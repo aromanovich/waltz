@@ -44,8 +44,12 @@ lint-fix: ## Apply what the linters can rewrite
 # The handbook's Markdown is the source and docs/handbook/site/ is generated
 # from it; the check parses every mermaid block and resolves every link, which
 # is the only way a broken one shows up before somebody opens the page.
+#
+# Two editions come out of it: site/ to browse, and site/waltz-handbook.html —
+# one self-contained file — to attach to a release. WALTZ_REF is what the second
+# one's links to source files point at, so a release build passes its tag.
 .PHONY: handbook
-handbook: ## Build the HTML edition of docs/handbook/ (needs node)
+handbook: ## Build both HTML editions of docs/handbook/ (needs node)
 	cd docs/handbook && npm install --no-audit --no-fund && npm run check && npm run build
 
 # The .pb.go file is checked in, so a clone builds and tests without protoc.

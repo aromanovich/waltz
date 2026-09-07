@@ -210,7 +210,7 @@
   ;(window.HANDBOOK_INDEX || []).forEach(function (page) {
     entries.push({ label: page.title, sub: page.number ? 'Chapter ' + page.number : 'Handbook', href: page.href })
     page.headings.forEach(function (h) {
-      entries.push({ label: h.text, sub: page.nav, href: page.href + '#' + h.id })
+      entries.push({ label: h.text, sub: page.nav, href: h.href || page.href + '#' + h.id })
     })
   })
 

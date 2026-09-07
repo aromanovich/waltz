@@ -4,8 +4,9 @@
   "description": "Builds the HTML edition of the WAL layer handbook from its Markdown chapters.",
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
-    "check": "node check-diagrams.mjs && node check-links.mjs"
+    "build": "node build.mjs && node build-single.mjs",
+    "check": "node check-diagrams.mjs && node check-links.mjs",
+    "build:single": "node build-single.mjs"
   },
   "devDependencies": {
     "marked": "^16.4.1",
