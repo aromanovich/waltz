@@ -24,8 +24,8 @@ import (
 
 	"github.com/aromanovich/waltz/baserow"
 	"github.com/aromanovich/waltz/cycle"
+	"github.com/aromanovich/waltz/internal/verify/coldtest"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/coldtest"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/memwal"
 )

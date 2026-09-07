@@ -226,9 +226,9 @@ func assertSame(t *testing.T, want, got reflect.Value, method string) {
 // them is a change to what the wrapper owes.
 func TestTheWholeSurfaceIsCovered(t *testing.T) {
 	require.Equal(t, 28, reflect.TypeFor[p.ExecutionStore]().NumMethod(),
-		"the ExecutionStore surface moved; the wrapper and #44's count both need rereading")
+		"the ExecutionStore surface moved; reread what the wrapper owes rather than updating the number")
 	require.Equal(t, 6, reflect.TypeFor[p.ShardStore]().NumMethod(),
-		"the ShardStore surface moved; the wrapper and #44's count both need rereading")
+		"the ShardStore surface moved; reread what the wrapper owes rather than updating the number")
 	require.Equal(t, 10, reflect.TypeFor[p.DataStoreFactory]().NumMethod(),
 		"the DataStoreFactory surface moved; a new store would be silently unwrapped")
 }

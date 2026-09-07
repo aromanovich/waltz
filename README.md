@@ -35,8 +35,12 @@ package main
 
 import (
 	"context"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/persistence/client"
 	"go.temporal.io/server/temporal"
@@ -76,10 +80,15 @@ func main() {
 	// your plugin's otherwise.
 	var base client.AbstractDataStoreFactory = memcold.NewAbstractDataStoreFactory(store)
 
+	// The server's own configuration, read the way a stock server reads it. It
+	// must name a custom datastore in Persistence.DataStores; that naming is the
+	// whole of how the factory below enters its persistence graph.
+	cfg, err := config.LoadConfig("development", "config", "")
+	if err != nil {
+		panic(err)
+	}
+
 	s, err := temporal.NewServer(
-		// The server's own config must name a custom datastore in
-		// Persistence.DataStores; that naming is the whole of how the factory
-		// below enters its persistence graph.
 		temporal.WithConfig(cfg),
 		temporal.WithCustomDataStoreFactory(layer.AbstractFactory(base)),
 	)
@@ -96,6 +105,13 @@ func main() {
 		// order that leaves the drain a database.
 		layer.Shutdown(context.Background(), 30*time.Second)
 	}()
+
+	// Start returns once the services are up, so a main that did not wait here
+	// would run both deferred shutdowns immediately — and the ordering they are
+	// written for is the whole point of them.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
 }
 ```
 
@@ -218,15 +234,15 @@ suite written here would be this repository's opinion of what a store owes; thos
 
 They judge the inherited surface and not `Apply`, which is not a method they know about. What judges
 `Apply` is `cold/memcold/apply_test.go` — seven cases over the transaction's ordering, its refusals,
-its attribution and its rollback — and `verify/acceptance`'s both-seams-real run, which drives a
-generated stream through `memwal` and `memcold` at the shipped window and then asks the database
-what it holds.
+its attribution and its rollback — and `internal/verify/acceptance`'s both-seams-real run, which
+drives a generated stream through `memwal` and `memcold` at the shipped window and then asks the
+database what it holds.
 
-`verify/coldtest` is still here and is still a double: one value satisfying both interfaces, which
-records what a drain carried and interprets nothing. It is what a suite uses when it needs to *vary*
-a drain's outcome: `coldtest.Refusing(err)` fails every drain with the error a test chose, which
-is how a suite reaches the refused, the shard-lost and the ambiguous classes without a store that
-can be asked to misbehave.
+`internal/verify/coldtest` is still here and is still a double: one value satisfying both
+interfaces, which records what a drain carried and interprets nothing. It is what a suite uses when
+it needs to *vary* a drain's outcome: `coldtest.Refusing(err)` fails every drain with the error a
+test chose, which is how a suite reaches the refused, the shard-lost and the ambiguous classes
+without a store that can be asked to misbehave.
 
 What an implementer owes the contract:
 
@@ -271,28 +287,40 @@ and the extension is one `SELECT` that keeps a column upstream already reads.
 
 ## A real server, over both seams, with nothing installed
 
-`verify/e2e` boots a Temporal server — frontend, history, matching and worker, all four services in
-the test process — over `memwal` and `memcold`, registers a namespace through the frontend, and runs
-a real workflow with a real activity through the SDK. It needs no cluster, no container, no fixed
-port, no cgo and no build tag: the ports come from the OS, the databases are in memory, and the
-whole thing is `go test ./verify/e2e/`.
+`internal/verify/e2e` boots a Temporal server — frontend, history, matching and worker, all four
+services in the test process — over `memwal` and `memcold`, registers a namespace through the
+frontend, and runs a real workflow with a real activity through the SDK. It needs no cluster, no
+container, no fixed port, no cgo and no build tag: the ports come from the OS, the databases are in
+memory, and the whole thing is `go test ./internal/verify/e2e/`.
 
 It runs twice. `TestAWorkflowRunsThroughTheLayer` hands the server the layer's factory;
 `TestAWorkflowRunsWithTheLayerOutOfThePath` hands it the same store bare. Both compose a layer, and
 that is what makes the control worth having — the passthrough arm's claim is that the layer it
 composed saw *nothing*, which is a claim a run with no layer at all could not make. The green
 workflow is the weaker half of both: a layer that quietly fell out of the path completes the same
-workflow just as fast. So each arm ends in a `verify/witness` claim over the layer's own counters —
-shards acquired through the layer, mutations acked, drains committed, history tasks written, task
-pages merged, mutation kinds seen — and the intercept arm then reads each shard's watermark out of
-the database, so a run claiming a drain committed and a store holding nothing cannot both be
-believed.
+workflow just as fast. So each arm ends in an `internal/verify/witness` claim over the layer's own
+counters — shards acquired through the layer, mutations acked, drains committed, history tasks
+written, task pages merged, mutation kinds seen — and the intercept arm then reads each shard's
+watermark out of the database, so a run claiming a drain committed and a store holding nothing
+cannot both be believed.
 
 **What it does not prove.** The database is in memory and dies with the process, so nothing here is
 a durability claim. Nothing is killed, so nothing is a crash-recovery claim — replay is exercised
 over an in-process log by `cycle`'s own tests and by no handover between two processes. One
 workflow on four shards is not load, and no number this suite produces is a performance claim about
 anything.
+
+## Running it
+
+```sh
+make test    # go test ./... -count=1, the default target
+make lint    # golangci-lint plus gopls's modernize, both pinned in the Makefile
+```
+
+`make check` is the two together, and it is the whole gate. What is worth saying about them is what
+they do not need: no cluster, no container, no fixed port, no cgo and no build tag. Both shipped
+backends live in the test process, so a fresh clone runs everything there is — the Temporal server
+of `internal/verify/e2e` included — with nothing installed.
 
 ## Configuration
 
@@ -325,10 +353,11 @@ fit the node's tail budget. [Chapter 08](docs/handbook/08-configuration.md) is e
 | `apply` | what a drain's outcome means: the five classes, and the errors that carry them. It writes nothing |
 | `baserow` | the cold store's two pre-window mutable-state reads, as three packages that may not name each other need them |
 | `walmetrics` | the layer's numbers, emitted through the server's own `metrics.Handler` — which arrives after the layer is composed, hence the late handover |
-| `verify/...` | what judges the layer: the acceptance suites, the end-to-end server run (`e2e`), the guards, the witness, the generators, and the in-memory doubles (`coldtest`, `basetest`, `coldtasks`) |
+| `internal/verify/...` | what judges the layer: the acceptance suites, the end-to-end server run (`e2e`), the guards, the witness, the generators, and the in-memory doubles (`coldtest`, `basetest`, `coldtasks`) |
 
-The split is one-way: nothing outside `verify/` imports it in a non-test file, so what the library
-ships and what judges it cannot be confused for each other.
+The split is one-way, and `internal/` is half of what holds it: nothing outside this module can
+reach those packages at all, and inside it nothing outside `internal/verify/` imports them in a
+non-test file — so what the library ships and what judges it cannot be confused for each other.
 
 ## Status
 
@@ -338,15 +367,24 @@ both seams now have an implementation in the tree: `go test ./...` is green with
 no cluster, no container, no port, no cgo, no build tag — and that run includes a Temporal server
 booting over waltz and completing a workflow.
 
+**What it is built against.** `go.temporal.io/server` v1.29.6, and Go 1.26 or newer. The server
+version is not a soft floor: the record an entry carries mirrors that version's write request
+structs field by field, hand-filled rather than reflected, so a field a newer server adds is a field
+this codec has nowhere to put and stops carrying — an acked write folded into the cold store with
+part of it missing, which under the first rule above is a data-loss path and not a compatibility
+inconvenience. `mutation`'s field-set guard is what makes that a failing test at the bump rather
+than a lost column, and updating its fingerprint is never the fix: decide first whether the new
+field is carried, derived or dropped.
+
 What is established, in order of how much it says:
 
 * a real server, composed over waltz the production way, acquires its shards through the layer,
   writes its mutable state into the log, drains it into a database and completes a workflow — with
   a passthrough control run beside it and a witness over the layer's own counters
-  (`verify/e2e`);
+  (`internal/verify/e2e`);
 * a folded window, driven at volume over both real seams, leaves a real Temporal schema holding
   exactly what the batches said it should, including when the shard's epoch moves out from under a
-  running cycle (`verify/acceptance`);
+  running cycle (`internal/verify/acceptance`);
 * the cold store passes Temporal's own four persistence suites (`cold/memcold`);
 * the log satisfies the five guarantees, and `wal/waltest` would say the same of any implementation
   a deployment hands it;
@@ -357,9 +395,10 @@ What is **not** established, and cannot be from inside this repository:
 
 * **nothing here is durable.** Both shipped backends live in one process's memory and die with it.
   No fsync, no network and no quorum has ever been in the path of anything in this tree;
-* **no process has ever been killed.** `verify/checker` is the judge written for a run under faults
-  and it has no harness here, because a harness needs processes and processes need storage. Replay
-  is exercised in process; a real handover between two owners on two machines is not;
+* **no process has ever been killed**, and nothing here can kill one: a run under faults needs a
+  harness, a harness needs processes, and processes need storage that outlives them — which neither
+  shipped backend is. Replay is exercised in process; a real handover between two owners on two
+  machines is not;
 * **no backend has been run under load**, and no number produced here is a performance claim.
   Whether a log answers sooner than a cold store would is a property of that pair, measured on the
   cluster it runs on;
@@ -371,8 +410,8 @@ What is **not** established, and cannot be from inside this repository:
 entry, with which entries are measurements nobody has taken and which are the shape of a decision.
 [`patches/`](patches/README.md) holds the fifteen-line patch that puts a composition over waltz under
 upstream Temporal's own functional suites against a deployment's real store — wider coverage than
-`verify/e2e`, at the price of a patched checkout, and the strongest evidence available from outside
-a production cluster.
+`internal/verify/e2e`, at the price of a patched checkout, and the strongest evidence available
+from outside a production cluster.
 
 Start with the handbook: [`docs/handbook`](docs/handbook) is the reference (01–11) and the
 reasoning (12–15). [`docs/adr`](docs/adr) holds the decisions somebody will otherwise try to

@@ -117,7 +117,7 @@ func TestTheOverlayShapeTable(t *testing.T) {
 
 		resp, found, shape := render(a, runX, baseRow(9))
 		require.Equal(t, fold.RunTombstone, shape)
-		require.False(t, found, "a deleted execution must read as deleted (#34, #43)")
+		require.False(t, found, "a deleted execution must read as deleted")
 		require.Nil(t, resp)
 	})
 

@@ -25,7 +25,7 @@ What to know before changing any of it:
   (`conformance_test.go`), and a suite of ours at this seam would be this
   repository's opinion of what a store owes. `Apply` is the exception, because
   no upstream suite knows about it: it is judged by `apply_test.go` and by
-  `verify/acceptance`'s both-seams-real run, and every case there was proved by
+  `internal/verify/acceptance`'s both-seams-real run, and every case there was proved by
   staging the defect it exists for;
 * **the transaction is opened beside the interface, not inside it.**
   `p.ExecutionStore` has nowhere to declare a write spanning many workflows, so

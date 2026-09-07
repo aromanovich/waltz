@@ -24,11 +24,11 @@ Two groups:
 * **the module root** — everything that runs in production: `wal/` (the contract, the in-memory
   backend and the conformance suite), `mutation/`, `fold/`, `apply/`, `cycle/`, `wrapper/`,
   `walmetrics/`, `baserow/`, and the root package `waltz` itself.
-* **`verify/`** — everything that judges it and never runs in production: `mutgen/`, `mutbuild/`,
+* **`internal/verify/`** — everything that judges it and never runs in production: `mutgen/`, `mutbuild/`,
   `drive/`, `foldrun/`, `coldtest/`, `basetest/`, `coldtasks/`, `acceptance/`, `checker/`,
   `witness/`, `guard/`.
 
-Two rules say what the split means: **no non-test file outside `verify/` may import `verify/**`**,
+Two rules say what the split means: **no non-test file outside `internal/verify/` may import `internal/verify/**`**,
 and **the root package is the front door** — `Compose`, the configuration, the settings and
 `AbstractFactory`, and nothing else. They are stated in
 [`.claude/rules/dependencies.md`](../../.claude/rules/dependencies.md) and no test enforces them
@@ -48,8 +48,8 @@ the one composition (`Compose`), the `wal` section, the dynamic-config settings 
 what makes "the layer packages are at the root" a decision rather than a leftover, since a
 `waltz/layer/cycle` would put a segment on every import path and buy a reader nothing.
 
-**The shared test support is a set of packages, and their APIs are wide.** `verify/mutgen`,
-`verify/drive`, `verify/coldtest` and the rest are packages rather than `_test.go` files because
+**The shared test support is a set of packages, and their APIs are wide.** `internal/verify/mutgen`,
+`internal/verify/drive`, `internal/verify/coldtest` and the rest are packages rather than `_test.go` files because
 several other packages import them. That width is not incidental — it measures how entangled the
 tests were, since a single package let everything reach into one fixture type for free — and it is
 the honest price of the split rather than a design to be admired.
@@ -74,10 +74,10 @@ the pattern for reasons a reader would have to look up. The rules already state 
 ## Considered and not taken: the tests somewhere other than beside the code
 
 Every package's tests sit beside it, which is what idiomatic Go asks for, and it is available here
-because nothing in this repository needs a cluster: the cold store is `verify/coldtest` and the log
+because nothing in this repository needs a cluster: the cold store is `internal/verify/coldtest` and the log
 is `wal/memwal`, so `fold`'s tests, `cycle`'s and `wrapper`'s all run in process.
 
-What is under `verify/` is therefore not "the tests": it is the judges that are about no single
+What is under `internal/verify/` is therefore not "the tests": it is the judges that are about no single
 package — the corpus and what drives it, the doubles at the two cold-store seams, the witness, the
 checker, and the guards, which are the tests that fail when a decision is reverted rather than when
 the code is wrong.
@@ -104,11 +104,11 @@ double. So the module root now holds three kinds of thing rather than two, and w
 legible is a dependency rule rather than a directory — nothing of the layer may import `memcold`,
 and `memcold` may import nothing of the layer.
 
-`verify/` gains `e2e/`, which is a judgement in the sense the section below uses: it boots a
+`internal/verify/` gains `e2e/`, which is a judgement in the sense the section below uses: it boots a
 Temporal server over the layer and states what the layer must have seen.
 
 The sentence in "the tests somewhere other than beside the code" that says "the cold store is
-`verify/coldtest`" is superseded: the cold store is `cold/memcold` and `verify/coldtest` is the
+`internal/verify/coldtest`" is superseded: the cold store is `cold/memcold` and `internal/verify/coldtest` is the
 double beside it. The reasoning it was supporting — that nothing here needs a cluster, so every
 package's tests sit beside it — is unchanged and is now stronger.
 
@@ -138,3 +138,32 @@ rule someone deletes.
 merges. The rules are loaded into an agent's context whenever the packages they cover are touched,
 and reviewed by a person otherwise. If that proves too weak, the answer is `depguard` or
 `go-arch-lint` taking the table as configuration — not another check under `go test`.
+
+## Amendment — `verify/` moves under `internal/` for the first public release
+
+`verify/` is now `internal/verify/`. That reverses "Considered and not taken: `internal/`" above,
+which is left as it was written.
+
+Two facts ruled `internal/` out there, and neither survives contact with the move as made. The
+first was [ADR 0002](0002-wal-contract-is-backend-independent.md)'s promise of the `wal` contract
+together with its conformance suite: `wal/waltest` is not under `verify/` and did not move — it
+sits beside the contract it judges, which is where that promise needs it, and the same is true of
+`wal/memwal` and `cold/memcold`. The second was `verify/coldtest`, said to be what an author of a
+`cold.Applier` tests their store against. Its own package comment does not support that: it
+records what a drain carried and what watermark it moved, and *interprets nothing*, which makes it
+a fixture for composing a layer rather than a judge of a store. What would judge somebody else's
+`cold.Applier` does not exist here, and the README says so.
+
+What the section could not weigh is the one thing that changed: this repository is being
+published. Before a tag, `internal/` bought protection from an external importer of `fold` or
+`cycle` "who is welcome". After one, every package outside `internal/` is a compatibility
+commitment — and that is twelve packages of test scaffolding whose APIs this ADR itself calls
+wide, and calls the honest price of the split rather than a design to be admired. Wide and
+unstable is precisely what a first tag must not promise.
+
+**What the move does not buy, since it is easy to assume otherwise:** `internal/` at the module
+root is importable from everywhere inside this module. The rule that no non-test file outside
+`internal/verify/` may import it is therefore still prose, still in
+[`.claude/rules/dependencies.md`](../../.claude/rules/dependencies.md), and still enforced by
+nobody — exactly as the amendment above leaves it. What changed is who *may* import these
+packages, not who does.

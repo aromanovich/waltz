@@ -10,7 +10,7 @@ paths:
   - "walmetrics/**"
   - "baserow/**"
   - "cold/**"
-  - "verify/**"
+  - "internal/verify/**"
 ---
 
 # This repo: what a comment may say
@@ -37,6 +37,13 @@ that is the signal to re-read this.
   — including every `**bold**` inside a comment;
 * **sentences restating the line below them**, and on a test, the rationale for
   its name or a narration of its arrange/act/assert.
+
+**Licence and attribution headers are not comments in this sense**, and the
+first bullet does not reach them. A header naming the upstream a file is derived
+from and the licence that code carries is the condition on which the file may be
+here at all; `NOTICE` at the root is where the detail lives, and the header is
+the pointer to it. Those headers are never cut, never shortened away, and never
+counted against the density above.
 
 **Keep, because it has no other home:** preconditions and invariants; ordering
 and locking constraints; which goroutine owns what; units and resolutions;

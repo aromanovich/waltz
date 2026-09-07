@@ -60,11 +60,10 @@ var _ p.ExecutionStore = (*ExecutionStore)(nil)
 // Intercept mode converts base to [baserow.Store] and passthrough does not,
 // which is the whole of why the conversion is here rather than in a parameter
 // type: base arrives as [p.ExecutionStore] through Temporal's factory
-// interface, and only one of the two modes reads a pre-window row. A store that
-// cannot answer the version-carrying read is a build over an unpatched
-// checkout, and there is no honest way to serve intercept mode over it — so the
-// error is [baserow.ErrNoVersionedRead], returned where the server is still
-// starting and can be told which patch is missing.
+// interface, and only one of the two modes reads a pre-window row. There is no
+// honest way to serve intercept mode over a store that cannot answer the
+// version-carrying read, so the error is [baserow.ErrNoVersionedRead], returned
+// where the server is still starting and can be told which read is missing.
 func NewExecutionStore(base p.ExecutionStore, opts Options) (*ExecutionStore, error) {
 	emit := opts.Metrics
 	if emit == nil {

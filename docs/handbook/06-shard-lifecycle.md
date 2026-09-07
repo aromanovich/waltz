@@ -75,7 +75,7 @@ if s.layer != nil && request.RangeID != request.PreviousRangeID {
 return s.base.UpdateShard(ctx, request)
 ```
 
-Two properties of those seven lines are load-bearing.
+Two properties of those six lines are load-bearing.
 
 **The order.** The observer runs *before* the base store commits the rangeID bump, so the WAL is
 fenced at the new epoch first and the rangeID lands second. A failed fence therefore fails the
@@ -269,7 +269,7 @@ reaches the shard — read or write alike.
 sequenceDiagram
     participant REQ as first read or write
     participant CY as the new owner's Cycle goroutine
-    participant WM as apply.Recoverer (applied_seqno)
+    participant WM as cold.Watermarker (applied_seqno)
     participant LOG as wal.Log
     participant CS as cold store
     REQ->>CY: queued on the loop

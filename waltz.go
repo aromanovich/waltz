@@ -5,6 +5,14 @@
 // all three the caller's, and the only log shipped here is wal/memwal, in
 // memory.
 //
+// waltz is developed against go.temporal.io/server v1.29.6 and needs Go 1.26 or
+// newer. The requirement on the server is a floor under minimal version
+// selection and not a pin, so a consumer already on a newer one builds against
+// it with no diagnostic: the WAL record format mirrors v1.29.6's request
+// structs field-for-field, and the mirror's completeness is checked against
+// that version here, never in a consumer's build. A field a newer server adds
+// is a field this codec drops from a write it has already acked.
+//
 // [Compose] is the only composition; a new caller's need belongs there as a
 // parameter. [Layer.AbstractFactory] is the door out: the value a custom main
 // hands to temporal.WithCustomDataStoreFactory, which is the whole of how a

@@ -20,8 +20,8 @@ import (
 	p "go.temporal.io/server/common/persistence"
 
 	"github.com/aromanovich/waltz/cold"
+	"github.com/aromanovich/waltz/internal/verify/basetest"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/basetest"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/memwal"
 )

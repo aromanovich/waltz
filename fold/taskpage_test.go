@@ -6,7 +6,7 @@ package fold_test
 // not. taskpage_corpus_test.go checks the same rules over a stream; what a
 // shard does with a page is cycle's.
 //
-// The base is the plugin's own pagination (verify/coldtasks) rather than a stub,
+// The base is the plugin's own pagination (internal/verify/coldtasks) rather than a stub,
 // because the base's pagination is the merge's whole difficulty: a store that
 // answered everything in one page would leave the cut untested.
 
@@ -23,8 +23,8 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/fold"
+	"github.com/aromanovich/waltz/internal/verify/coldtasks"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/coldtasks"
 )
 
 // immediateRange and scheduledRange are the widest ranges a queue could ask for,

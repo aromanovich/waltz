@@ -226,11 +226,13 @@ the server is the node, this is what it builds. It is the root package,
 `waltz`, and `waltz.Layer` is what a composition hands back.
 
 **Checker (проверяльщик)**:
-The judge of a run in which nodes are killed: a journal of what each driver
-asked for and what it
-was told, plus assertions A1–A10 over it. It may not import the layer, which is
-the point — an assertion compiled into the layer sees what the layer *believes*
-and dies with it under `kill -9`.
+The record a driver writes of the calls it made and what it was told: two
+fsynced lines per call, the first before the store is touched and the second
+once it has answered, so the gap between them is the third outcome class — a
+call nobody knows the result of. It judges nothing; the judge that reads such a
+record back is not in this repository. Whatever writes one may not import the
+layer, which is the point — an assertion compiled into the layer sees what the
+layer *believes* and dies with it under `kill -9`.
 
 **Witness (свидетель)**:
 The assertion a run makes over the layer's **own** counters, beside the
@@ -238,7 +240,7 @@ assertions of whatever suite it ran. It exists because a layer that came out
 empty is passthrough wearing another name, and somebody else's suite is green
 over it — so a witness can fail a run every suite passed. Its central claims
 invert between sync and windowed modes, which is why both are run. It is one
-judged module, `verify/witness`: a run states what it was supposed to
+judged module, `internal/verify/witness`: a run states what it was supposed to
 be (`Expect` — the window, and what its suites drove) and hands over what its
 instruments saw (`Observed` — `cycle.Totals` required, the store's counts and
 the metric emissions optional), so a run that has a capture handler and one
@@ -259,7 +261,7 @@ Whatever the caller plugs in behind `cold.Applier` and `cold.Watermarker` —
 the permanent target of apply, regardless of which WAL backend is in use. No
 package of the layer implements one. `cold/memcold` is the one shipped here —
 Temporal's own SQL persistence over a database in this process, judged by
-Temporal's own persistence suites — and `verify/coldtest` is the double beside
+Temporal's own persistence suites — and `internal/verify/coldtest` is the double beside
 it, for a suite that has to make a drain fail.
 _Avoid_: main storage, base (overloaded)
 

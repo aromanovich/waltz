@@ -14,8 +14,8 @@ import (
 	"github.com/aromanovich/waltz/wal/waltest"
 )
 
-// TestMemWALContractSuite runs the conformance suite backend #1 also passes,
-// against a Backend of its own: the suite is entitled to one with no shards.
+// TestMemWALContractSuite runs the conformance suite against a Backend of its
+// own: the suite is entitled to one with no shards.
 func TestMemWALContractSuite(t *testing.T) {
 	waltest.RunContractSuite(t, memwal.New())
 }
@@ -75,9 +75,9 @@ func TestATrimmedLogRemembersWhereItIs(t *testing.T) {
 	require.Empty(t, entries, "the trim left entries behind")
 
 	// Every seqno the log gave out is refused as taken: the entries are gone,
-	// what they occupied is not. Backend #1 answers ErrGap here, the rows its
-	// answer would come from being what the trim deleted, and the contract picks
-	// neither.
+	// what they occupied is not. A backend deriving the answer from its rows
+	// says ErrGap here, the rows that answer would come from being what the
+	// trim deleted, and the contract picks neither.
 	for i := range wal.Seqno(count) {
 		err := log.Append(ctx, shard, epoch, wal.FirstSeqno+i, []byte("again"))
 		require.ErrorIsf(t, err, wal.ErrAlreadyWritten,

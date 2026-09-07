@@ -352,13 +352,13 @@ func TestReplayRefusesATailWrittenAboveItsEpoch(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, StateHaltedLost, zombie.State())
 	require.Empty(t, stale.drains, "nothing of somebody else's log was applied")
-	// The phrase is scanned for outside this package, so it is spelled out here
-	// rather than taken from [FencedAway]: an assertion against the constant
-	// would let the words change under both at once. See
-	// chaos_claimants_test.go, which reads FencedAway.
+	// The phrase is spelled out here rather than taken from [FencedAway]: an
+	// assertion against the constant would let the words change under both at
+	// once.
 	require.Contains(t, err.Error(), "the shard has been fenced away")
 	require.Equal(t, "the shard has been fenced away", FencedAway,
-		"the phrase moved: the chaos case reads this constant and its own message says why")
+		"FencedAway is an operator-facing cause the handbook's shard-lifecycle "+
+			"and operations chapters name verbatim, so it is not free to change")
 }
 
 // TestAFailedTailReadIsRetriedFromTheWatermark: a failed page read leaves the

@@ -2,7 +2,7 @@ package cycle
 
 // The cycle without a cluster: what a drain's outcome does to the state
 // machine, when the watermarks fire, and what the trim cadence allows. The log
-// is backend #2 behind a fault the test sets; the applier and the watermark are
+// is memwal behind a fault the test sets; the applier and the watermark are
 // fakes.
 
 import (
@@ -22,9 +22,9 @@ import (
 	"github.com/aromanovich/waltz/apply"
 	"github.com/aromanovich/waltz/baserow"
 	"github.com/aromanovich/waltz/fold"
+	"github.com/aromanovich/waltz/internal/verify/basetest"
+	"github.com/aromanovich/waltz/internal/verify/mutbuild"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/basetest"
-	"github.com/aromanovich/waltz/verify/mutbuild"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/memwal"
 	"github.com/aromanovich/waltz/wal/waltest"
@@ -40,7 +40,7 @@ func testRegistry() tasks.TaskCategoryRegistry { return tasks.NewDefaultTaskCate
 // The log, and the fakes: one answer each, programmable per call.
 // ---------------------------------------------------------------------------
 
-// newLog is what every test here drives: backend #2, which keeps the contract,
+// newLog is what every test here drives: memwal, which keeps the contract,
 // behind the decorator a test sets a failure on.
 func newLog() *waltest.Faulty { return waltest.NewFaulty(memwal.New()) }
 
@@ -100,8 +100,8 @@ func (w *fakeWatermark) Watermark(context.Context, wal.ShardID) (wal.Seqno, bool
 }
 
 // standUp is how a cycle is stood up over fakes here. The cycle does not fence
-// — its manager does, before the rangeID lands (§9) — so the fence belongs with
-// the construction: a harness standing one up over an unfenced log is driving a
+// — its manager does, before the rangeID lands — so the fence belongs with the
+// construction: a harness standing one up over an unfenced log is driving a
 // shard nobody acquired. The registry, the policy and the retire are the same
 // everywhere; the applier, the watermark and the emitter are what each harness
 // is about, so they arrive in deps.
@@ -691,7 +691,7 @@ func TestCloseDrainsWhatTheWindowHolds(t *testing.T) {
 }
 
 // TestManagerSupersedesByEpoch: an acquire fences the log before the rangeID
-// lands (§9), a higher epoch retires the cycle below it, the same epoch is
+// lands, a higher epoch retires the cycle below it, the same epoch is
 // idempotent, and a lower one is refused.
 func TestManagerSupersedesByEpoch(t *testing.T) {
 	logs := newLog()
@@ -726,8 +726,8 @@ func TestManagerSupersedesByEpoch(t *testing.T) {
 	require.Nil(t, m.Shard(testShard))
 }
 
-// TestAFailedFenceLeavesNoCycle: §9 step 1 — the log's epoch may never lag the
-// database's, so a fence that failed must leave no cycle behind.
+// TestAFailedFenceLeavesNoCycle: the log's epoch may never lag the database's,
+// so a fence that failed must leave no cycle behind.
 func TestAFailedFenceLeavesNoCycle(t *testing.T) {
 	logs := newLog()
 	logs.OnFence(waltest.Always(wal.ErrFenced))

@@ -14,7 +14,7 @@ waltz has two seams: `wal.Log`, where an acknowledgement lands, and `cold.Applie
 settled the first and shipped `wal/memwal` with it — a backend and not a double, which is what makes
 the conformance suite it passes worth handing to somebody else.
 
-The second seam had nothing. `verify/coldtest` stood in for it: a double that records what a drain
+The second seam had nothing. `internal/verify/coldtest` stood in for it: a double that records what a drain
 carried and what watermark it moved, and interprets nothing. That asymmetry was never decided. It
 followed from a sentence — *this library implements no persistence* — that reads like a principle
 and was in fact a description, and it cost three things.
@@ -50,14 +50,14 @@ Four rules make that a shape rather than an accretion:
    would make every suite above it green for the wrong reason.
 3. **Neither may have knobs, hooks or fault injection.** Making a backend misbehave is a *test's*
    need and belongs to a decorator, not to the backend: `waltest.Faulty` at the log seam,
-   `verify/coldtest` at the cold one. The doubles therefore stay, and stay in `verify/`.
+   `internal/verify/coldtest` at the cold one. The doubles therefore stay, and stay in `internal/verify/`.
 4. **Neither may know waltz.** `memwal` knows the log contract and nothing else; `memcold` answers
    Temporal's interfaces and imports nothing of the layer. A backend that could see the layer would
    be judged by the thing sitting on top of it.
 
 ## Consequences
 
-**A Temporal server now runs inside this repository's test suite.** `verify/e2e` composes the layer
+**A Temporal server now runs inside this repository's test suite.** `internal/verify/e2e` composes the layer
 over both shipped backends, hands it to `temporal.WithCustomDataStoreFactory` through a custom
 datastore named in the server's own config, boots frontend, history, matching and worker in the test
 process, and completes a real workflow through the SDK — with nothing installed, and with a

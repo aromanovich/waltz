@@ -10,7 +10,7 @@ MODERNIZE := golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@
 # No `-p 1` here, and its absence is the deliberate half: nothing in this module
 # wants a cluster, a container or a fixed port. Every backend lives in the test
 # process and every database is keyed by a name minted per store, so the packages
-# share nothing and run concurrently — including verify/e2e, whose Temporal
+# share nothing and run concurrently — including internal/verify/e2e, whose Temporal
 # services take ports from the OS. `-count=1` is what keeps a green run from
 # being yesterday's cache.
 .PHONY: test

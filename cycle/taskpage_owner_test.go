@@ -22,8 +22,8 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/baserow"
+	"github.com/aromanovich/waltz/internal/verify/coldtasks"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/coldtasks"
 )
 
 // windowed is a cycle that holds its tasks rather than draining each one, so

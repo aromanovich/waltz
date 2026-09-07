@@ -1,5 +1,10 @@
 package memcold
 
+// The read below is derived from go.temporal.io/server v1.29.6,
+// common/persistence/sql, which is copyright Temporal Technologies Inc. and
+// Uber Technologies, Inc. and licensed under the MIT licence. NOTICE at the
+// repository root has that licence and what this file takes.
+
 import (
 	"context"
 	"database/sql"

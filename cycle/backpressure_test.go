@@ -24,9 +24,9 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/fold"
+	"github.com/aromanovich/waltz/internal/verify/basetest"
+	"github.com/aromanovich/waltz/internal/verify/mutbuild"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/basetest"
-	"github.com/aromanovich/waltz/verify/mutbuild"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/memwal"
 )
@@ -34,7 +34,7 @@ import (
 const testEpoch wal.Epoch = 7
 
 // ---------------------------------------------------------------------------
-// A cycle over backend #2, and an applier the test decides when to run.
+// A cycle over memwal, and an applier the test decides when to run.
 // ---------------------------------------------------------------------------
 
 // heldApplier commits whatever it is given — what these tests are about is the
@@ -216,8 +216,8 @@ func TestARefusedWriteIsNotAWrite(t *testing.T) {
 	require.EqualValues(t, 4, e.c.Stats().CommitSeqno, "and consumed no seqno")
 
 	// Draining is the only way to ask the accumulator what it holds: four in
-	// means the refused mutation never reached fold, so the collapse ratio the
-	// oracle judges is untouched by backpressure.
+	// means the refused mutation never reached fold, so what a window collapses
+	// is untouched by backpressure.
 	require.NoError(t, e.c.drainNow(context.Background()))
 	require.Equal(t, 4, e.c.Stats().LastStats.MutationsIn)
 
@@ -388,10 +388,10 @@ func TestBackpressureNeverCostsTheNodeItsShard(t *testing.T) {
 // The node's budget.
 // ---------------------------------------------------------------------------
 
-// TestTheNodeBudgetIsAStartupAssertion: §2 puts `hard_max × shards per node` in
-// the node's RAM calculation, so raising the per-shard bound has to stop the
-// node rather than quietly overcommit it. The registry is where that happens,
-// because a composed binary has no cycle without one.
+// TestTheNodeBudgetIsAStartupAssertion: the node's RAM goes as `hard_max ×
+// shards per node`, so raising the per-shard bound has to stop the node rather
+// than quietly overcommit it. The registry is where that happens, because a
+// composed binary has no cycle without one.
 func TestTheNodeBudgetIsAStartupAssertion(t *testing.T) {
 	deps := Deps{Log: memwal.New(), Writer: &heldApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry()}
 

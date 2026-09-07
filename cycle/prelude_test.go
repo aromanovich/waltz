@@ -12,7 +12,7 @@ import (
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/service/history/tasks"
 
-	"github.com/aromanovich/waltz/verify/coldtasks"
+	"github.com/aromanovich/waltz/internal/verify/coldtasks"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/waltest"
 )

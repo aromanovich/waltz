@@ -38,9 +38,10 @@ type Store interface {
 	) (*p.InternalGetCurrentExecutionResponse, int64, error)
 }
 
-// ErrNoVersionedRead is what [Of] answers for a store without the
-// version-carrying current-row read: the checkout is unpatched, or the store is
-// not the plugin's.
+// ErrNoVersionedRead is what [Of] answers for a store that does not implement
+// [Store]: the cold store below has not been extended with the
+// version-carrying current-row read, so intercept mode cannot be served over
+// it.
 var ErrNoVersionedRead = errors.New("baserow: the store below cannot read a current row's last_write_version")
 
 // Rows reads the pre-window rows one shard's write path stands on. A nil *Rows

@@ -1,9 +1,9 @@
 package cycle
 
-// §M's numbers, over cycle_test.go's fakes: every emission point is on a path
-// those fakes already drive — a drain's outcome, a refused append, a tail that
-// moved. What each test pins is the *reading* a dashboard takes off a series,
-// not that the call was made.
+// The metric series, over cycle_test.go's fakes: every emission point is on a
+// path those fakes already drive — a drain's outcome, a refused append, a tail
+// that moved. What each test pins is the *reading* a dashboard takes off a
+// series, not that the call was made.
 
 import (
 	"errors"
@@ -16,7 +16,7 @@ import (
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/service/history/tasks"
 
-	"github.com/aromanovich/waltz/verify/coldtasks"
+	"github.com/aromanovich/waltz/internal/verify/coldtasks"
 	"github.com/aromanovich/waltz/wal/waltest"
 	"github.com/aromanovich/waltz/walmetrics"
 )
@@ -92,7 +92,7 @@ func TestTheCollapseGoesOutAsTwoCountersAndNotAsARatio(t *testing.T) {
 
 	for name := range e.capture.Snapshot() {
 		require.NotContains(t, name, "ratio",
-			"a pre-divided collapse ratio is the bare number the rule forbids (§M, #12, #19)")
+			"a pre-divided collapse ratio is the bare number the rule forbids")
 	}
 }
 
@@ -125,7 +125,7 @@ func TestTheTailIsRecordedInBothUnitsWhereverItMoves(t *testing.T) {
 
 	require.NoError(t, e.c.drainNow(t.Context()))
 	require.Equal(t, int64(0), last(values(e.recorded("wal_tail_entries"))), "a committed drain empties the tail")
-	require.NotEmpty(t, e.recorded("wal_window_age"), "the third unit §M asks for")
+	require.NotEmpty(t, e.recorded("wal_window_age"), "age, the third of the three units")
 }
 
 // TestBackpressureNamesTheUnitThatBound: a write is refused before the append

@@ -49,25 +49,25 @@ gain; raising it leaves more of the log behind, which is what a post-mortem read
 	TrimAfter = dynamicconfig.NewGlobalDurationSetting(
 		"wal.trimAfter", measured.TrimAfter,
 		`TrimAfter is the same cadence in time, whichever trips first. Raising TrimEvery alone
-does not keep a log: this one fires anyway (#95).`)
+does not keep a log: this one fires anyway.`)
 
 	HardMaxEntries = dynamicconfig.NewGlobalIntSetting(
 		"wal.hardMaxEntries", measured.HardMaxEntries,
 		`HardMaxEntries is invariant I10's bound on one shard's tail in entries: what has been
 acked and not yet applied. A shard at the bound refuses its writers with ResourceExhausted
 rather than parking them behind the apply. READ AT START-UP: a change needs the history
-services restarted. It is read once because it is one half of a bound whose other half is —
-neither unit works alone, and a node honouring one of the two from a different edit than the
-other is a bound nobody wrote.`)
+services restarted. It is read once because it is one half of a bound whose other half is
+wal.hardMaxBytes — neither unit works alone, and a node honouring one of the two from a
+different edit than the other is a bound nobody wrote.`)
 
 	HardMaxBytes = dynamicconfig.NewGlobalIntSetting(
 		"wal.hardMaxBytes", measured.HardMaxBytes,
 		`HardMaxBytes is the same bound in encoded bytes — two units because neither works
 alone: one workflow near the server's own 8 MB mutable-state limit turns an entries-only bound
 into a byte budget with no ceiling. It is arithmetic and not taste: the node's tail budget
-divided by the shards it may own. READ AT START-UP: it is a factor of the product asserted
-before the node boots (#47), and a factor that moved afterwards would be that refusal with
-nothing behind it.`)
+divided by the shards it may own. READ AT START-UP: it is a factor of the product
+cycle.Config.CheckBudget asserts before the node boots, and a factor that moved afterwards
+would be that refusal with nothing behind it.`)
 
 	MaxShards = dynamicconfig.NewGlobalIntSetting(
 		"wal.maxShards", measured.MaxShards,
@@ -77,8 +77,8 @@ nothing behind it.`)
 	TailBudgetBytes = dynamicconfig.NewGlobalIntSetting(
 		"wal.tailBudgetBytes", measured.TailBudgetBytes,
 		`TailBudgetBytes is the RAM one node may hold as unapplied tail. hardMaxBytes × maxShards
-must fit in it or the node refuses to start (#47) — the assertion is run rather than written
-down, because a doc line does not survive a config edit. READ AT START-UP.`)
+must fit in it or the node refuses to start — cycle.Config.CheckBudget is run rather than
+written down, because a doc line does not survive a config edit. READ AT START-UP.`)
 )
 
 // setting is one row of [settings]: its current and legacy keys, how it binds

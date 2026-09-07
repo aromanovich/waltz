@@ -41,7 +41,8 @@ func Fixed(c Config) Policy {
 }
 
 // Live is the policy whose watermarks and cadence come from somewhere that can
-// change while the node runs — the server's dynamic config, through waltz.Policy.
+// change while the node runs — the server's dynamic config, through
+// waltz.NewPolicy.
 //
 // static is read once, here, and carries the mode, the bounds and the clock. A
 // call costs five reads of the source and a struct copy, so read sites take one

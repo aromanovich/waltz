@@ -37,8 +37,8 @@ Five seams let the component on either side be replaced or run without a cluster
 | the log | `wal.Log` | `memwal` here; a deployment's own log otherwise | `cycle` |
 | one entry | `mutation.Mutation` + `Encode`/`Decode` | — (a value type and a codec) | `wrapper`, `cycle` |
 | the server's stores | `wrapper.ShardLayer` (four faces) | `cycle.Manager` | `wrapper.ExecutionStore`, `wrapper.ShardStore` |
-| the cold store | `cold.Applier`, `cold.Watermarker` | `memcold` here; a deployment's own store otherwise, and `verify/coldtest` where a suite has to vary a drain's outcome | `cycle` |
-| the two pre-window reads | `baserow.Store` | `memcold` here; the base `ExecutionStore` the wrapper decorates otherwise, and `verify/basetest` in tests | `wrapper`, `cycle` |
+| the cold store | `cold.Applier`, `cold.Watermarker` | `memcold` here; a deployment's own store otherwise, and `internal/verify/coldtest` where a suite has to vary a drain's outcome | `cycle` |
+| the two pre-window reads | `baserow.Store` | `memcold` here; the base `ExecutionStore` the wrapper decorates otherwise, and `internal/verify/basetest` in tests | `wrapper`, `cycle` |
 
 Two of the five are storage, and each has exactly one implementation in this tree, running in this
 process: `wal/memwal` and `cold/memcold`. Neither is a double — that is what makes a green suite
@@ -194,7 +194,7 @@ Running `waltest.RunContractSuite` against a second implementation that shares n
 is the check that says otherwise, and it is why the suite is where an obligation is stated once —
 payload ownership and the spentness of trimmed seqnos are both stated there rather than in any one
 backend's local tests. So `memwal` has no knobs and no fault-injection points: `New()` takes nothing
-and the type exposes the four contract methods, because a backend with a back door would let a test
+and the type exposes the five contract methods, because a backend with a back door would let a test
 above the log assert something no real backend has to satisfy. A caller that needs a failing log
 wraps a real one in `waltest.Faulty`.
 
@@ -673,7 +673,7 @@ on mutated state.
 One obligation on the composition rather than on either interface: **the `Applier` and the
 `Watermarker` must be the same cold store.** A writer moving one watermark while a watermarker reads
 another answers every ambiguous drain with "it did not commit", which halts a shard over a drain that
-had written. `memcold.Store` and `verify/coldtest.Cold` are each one value satisfying both, for
+had written. `memcold.Store` and `internal/verify/coldtest.Cold` are each one value satisfying both, for
 exactly that reason.
 
 ### The implementation shipped at this seam
@@ -785,7 +785,7 @@ switched off. It must be the server's own registry, since the archival category 
 archival is configured. A nil `Logger` becomes a noop logger and a nil `Metrics` a noop emitter.
 
 * `cold.Applier` — `Apply(ctx, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error`.
-  `memcold.Store` satisfies it, and so does `verify/coldtest.Cold`.
+  `memcold.Store` satisfies it, and so does `internal/verify/coldtest.Cold`.
 * `cold.Watermarker` — `Watermark(ctx, shard wal.ShardID) (wal.Seqno, bool, error)`. The recovery
   half of the same seam, and the only read this package makes of the cold store.
 

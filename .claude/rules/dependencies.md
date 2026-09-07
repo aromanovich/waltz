@@ -10,7 +10,7 @@ paths:
   - "walmetrics/**"
   - "baserow/**"
   - "cold/**"
-  - "verify/**"
+  - "internal/verify/**"
 ---
 
 # This repo: what each package may import
@@ -43,12 +43,12 @@ layer.
 
 ## The tree rules (ADR 0009)
 
-* **nothing outside `verify/` may import `verify/**`** — in non-test files.
+* **nothing outside `internal/verify/` may import `internal/verify/**`** — in non-test files.
   Nothing stops a layer package from reaching for a corpus generator or an
   in-memory cold store; both are in this module and both are useful, and the
   first such import puts test scaffolding into the binary an operator runs. Test
   files are exempt and must be: fold's and cycle's own tests legitimately fold a
-  generated stream from `verify/mutgen`.
+  generated stream from `internal/verify/mutgen`.
 * **the root package is the front door and nothing else** — `Compose`, the `wal`
   section, the dynamic-config settings, `AbstractFactory`. It may import the
   whole layer and **nothing of the layer may import it**, which is what keeps
@@ -127,13 +127,13 @@ Where the one-line *why* is not the whole reason:
 
 | package | may not | why |
 |---|---|---|
-| `verify/mutgen` | a cold store, `fold`, `apply`, `wal`, `verify/drive` | the corpus states what Temporal's write path produces: not what folds, not what one store accepts, and not what drives it |
-| `verify/mutbuild` | a cold store, `fold`, `apply`, `cycle`, `wal` | `mutgen`'s rule at the granularity of one mutation: what a well-formed request is, is Temporal's answer and not the layer's |
-| `verify/coldtest` | a cold store, `apply` | the cold store's double may not reach a cold store |
-| `verify/basetest` | a cold store, everything of this layer but `baserow` | the pre-window rows' double stands at one seam and may know only it |
-| `verify/checker` | a cold store, `apply`, `cycle`, `fold`, `wrapper`, the root package | the checker judges the layer from outside it: the log through the contract, everything else handed in |
-| `verify/witness` | `verify/drive`, anything that runs a run | the module that catches a silent pass must be judgeable with no run at all |
-| `verify/drive` | *(import)* `testing`, testify **in a non-test file** | the driving half is shared with callers that are not tests: it returns errors and knows nothing about testing |
+| `internal/verify/mutgen` | a cold store, `fold`, `apply`, `wal`, `internal/verify/drive` | the corpus states what Temporal's write path produces: not what folds, not what one store accepts, and not what drives it |
+| `internal/verify/mutbuild` | a cold store, `fold`, `apply`, `cycle`, `wal` | `mutgen`'s rule at the granularity of one mutation: what a well-formed request is, is Temporal's answer and not the layer's |
+| `internal/verify/coldtest` | a cold store, `apply` | the cold store's double may not reach a cold store |
+| `internal/verify/basetest` | a cold store, everything of this layer but `baserow` | the pre-window rows' double stands at one seam and may know only it |
+| `internal/verify/checker` | a cold store, `apply`, `cycle`, `fold`, `wrapper`, the root package | a record of what was asked and answered must be readable without the layer's beliefs, so a reader of one written by a killed node depends on nothing that died with it |
+| `internal/verify/witness` | `internal/verify/drive`, anything that runs a run | the module that catches a silent pass must be judgeable with no run at all |
+| `internal/verify/drive` | *(import)* `testing`, testify **in a non-test file** | the driving half is shared with callers that are not tests: it returns errors and knows nothing about testing |
 
 Where the one-line *why* is not the whole reason:
 
@@ -141,7 +141,7 @@ Where the one-line *why* is not the whole reason:
   The generator's job is to state what Temporal's own requests are, and what
   folds is fold's answer to give. A store is out from the other side for the
   same reason — validity here is what Temporal's exported validators say, never
-  an import of something that would accept the stream. `verify/drive` is the
+  an import of something that would accept the stream. `internal/verify/drive` is the
   same rule from the other side: `drive.Stream` is the one verb that drives a
   generated stream, so the edge between the two points one way, and a generator
   that could reach it would be tuned to what drives it.
@@ -154,12 +154,13 @@ Where the one-line *why* is not the whole reason:
   `ExecutionStateBlob`. `fold`'s fixtures are deliberately not moved to
   it: theirs are legible rather than valid, and would fail every validator
   `mutbuild` runs.
-* **`checker`**: each name closes one road back in. A store would give it reads
-  of its own and make every assertion a statement about one deployment rather
-  than about the contract (ADR 0002); `apply` and `cycle` would give it the
-  layer's own beliefs, which is the reason for refusing assertions compiled into
-  the layer — they see what the layer *thinks* and die with it under `kill -9`.
-  The watermark and the cold-store read arrive as functions the caller passes in,
+* **`checker`**: each name closes one road back in. A store would tie the
+  vocabulary to one deployment rather than to the contract (ADR 0002); `apply`
+  and `cycle` would give it the layer's own beliefs. That second one is the
+  constraint on whoever builds the judge, which is not in this repository: an
+  assertion compiled into the layer sees what the layer *thinks* and dies with
+  it under `kill -9`, so it has to read the record back from outside. Anything
+  the record cannot be read without arrives as a function the caller passes in,
   which is not indirection for its own sake: it is what makes them the *store's*
   reads rather than the layer's.
 * **`coldtest`**: the double exists because the seam's only other adapter is a
@@ -191,8 +192,8 @@ Where the one-line *why* is not the whole reason:
   `go.temporal.io/server/common/persistence` reaches `testing` and testify
   transitively. The ban is on the *importable* surface, so an external
   `drive_test` package is fine and is where `drive.Recorder` — the recorded call,
-  two fsynced lines with a deadline between them — is judged: the order A9 rests
-  on, the outcome line always written, the fenced note beside it, the deadline
+  two fsynced lines with a deadline between them — is judged: the call line
+  durable before the store is touched, the outcome line always written, the fenced note beside it, the deadline
   released per call. What the recorder does **not** own is the stop rule: a
   driver stops at its first non-acked call and a probe retries until a definite
   answer, and both are their callers'.

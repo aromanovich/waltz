@@ -49,10 +49,11 @@ func (s *ShardStore) GetOrCreateShard(
 	return s.base.GetOrCreateShard(ctx, request)
 }
 
-// UpdateShard reports an acquire before delegating (design §9): the WAL is
-// fenced at the new epoch first and the rangeID lands second, so a failed
-// observer fails the acquire without the base store being called and leaves the
-// previous owner's rangeID in place for the controller to retry.
+// UpdateShard reports an acquire before delegating: the WAL is fenced at the
+// new epoch first and the rangeID lands second, so the epoch in the log never
+// lags the one in the database. A failed observer fails the acquire without the
+// base store being called and leaves the previous owner's rangeID in place for
+// the controller to retry.
 //
 // The test is inequality rather than "greater than", so that a rangeID which
 // went backwards reaches the observer to be refused instead of passing as a

@@ -117,7 +117,7 @@ func assertConflictResolve(req *p.InternalConflictResolveWorkflowExecutionReques
 	switch req.Mode {
 	case p.ConflictResolveWorkflowModeUpdateCurrent:
 		// The store asserts against the run it believes is current: the mutated
-		// current run when there is one, the reset run otherwise (mss.go).
+		// current run when there is one, the reset run otherwise.
 		runID := reset.ExecutionState.RunId
 		if req.CurrentWorkflowMutation != nil {
 			runID = req.CurrentWorkflowMutation.ExecutionState.RunId

@@ -165,9 +165,10 @@ func testTrimRemovesUpToAndNothingElse(f *fixture) {
 
 // Payload ownership, both directions. A caller may reuse the buffer it appended
 // from as soon as the call returns, and may keep and overwrite what a read
-// handed it; neither reaches the log. Backend #2 is the one that could fail
-// this by handing out its own memory, but a backend caching a page would fail
-// it too, so the obligation is the contract's rather than that backend's.
+// handed it; neither reaches the log. A backend keeping its entries in memory
+// is the one that could fail this by handing out its own, but so would one
+// caching a page it read, so the obligation is the contract's rather than any
+// backend's.
 //
 // Non-aliasing between two entries of one read is asserted by writing into one
 // and reading the other, because pointer identity is not what the contract

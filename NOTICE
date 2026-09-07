@@ -1,0 +1,117 @@
+waltz contains code derived from Temporal Server (go.temporal.io/server),
+copyright Temporal Technologies Inc. and Uber Technologies, Inc., used under
+the MIT licence reproduced below. The derived files are listed after it, each
+with what was taken from where. Everything else in this repository is the work
+of its own authors and is covered by LICENSE.
+
+The upstream is https://github.com/temporalio/temporal at v1.29.6 — the version
+this module builds against. What follows is that release's LICENSE file,
+verbatim.
+
+----------------------------------------------------------------------
+
+The MIT License
+
+Copyright (c) 2025 Temporal Technologies Inc.  All rights reserved.
+
+Copyright (c) 2020 Uber Technologies, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+----------------------------------------------------------------------
+
+
+What is derived, and how
+========================
+
+Every derived function body is in cold/memcold, and each takes from a single
+upstream package, common/persistence/sql; the patch under patches/ is the
+exception and is listed with them. The reason is the same throughout
+cold/memcold: a folded window is written in one transaction spanning many
+workflows, and the functions upstream writes a single workflow with are
+unexported, so their statement sequences are copied rather than called.
+
+Upstream error text is also reproduced in two files outside cold/memcold, and
+they are listed below as well. No logic there is upstream's; the strings are,
+and this notice treats a verbatim upstream error string as something to
+disclose wherever it appears.
+
+cold/memcold/rows.go
+    Derived throughout, from execution_util.go (applyWorkflowMutationTx,
+    applyWorkflowSnapshotTxAsReset, applyWorkflowSnapshotTxAsNew, applyTasks,
+    createImmediateTasks, createScheduledTasks and the four per-table task
+    inserts, buildExecutionRow, createExecution, updateExecution,
+    lockExecution), from execution_state_map.go and execution_state_non_map.go
+    (the seven update*Infos and delete*Map functions, updateSignalsRequested,
+    updateBufferedEvents, deleteBufferedEvents), from execution_tasks.go (the
+    rangeComplete* family) and from execution.go (DeleteWorkflowExecution,
+    getStartTimeFromState).
+    The statement sequence of each write path is upstream's, and every row and
+    filter literal — the executions row, the seven keyed maps, buffered events,
+    the six task tables, the range-delete filters — is field-for-field
+    identical. startTimeOf is getStartTimeFromState with its identifiers
+    renamed. Error strings are this repository's own except two that are
+    upstream's verbatim: "Workflow execution already running. WorkflowId: %v"
+    (execution_util.go) and "unknown task category type: %v"
+    (persistence_metric_clients.go). One
+    function takes less than that: lockCurrent follows
+    lockCurrentExecutionIfExists in shape and filter only, and issues a
+    different statement.
+
+cold/memcold/current.go
+    GetCurrentExecutionWithLastWriteVersion and currentRowResponse are
+    execution.go's GetCurrentExecution: the same select, the same response
+    literal, and both of its error strings verbatim, "GetCurrentExecution
+    operation failed. Error: %v" and the bare text of sql.ErrNoRows. What is
+    added is the last_write_version column, which upstream's response type has
+    nowhere to carry.
+
+cold/memcold/apply.go
+    One literal and its two statements: the sqlplugin.CurrentExecutionsRow that
+    writeCurrentRow builds is field-for-field the one execution.go's
+    createWorkflowExecutionTx builds, and the insert-or-update around it does
+    what execution_util.go's createOrUpdateCurrentExecution and
+    updateCurrentExecution do in their two writing modes — chosen here by
+    whether the row was found rather than by a create mode. The rest of the
+    file — the drain's transaction, its ordering, its assertions and its
+    refusals — is not derived.
+
+fold/check.go
+    One error string, verbatim: "Encounter workflow db version mismatch,
+    request db version: %v, actual db version: %v", from
+    common/persistence/cassandra/errors.go. The layer refuses a run-row
+    assertion in the store's own words so that a halted shard's log reads the
+    same whichever of the two raised it. No logic here is upstream's.
+
+cycle/read.go
+    One error string, verbatim: "workflow execution not found for workflow ID
+    %q and run ID %q", from common/persistence/execution_manager.go, for the
+    same reason — a read served out of the window must be indistinguishable
+    from the store's. No logic here is upstream's.
+
+patches/temporal/0001-custom-persistence-test-base-factory.patch
+    A diff against Temporal's tests/testcore/test_cluster.go, so it carries
+    upstream code by construction: its context lines are that file as Temporal
+    wrote it.
+
+Not derived: cold/memcold/memcold.go and cold/memcold/factory.go call
+Temporal's exported constructors and implement its exported interfaces, and
+copy no upstream body; cold/memcold/watermark.go is this repository's own table
+and its own SQL; the tests under cold/memcold run Temporal's exported suites
+rather than reproducing them.

@@ -148,9 +148,9 @@ type Log interface {
 	// them landed, and the three refusals below cannot: each of them says the
 	// write is whole one way or the other. Backends whose append is one
 	// transaction, one statement or one replicated command could carry a batch
-	// and are not asked to, because backend #6 cannot — a journal has no atomic
-	// append — and a contract that is true of five backends out of six is not
-	// one ([ADR 0010]).
+	// and are not asked to: a log with no atomic multi-record append cannot,
+	// and a contract only some implementations can keep is not one
+	// ([ADR 0010]).
 	//
 	// The payload stays the caller's: no backend retains the slice or reads it
 	// after Append returns, whatever it returns, so an encoder's scratch buffer
@@ -192,8 +192,9 @@ type Log interface {
 	//
 	// Whatever upTo says, the log stays appendable at the next seqno and
 	// ownership stays put. A backend may keep entries it needs to promise that
-	// (backend #1 keeps the last one, since gap-freedom checks an append
-	// against it), so a trim past the tail may leave the tail behind.
+	// — one that checks an append for gap-freedom against the stored entry
+	// below it has to keep the last one — so a trim past the tail may leave the
+	// tail behind.
 	//
 	// The seqnos it removed stay spent: an append at one is refused and writes
 	// nothing, with [ErrAlreadyWritten] or [ErrGap] as the backend keeps its
@@ -211,8 +212,9 @@ type Log interface {
 	//
 	// Most backends hold nothing and do nothing here. It is on the contract
 	// rather than reached for with a type assertion so that a composition
-	// cannot hold a backend it never learned to release: backend #6 pings the
-	// transaction every append names as a prerequisite, so a process that
-	// leaves that goroutine running keeps shards it has stopped writing to.
+	// cannot hold a backend it never learned to release: a backend that keeps
+	// its claim alive from a goroutine of its own — a lease renewal, a
+	// keepalive on the transaction its appends run under — leaves a process
+	// that never closes it owning shards it has stopped writing to.
 	Close()
 }

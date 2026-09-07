@@ -14,8 +14,8 @@ import (
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/service/history/tasks"
 
+	"github.com/aromanovich/waltz/internal/verify/coldtasks"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/coldtasks"
 	"github.com/aromanovich/waltz/wal"
 )
 
@@ -121,7 +121,7 @@ func TestARetiredCyclesCountersReachTheNodesTotals(t *testing.T) {
 	require.Equal(t, held.Counters, total.Counters,
 		"the retired cycle's counters left the node's reading with it")
 	require.Equal(t, 1, total.TaskCollisions,
-		"TaskCollisions is a count of something a cycle did and it did not survive the Totals seam (#152)")
+		"TaskCollisions is a count of something a cycle did and it did not survive the Totals seam")
 	require.Equal(t, 2, total.Epochs)
 	require.Equal(t, 1, total.Shards)
 }

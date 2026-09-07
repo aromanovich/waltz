@@ -148,8 +148,8 @@ func (w *recordingLayer) Use(metrics.Handler) {}
 func TestInterceptModeTakesTheElevenAndOnlyTheEleven(t *testing.T) {
 	iface := reflect.TypeFor[p.ExecutionStore]()
 	require.Len(t, intercepted, 8, "the WAL's record format has eight shapes (invariant I1)")
-	require.Len(t, answered, 3, "two mutable-state reads through the overlay (#72), one task read through the merge (#73)")
-	require.Len(t, refused, 1, "the single-key completion is the one method the record format has no shape for (#142)")
+	require.Len(t, answered, 3, "two mutable-state reads through the overlay, one task read through the merge")
+	require.Len(t, refused, 1, "the single-key completion is the one method the record format has no shape for")
 
 	for method := range iface.Methods() {
 		t.Run(method.Name, func(t *testing.T) {

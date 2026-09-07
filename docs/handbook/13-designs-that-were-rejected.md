@@ -398,7 +398,7 @@ recomputed every time rather than remembered. The one recorded thing that may st
 is the *input* corpus, and it should not be checked in for the same reason: a recorded input is a
 seed, and a seed regenerates.
 
-The same argument is why `verify/acceptance` here records nothing at all. Its stream is generated
+The same argument is why `internal/verify/acceptance` here records nothing at all. Its stream is generated
 from a seed, and its one recorded number — a collapse ratio — is asserted against a *control run* at
 the other end of the knob rather than against a stored value
 ([chapter 11](11-verification.md#the-acceptance-one-stream-through-the-fold)).

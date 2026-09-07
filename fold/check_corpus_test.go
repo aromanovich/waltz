@@ -19,8 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/server/service/history/tasks"
 
+	"github.com/aromanovich/waltz/internal/verify/mutgen"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/mutgen"
 	"github.com/aromanovich/waltz/wal"
 )
 

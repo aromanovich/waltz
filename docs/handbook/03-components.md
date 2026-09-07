@@ -29,15 +29,15 @@ diagrams, and finally assigns each mutable value to a goroutine or mutex. Keep i
 The repository's Go code lives in two source groups:
 
 * **the module root and its packages** — what runs inside a production `temporal-server` process.
-* **`verify/`** — what judges it. Nothing here runs alongside the layer in production.
+* **`internal/verify/`** — what judges it. Nothing here runs alongside the layer in production.
 
-One rule holds the split in place: **no package outside `verify/` may import `verify/**` in a
+One rule holds the split in place: **no package outside `internal/verify/` may import `internal/verify/**` in a
 non-test file.** The first such import puts test scaffolding into the binary an operator runs; test
 files are exempt and must be, since `fold`'s and `cycle`'s own tests legitimately fold a generated
-stream from `verify/mutgen`.
+stream from `internal/verify/mutgen`.
 
 `cold/memcold` is at the module root and is the one thing there that is not the layer: it is a
-*store*, sitting under the cold seam where a deployment's own store sits. It is not under `verify/`
+*store*, sitting under the cold seam where a deployment's own store sits. It is not under `internal/verify/`
 because it is not a judge and not a double — it is Temporal's own persistence over a database in
 this process, and a server composed over it serves real workflows. What it is not is durable, which
 is why nothing here calls it a production store.
@@ -358,7 +358,7 @@ exists later than the layer does, so it comes *down* the same seam the stores co
 from the same configuration was tried and rejected: with the Prometheus reporter it is a second
 listener on the address the server's own handler binds, so one of the two fails to start.
 
-## `verify/` in brief
+## `internal/verify/` in brief
 
 Nothing here runs in production. What lives here splits in two, and which half a package is in is the
 thing to know before opening it:
@@ -367,9 +367,9 @@ thing to know before opening it:
   `coldtest`, `basetest`, `coldtasks`, `checker`, `witness`;
 * **judgements** say yes or no — `acceptance`, `e2e`, `guard`.
 
-What each one claims is [chapter 11](11-verification.md#the-map-of-verify). None of them needs a
+What each one claims is [chapter 11](11-verification.md#the-map-of-internalverify). None of them needs a
 cluster, and that is now a stronger statement than "none of them can have one": both seams have an
-implementation that runs in this process, so `verify/e2e` boots four Temporal services over the
+implementation that runs in this process, so `internal/verify/e2e` boots four Temporal services over the
 layer without installing anything. What no package here can have is *storage that survives the
 process*, which is where the limits in [chapter 15](15-the-limits-of-the-evidence.md) begin.
 

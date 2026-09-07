@@ -1,7 +1,7 @@
 # Putting a composition under Temporal's own functional suites
 
 Nothing in this repository needs a patched Temporal. The library builds against
-stock `go.temporal.io/server`, and every suite under `verify/` runs without one.
+stock `go.temporal.io/server`, and every suite under `internal/verify/` runs without one.
 
 This directory holds one patch, and it is not about building waltz. It is about
 the strongest evidence a composition over waltz can produce: upstream's own
@@ -17,6 +17,12 @@ site — every suite in `./tests` embeds `FunctionalTestBase`, whose `SetupSuite
 builds its cluster from the no-argument `NewTestClusterFactory()`, which switches
 on `-persistenceType` / `-persistenceDriver` and panics on anything else. The
 patch adds a package-level override read at that one site.
+
+A patch is a diff, so the file carries upstream's code by construction: its
+context lines are `tests/testcore/test_cluster.go` as Temporal wrote it,
+copyright Temporal Technologies Inc. and Uber Technologies, Inc. under the MIT
+licence. [NOTICE](../NOTICE) at the repository root carries that licence, and
+lists this patch beside everything else here derived from Temporal.
 
 ## Using it
 

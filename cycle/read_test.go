@@ -318,7 +318,7 @@ func TestAHaltedShardAnswersReadsFromWhatItCanVouchFor(t *testing.T) {
 		require.ErrorIs(t, err, ErrHalted)
 		var lost *p.ShardOwnershipLostError
 		require.NotErrorIs(t, err, lost,
-			"a divergence this process owns must not be handed on as an ordinary failover (#46)")
+			"a divergence this process owns must not be handed on as an ordinary failover")
 		require.Zero(t, base.asked())
 	})
 }

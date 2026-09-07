@@ -145,7 +145,7 @@ func TestEveryKindIsInTheFoldedWindowTable(t *testing.T) {
 // exception, and it is an exception rather than a bug because nothing builds
 // one: every shardContext.AddTasks call site in the server fills the map from
 // at least one task, and this repo's own generator declines to build the shape
-// at all (verify/mutgen's emitAddTasks, which says why there).
+// at all (internal/verify/mutgen's emitAddTasks, which says why there).
 //
 // It is the whole reason Settles is not Empty answered backwards: this batch
 // carries no transaction and still owes its entry a position, because the fold

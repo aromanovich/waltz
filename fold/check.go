@@ -429,9 +429,11 @@ func (want CurrentAssertion) VerifyRow(base *p.InternalGetCurrentExecutionRespon
 	return want.against(readRow(base, lastWriteVersion))
 }
 
-// The three run-row failures, in the plugin's own words (rows/assertions.go).
-// The message is part of the answer: it is what an operator reading a halted
-// shard's logs compares against the store's own.
+// The three run-row failures, in the words a Cassandra-shaped store raises them
+// with. The message is part of the answer: an operator reading a halted shard's
+// logs compares it against the store's own, so the two must not diverge. A
+// store whose wording differs is one this text does not match — only the first
+// of the three is upstream's verbatim (see NOTICE).
 
 func runMustNotExist(workflowID string) error {
 	return &p.WorkflowConditionFailedError{Msg: fmt.Sprintf("Workflow %s must not exist", workflowID)}

@@ -52,7 +52,7 @@ func TestTheWindowAnswersAStaleVersion(t *testing.T) {
 	require.EqualValues(t, 2, failed.DBRecordVersion,
 		"the version the window will write, which is what the store's own readback would have reported")
 	require.Equal(t, "Encounter workflow db version mismatch, request db version: 1, actual db version: 2",
-		failed.Msg, "the plugin's own message (rows/assertions.go:461)")
+		failed.Msg, "the plugin's own message")
 
 	require.NoError(t, check(t, a, mkUpdate(runX, 3)), "and the write that does follow the window is taken")
 }
@@ -71,8 +71,7 @@ func TestTheWindowAnswersACreateOfARunItHolds(t *testing.T) {
 }
 
 // TestTheWindowAnswersAWriteToARunItDeleted is the one run failure the plugin
-// reports with the bare ConditionFailedError rather than the workflow one
-// (rows/assertions.go:455).
+// reports with the bare ConditionFailedError rather than the workflow one.
 func TestTheWindowAnswersAWriteToARunItDeleted(t *testing.T) {
 	// Set-headed again, so the tombstone answers rather than a current-row
 	// conflict.

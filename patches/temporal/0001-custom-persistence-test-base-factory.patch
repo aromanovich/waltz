@@ -32,8 +32,10 @@ is the whole of what this needs — but it does need one.
 How it was needed
 =================
 
-Measured rather than argued, on this repository's own module with
-`replace go.temporal.io/server => ./temporal` (ADR 0007):
+Measured rather than argued, in a module with
+`replace go.temporal.io/server => ./temporal` over a patched checkout.
+waltz itself has no such checkout and no replace directive; it builds
+against the stock release, and this patch is for the harness only:
 
   * `go build -tags test_dep go.temporal.io/server/tests/testcore`
     compiles clean with the patch applied. Without `-tags test_dep` the
@@ -44,7 +46,7 @@ Measured rather than argued, on this repository's own module with
     against the patched checkout, which is the seam in the shape a live
     harness will use it. Importing
     common/persistence/persistence-tests to build a *TestBase adds five
-    indirect requirements to this module's go.mod (go-version,
+    indirect requirements to that module's go.mod (go-version,
     json-iterator/go, modern-go/concurrent, modern-go/reflect2,
     collector/pdata); tests/testcore on its own adds none.
 
@@ -71,9 +73,9 @@ This is the patch this repository would most like to delete, and the
 way to delete it is a PR: the hook one layer down is already exported
 and public, so upstreaming this is threading the last inch of a seam
 somebody at Temporal already built. Until then it is a patch against a
-vendored checkout that nothing shipped compiles — the guard test at the
-root of this repository asserts exactly that, by package rather than by
-path.
+checkout that nothing shipped compiles against: no package under
+go.temporal.io/server/tests is reachable from waltz's own build, which
+is why applying it changes nothing this repository ships.
 
 diff --git a/tests/testcore/test_cluster.go b/tests/testcore/test_cluster.go
 index c3a1b384c..64ad5a733 100644

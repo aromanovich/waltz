@@ -38,8 +38,7 @@ sense, then states every numbered invariant with the file that enforces it and t
 catch a violation. Three things to know before reading it:
 
 * The vocabulary here is the repository's own, kept in [`../../CONTEXT.md`](../../CONTEXT.md) beside
-  its Russian aliases; that glossary and the Russian statement of the invariants are both translated
-  rather than paraphrased.
+  its Russian aliases; the entries below are that glossary translated rather than paraphrased.
 * It is the vocabulary of the **layer**. What judges the layer from outside — the checker and the
   witness — is [chapter 11](11-verification.md#the-words-for-what-judges-the-layer).
 * When two words look interchangeable in this repository they usually are not, and the last section
@@ -539,11 +538,11 @@ they follow the order of implementation rather than any order of exposition, so 
 sequence. The suites in the last column are [chapter 11](11-verification.md), which owns `waltest`
 and the guards.
 
-Two of them are claims about things this library does not implement, and they are stated anyway
-because a deployment that breaks either loses acknowledged data. I4's cold-store half and I5 are
-both obligations on the `cold.Applier` a deployment supplies: nothing here can check them, and the
-"how it is verified" column says so rather than naming a suite that does not judge them. I9 is the
-same shape one seam lower, on the log.
+Three of them are claims about things this library does not implement, and they are stated anyway
+because a deployment that breaks any of them loses acknowledged data. I4's cold-store half and I5
+are both obligations on the `cold.Applier` a deployment supplies: nothing here can check them, and
+the "how it is verified" column says so rather than naming a suite that does not judge them. I9 is
+the same shape one seam lower, on the log.
 
 | # | What it claims | Enforced in | How it is verified |
 |---|---|---|---|
@@ -556,7 +555,7 @@ same shape one seam lower, on the log.
 | **I7** | The layer does not model an ack level: it applies the range deletions it was asked for, in the order it was asked. | [`fold/histtasks.go`](../../fold/histtasks.go), handed to the applier inside the drain's `fold.Batch` | `fold`'s task tests and the task-page corpus test; the `wal_dropped_tasks` / `wal_written_tasks` pair |
 | **I8** | Compaction barriers: a snapshot resets what was accumulated for the run, an update merges, a deletion is a tombstone. | [`fold/fold.go`](../../fold/fold.go) and [`fold/merge.go`](../../fold/merge.go) | `fold`'s barrier tests, and the condition corpus that drives a generated stream through the accumulator the way a cycle does |
 | **I9** | An append is one immediate write over adjacent keys of the log's own storage: no indexes, no changefeeds, no reads of other tables. | the `wal.Log` implementation, whichever one a deployment supplies | nothing in this tree: it is a cost claim about storage this library does not own, and a backend that breaks it is slow rather than wrong |
-| **I10** | Exceeding the tail bound is degradation, not loss: what was refused is not in the log, what was acked is. | [`cycle/decide.go`](../../cycle/decide.go) (`writeRefused`) over [`cycle/tailstate`](../../cycle/tailstate/tailstate.go) | `verify/guard`'s three backpressure-boundary tests; `cycle`'s edge tests over both units |
+| **I10** | Exceeding the tail bound is degradation, not loss: what was refused is not in the log, what was acked is. | [`cycle/decide.go`](../../cycle/decide.go) (`writeRefused`) over [`cycle/tailstate`](../../cycle/tailstate/tailstate.go) | `internal/verify/guard`'s three backpressure-boundary tests; `cycle`'s edge tests over both units |
 | **I11** | The epoch is the shard's own counter: one token rather than two mechanisms; it may grow without an ownership change, and the shard's own writes bypass the log. | [`wal/wal.go`](../../wal/wal.go) (`Epoch`), [`wrapper/shard_store.go`](../../wrapper/shard_store.go) | `waltest`'s renewal case; `wrapper`'s completion tests, which assert the request's rangeID is the epoch it was written under |
 
 ### I7, at more length
@@ -639,7 +638,7 @@ neither unit works alone, and where the two defaults come from, is
 Three properties matter more than the numbers:
 
 * the refusal is raised **before** the append — that is the "not loss" half of the claim, and
-  `verify/guard`'s `TestTheBackpressureRefusalIsDefinitelyNotCommitted` is the guard on it;
+  `internal/verify/guard`'s `TestTheBackpressureRefusalIsDefinitelyNotCommitted` is the guard on it;
 * the bound reads the tail **as it stands**, never the tail the incoming mutation would make. So no
   mutation is ever refused for its own size, and the tail overshoots the bound by at most one entry;
 * a *stalled* applier — one that cannot read whether its last drain committed — is refused as such,
@@ -668,7 +667,7 @@ Not every claim made about this layer carries a number, and the absence is delib
 claim is one that has no such name inside the layer. It is one of three things:
 
 * a property of the incumbent system;
-* a property of an instrument that judges the layer — the checker's A1–A10;
+* a property of an instrument that judges the layer — the witness's named claims;
 * a mechanism local to one chapter.
 
 Do not renumber them into the list, and do not invent I12.

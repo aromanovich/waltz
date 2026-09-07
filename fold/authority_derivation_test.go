@@ -4,9 +4,9 @@ package fold
 // it differently — fold.go records it through adopt, which keeps a run's
 // existing head, and Emitted assembles what is left, while check.go evaluates
 // or delegates. So the two can still disagree about what a mutation asserts,
-// and the disagreement is a stale write acked. The differential oracle cannot
-// see the authority's half of it, check.go having no effect on what a drain
-// writes.
+// and the disagreement is a stale write acked. No comparison of what a drain
+// wrote can see the authority's half of it, check.go having no effect on what a
+// drain writes.
 //
 // On an EMPTY window the two sets are comparable: every run and every
 // current-row assertion is a head, so add* records all of them into

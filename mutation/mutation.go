@@ -1,11 +1,11 @@
 // Package mutation is the WAL's record format: it turns one ExecutionStore
 // write request into the opaque bytes a [wal.Entry] carries, and back.
 //
-// The generated [Payload] in mutation.pb.go is the record's specification — the
-// .proto it came from is not in this tree. Encoding fills that mirror field by
-// field rather than reflecting over Temporal's structs, so a field upstream adds
-// is one this package silently omits; the field-set test is what makes that a
-// named failure instead of a lost column.
+// The [Payload] generated from mutation.proto is the record's specification.
+// Encoding fills that mirror field by field rather than reflecting over
+// Temporal's structs, so a field upstream adds is one this package silently
+// omits; the field-set test is what makes that a named failure instead of a
+// lost column.
 package mutation
 
 import (

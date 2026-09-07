@@ -1,15 +1,15 @@
 ---
 paths:
-  - "verify/acceptance/**"
-  - "verify/witness/**"
+  - "internal/verify/acceptance/**"
+  - "internal/verify/witness/**"
   - "walmetrics/**"
 ---
 
 # This repo: the acceptance, the witness and the metrics
 
-`verify/acceptance/` is one stream of a generated corpus driven end to end
+`internal/verify/acceptance/` is one stream of a generated corpus driven end to end
 through the fold, at volume, with no cluster and no store;
-`verify/witness/` is what a run says about the layer's **own** counters; and
+`internal/verify/witness/` is what a run says about the layer's **own** counters; and
 `walmetrics/` is what those counters go out as. What to know:
 
 * **the acceptance's claim is narrow and stated in its own counters**: a stream

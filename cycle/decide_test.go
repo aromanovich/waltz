@@ -46,7 +46,7 @@ func requireRoute(t *testing.T, want, got readRoute, refusal, halt error) {
 		require.Same(t, halt, refusal,
 			"the halt's own error, unrebuilt: its cause is the only record of what diverged")
 		require.False(t, errors.As(refusal, new(*p.ShardOwnershipLostError)),
-			"a divergence this process owns must not leave here as a failover (#46)")
+			"a divergence this process owns must not leave here as a failover")
 	case refuseAsUnresolved:
 		requireRefusal(t, refusal)
 		require.False(t, errors.As(refusal, new(*p.ShardOwnershipLostError)),
@@ -280,7 +280,7 @@ func TestOnlyAFenceBecomesShardOwnershipLost(t *testing.T) {
 	condition := &p.WorkflowConditionFailedError{Msg: "stale"}
 	fenced := &p.ShardOwnershipLostError{ShardID: int32(testShard), Msg: "another node has it"}
 	refused := &serviceerror.ResourceExhausted{Cause: enumspb.RESOURCE_EXHAUSTED_CAUSE_PERSISTENCE_LIMIT}
-	unknown := errors.New("ydb: the transaction's outcome was not read back")
+	unknown := errors.New("the transaction's outcome was not read back")
 	halted := fmt.Errorf("%w (halted-invariant), shard %d: %w", ErrHalted, int(testShard), unknown)
 	// The boundary type-switches rather than using errors.As, so a wrapped
 	// condition failure is not one the shard would recognise either.

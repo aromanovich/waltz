@@ -74,7 +74,7 @@ What to know before changing it:
   I11's: the epoch check is `Manager.Write`'s and a caller holding a `*Cycle`
   has already resolved the shard, so an exported append here was a second write
   door that skipped it. It is `Cycle.write` now. The concession that had kept
-  it exported — `verify/guard`'s backpressure test needing the value the cycle
+  it exported — `internal/verify/guard`'s backpressure test needing the value the cycle
   itself refuses with — is gone: it drives `Manager.Write`, which hands the
   refusal back untouched, because `storeError` translates nothing the store's
   own `OperationPossiblySucceeded` reads as definitely-not-committed and I10's
@@ -415,7 +415,7 @@ What to know before changing it:
   do deliberately, the entries behind a halted window being acked and the cycle
   finished; Go has no way to make that one a compile error, so it is not one.
   This is why `tailstate` imports `window` at all — for the token, not for the
-  window: the two byte counts stay two numbers, and `verify/guard`'s rule that
+  window: the two byte counts stay two numbers, and `internal/verify/guard`'s rule that
   the tail may not reach `fold` is what keeps them that way;
 * **the window's arithmetic has one owner too, `cycle/window`** — the
   bullet above applied to the other three counters, with two differences.
@@ -426,7 +426,7 @@ What to know before changing it:
   fold to nothing and the batch's own `MutationsIn` is the number a drain
   applied. And it **publishes nothing**, where every move of the tail is a
   publish: the drain's numbers are emitted once the transaction has an outcome,
-  so `verify/guard` forbids `walmetrics` here and requires it in `tailstate`.
+  so `internal/verify/guard` forbids `walmetrics` here and requires it in `tailstate`.
   `Trips` and `Aged` are separate for replay's reason — it consults the size
   rule and not the age one, which used to live in a comment beside one of two
   inline copies. `s.window.mutations = 0` does not build in `cycle`, and neither
@@ -498,7 +498,7 @@ What to know before changing it:
   SCOPE_SYSTEM}` **returned unwrapped**: the shard's write path switches on the
   concrete type, so one `%w` turns backpressure into a background re-acquire —
   a self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
-  (`verify/guard`) is that claim, with the wrapped copy beside it to show the
+  (`internal/verify/guard`) is that claim, with the wrapped copy beside it to show the
   hazard is not theoretical;
 * a mutation is **never refused for its own size**: the bound reads the tail as
   it stands, not the tail the mutation would make. The server already accepted

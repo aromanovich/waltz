@@ -261,7 +261,7 @@ func TestTheTaskViewIsReadOnlyOnTheAccumulator(t *testing.T) {
 			"writing into a merged page reached the window: the merge handed out the accumulator's own slice")
 	})
 
-	t.Run("and the window the oracle judges does not know it was read", func(t *testing.T) {
+	t.Run("and the window a drain emits does not know it was read", func(t *testing.T) {
 		quiet := build()
 		supersede(quiet)
 		loud := build()

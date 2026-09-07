@@ -8,8 +8,8 @@ import "fmt"
 // here decide what to say about it and in what order, so that two backends
 // cannot answer one contract differently and a third inherits both.
 //
-// They take a shard and the arguments rather than reading anything: nothing
-// here touches a log.
+// Nothing here touches a log: they take the arguments, and the shard wherever
+// there is an error string for it to appear in.
 
 // CheckFence refuses a fence whose arguments the contract does not admit.
 func CheckFence(shard ShardID, epoch Epoch) error {
@@ -47,6 +47,9 @@ func CheckAppend(shard ShardID, epoch Epoch, seqno Seqno, payload []byte) error 
 
 // AppendState is what a backend has found out about an append it has not
 // performed: the three questions the contract's three refusals are answers to.
+//
+// It is exported, with [AppendRefusal], for backends written outside this
+// module; the only caller here is [RefuseAtNext].
 type AppendState struct {
 	// Owner is the epoch the log is fenced at. Zero means nobody has fenced it.
 	Owner Epoch
@@ -54,8 +57,8 @@ type AppendState struct {
 	Taken bool
 	// HasPredecessor reports whether the entry below the seqno is there. An
 	// append at [FirstSeqno] has none to miss, so a backend answers it true —
-	// or, like backend #1, reads a row that is always there below the first
-	// entry.
+	// or, if its own bookkeeping sits below the first entry, reads that, which
+	// is always there.
 	HasPredecessor bool
 }
 
@@ -65,9 +68,10 @@ type AppendState struct {
 // next is exclusive: the seqnos below it are spent, the one at it is this
 // entry's, and everything above it is a hole.
 //
-// It is here rather than derived per backend because the derivation is the
-// contract's: three backends wrote it three ways, and two of the three agreed
-// only because [AppendRefusal] diagnoses Taken before HasPredecessor.
+// It is here rather than derived per backend because the derivation leans on
+// the diagnosis order: it answers HasPredecessor true for the taken seqnos
+// below next as well, which is only right because [AppendRefusal] reports Taken
+// first.
 func RefuseAtNext(shard ShardID, epoch Epoch, seqno Seqno, owner Epoch, next Seqno) error {
 	return AppendRefusal(shard, epoch, seqno, AppendState{
 		Owner:          owner,
@@ -103,11 +107,11 @@ func AppendRefusal(shard ShardID, epoch Epoch, seqno Seqno, found AppendState) e
 
 // CheckTrim answers whether a trim has entries to reach. An upTo below
 // [FirstSeqno] reaches none: what lives down there is the backend's own
-// bookkeeping — backend #1 keeps its fence row at seqno 0 — and a trim may
-// never take it. Deleting an ownership record hands the shard to whichever
-// epoch asks next, with nothing anywhere to report the loss, which is why the
-// bound is the contract's to state rather than each backend's to re-derive.
-func CheckTrim(shard ShardID, upTo Seqno) (proceed bool) {
+// bookkeeping — a fence row at seqno 0, say — and a trim may never take it.
+// Deleting an ownership record hands the shard to whichever epoch asks next,
+// with nothing anywhere to report the loss, which is why the bound is the
+// contract's to state rather than each backend's to re-derive.
+func CheckTrim(upTo Seqno) (proceed bool) {
 	return upTo >= FirstSeqno
 }
 

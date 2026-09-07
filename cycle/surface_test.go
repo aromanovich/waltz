@@ -12,7 +12,7 @@ import (
 // doors is every exported method on a *Cycle and what it is for. The bar is
 // I11's — Manager.Shard hands the handle to whoever asks, so nothing on it may
 // be a way to write around Manager.Write — and not "somebody outside calls it":
-// Epoch, Stats and Retire are what verify/ drives a cycle by, State, Shard and
+// Epoch, Stats and Retire are what internal/verify/ drives a cycle by, State, Shard and
 // Close are reached only from inside this package today, and all six either read
 // or stop.
 var doors = map[string]string{

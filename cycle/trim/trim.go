@@ -9,9 +9,10 @@
 // no such state to hold: a [Trimmer] is handed a watermark by value, and the
 // cycle's rule is the compiler's.
 //
-// Trimming is part of the latency budget rather than hygiene: it is what keeps
-// backend #1's partitions small. A failed trim is logged and retried at the
-// next cadence, and halts nothing.
+// Trimming is part of the latency budget rather than hygiene: a backend's
+// reads get dearer as its log gets longer ([wal.Log.Trim]), so this is on the
+// drain's budget and not a background chore. A failed trim is logged and
+// retried at the next cadence, and halts nothing.
 package trim
 
 import (

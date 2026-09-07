@@ -233,9 +233,10 @@ message Blob {
 
 // The keyed collections travel as repeated entries rather than as proto maps.
 //
-// Map fields do not marshal deterministically unless every call asks for it, and
-// a codec whose bytes depend on an option someone remembers to pass is not one a
-// differential oracle can rest on. Entries are written in sorted key order.
+// Map fields do not marshal deterministically unless every call asks for it, so
+// a codec resting on one gives a single mutation several byte strings. Entries
+// are written in sorted key order instead, which is what lets two encodings of
+// the same mutation be compared byte for byte.
 message Int64BlobEntry {
   int64 key = 1;
   Blob blob = 2;

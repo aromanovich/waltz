@@ -14,8 +14,8 @@ import (
 	"go.temporal.io/api/serviceerror"
 	p "go.temporal.io/server/common/persistence"
 
+	"github.com/aromanovich/waltz/internal/verify/basetest"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/basetest"
 )
 
 // asyncEnv is a cycle that accumulates: no sync drain and no watermark within
@@ -223,7 +223,7 @@ func TestSyncModeDecidesNothingHereEither(t *testing.T) {
 // sequential path does the same: an assertion it cannot read does not commit.
 func TestAColdStoreThatCannotBeReadFailsTheWrite(t *testing.T) {
 	store := basetest.New()
-	unavailable := error(serviceerror.NewUnavailable("ydb is having a moment"))
+	unavailable := error(serviceerror.NewUnavailable("the cold store is unavailable"))
 	store.FailAll(unavailable)
 	ns, wf, run := ids()
 	e := asyncEnv(t, store)

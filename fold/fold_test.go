@@ -1,8 +1,9 @@
 package fold_test
 
-// Unit tests for the fold rules; the differential judgement against a real
-// store is the oracle's. Requests are built by hand: fold treats blobs
-// opaquely, so a two-byte blob exercises the same rule a real one would.
+// Unit tests for the fold rules, one rule at a time; nothing here compares a
+// folded store against one the same stream was applied to mutation by
+// mutation. Requests are built by hand: fold treats blobs opaquely, so a
+// two-byte blob exercises the same rule a real one would.
 
 import (
 	"fmt"

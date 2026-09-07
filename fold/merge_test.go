@@ -4,10 +4,10 @@ package fold
 // it onto another delta and applyMutationToSnapshot folds it onto whole state,
 // and every collection the request carries has to reach both. Neither spelling
 // names the other, so a pair added to one alone compiles and no unit test that
-// names its fields exists to fail — the differential oracle is the first thing
-// to notice, and it needs a cluster. Both tests here drive the enumeration off
-// the request type's own fields instead, so the pair nobody folded fails by
-// name in this package.
+// names its fields exists to fail — the first thing to notice would be a folded
+// store ending somewhere a sequentially applied one did not, which nothing here
+// builds. Both tests here drive the enumeration off the request type's own
+// fields instead, so the pair nobody folded fails by name in this package.
 
 import (
 	"fmt"

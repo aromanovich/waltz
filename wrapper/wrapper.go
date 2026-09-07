@@ -6,9 +6,7 @@
 // every call transits; a layer is intercept, where eleven methods are answered
 // from the WAL and a twelfth is refused ([ErrCompleteHistoryTaskUnsupported]).
 //
-// [ADR 0003] is why this runs in the server's process. A § number here cites
-// the design brief the research prototype was written against, which is not in
-// this tree; what it says that still binds is in the handbook.
+// [ADR 0003] is why this runs in the server's process.
 //
 // [ADR 0003]: ../docs/adr/0003-wal-layer-runs-in-process.md
 package wrapper
@@ -35,8 +33,8 @@ import (
 type ShardObserver interface {
 	// ShardAcquired runs before the base store commits the bump, and an error
 	// from it fails the acquire without the base store being called, so a failed
-	// fence never leaves a moved rangeID behind (design §9 step 1). The error
-	// reaches the shard controller unwrapped.
+	// fence never leaves a moved rangeID behind. The error reaches the shard
+	// controller unwrapped.
 	ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wal.Epoch) error
 }
 
@@ -189,8 +187,7 @@ func (f *AbstractDataStoreFactory) NewFactory(
 
 // DataStoreFactory is the decorator proper: the ExecutionStore and the
 // ShardStore come back wrapped, everything else as the plugin built it, since
-// matching, visibility, cluster metadata and the queues are outside the layer
-// (§0).
+// matching, visibility, cluster metadata and the queues are outside the layer.
 type DataStoreFactory struct {
 	base p.DataStoreFactory
 	opts Options

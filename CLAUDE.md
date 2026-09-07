@@ -24,23 +24,31 @@ here, running in this process:
   is Temporal's own SQL persistence over an in-process SQLite database, embedded
   rather than written, with the folded window's transaction added beside the 28
   inherited methods. Temporal's own four persistence suites judge it.
-  `verify/coldtest` is still the double, for suites that need to vary a drain's
-  outcome.
+  `internal/verify/coldtest` is still the double, for suites that need to vary
+  a drain's outcome.
 
 That pair is why a Temporal server boots over waltz in `go test` with nothing
-installed (`verify/e2e`), and it is not a durability claim: both die with the
-process.
+installed (`internal/verify/e2e`), and it is not a durability claim: both die
+with the process.
 
 It is consumed the way Temporal's own custom-persistence option is:
 
 ```go
-temporal.WithCustomDataStoreFactory(wrapper.NewAbstractDataStoreFactory(base, layer.Options()))
+temporal.WithCustomDataStoreFactory(layer.AbstractFactory(base))
 ```
+
+where `base` is the plugin whose stores hold the cold data. That method is the
+door, and `Layer.Options()` with `wrapper.NewAbstractDataStoreFactory` is the
+same composition one level down, for a caller who is already building the
+wrapper's stores itself: a layer composed and never handed to a factory is a
+node running passthrough under a configuration that says otherwise, and nothing
+reports it.
 
 ## Layout
 
-The layer packages sit at the **module root** and `verify/` holds what judges
-them ([ADR 0009](docs/adr/0009-the-tree-separates-the-layer-from-what-judges-it.md)).
+The layer packages sit at the **module root** and `internal/verify/` holds what
+judges them
+([ADR 0009](docs/adr/0009-the-tree-separates-the-layer-from-what-judges-it.md)).
 `cold/memcold` is the one thing at the root that is neither: it is a *store*,
 sitting under the cold seam, so nothing of the layer may import it and it may
 import nothing of the layer
@@ -66,9 +74,9 @@ go test ./wal/...    # the contract and its conformance suite; milliseconds
 There is no `-p 1` and its absence is deliberate: every backend is in this
 process and every database is keyed by a name minted per store, so the packages
 share nothing. `WAL_ACCEPTANCE_MUTATIONS` shortens or lengthens
-`verify/acceptance`'s stream. `verify/e2e` is the longest thing in the run — it
-starts four Temporal services twice — and `go test ./verify/e2e/` is how to run
-it alone.
+`internal/verify/acceptance`'s stream. `internal/verify/e2e` is the longest
+thing in the run — it starts four Temporal services twice — and
+`go test ./internal/verify/e2e/` is how to run it alone.
 
 Three things a green run does **not** say, and they are worth having before you
 quote one:

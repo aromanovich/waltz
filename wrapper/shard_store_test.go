@@ -64,7 +64,7 @@ func TestShardAcquireIsReportedBeforeTheRangeIDMoves(t *testing.T) {
 	require.Equal(t, []acquire{{shard: 7, epoch: 42}}, obs.acquired,
 		"the epoch is the new rangeID, not the previous one (I11)")
 	require.Equal(t, []string{"observer", "base"}, obs.events,
-		"§9 orders the WAL fence before the rangeID bump: the epoch in the log may never lag the one in the database")
+		"the WAL fence comes before the rangeID bump: the epoch in the log may never lag the one in the database")
 }
 
 func TestShardHeartbeatIsNotAnAcquire(t *testing.T) {

@@ -10,9 +10,9 @@
 // here the tail is state, so a trim may take everything and the log still knows
 // where its next entry goes and that the seqnos below it are spent. The two
 // shapes therefore differ below a trimmed prefix, where appending is
-// [wal.ErrAlreadyWritten] here and [wal.ErrGap] there. Both refuse and write nothing — which is the contract's
-// and asserted by the suite — while the contract picks neither answer, and no
-// correct caller gets there.
+// [wal.ErrAlreadyWritten] here and [wal.ErrGap] there. Both refuse and write
+// nothing — which is the contract's and asserted by the suite — while the
+// contract picks neither answer, and no correct caller gets there.
 //
 // Payloads are copied in and out: this is the only backend that could hand out
 // the caller's own memory, where a caller reusing an append buffer would
@@ -31,8 +31,9 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// Backend is WAL backend #2. Each one is a log of its own: two Backends share
-// nothing, and a shard exists in exactly the one it was fenced in.
+// Backend holds every shard's log in this process's memory. Each one is a log
+// of its own: two Backends share nothing, and a shard exists in exactly the one
+// it was fenced in.
 type Backend struct {
 	// One mutex for every shard, not one per shard: nothing here is slow
 	// enough for the lock to be visible to anything above it.
@@ -153,7 +154,7 @@ func (b *Backend) ReadFrom(
 }
 
 func (b *Backend) Trim(ctx context.Context, shard wal.ShardID, upTo wal.Seqno) error {
-	if !wal.CheckTrim(shard, upTo) {
+	if !wal.CheckTrim(upTo) {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {

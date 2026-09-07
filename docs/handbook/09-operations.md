@@ -218,11 +218,12 @@ conditions below; the keys are
   read `appliedSeqno`, its only witness to whether the transaction committed. This is a stalled
   tail, not a halt: writers and readers are refused so nothing can be applied over an ambiguous
   transaction. No size knob clears it.
-* **What to do for `unresolved`.** Restore reads of the WAL folder's `appliedSeqno` watermark. The
-  age tick re-reads it without operator intervention: a watermark at or above the drain's seqno
+* **What to do for `unresolved`.** Restore reads of the cold store's `appliedSeqno` watermark — the
+  seqno the drain's own transaction carried, read back through `cold.Watermarker`. The age tick
+  re-reads it without operator intervention: a watermark at or above the drain's seqno
   releases the stall and traffic resumes; a watermark below it proves the drain did not commit and
   turns the shard into `halted-invariant`, at which point follow runbook (b). If the watermark
-  remains unreadable, retain the WAL and the original drain error and escalate the storage failure.
+  remains unreadable, retain the log and the original drain error and escalate the storage failure.
 
 Nothing was written by any refused call in this runbook: all three checks run before the append.
 The history node's handling of `PERSISTENCE_LIMIT` keeps the shard loaded and slows its queues
@@ -258,7 +259,7 @@ import ban in [03-components.md](03-components.md) exist to allow.
 * **What to check.** For `halted-invariant`, the log line carrying the cause (an
   `apply.InvariantViolationError`, an encode failure, or `cycle.ErrTailNotEmpty` — "the log holds an
   entry at a seqno this cycle replayed past"). Correlate with `wal_replayed_entries` on that shard.
-* **What to do.** `halted-lost`: nothing. `halted-invariant`: capture the WAL folder before
+* **What to do.** `halted-lost`: nothing. `halted-invariant`: capture the shard's log before
   anything trims it (a halted cycle's log is not its own to shorten, so it will still be there), and
   treat it as a correctness incident.
 * **There is no path back.** No tool, no supported edit and no documented procedure returns a
@@ -300,8 +301,8 @@ import ban in [03-components.md](03-components.md) exist to allow.
 * **What it means.** The trim is the lazy deletion of log entries below the applied watermark. It
   runs beside the apply cycle, not in it, and a failed trim is logged, retried at the next cadence,
   and **halts nothing**. This counter is the only place a failing trim is visible.
-* **What to check.** Whether it is failing on every cadence or occasionally; whether the WAL
-  table's partitions are growing. Trimming is part of the latency budget rather than hygiene — it is
+* **What to check.** Whether it is failing on every cadence or occasionally. Trimming is part of
+  the latency budget rather than hygiene — it is
   what keeps the log small, and how much that costs is the log's business — so a permanently failing
   trim degrades write latency over hours, not minutes.
 * **What to do.** The cadence knobs are `wal.trimEvery` (in drains) and `wal.trimAfter` (in time),
@@ -394,9 +395,9 @@ go test ./...
 No cluster, no container, no port, no cgo, no fixture directory. That is not a convenience — it is
 what falls out of every backend living in the test process. The log is `wal/memwal`, the cold store
 and the base store are both `cold/memcold` (Temporal's own SQL persistence over an in-memory SQLite
-database, pure Go), and `verify/coldtest` and `verify/basetest` are the doubles a suite reaches for
+database, pure Go), and `internal/verify/coldtest` and `internal/verify/basetest` are the doubles a suite reaches for
 when it has to make one of those two misbehave. So there is nothing to connect to and nothing to
-wait for, and `verify/e2e` starts four Temporal services on OS-assigned ports on the same terms.
+wait for, and `internal/verify/e2e` starts four Temporal services on OS-assigned ports on the same terms.
 
 Two things worth knowing about that, both of which are limits rather than features:
 
@@ -407,7 +408,7 @@ Two things worth knowing about that, both of which are limits rather than featur
 * **the widest evidence available to a composition over this library is upstream's own functional
   suites**, run against the deployment's real store with waltz between. That is not a target here,
   because it needs a store worth running them against; `patches/README.md` is the fifteen-line patch
-  and the recipe for it. `verify/e2e` is the in-tree version of the same idea at a fraction of the
+  and the recipe for it. `internal/verify/e2e` is the in-tree version of the same idea at a fraction of the
   coverage: one server, one workflow, no installation.
 
 `go vet ./...` and `golangci-lint run` are the other two, and `.golangci.yml` says which linters are

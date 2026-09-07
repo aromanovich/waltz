@@ -271,13 +271,13 @@ your own traffic.
 
 | condition (shape) | severity | what it means | first action |
 |---|---|---|---|
-| `increase(wal_halts{state="halted-invariant"}) > 0` over any window | **page** | An assertion failed inside a window whose failure could not be pinned on one caller. There is no retry and no failover — the layer deliberately does not convert this into an ownership-lost — so **nobody else picks it up**. | [runbook (b)](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes); capture the WAL folder before anything trims it |
+| `increase(wal_halts{state="halted-invariant"}) > 0` over any window | **page** | An assertion failed inside a window whose failure could not be pinned on one caller. There is no retry and no failover — the layer deliberately does not convert this into an ownership-lost — so **nobody else picks it up**. | [runbook (b)](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes); capture the shard's log before anything trims it |
 | `increase(wal_merged_task_collisions) > 0` over any window | **page** | A merged task page found the same key in the window and in the cold store. The sources are disjoint by construction, so any non-zero value is a correctness signal: a second writer, or a window release that did not happen. | [runbook (f)](09-operations.md#f-merged-page-collisions-are-non-zero) |
 | `wal_backpressure_refusals{limit="unresolved"}` non-zero and sustained | page | The applier cannot read what its last drain did, so nothing may be applied over it. No size knob clears this. | [runbook (a)](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain) |
 | `rate(wal_backpressure_refusals{limit=~"entries\|bytes"})` above your normal floor, sustained | high | I10's per-shard bound is refusing writes: the tail reached its limit because the applier is behind. Refused writes provably wrote nothing. | [runbook (a)](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain) — fix the cold store |
 | high quantile of `wal_unapplied_entries` climbing and not returning | high | The cold store is falling behind; the runway before backpressure is what is left of the tail bound. | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
 | high quantile of `wal_window_age` well above `wal.windowAge` | medium | Drains are not keeping up with the age watermark that should be firing them. Check the unit first (§4). | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
-| `rate(wal_trims{outcome="failed"})` a sustained fraction of `started` | medium | The log is not being compacted. Halts nothing, degrades write latency over hours as the log's partitions grow. | [runbook (d)](09-operations.md#d-trims-are-failing) |
+| `rate(wal_trims{outcome="failed"})` a sustained fraction of `started` | medium | The log is not being compacted. Halts nothing, degrades write latency over hours as the log grows. | [runbook (d)](09-operations.md#d-trims-are-failing) |
 | I7 drop share for one category stepping up and staying up | medium | More task work is being deleted under the window than before, which is a saving rather than a fault: fewer drains fall between two queue checkpoints than did. Usually the window got bigger; occasionally the queues began checkpointing more often. | [runbook (e)](09-operations.md#e-task-drops-are-climbing) |
 | collapse ratio falling towards 1 | low / informational | The window has stopped saving work; drains cost what the writes would have. Not a fault, but it removes the layer's reason to be there. | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
 | `wal_answered_condition_failures` non-zero | medium | Zero is the expected value: every condition is decided before the append. Non-zero means a condition reached a drain that should not have. | [05-write-path.md](05-write-path.md#3-failed-write--the-condition-did-not-hold) |
@@ -322,7 +322,7 @@ are what an empty layer looks like from outside, so those are the numbers a witn
 with `Intercepted`, `TasksWritten`, `TasksCompleted`, `Overlaid` and `TaskReads`, of which the last
 two are the in-process twins of the two routing counters.
 
-Who reads them: `verify/witness`, which is where the claims a run makes about what the layer saw are
+Who reads them: `internal/verify/witness`, which is where the claims a run makes about what the layer saw are
 stated once. See [11-verification.md](11-verification.md).
 
 The same three types are listed field for field in
@@ -388,5 +388,5 @@ than by a runtime series, and that guard belongs to whoever ships the backend;
   once a replay has finished.
 * [`../../waltz.go`](../../waltz.go) — `Layer.Totals` and `Layer.ShardStats`: the
   in-process doors an operator-facing endpoint or a test reads.
-* [`../../verify/witness/witness.go`](../../verify/witness/witness.go) — the claims stated over
+* [`../../internal/verify/witness/witness.go`](../../internal/verify/witness/witness.go) — the claims stated over
   `cycle.Totals` and over the emitted series, and the one place both are read together.

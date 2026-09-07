@@ -23,8 +23,8 @@ import (
 	"github.com/aromanovich/waltz/apply"
 	"github.com/aromanovich/waltz/cold/memcold"
 	"github.com/aromanovich/waltz/fold"
+	"github.com/aromanovich/waltz/internal/verify/mutbuild"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/mutbuild"
 	"github.com/aromanovich/waltz/wal"
 )
 

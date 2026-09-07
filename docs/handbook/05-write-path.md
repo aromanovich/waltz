@@ -534,7 +534,7 @@ one. The recovery is the same one drain.
 sequenceDiagram
   participant CY as cycle.Cycle
   participant ACC as fold.Accumulator
-  participant AP as apply.Writer
+  participant AP as cold.Applier
   participant LOG as wal.Log
 
   CY->>ACC: Add(seqno, mutation)

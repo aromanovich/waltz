@@ -12,7 +12,8 @@ import (
 
 // pagedLog is a log that answers reads out of one shard's entries. Its three
 // knobs are the three ways a page can come back: short, failed, and — the one
-// no backend in this repository does — ignoring the seqno it was asked for.
+// that is a backend bug rather than a shape a log has — ignoring the seqno it
+// was asked for.
 type pagedLog struct {
 	entries    []wal.Entry
 	ignoreFrom bool

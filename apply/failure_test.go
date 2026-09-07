@@ -19,9 +19,9 @@ import (
 
 	"github.com/aromanovich/waltz/baserow"
 	"github.com/aromanovich/waltz/fold"
+	"github.com/aromanovich/waltz/internal/verify/basetest"
+	"github.com/aromanovich/waltz/internal/verify/mutbuild"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/basetest"
-	"github.com/aromanovich/waltz/verify/mutbuild"
 	"github.com/aromanovich/waltz/wal"
 )
 

@@ -130,7 +130,7 @@ func (t *taskPageToken) setAfter(k tasks.Key) {
 // from it. The two meet when a pagination began while this shard's cycle was
 // retired; mistaking one for the other fails the read or resumes the window
 // from the wrong place.
-var taskTokenMagic = [4]byte{'t', '6', 'w', '1'}
+var taskTokenMagic = [4]byte{'w', 'a', 'l', '1'}
 
 func encodeTaskToken(t *taskPageToken) []byte {
 	if t == nil {

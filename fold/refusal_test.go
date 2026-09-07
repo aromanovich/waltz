@@ -10,8 +10,8 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/fold"
+	"github.com/aromanovich/waltz/internal/verify/mutgen"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/mutgen"
 	"github.com/aromanovich/waltz/wal"
 )
 

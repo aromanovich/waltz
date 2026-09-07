@@ -10,7 +10,7 @@ paths:
   - "walmetrics/**"
   - "baserow/**"
   - "cold/**"
-  - "verify/**"
+  - "internal/verify/**"
 ---
 
 # This repo: a test asserts behaviour, never shape

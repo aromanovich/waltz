@@ -118,17 +118,15 @@ records why 16 rather than 8 or 32, and nothing records why 60 seconds. They are
 to move on read-cost grounds. **Both are chosen.**
 
 What the pair does derive is worth more than its own justification, because it is the one bound a
-post-mortem depends on. Trim goes to the committed applied watermark **with no safety lag**, so —
-in `verify/checker`'s own words — the surviving log is bounded by `TrimEvery × Mutations` entries
+post-mortem depends on. Trim goes to the committed applied watermark **with no safety lag**, so the
+surviving log is bounded by `TrimEvery × Mutations` entries
 however long the run was. At the shipped defaults that is 16 × 256 = **4096 entries**, plus whatever
 the tail currently holds, independent of how long the shard has been running. The time trigger only
 shortens it: a low-traffic shard trims at 60 seconds whether or not sixteen drains have happened.
 
-The two triggers are therefore one knob and not two, and `verify/checker`'s `Policy` is where that
-stopped being an opinion: a run that needs the whole log declares it, and the declaration moves
-**both** triggers, because a run that raised only the drain count has its whole history erased by the
-age trigger and comes back red against a correct layer.
-`TestTheDeclarationIsWhatSetsTheTrim` is that lesson kept.
+The two triggers are therefore one knob and not two, and a run that needs the whole log has to move
+**both**: one that raised only the drain count has its whole history erased by the age trigger
+anyway, and comes back red against a layer that did nothing wrong.
 
 ## The per-shard tail bound: 8192 entries and 8 MiB
 
@@ -345,9 +343,7 @@ chapter like this one to record that there is none.
 * [`../../settings.go`](../../settings.go) — the same nine numbers as
   dynamic-config settings, taking their defaults from `cycle.Defaults()` by reference, with the
   live/start-up split stated per setting.
-* [`../../verify/checker/checker.go`](../../verify/checker/checker.go) — the trim cadence's
-  consequence: `TrimEvery × Mutations` entries survive, however long the run was.
-* [`../../verify/checker/policy.go`](../../verify/checker/policy.go) — why both trim triggers move
-  together, and the test that keeps the lesson.
-* [`../../verify/acceptance/acceptance_fold_test.go`](../../verify/acceptance/acceptance_fold_test.go)
+* [`../../cycle/trim/trim.go`](../../cycle/trim/trim.go) — the cadence's two triggers, whichever
+  trips first, and why the trim runs beside the loop rather than in it.
+* [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)
   — the effective window: the refusal rate, the average drain, and the hot-set knob behind them.

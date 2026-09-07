@@ -163,7 +163,8 @@ func TestEveryInterceptedWriteNamesItsMethod(t *testing.T) {
 	}, ops)
 
 	require.Empty(t, snapshot["wal_transiting_writes"],
-		"the series is gone with the write it counted (#142); nothing may bring it back at zero")
+		"nothing intercepted goes around the log, so the series could only ever read zero, "+
+			"and one that can only be zero reads as a system doing no work")
 }
 
 // TestARefusedWriteIsStillAWriteThisStoreSent: the counter is taken on the way

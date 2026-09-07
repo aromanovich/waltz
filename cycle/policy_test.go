@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/server/common/clock"
 
-	"github.com/aromanovich/waltz/verify/basetest"
+	"github.com/aromanovich/waltz/internal/verify/basetest"
 )
 
 // TestAWatermarkThatMovesReachesARunningCycle is why [Policy] is a function:

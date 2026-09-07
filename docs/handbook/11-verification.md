@@ -11,7 +11,7 @@ failure occurred in the interval the claim is about. This chapter develops those
 through the log's contract suite, the fold acceptance, the server that boots over both seams, the
 witness and the guards, then states the
 limits of each. Its last sections are reference: the exact boundary of the two words this repository
-judges with, the map of `verify/`, and what is not claimed.
+judges with, the map of `internal/verify/`, and what is not claimed.
 
 **Every suite here runs with nothing installed** — no cluster, no container, no port, no cgo, no
 build tag. That is the shape of the whole chapter, and it is a consequence of where the storage is
@@ -21,7 +21,7 @@ services over the pair. What is *not* judged is any storage that survives the pr
 network, no quorum, no handover between two machines — which is where a deployment's own risk lives.
 [Chapter 15](15-the-limits-of-the-evidence.md) is that boundary collected.
 
-Nothing under `verify/` runs in production: no package outside it may import it in a non-test file.
+Nothing under `internal/verify/` runs in production: no package outside it may import it in a non-test file.
 What lives on the other side of that line is
 [chapter 03](03-components.md#the-tree-has-two-halves).
 
@@ -41,11 +41,11 @@ passthrough; counters without behavioural equality can certify a mechanism that 
 answer; a server that comes up says nothing about what it wrote; and a final snapshot without a
 recorded history cannot say what was acknowledged before a kill.
 
-The third level arrived with the shipped cold store, and is `verify/e2e` below. The fourth is the
-one this repository can only half provide. `verify/checker` is the judge for it, written and tested
-here; the harness that would kill processes and hand it a journal is a deployment's, because killing
-a process means having a process that owns storage worth recovering, and both backends here die with
-the test.
+The third level arrived with the shipped cold store, and is `internal/verify/e2e` below. The fourth is not
+here at all. What is here is one of its two inputs: `internal/verify/checker` is the record a driver writes
+of the calls it made, and it judges nothing. The judge that reads such a record back, and the
+harness that would kill processes to produce one, are a deployment's — killing a process is only a
+test if what the process owned is still there afterwards, and both backends here die with it.
 
 ---
 
@@ -108,7 +108,7 @@ merely a saving.
 upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is seven cases —
 the ordering of the transaction, the refusals that must happen before it opens, the attribution a
 condition failure carries, and the rollback that undoes the requests that had already run — each
-proved by staging the defect that reds it. `verify/acceptance` is the volume half, below.
+proved by staging the defect that reds it. `internal/verify/acceptance` is the volume half, below.
 
 **Nothing here judges somebody else's `cold.Applier`.** A deployment writing one gets the four
 obligations in [chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for), `memcold`
@@ -127,7 +127,7 @@ what says those suites are not a guard against cross-store bleed and these two a
 
 Example-based tests ask whether named scenarios behave as expected. Folding has a different risk:
 two individually ordinary mutations can interact in an unusual order and leave a merged request that
-looks plausible and differs in one field. `verify/acceptance` is the volume answer to that —
+looks plausible and differs in one field. `internal/verify/acceptance` is the volume answer to that —
 `TestAcceptanceFoldNoCluster` drives a generated stream of 100,000 mutations through the codec and
 through a real `fold.Accumulator`, window by window, the way a cycle drives it, with the refusal
 recovery around it.
@@ -153,7 +153,7 @@ control, the headline ratio is not a measurement of anything — it could be a p
 generator's defaults rather than of the fold. The control is what makes the ratio visibly a function
 of the knob.
 
-`verify/mutgen` is the generator, deterministic from its seed: the same config and seed produce the
+`internal/verify/mutgen` is the generator, deterministic from its seed: the same config and seed produce the
 same mutations byte for byte, so a failure reproduces from the seed alone. That determinism is a
 constraint on how it is written — no time, no UUIDs, no map iteration, no protobuf maps — and it is
 the reason a red run here is a bug report rather than a mystery.
@@ -252,7 +252,7 @@ to what was acked. Nothing acknowledged lost, nothing unapplied invented.
 
 ## A server, in this process
 
-`verify/e2e` is the composition level, and it is the one claim no suite below it can make. It builds
+`internal/verify/e2e` is the composition level, and it is the one claim no suite below it can make. It builds
 a Temporal server the production way — a custom datastore named in `Persistence.DataStores`, the
 layer's factory handed to `temporal.WithCustomDataStoreFactory` — starts frontend, history, matching
 and worker in the test process, registers a namespace through the frontend, and runs a workflow with
@@ -289,52 +289,43 @@ shards is not load, and no timing this suite produces is a performance claim.
 
 ---
 
-## The checker: judging a run nobody was there for
+## The record, and the judge that is not here
 
-`verify/checker` is the judge for the last level of evidence — *nothing acked was lost and nothing
-applied was invented, while nodes were being killed*. It is here in full, tested in full, and it has
-no harness in this repository to feed it: killing a process is only a test if what the process owned
-is still there afterwards, and both backends here die with it. What follows is therefore both a
-description and an instruction manual for whoever builds that harness over their own deployment.
+The last level of evidence — *nothing acked was lost and nothing applied was invented, while nodes
+were being killed* — has no instrument in this repository. Killing a process is only a test if what
+the process owned is still there afterwards, and both backends here die with it. What is here is
+one half of such a run's input: `internal/verify/checker` is the record a driver writes of the calls it
+made, and it judges nothing. Nothing here reads a record back and says whether the run it describes
+was correct.
 
-**It is a journal, not a look.** The measurement that shapes everything else: a cycle trims to the
+**Two lines per call, each fsynced, and the gap between them is the third outcome class.** The
+first is written before the store is touched, the second once it has answered, so a process killed
+between them leaves a call whose outcome nobody knows — which is the truth about it. Recording the
+outcome only would make every killed call look like one that was never issued, while its entry sits
+in the log with nothing to account for it. It is a file rather than memory because what it records
+is a process dying: an in-memory record goes with the node, and the one call a run turns on is then
+the one that is missing. `TestTheCallIsDurableBeforeTheStoreIsTouched` in `internal/verify/drive` is that
+ordering made permanent, and `TestACallWithNoOutcomeIsTheThirdClass` is the class it creates.
+
+`NewRecord` takes a node name and an incarnation, and neither is decoration: the line ids are per
+process, so a node restarted onto the same path numbers its second run from 1 and the two runs'
+calls collide — one call's outcome read as another's. An incarnation of 0 appended to a record that
+already holds a run is refused rather than trusted.
+
+Two things constrain whoever builds the judge, and both are worth stating here because a judge that
+gets either wrong is green for the wrong reason.
+
+**It may not import the layer.** Assertions inside the layer see what the layer believes and die
+with it under `kill -9`, which is exactly the case such a run exists for. A judge reads the log
+through `wal.Log`'s own contract, the watermark through the same seam the cycle uses, and the cold
+store through the deployment's own reader.
+
+**It observes repeatedly and remembers, rather than looking once at the end.** A cycle trims to the
 applied watermark with no safety lag, so the surviving log is bounded by roughly
 `TrimEvery × windowMutations` entries however long the run was. A post-mortem look at a long run
-therefore sees a vanishing fraction of it. So the checker **observes repeatedly and remembers**:
-every assertion is over the journal rather than over the world, and the driver's record of its own
-calls is not a second instrument beside it but entries in the same journal, made by the one observer
-that can see an outcome at all.
-
-**It may not import the layer, and that is the point.** Assertions inside the layer see what the
-layer believes and die with it under `kill -9`, which is exactly the case such a run exists for.
-
-The assertions are numbered A1–A10 and the numbering has a hole in it, deliberately: A8 is withdrawn
-and keeps its number, with A9 stating what took its place. They are:
-
-| | what it holds |
-|---|---|
-| **A1** | gap-freedom: the log a run leaves has no hole in it |
-| **A2** | the epoch is monotonic along a shard's log, and two epochs' entries never interleave |
-| **A3** | an entry never changes after it is written |
-| **A4** | the watermark only moves forward |
-| **A5** | everything acked is recoverable: it is in the log at or above the watermark, or applied below it |
-| **A6** | applied ⊆ logged — nothing reached the cold store that was not an entry first |
-| **A7** | acked ⟹ the store agrees, judged over one run at a time once it is quiescent |
-| **A9** | no entry without a call: the log holds no mutation nobody asked for |
-| **A10** | the run kept its whole log — the declaration that makes A6 sound |
-
-A10 is the one worth reading twice, because it is a claim about the *harness* rather than about the
-layer. A6 is only sound over a run whose log was never trimmed away underneath it, so a run that
-wants A6 raises both trim triggers to keep the log — and because a declaration nobody keeps is worse
-than no declaration, keeping it is `checker.Policy`'s job rather than a caller's, and A10 checks the
-promise was kept.
-
-Three of the checker's own tests are the ones to copy the reasoning of:
-`TestEachAssertionHasADefectOnlyItCatches` is the leave-one-out;
-`TestAJournalThatForgetsMissesWhatOnlyMemorySees` is the argument for the journal, stated as a test;
-and `TestADriverThatRecordsOutcomesOnlyIsCaught` is the argument for recording the call *before* it
-is made — `TestTheCallIsDurableBeforeTheStoreIsTouched` is the same rule on the driver's side.
-`TestAPresentThatAlwaysAnswersYesIsCaught` is the one that keeps a broken observer from being green.
+therefore sees a vanishing fraction of it. The consequence for any claim of the form *applied ⊆
+logged* is sharper still: it is only sound over a run whose log was never trimmed away underneath
+it, so such a run has to raise both trim triggers first and then check that the promise was kept.
 
 ---
 
@@ -385,11 +376,11 @@ storage — an engine's transaction counters, an applier's statement text — an
 
 ## The doubles, and why each is a package
 
-Five packages under `verify/` exist so that a suite above them does not write its own. Each was
+Six packages under `internal/verify/` exist so that a suite above them does not write its own. Each was
 extracted after several packages had written the same thing slightly differently, which is the
 failure mode a double has: two copies that disagree leave a rule green and unjudged.
 
-* **`verify/coldtest`** — the cold store a drain lands in, in memory. One value satisfies both
+* **`internal/verify/coldtest`** — the cold store a drain lands in, in memory. One value satisfies both
   `cold.Applier` and `cold.Watermarker`, and that is the point rather than a convenience: a
   composition whose drains land somewhere the watermark does not read back is a shard that replays
   what it already applied, and no test built that way could ever notice. It is a double and not a
@@ -398,20 +389,20 @@ failure mode a double has: two copies that disagree leave a rule green and unjud
   straight: a suite that needs a drain to **land** uses the store, and a suite that needs a drain to
   fail in a chosen way uses `coldtest.Refusing(err)`, because a correct store cannot be asked to
   return the error a test is about.
-* **`verify/basetest`** — the pre-window rows in memory, the second adapter at the seam
+* **`internal/verify/basetest`** — the pre-window rows in memory, the second adapter at the seam
   `baserow.Store` names. Absence is what makes it worth a package: a row that is not there arrives
   as a NotFound and becomes a nil row, and a double answering absence its own way leaves every
   delegated assertion green and unjudged.
-* **`verify/coldtasks`** — a model of the store below for the merged task read, and explicitly *not*
+* **`internal/verify/coldtasks`** — a model of the store below for the merged task read, and explicitly *not*
   a stub. The merge's whole difficulty is the base's pagination, so a fake that answered everything
   in one page would leave every rule in `fold/taskpage.go` untested. It models two paginations — an
   immediate page by task id, a scheduled page refined by `(fireTime, taskID)` and bounded above by
   fire time alone — and `coldtasks_test.go` states both plainly, because that is what a reader
   compares their own store's queries against.
-* **`verify/mutbuild`** — one well-formed mutation of a given shape, ids named rather than drawn.
+* **`internal/verify/mutbuild`** — one well-formed mutation of a given shape, ids named rather than drawn.
   Every shape that has a validator runs through Temporal's own before it is returned, and an invalid
   fixture **panics**: an invalid fixture is a bug in the test rather than a case a caller handles.
-* **`verify/drive` and `verify/foldrun`** — the writing half of a run (one mutation into one store
+* **`internal/verify/drive` and `internal/verify/foldrun`** — the writing half of a run (one mutation into one store
   call, plus `Stream` for driving a generated stream through the codec) and the loop that folds it
   window by window. `foldrun` owns the loop and nothing above it: where the mutations come from is
   the caller's, and so is what a drained batch is for, which is why the drain is a callback.
@@ -429,16 +420,17 @@ The layer's own vocabulary is
 deliberately absent from it: they name instruments that stand outside the layer and pass judgement
 on it.
 
-**Checker.** The judge of a run under faults: a journal of what each driver asked for and what it
-was told, plus assertions A1–A10 over it. It may not import the layer, and that is the point: a
-judge that dies with the thing it judges is no judge.
+**Checker.** The judge of a run under faults, stated over a record of what each driver asked for
+and what it was told. It may not import the layer, and that is the point: a judge that dies with the
+thing it judges is no judge. It is not in this repository; `internal/verify/checker` is the record, not the
+judgement over it.
 
 *Not to be confused with:* an assertion inside the layer, which sees what the layer believes.
 
 **Witness.** The assertion a run makes over the layer's **own** counters, beside the assertions of
 whatever suite it ran. It exists because a layer that came out empty is passthrough wearing another
 name, and somebody else's suite is green over it — so a witness can fail a run that every suite
-passed. `verify/witness` is itself a judged module: a run states what it was supposed to be
+passed. `internal/verify/witness` is itself a judged module: a run states what it was supposed to be
 (`Expect`) and hands over what its instruments saw (`Observed`).
 
 *Not to be confused with:* smoke check, sanity assert — both name something weaker than the suite,
@@ -455,7 +447,7 @@ not build instead.
 
 ---
 
-## The map of `verify/`
+## The map of `internal/verify/`
 
 Two kinds of package live here, and confusing them is the first mistake. **Instruments** measure or
 drive; they assert nothing. **Judgements** say yes or no.
@@ -464,39 +456,40 @@ drive; they assert nothing. **Judgements** say yes or no.
 
 | package | what it is |
 |---|---|
-| `verify/mutgen` | the mutation-stream generator, deterministic from its seed |
-| `verify/mutbuild` | one well-formed mutation of a named shape, for a unit test |
-| `verify/drive`, `verify/foldrun` | the writing half of a run, and the loop that folds it window by window |
-| `verify/coldtest`, `verify/basetest`, `verify/coldtasks` | the doubles: a drain's outcome on demand, the pre-window rows, and a model of the base's task pagination. The *store* is `cold/memcold`, outside `verify/` |
-| `verify/checker` | the journal and its assertions A1–A10, for a run under faults |
-| `verify/witness` | the claims a run makes about the layer's own counters, as a pure function of values |
+| `internal/verify/mutgen` | the mutation-stream generator, deterministic from its seed |
+| `internal/verify/mutbuild` | one well-formed mutation of a named shape, for a unit test |
+| `internal/verify/drive`, `internal/verify/foldrun` | the writing half of a run, and the loop that folds it window by window |
+| `internal/verify/coldtest`, `internal/verify/basetest`, `internal/verify/coldtasks` | the doubles: a drain's outcome on demand, the pre-window rows, and a model of the base's task pagination. The *store* is `cold/memcold`, outside `internal/verify/` |
+| `internal/verify/checker` | the record a driver writes of its own calls and their outcomes, for a run under faults. It judges nothing; the judge over it is not here |
+| `internal/verify/witness` | the claims a run makes about the layer's own counters, as a pure function of values |
 
 ### Judgements
 
 | package | what it says |
 |---|---|
-| `verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said and hold nothing a drain that lost the shard carried |
-| `verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
-| `verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
-| `cold/memcold` | *(not under `verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the seven cases over the one method those suites do not know about |
+| `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said and hold nothing a drain that lost the shard carried |
+| `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
+| `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
+| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the seven cases over the one method those suites do not know about |
 | `wal/waltest` | an implementation of `wal.Log` satisfies the five guarantees — the one judgement here written to be run against somebody else's code |
 
 Who judges what. Circles are judgements, boxes are what they are stated over.
 
 ```mermaid
 graph LR
-  A(("verify/acceptance")) --> F["fold, over a generated stream and into a real database"]
-  E(("verify/e2e")) --> S["a Temporal server composed over both seams"]
-  G(("verify/guard")) --> D["decisions somebody may revert"]
+  A(("internal/verify/acceptance")) --> F["fold, over a generated stream and into a real database"]
+  E(("internal/verify/e2e")) --> S["a Temporal server composed over both seams"]
+  G(("internal/verify/guard")) --> D["decisions somebody may revert"]
   W(("wal/waltest")) --> L["any wal.Log implementation"]
   MC(("cold/memcold")) --> T["Temporal's own four persistence suites"]
-  WI["verify/witness"] --> C["the layer's own counters"]
-  CH["verify/checker"] --> J["a journal of a run under faults"]
+  WI["internal/verify/witness"] --> C["the layer's own counters"]
+  CH["internal/verify/checker"] --> R["a record of the calls one driver made"]
 ```
 
-The judgement packages, with the two judging *modules* drawn beside them: `witness` and
-`checker` state claims rather than run them, and each is a judgement's claims pulled into a module of
-its own so that the thing whose job is to catch a silent pass is itself judged by a table test.
+The judgement packages, with `witness` drawn beside them: it states claims rather than running them,
+a judgement's claims pulled into a module of its own so that the thing whose job is to catch a silent
+pass is itself judged by a table test. `checker` is drawn beside them too and is not one of them — it
+is the input a judge of a run under faults would need, and that judge is not in this repository.
 
 ---
 
@@ -538,26 +531,24 @@ A newly written test that passes proves nothing — not that the mechanism works
 test would notice if it stopped. So stage the defect on purpose and show the guard go red, then put
 the number or the failure in the ticket.
 
-The two leave-one-out tests are that rule made permanent rather than remembered:
-`TestEachClaimHasADefectOnlyItCatches` over the witness's claims, and
-`TestEachAssertionHasADefectOnlyItCatches` over the checker's. Each builds a defect per claim and
-requires that exactly one claim catches it. The same rule is what makes a *removal* honest: a claim
-leaves the table when no defect reaches it exclusively — evidence, not a judgement that it looked
-redundant.
+`TestEachClaimHasADefectOnlyItCatches`, over the witness's claims, is that rule made permanent
+rather than remembered: it builds a defect per claim and requires that exactly one claim catches it.
+The same rule is what makes a *removal* honest: a claim leaves the table when no defect reaches it
+exclusively — evidence, not a judgement that it looked redundant.
 
 ---
 
 ## What is not claimed
 
-The collected boundaries are [chapter 15](15-the-limits-of-the-evidence.md). Three belong to the
+The collected boundaries are [chapter 15](15-the-limits-of-the-evidence.md). Four belong to the
 suites above and are stated where they are:
 
 * **the contract suite cannot see a fence that does not reach another process**
   ([above](#the-blind-spot-stated-where-the-instrument-is));
 * **no suite here hands a shard with a non-empty window to a new owner in a second process.** Replay
   is exercised over an in-process log by `cycle`'s own tests; what is not exercised is a real
-  handover, and the instrument for that is `verify/checker` with a harness this repository does not
-  have;
+  handover, and neither the harness that would stage one nor the judge that would read its record
+  back is in this repository;
 * **nothing here judges the fold against the sequential path.** A folded batch now *executes*
   against a real Temporal schema, which is what `TestBothSeamsRealNoServer` added and which catches
   a merged request no store would take. What is still unjudged is the stronger claim — that a folded
@@ -574,33 +565,33 @@ suites above and are stated where they are:
 * [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its eighteen
   cases, and the guarantee each is stated under;
   [`fault.go`](../../wal/waltest/fault.go) is `Faulty`.
-* [`../../verify/acceptance/acceptance_fold_test.go`](../../verify/acceptance/acceptance_fold_test.go)
+* [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)
   — the stream, the window, the assertions and the knob control at the other end of the dial;
-  [`acceptance_seams_test.go`](../../verify/acceptance/acceptance_seams_test.go) is the same shape
+  [`acceptance_seams_test.go`](../../internal/verify/acceptance/acceptance_seams_test.go) is the same shape
   over both real seams, with the ledger that says what the database must hold.
 * [`../../cold/memcold/conformance_test.go`](../../cold/memcold/conformance_test.go) — Temporal's
   four suites over the shipped store, and why a suite of ours is not beside them;
   [`apply_test.go`](../../cold/memcold/apply_test.go) is the one method they do not reach, and
   [`isolation_test.go`](../../cold/memcold/isolation_test.go) is the pair the four suites stay green
   without.
-* [`../../verify/e2e/server.go`](../../verify/e2e/server.go) — the server's configuration, the
-  readiness probe and the log gate; [`e2e_test.go`](../../verify/e2e/e2e_test.go) is the two arms
+* [`../../internal/verify/e2e/server.go`](../../internal/verify/e2e/server.go) — the server's configuration, the
+  readiness probe and the log gate; [`e2e_test.go`](../../internal/verify/e2e/e2e_test.go) is the two arms
   and what each claims.
-* [`../../verify/mutgen/mutgen.go`](../../verify/mutgen/mutgen.go) — the generator and the
-  determinism rules it is written under; [`corpus.go`](../../verify/mutgen/corpus.go) is the report
+* [`../../internal/verify/mutgen/mutgen.go`](../../internal/verify/mutgen/mutgen.go) — the generator and the
+  determinism rules it is written under; [`corpus.go`](../../internal/verify/mutgen/corpus.go) is the report
   a stream makes about itself.
-* [`../../verify/witness/witness.go`](../../verify/witness/witness.go) — `Expect`, `Observed` and
+* [`../../internal/verify/witness/witness.go`](../../internal/verify/witness/witness.go) — `Expect`, `Observed` and
   the named claim tables.
-* [`../../verify/checker/checker.go`](../../verify/checker/checker.go) — the journal, and why it is
-  a journal; [`assertions.go`](../../verify/checker/assertions.go) has A1–A10 with the reasoning at
-  each; [`policy.go`](../../verify/checker/policy.go) is A10's declaration.
-* [`../../verify/guard/doc.go`](../../verify/guard/doc.go) — what a guard is and what it may not be.
-* [`../../verify/coldtest/coldtest.go`](../../verify/coldtest/coldtest.go),
-  [`../../verify/basetest/basetest.go`](../../verify/basetest/basetest.go) and
-  [`../../verify/coldtasks/coldtasks.go`](../../verify/coldtasks/coldtasks.go) — the three doubles,
+* [`../../internal/verify/checker/record.go`](../../internal/verify/checker/record.go) — the record's file format, why
+  a call is written before the store is touched, and why the incarnation is not decoration;
+  [`checker.go`](../../internal/verify/checker/checker.go) is the vocabulary it is written in.
+* [`../../internal/verify/guard/doc.go`](../../internal/verify/guard/doc.go) — what a guard is and what it may not be.
+* [`../../internal/verify/coldtest/coldtest.go`](../../internal/verify/coldtest/coldtest.go),
+  [`../../internal/verify/basetest/basetest.go`](../../internal/verify/basetest/basetest.go) and
+  [`../../internal/verify/coldtasks/coldtasks.go`](../../internal/verify/coldtasks/coldtasks.go) — the three doubles,
   each with the rule it exists to keep judged.
-* [`../../verify/foldrun/foldrun.go`](../../verify/foldrun/foldrun.go) and
-  [`../../verify/drive/drive.go`](../../verify/drive/drive.go) — the loop and the writing half.
+* [`../../internal/verify/foldrun/foldrun.go`](../../internal/verify/foldrun/foldrun.go) and
+  [`../../internal/verify/drive/drive.go`](../../internal/verify/drive/drive.go) — the loop and the writing half.
 * [`../../patches/README.md`](../../patches/README.md) — the strongest evidence a composition over
   this library can produce, which is upstream's own functional suites against a real store, and the
   fifteen-line patch that makes it reachable.

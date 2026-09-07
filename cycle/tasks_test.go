@@ -20,9 +20,9 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/apply"
+	"github.com/aromanovich/waltz/internal/verify/coldtasks"
+	"github.com/aromanovich/waltz/internal/verify/mutbuild"
 	"github.com/aromanovich/waltz/mutation"
-	"github.com/aromanovich/waltz/verify/coldtasks"
-	"github.com/aromanovich/waltz/verify/mutbuild"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/waltest"
 )
@@ -281,7 +281,7 @@ func TestAHaltedShardAnswersATaskReadByTheHaltAndThenTheTail(t *testing.T) {
 			taskReq(tasks.CategoryTransfer, minKey, maxKey, 100), cold.Read)
 		require.ErrorIs(t, err, ErrHalted)
 		require.False(t, errors.As(err, new(*p.ShardOwnershipLostError)),
-			"a divergence this process owns must not be handed on as an ordinary failover (#46)")
+			"a divergence this process owns must not be handed on as an ordinary failover")
 		require.Zero(t, cold.Calls)
 	})
 }

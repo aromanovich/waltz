@@ -148,7 +148,7 @@ A deployment's log is where the interesting failures live, and it is judged by
 double: the 28 execution-store methods are upstream's, embedded, and Temporal's four exported
 persistence suites judge them exactly as they judge a plugin. A folded window executes against that
 schema, with those statements and those error classes, which is what the suites above it now rest
-on. `verify/coldtest` is still here beside it and is still a double, for the suites that need a
+on. `internal/verify/coldtest` is still here beside it and is still a double, for the suites that need a
 drain to be refused or to fail ambiguously.
 
 Two limits survive that, and the second is the sharpest in this chapter.
@@ -200,23 +200,25 @@ fencing.
 
 What is unstaged, and could be staged by whoever has processes to kill, is everything on the other
 side of the two seams: a failure of the log, a failure of the cold store, a split of either's
-storage, a slow replica. `verify/checker` is the judge written for exactly those runs and it has no
-harness here. The distinction is what makes the list readable — the node-to-node entry describes the
+storage, a slow replica. Neither the harness that would stage those runs nor the judge that would
+read one back is in this repository; `internal/verify/checker` is one half of such a run's input and judges
+nothing. The distinction is what makes the list readable — the node-to-node entry describes the
 shape of the design, the rest describe the reach of a harness that does not exist in this repository.
 
 ## The saving on deferred work is not observable from outside
 
 Invariant [I7](02-concepts-and-invariants.md#the-invariants) is the rule that makes a dropped task
-row correct. It is **not one of the checker's assertions and cannot be** — and the reason is not that
+row correct. It is **not something a judge outside the layer can assert, and cannot be** — and the
+reason is not that
 the deletion is invisible. The range deletion is `mutation.KindRangeCompleteTasks`, a log entry like
 any other, folded into the window and restored by replay, so an outside observer sees it. What no
 observer sees is the **drop**: a row the drain did not write exists nowhere. A reader of the log and
 the cold store therefore finds the range record, finds no row, and cannot separate a correct drop
-from a loss without reproducing the fold — which is exactly the thing the checker may not import.
+from a loss without reproducing the fold — which is exactly the thing such a judge may not import.
 
 What holds the rule is therefore the mechanism's own tests — `fold/tasks_test.go`,
 `fold/histtasks_test.go` and `cycle/tasks_test.go`, where the pagination, the ordering, the dedup and
-the deletion rule are pinned at their smallest, over `verify/coldtasks`' model of a base store's two
+the deletion rule are pinned at their smallest, over `internal/verify/coldtasks`' model of a base store's two
 paginations. That is a real limit twice over: the saving is a row that was never written, and the
 base pagination it is judged against is a model rather than a store.
 
@@ -278,7 +280,8 @@ and telling them apart is the reader's job:
 1. **closed by a measurement against a real deployment.** Someone runs the shipped window against
    their own store, or measures the incumbent's write amplification. These need a cluster and an
    afternoon, not a design;
-2. **closed by work nobody has started.** A harness that kills processes and feeds the checker; a
+2. **closed by work nobody has started.** A harness that kills processes, and the judge that reads
+   the record back; a
    differential oracle against a real store. These need a deployment first and then a project;
 3. **not closable at all, because the entry describes the boundary of a decision that was taken.**
    Measuring them harder does not move them; they are what the design is.
@@ -306,15 +309,15 @@ that was chosen.
 
 ## Where this lives in the code
 
-* [`../../verify/checker/checker.go`](../../verify/checker/checker.go) — what the checker may know,
-  and the outcome classes an assertion is allowed to be stated over.
-* [`../../verify/coldtest/coldtest.go`](../../verify/coldtest/coldtest.go) — the double that
+* [`../../internal/verify/checker/checker.go`](../../internal/verify/checker/checker.go) — the three outcome classes a
+  driver can report, and why the third one — the call whose outcome nobody knows — has to exist.
+* [`../../internal/verify/coldtest/coldtest.go`](../../internal/verify/coldtest/coldtest.go) — the double that
   interprets nothing, with the reason written at the top.
 * [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go) — the store that is not a double,
   what the embedding covers and what it does not;
   [`apply.go`](../../cold/memcold/apply.go) has the four places it knowingly answers differently from
   upstream's sequential path.
-* [`../../verify/coldtasks/coldtasks.go`](../../verify/coldtasks/coldtasks.go) — the two paginations
+* [`../../internal/verify/coldtasks/coldtasks.go`](../../internal/verify/coldtasks/coldtasks.go) — the two paginations
   it models, and the paragraph headed "what can make it a lie".
 * [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one log here, and why it has no
   knobs.
