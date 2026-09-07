@@ -1,0 +1,282 @@
+syntax = "proto3";
+
+// The WAL's record format: one ExecutionStore write request, on its way into an
+// entry's payload.
+//
+// This file is the format. Every number in it is on disk in some log, read back
+// by a process that may be older or newer than the one that wrote it — so a
+// field may be added at the end of a message, and nothing may ever be renumbered
+// or reused. Payload.format is the escape hatch if that is not enough.
+//
+// The messages mirror go.temporal.io/server/common/persistence's request structs
+// field for field, minus what the codec drops on purpose. The mirror is explicit
+// because no reflective encoder survives those structs: the Tasks map is keyed
+// by tasks.Category, which marshals and does not unmarshal, and gob refuses the
+// type outright. The cost of an explicit mirror is that a field Temporal adds is
+// a field this format silently omits; that cost is paid by the field-set guard
+// in mutation's tests, which holds one recorded decision per field of every
+// struct mirrored here.
+package waltz.mutation.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aromanovich/waltz/mutation;mutation";
+
+// Payload is what a WAL entry carries.
+//
+// The kind of a mutation is which request the oneof holds — there is no separate
+// tag, because a tag could disagree with the body.
+message Payload {
+  uint32 format = 1;
+
+  oneof request {
+    CreateRequest create = 2;
+    UpdateRequest update = 3;
+    ConflictResolveRequest conflict_resolve = 4;
+    SetRequest set = 5;
+    DeleteRequest delete = 6;
+    DeleteRequest delete_current = 7;
+    AddTasksRequest add_tasks = 9;
+    RangeCompleteTasksRequest range_complete_tasks = 10;
+  }
+
+  // provisional marks an entry whose condition was not verified before its
+  // caller was acknowledged. Replay drops a provisional entry on condition
+  // failure; the same failure on any other entry is a divergence.
+  //
+  // Absent means false, which is the conservative reading: an entry written by a
+  // codec that did not have this field is replayed as verified, and a condition
+  // failure on it halts rather than drops.
+  //
+  // This appended field does not bump format. Both directions are safe without
+  // a version switch:
+  //
+  //   - a newer build reading an older entry sees the field absent, reads false,
+  //     and replays the entry as verified;
+  //   - an older build reading a *provisional* entry sees an unknown field and
+  //     refuses the entry whole, because this codec rejects unknown fields;
+  //   - an older build reading a non-provisional entry sees nothing at all: a
+  //     false bool is not on the wire, so those bytes are byte-for-byte what the
+  //     previous codec wrote.
+  bool provisional = 8;
+}
+
+// CreateRequest mirrors persistence.InternalCreateWorkflowExecutionRequest.
+//
+// RangeID is absent on purpose here and in every other request: it is the epoch
+// (invariant I11), it travels with the WAL entry, and a copy inside the payload
+// could disagree with it. So are the *NewEvents slices — event history stays out
+// of the WAL in v1 (decision D3).
+message CreateRequest {
+  int32 shard_id = 1;
+  int32 mode = 2;
+  string previous_run_id = 3;
+  int64 previous_last_write_version = 4;
+  WorkflowSnapshot snapshot = 5;
+}
+
+// UpdateRequest mirrors persistence.InternalUpdateWorkflowExecutionRequest.
+message UpdateRequest {
+  int32 shard_id = 1;
+  int32 mode = 2;
+  WorkflowMutation mutation = 3;
+  WorkflowSnapshot new_snapshot = 4;
+}
+
+// ConflictResolveRequest mirrors
+// persistence.InternalConflictResolveWorkflowExecutionRequest.
+message ConflictResolveRequest {
+  int32 shard_id = 1;
+  int32 mode = 2;
+  WorkflowSnapshot reset_snapshot = 3;
+  WorkflowSnapshot new_snapshot = 4;
+  WorkflowMutation current_mutation = 5;
+}
+
+// SetRequest mirrors persistence.InternalSetWorkflowExecutionRequest.
+message SetRequest {
+  int32 shard_id = 1;
+  WorkflowSnapshot snapshot = 2;
+}
+
+// DeleteRequest mirrors both persistence.DeleteWorkflowExecutionRequest and
+// persistence.DeleteCurrentWorkflowExecutionRequest, which have the same four
+// fields. They stay two entries in the oneof because they mean different things.
+message DeleteRequest {
+  int32 shard_id = 1;
+  string namespace_id = 2;
+  string workflow_id = 3;
+  string run_id = 4;
+}
+
+// AddTasksRequest mirrors persistence.InternalAddHistoryTasksRequest.
+//
+// It is the first request in this format that names no run and asserts nothing:
+// a task is a queue entry rather than workflow state. NamespaceID and WorkflowID
+// are carried because the request has them, and the store below ignores both —
+// its task rows are keyed by (shard, category, key) alone.
+//
+// RangeID is absent for the reason it is absent everywhere else: it is the epoch
+// (invariant I11) and it travels with the entry.
+message AddTasksRequest {
+  int32 shard_id = 1;
+  string namespace_id = 2;
+  string workflow_id = 3;
+  repeated TaskGroup tasks = 4;
+}
+
+// RangeCompleteTasksRequest mirrors persistence.RangeCompleteHistoryTasksRequest:
+// one category's task rows in [inclusive_min, exclusive_max) are garbage.
+//
+// The category travels as its id, like every other category in this format, and
+// is re-resolved through the process's registry on decode — so a range naming a
+// category this node does not know is an error rather than a range silently not
+// deleted.
+message RangeCompleteTasksRequest {
+  int32 shard_id = 1;
+  int32 category_id = 2;
+  TaskKey inclusive_min = 3;
+  TaskKey exclusive_max = 4;
+}
+
+// TaskKey mirrors tasks.Key, with the same fire-time rule as [Task]: absent for
+// a zero fire time and present otherwise, because the zero time.Time is not
+// tasks.DefaultFireTime and a nanosecond count cannot tell them apart.
+message TaskKey {
+  google.protobuf.Timestamp fire_time = 1;
+  int64 task_id = 2;
+}
+
+// WorkflowMutation mirrors persistence.InternalWorkflowMutation.
+//
+// Where the struct holds both a blob and its parsed proto — ExecutionInfo and
+// ExecutionInfoBlob, ExecutionState and ExecutionStateBlob — only the blob is
+// here. The blob is what the store writes verbatim; the proto is derived on
+// decode. Carrying the proto instead would make the stored bytes a re-marshal of
+// it, and marshalling a message with a map field is not a function of the
+// message.
+message WorkflowMutation {
+  string namespace_id = 1;
+  string workflow_id = 2;
+  string run_id = 3;
+
+  Blob execution_info = 4;
+  Blob execution_state = 5;
+
+  int64 next_event_id = 6;
+  int64 start_version = 7;
+  int64 last_write_version = 8;
+  int64 db_record_version = 9;
+  int64 condition = 10;
+
+  repeated Int64BlobEntry upsert_activity_infos = 11;
+  repeated int64 delete_activity_infos = 12;
+  repeated StringBlobEntry upsert_timer_infos = 13;
+  repeated string delete_timer_infos = 14;
+  repeated Int64BlobEntry upsert_child_execution_infos = 15;
+  repeated int64 delete_child_execution_infos = 16;
+  repeated Int64BlobEntry upsert_request_cancel_infos = 17;
+  repeated int64 delete_request_cancel_infos = 18;
+  repeated Int64BlobEntry upsert_signal_infos = 19;
+  repeated int64 delete_signal_infos = 20;
+  repeated ChasmNodeEntry upsert_chasm_nodes = 21;
+  repeated string delete_chasm_nodes = 22;
+  repeated string upsert_signal_requested_ids = 23;
+  repeated string delete_signal_requested_ids = 24;
+
+  Blob new_buffered_events = 25;
+  bool clear_buffered_events = 26;
+
+  repeated TaskGroup tasks = 27;
+  Blob checksum = 28;
+}
+
+// WorkflowSnapshot mirrors persistence.InternalWorkflowSnapshot.
+//
+// It has no delete sets: a snapshot is a workflow's whole state, which is what
+// makes it a compaction barrier (invariant I8).
+message WorkflowSnapshot {
+  string namespace_id = 1;
+  string workflow_id = 2;
+  string run_id = 3;
+
+  Blob execution_info = 4;
+  Blob execution_state = 5;
+
+  int64 start_version = 6;
+  int64 last_write_version = 7;
+  int64 next_event_id = 8;
+  int64 db_record_version = 9;
+  int64 condition = 10;
+
+  repeated Int64BlobEntry activity_infos = 11;
+  repeated StringBlobEntry timer_infos = 12;
+  repeated Int64BlobEntry child_execution_infos = 13;
+  repeated Int64BlobEntry request_cancel_infos = 14;
+  repeated Int64BlobEntry signal_infos = 15;
+  repeated ChasmNodeEntry chasm_nodes = 16;
+  repeated string signal_requested_ids = 17;
+
+  repeated TaskGroup tasks = 18;
+  Blob checksum = 19;
+}
+
+// Blob mirrors common.v1.DataBlob, carried verbatim.
+//
+// It is not the Temporal type itself so that this format owns its own
+// compatibility: a change to Temporal's proto is then a decision here rather
+// than a silent change to what a log means.
+message Blob {
+  bytes data = 1;
+  int32 encoding = 2;
+}
+
+// The keyed collections travel as repeated entries rather than as proto maps.
+//
+// Map fields do not marshal deterministically unless every call asks for it, and
+// a codec whose bytes depend on an option someone remembers to pass is not one a
+// differential oracle can rest on. Entries are written in sorted key order.
+message Int64BlobEntry {
+  int64 key = 1;
+  Blob blob = 2;
+}
+
+message StringBlobEntry {
+  string key = 1;
+  Blob blob = 2;
+}
+
+// ChasmNodeEntry mirrors persistence.InternalChasmNode plus its key.
+//
+// CassandraBlob is absent: it is set only when Cassandra is the persistence
+// layer, so on this store it cannot occur — and dropping it quietly if it ever
+// did would lose state. The encoder refuses such a node instead.
+message ChasmNodeEntry {
+  string key = 1;
+  Blob metadata = 2;
+  Blob data = 3;
+}
+
+// TaskGroup is one task category's tasks.
+//
+// The category travels as its id, because tasks.Category has unexported fields
+// and no way back from its text form. The id is re-resolved through the
+// *process's* registry on decode, and the valid set is a function of cluster
+// configuration — CategoryArchival is registered only when archival is enabled —
+// so an id this process does not know is an error, never a fallback.
+message TaskGroup {
+  int32 category_id = 1;
+  repeated Task tasks = 2;
+}
+
+// Task mirrors persistence.InternalHistoryTask.
+//
+// fire_time is absent for a zero fire time and present otherwise. That
+// distinction has to survive: the zero time.Time is not tasks.DefaultFireTime
+// (time.Unix(0, 0)), and a plain nanosecond count cannot tell them apart because
+// the zero Time predates what UnixNano can represent.
+message Task {
+  google.protobuf.Timestamp fire_time = 1;
+  int64 task_id = 2;
+  Blob blob = 3;
+}

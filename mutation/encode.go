@@ -1,0 +1,258 @@
+package mutation
+
+import (
+	"cmp"
+	"maps"
+	"slices"
+
+	commonpb "go.temporal.io/api/common/v1"
+	p "go.temporal.io/server/common/persistence"
+	"go.temporal.io/server/service/history/tasks"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// Encoding: Temporal's structs into the mirror, one struct at a time.
+//
+// Every collection is written in sorted key order. That alone is what makes
+// [Encode] a function of its argument: callers compare the bytes of two
+// encodings of the same mutation, and Go's map iteration order would give one
+// mutation several byte strings.
+
+func encodeCreate(r *p.InternalCreateWorkflowExecutionRequest) (*CreateRequest, error) {
+	snapshot, err := encodeSnapshot(&r.NewWorkflowSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	return &CreateRequest{
+		ShardId:                  r.ShardID,
+		Mode:                     int32(r.Mode),
+		PreviousRunId:            r.PreviousRunID,
+		PreviousLastWriteVersion: r.PreviousLastWriteVersion,
+		Snapshot:                 snapshot,
+	}, nil
+}
+
+func encodeUpdate(r *p.InternalUpdateWorkflowExecutionRequest) (*UpdateRequest, error) {
+	mutation, err := encodeMutation(&r.UpdateWorkflowMutation)
+	if err != nil {
+		return nil, err
+	}
+	out := &UpdateRequest{
+		ShardId:  r.ShardID,
+		Mode:     int32(r.Mode),
+		Mutation: mutation,
+	}
+	if r.NewWorkflowSnapshot != nil {
+		if out.NewSnapshot, err = encodeSnapshot(r.NewWorkflowSnapshot); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func encodeConflictResolve(r *p.InternalConflictResolveWorkflowExecutionRequest) (*ConflictResolveRequest, error) {
+	reset, err := encodeSnapshot(&r.ResetWorkflowSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	out := &ConflictResolveRequest{
+		ShardId:       r.ShardID,
+		Mode:          int32(r.Mode),
+		ResetSnapshot: reset,
+	}
+	if r.NewWorkflowSnapshot != nil {
+		if out.NewSnapshot, err = encodeSnapshot(r.NewWorkflowSnapshot); err != nil {
+			return nil, err
+		}
+	}
+	if r.CurrentWorkflowMutation != nil {
+		if out.CurrentMutation, err = encodeMutation(r.CurrentWorkflowMutation); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func encodeSet(r *p.InternalSetWorkflowExecutionRequest) (*SetRequest, error) {
+	snapshot, err := encodeSnapshot(&r.SetWorkflowSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	return &SetRequest{ShardId: r.ShardID, Snapshot: snapshot}, nil
+}
+
+func encodeMutation(m *p.InternalWorkflowMutation) (*WorkflowMutation, error) {
+	chasm, err := encodeChasmNodes(m.UpsertChasmNodes)
+	if err != nil {
+		return nil, err
+	}
+	return &WorkflowMutation{
+		NamespaceId: m.NamespaceID,
+		WorkflowId:  m.WorkflowID,
+		RunId:       m.RunID,
+
+		// Only the blob is carried; [Decode] derives the parsed proto back from
+		// it. A fixture that sets the struct and not the blob vanishes on
+		// replay.
+		ExecutionInfo:  encodeBlob(m.ExecutionInfoBlob),
+		ExecutionState: encodeBlob(m.ExecutionStateBlob),
+
+		NextEventId:      m.NextEventID,
+		StartVersion:     m.StartVersion,
+		LastWriteVersion: m.LastWriteVersion,
+		DbRecordVersion:  m.DBRecordVersion,
+		Condition:        m.Condition,
+
+		UpsertActivityInfos:       encodeBlobsInt(m.UpsertActivityInfos),
+		DeleteActivityInfos:       sortedKeys(m.DeleteActivityInfos),
+		UpsertTimerInfos:          encodeBlobsStr(m.UpsertTimerInfos),
+		DeleteTimerInfos:          sortedKeys(m.DeleteTimerInfos),
+		UpsertChildExecutionInfos: encodeBlobsInt(m.UpsertChildExecutionInfos),
+		DeleteChildExecutionInfos: sortedKeys(m.DeleteChildExecutionInfos),
+		UpsertRequestCancelInfos:  encodeBlobsInt(m.UpsertRequestCancelInfos),
+		DeleteRequestCancelInfos:  sortedKeys(m.DeleteRequestCancelInfos),
+		UpsertSignalInfos:         encodeBlobsInt(m.UpsertSignalInfos),
+		DeleteSignalInfos:         sortedKeys(m.DeleteSignalInfos),
+		UpsertChasmNodes:          chasm,
+		DeleteChasmNodes:          sortedKeys(m.DeleteChasmNodes),
+		UpsertSignalRequestedIds:  sortedKeys(m.UpsertSignalRequestedIDs),
+		DeleteSignalRequestedIds:  sortedKeys(m.DeleteSignalRequestedIDs),
+
+		NewBufferedEvents:   encodeBlob(m.NewBufferedEvents),
+		ClearBufferedEvents: m.ClearBufferedEvents,
+
+		Tasks:    encodeTasks(m.Tasks),
+		Checksum: encodeBlob(m.Checksum),
+	}, nil
+}
+
+func encodeSnapshot(s *p.InternalWorkflowSnapshot) (*WorkflowSnapshot, error) {
+	chasm, err := encodeChasmNodes(s.ChasmNodes)
+	if err != nil {
+		return nil, err
+	}
+	return &WorkflowSnapshot{
+		NamespaceId: s.NamespaceID,
+		WorkflowId:  s.WorkflowID,
+		RunId:       s.RunID,
+
+		ExecutionInfo:  encodeBlob(s.ExecutionInfoBlob),
+		ExecutionState: encodeBlob(s.ExecutionStateBlob),
+
+		StartVersion:     s.StartVersion,
+		LastWriteVersion: s.LastWriteVersion,
+		NextEventId:      s.NextEventID,
+		DbRecordVersion:  s.DBRecordVersion,
+		Condition:        s.Condition,
+
+		ActivityInfos:       encodeBlobsInt(s.ActivityInfos),
+		TimerInfos:          encodeBlobsStr(s.TimerInfos),
+		ChildExecutionInfos: encodeBlobsInt(s.ChildExecutionInfos),
+		RequestCancelInfos:  encodeBlobsInt(s.RequestCancelInfos),
+		SignalInfos:         encodeBlobsInt(s.SignalInfos),
+		ChasmNodes:          chasm,
+		SignalRequestedIds:  sortedKeys(s.SignalRequestedIDs),
+
+		Tasks:    encodeTasks(s.Tasks),
+		Checksum: encodeBlob(s.Checksum),
+	}, nil
+}
+
+// ---------------------------------------------------------------- pieces
+
+func encodeBlob(b *commonpb.DataBlob) *Blob {
+	if b == nil {
+		return nil
+	}
+	return &Blob{Data: b.Data, Encoding: int32(b.EncodingType)}
+}
+
+func encodeBlobsInt(m map[int64]*commonpb.DataBlob) []*Int64BlobEntry {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]*Int64BlobEntry, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, &Int64BlobEntry{Key: k, Blob: encodeBlob(m[k])})
+	}
+	return out
+}
+
+func encodeBlobsStr(m map[string]*commonpb.DataBlob) []*StringBlobEntry {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]*StringBlobEntry, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, &StringBlobEntry{Key: k, Blob: encodeBlob(m[k])})
+	}
+	return out
+}
+
+func encodeChasmNodes(m map[string]p.InternalChasmNode) ([]*ChasmNodeEntry, error) {
+	if len(m) == 0 {
+		return nil, nil
+	}
+	out := make([]*ChasmNodeEntry, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		node := m[k]
+		if node.CassandraBlob != nil {
+			return nil, ErrCassandraBlob
+		}
+		out = append(out, &ChasmNodeEntry{
+			Key:      k,
+			Metadata: encodeBlob(node.Metadata),
+			Data:     encodeBlob(node.Data),
+		})
+	}
+	return out, nil
+}
+
+// encodeTasks writes the groups in category-id order and preserves the caller's
+// slice order inside a group, which is already key order.
+func encodeTasks(groups map[tasks.Category][]p.InternalHistoryTask) []*TaskGroup {
+	if len(groups) == 0 {
+		return nil
+	}
+	ordered := slices.SortedFunc(maps.Keys(groups), func(a, b tasks.Category) int {
+		return cmp.Compare(a.ID(), b.ID())
+	})
+	out := make([]*TaskGroup, 0, len(groups))
+	for _, category := range ordered {
+		rows := groups[category]
+		group := &TaskGroup{CategoryId: int32(category.ID())}
+		if len(rows) > 0 {
+			group.Tasks = make([]*Task, 0, len(rows))
+		}
+		for _, t := range rows {
+			task := &Task{TaskId: t.Key.TaskID, Blob: encodeBlob(t.Blob)}
+			// A zero fire time travels as an absent field, so that the
+			// immediate/scheduled distinction survives the round trip.
+			if !t.Key.FireTime.IsZero() {
+				task.FireTime = timestamppb.New(t.Key.FireTime)
+			}
+			group.Tasks = append(group.Tasks, task)
+		}
+		out = append(out, group)
+	}
+	return out
+}
+
+// encodeTaskKey carries one tasks.Key, under the same zero-fire-time rule the
+// tasks inside a group follow.
+func encodeTaskKey(k tasks.Key) *TaskKey {
+	out := &TaskKey{TaskId: k.TaskID}
+	if !k.FireTime.IsZero() {
+		out.FireTime = timestamppb.New(k.FireTime)
+	}
+	return out
+}
+
+// sortedKeys is the encode half of the absent-vs-empty rule, inverse to
+// [setOf]: an empty set encodes as an absent field, not a present empty one.
+func sortedKeys[K cmp.Ordered](set map[K]struct{}) []K {
+	if len(set) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(set))
+}

@@ -1,0 +1,85 @@
+---
+paths:
+  - "mutation/**"
+---
+
+# This repo: the WAL's record format
+
+`mutation/` turns one ExecutionStore write request into the bytes a
+`wal.Entry` carries, and back (#11). The generated `Mutation` in
+`mutation.pb.go` is the record's specification — the `.proto` it came from is
+not in this tree — and the type's own doc comment says why the record is a
+hand-filled mirror rather than a reflective codec. What to know before changing any of it:
+
+* **changing the record changes the meaning of every entry already written.**
+  There is no version field and no migration path: a tail written by the
+  previous binary is replayed by this one (#98), so a field whose meaning moved
+  is a tail that decodes into something the writer did not mean. Adding a field
+  is safe, repurposing one is not;
+
+* **the mirror is filled field by field, and the cost is paid by a guard rather
+  than by attention.** A field Temporal adds is a field this package silently
+  omits, so the field-set test walks the real request structs and fails on a
+  field the mirror has no home for. *Which* structs it walks is decided by
+  `kinds.go` rather than by the list: every kind's payload type must have a row,
+  so a kind added without one fails by name instead of being walked by nobody,
+  which is what the two history-task requests were between #142 and #212. A
+  temporal bump that adds a field is expected to fail it — that failure *is* the
+  mechanism, not a broken test;
+
+* **a kind is declared once, and the spokes it can be forgotten in fail by
+  name.** `kinds.go` holds one row per kind — its name, the `Mutation` field it
+  travels in, how to see that field is set, and where its shard id is — and
+  `Kind.String` is driven from it. The field is a *selector*
+  (`func(m *Mutation) any { return &m.Create }`) rather than a name, so a field
+  that is renamed breaks its row at compile time; the guard recovers the name
+  back out of the pointer, by address, for its messages only. `Kind` and
+  `ShardID` stay hand-written fan-outs on purpose (the first is the most-called
+  function in the layer), so the table's job is to *hold them to it*:
+  `kinds_test.go` walks `reflect` over `Mutation` and fails on a field with no
+  row — the one direction Go cannot state, there being no sum type — an
+  accessor reading its neighbour's, and a `Kind` or `ShardID` case that
+  disagrees with its row. #142 added two kinds and had to find every spoke by
+  hand. What the table deliberately does not cover is behaviour — the per-kind
+  switches in fold, check and apply do genuinely different things and keep their
+  own guards — and the invariant all of them share is now
+  `ErrNotExactlyOneRequest` rather than six typed copies of one sentence;
+
+* **blobs are authoritative and the parsed protos are derived.** Where a request
+  holds both (`ExecutionInfo`/`ExecutionInfoBlob`, `ExecutionState`/
+  `ExecutionStateBlob`) only the blob is carried, and `Decode` derives the proto
+  back from it. Upstream builds the two together from one value
+  (`execution_manager.go`), so this is faithful — but it is also why a *fixture*
+  that sets the struct and not the blob survives a fold and vanishes on replay;
+
+* **three things are dropped on purpose**, each with an invariant behind it:
+  `RangeID` on every request that has one, because it is the epoch (I11), it
+  travels with the entry, and a copy inside the payload could disagree with it;
+  the `*NewEvents` slices, because event history stays out of the WAL in v1 (D3)
+  and is written by `AppendHistoryNodes` before the append; and
+  `InternalChasmNode.CassandraBlob`, which is set only under Cassandra —
+  dropping it silently would lose state, so `Encode` **refuses** a mutation that
+  carries one rather than encoding without it;
+
+* **`Encode` is a function of its argument, and that is load-bearing.** Go map
+  iteration is randomized, and one mutation encoded 200 times through an
+  unsorted encoder produced four distinct byte strings — so every collection
+  travels as repeated entries in sorted key order rather than as a proto map.
+  Any comparison of two runs of one stream rests on it (a window may be drained
+  twice after an ambiguous failure), and so would any future dedup of entries. The
+  absent-vs-empty rule is the other half: an empty set encodes as an *absent*
+  field, and an absent field decodes to a nil set — one generic per direction
+  (`sortedKeys`, `setOf`) so the rule is a single edit and not one per key type;
+
+* **the registry is a parameter and not a package default** (`Decode`,
+  `DecodeEntry`). It is the one input that is not a function of the bytes: the
+  same payload decodes on one node and fails on another, because the archival
+  task category exists only where archival is configured. Replay inherits that
+  constraint, which is why `cycle.Deps.Registry` is required and must be the
+  server's own;
+
+* **`DecodeEntry` carries one thing `Decode` does not**: whether the entry's ack
+  was provisional (#93). Sync mode acks before the condition is verified, so the
+  flag rides the payload and replay reads it back to know that a condition
+  failure on that entry is a drop rather than a halt. It is the only field about
+  the *entry* rather than about the request.

@@ -1,0 +1,16 @@
+# The handbook's npm dependencies and the HTML `make handbook` renders from the
+# Markdown beside them. The Markdown is the source; a generated copy in the tree
+# is one that goes stale in silence.
+/docs/handbook/node_modules/
+/docs/handbook/site/
+
+# What `go test -c` and a coverage run leave behind. This module builds no
+# binary of its own, so there is nothing else to name here.
+*.test
+*.out
+
+# Personal Claude Code overrides, which are per-developer rather than per-repo.
+.claude/settings.local.json
+
+*.log
+.DS_Store

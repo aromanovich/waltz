@@ -1,0 +1,105 @@
+Let the functional harness be pointed at a datastore that is neither
+SQL nor Cassandra
+
+Why this patch exists
+=====================
+
+The evidence this repository wants for its layer is upstream's own
+functional suites — real frontend, history and matching, real workers,
+real workflows — running against a custom datastore. Everything that
+takes to boot such a cluster is already exported and already threaded:
+NewTestClusterFactoryWithCustomTestBaseFactory takes a
+PersistenceTestBaseFactory, and newClusterWithPersistenceTestBaseFactory
+hands that base's AbstractDataStoreFactory to the server it starts
+(tests/testcore/test_cluster.go). The harness was built for exactly this
+kind of plugin.
+
+What stands in the way is one line. Every suite in ./tests embeds
+FunctionalTestBase, whose SetupSuite builds its cluster from
+NewTestClusterFactory() (functional_test_base.go) — the no-argument
+constructor, which always builds defaultPersistenceTestBaseFactory.
+That factory switches on the -persistenceType / -persistenceDriver
+flags and panics on anything but SQL or NoSQL/Cassandra:
+
+	panic(fmt.Sprintf("unknown store type: %v", options.StoreType))
+
+So a suite cannot be handed a factory from outside, whatever it is
+composed of: the call site is inside somebody else's SetupSuite, and no
+flag value reaches a store the harness does not know. A test harness is
+never shipped and the suites are upstream's own, so a patched checkout
+is the whole of what this needs — but it does need one.
+
+How it was needed
+=================
+
+Measured rather than argued, on this repository's own module with
+`replace go.temporal.io/server => ./temporal` (ADR 0007):
+
+  * `go build -tags test_dep go.temporal.io/server/tests/testcore`
+    compiles clean with the patch applied. Without `-tags test_dep` the
+    package does not compile at all, patched or not — upstream's own
+    switch for common/testing/testhooks;
+  * a probe package implementing PersistenceTestBaseFactory, assigning
+    it to the new variable and calling NewTestClusterFactory() compiles
+    against the patched checkout, which is the seam in the shape a live
+    harness will use it. Importing
+    common/persistence/persistence-tests to build a *TestBase adds five
+    indirect requirements to this module's go.mod (go-version,
+    json-iterator/go, modern-go/concurrent, modern-go/reflect2,
+    collector/pdata); tests/testcore on its own adds none.
+
+Shape of the patch
+==================
+
+A package-level variable and three lines at the one call site that
+cannot take an argument. It is deliberately not an option on
+FunctionalTestBase and not a parameter: what persistence the harness
+uses is already process-level configuration in this package — cliFlags,
+set from TestMain, read by the same function — and the override sits in
+that same slot. Which suite runs does not get to change it, and neither
+would a flag.
+
+Hooking NewTestClusterFactory rather than SetupSuite is what keeps the
+patch to one file and one function: the other three hardcoded call
+sites (tests/ndc, tests/xdc) are out of this repository's scope and get
+the same treatment for free, without a line each.
+
+Upstreamability
+===============
+
+This is the patch this repository would most like to delete, and the
+way to delete it is a PR: the hook one layer down is already exported
+and public, so upstreaming this is threading the last inch of a seam
+somebody at Temporal already built. Until then it is a patch against a
+vendored checkout that nothing shipped compiles — the guard test at the
+root of this repository asserts exactly that, by package rather than by
+path.
+
+diff --git a/tests/testcore/test_cluster.go b/tests/testcore/test_cluster.go
+index c3a1b384c..64ad5a733 100644
+--- a/tests/testcore/test_cluster.go
++++ b/tests/testcore/test_cluster.go
+@@ -128,8 +128,22 @@ func (f *defaultTestClusterFactory) NewCluster(t *testing.T, clusterConfig *Test
+ 	return newClusterWithPersistenceTestBaseFactory(t, clusterConfig, logger, f.tbFactory)
+ }
+ 
++// CustomPersistenceTestBaseFactory, when set, replaces the persistence test base
++// NewTestClusterFactory would otherwise build from -persistenceType and
++// -persistenceDriver. It is how a datastore implemented outside this repository —
++// an AbstractDataStoreFactory of its own — is put under the functional suites:
++// they reach the harness only through FunctionalTestBase, which builds its
++// cluster from NewTestClusterFactory and so can never be handed a factory
++// through NewTestClusterFactoryWithCustomTestBaseFactory.
++//
++// Set it from TestMain, before any suite runs. It is read once per cluster.
++var CustomPersistenceTestBaseFactory PersistenceTestBaseFactory
++
+ func NewTestClusterFactory() TestClusterFactory {
+-	tbFactory := &defaultPersistenceTestBaseFactory{}
++	var tbFactory PersistenceTestBaseFactory = &defaultPersistenceTestBaseFactory{}
++	if CustomPersistenceTestBaseFactory != nil {
++		tbFactory = CustomPersistenceTestBaseFactory
++	}
+ 	return NewTestClusterFactoryWithCustomTestBaseFactory(tbFactory)
+ }
+ 
