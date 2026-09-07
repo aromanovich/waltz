@@ -19,6 +19,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	p "go.temporal.io/server/common/persistence"
 
+	"github.com/aromanovich/waltz/cold"
 	"github.com/aromanovich/waltz/mutation"
 	"github.com/aromanovich/waltz/verify/basetest"
 	"github.com/aromanovich/waltz/wal"
@@ -27,7 +28,7 @@ import (
 
 // newManager builds a manager over a memwal and a fake applier, in sync mode
 // unless shape says otherwise.
-func newManager(t *testing.T, apply Applier, shape func(*Config)) *Manager {
+func newManager(t *testing.T, apply cold.Applier, shape func(*Config)) *Manager {
 	t.Helper()
 	cfg := Defaults()
 	cfg.Sync = true

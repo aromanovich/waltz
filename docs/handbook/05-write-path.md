@@ -51,8 +51,8 @@ need no row — *the next owner's cycle* and *the operator*.
 | `cycle.Cycle` | one goroutine per (shard, epoch): the accumulator, the drain, the trim, the reads |
 | `fold.Accumulator` | the window — merged requests per dirty workflow, plus the assertions they stand on |
 | `wal.Log` | the log contract; `memwal` is the implementation this tree ships |
-| `cycle.Applier` | one drain, one transaction — the deployment's own, and the layer's only write door |
-| `the cold store` | the deployment's persistence implementation, on the other side of that door |
+| `cold.Applier` | one drain, one transaction — the layer's only write door; `memcold` is the implementation this tree ships |
+| `the cold store` | a persistence implementation, on the other side of that door: `memcold` here, a deployment's own otherwise |
 
 Two persistent positions run through the whole chapter. **commitSeqno** is the last seqno acked into
 the log. **appliedSeqno** is the last seqno a drain committed — a watermark in the cold store, keyed
@@ -127,7 +127,7 @@ Some later drain — the one a successor write trips, or the age tick — commit
 sequenceDiagram
   participant CY as cycle.Cycle
   participant ACC as fold.Accumulator
-  participant AP as cycle.Applier
+  participant AP as cold.Applier
   participant CS as the cold store
 
   Note over CY: a drain trigger fires — 256 mutations, or 256 KiB, or 5 seconds
@@ -157,7 +157,7 @@ One drain is one transaction. This is what it does, in order.
 sequenceDiagram
   participant CY as cycle.Cycle
   participant ACC as fold.Accumulator
-  participant AP as cycle.Applier
+  participant AP as cold.Applier
   participant CS as the cold store
 
   CY->>CY: resolveStalled — re-ask the watermark if a previous drain is unresolved
@@ -397,7 +397,7 @@ every other failure it could have reported.
 ```mermaid
 sequenceDiagram
   participant CY as cycle.Cycle
-  participant AP as cycle.Applier
+  participant AP as cold.Applier
   participant CS as the cold store
   participant NX as the next owner's cycle
 
@@ -432,7 +432,7 @@ a stopped shard with the log intact.
 ```mermaid
 sequenceDiagram
   participant CY as cycle.Cycle
-  participant AP as cycle.Applier
+  participant AP as cold.Applier
   participant CS as the cold store
   participant OP as the operator
 
@@ -471,7 +471,7 @@ class the recovery rule exists for.
 ```mermaid
 sequenceDiagram
   participant CY as cycle.Cycle
-  participant AP as cycle.Applier
+  participant AP as cold.Applier
   participant CS as the cold store
 
   CY->>AP: Apply(shard, epoch, batch)

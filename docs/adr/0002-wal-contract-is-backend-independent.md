@@ -4,7 +4,10 @@ Date: 2026-07-26
 
 ## Status
 
-Accepted. This is the decision the library is built on: waltz implements no log.
+Accepted. This is the decision the library is built on: the log a deployment runs on is not this
+library's, and what this library has is the contract. Narrowed by
+[ADR 0010](0010-the-log-appends-one-entry-at-a-time.md); mirrored at the other seam by
+[ADR 0011](0011-each-seam-ships-one-implementation.md).
 
 ## Context
 
@@ -66,3 +69,12 @@ safekeeper-like quorum log — is swappable without touching invariants I2–I5 
 replay code. A backend that provides them awkwardly is what [ADR
 0010](0010-the-log-appends-one-entry-at-a-time.md) is about: the contract narrowed
 rather than grew an exception.
+
+**The shape this decision established is now the shape of both seams.** "A contract, one in-process
+implementation of it that is a backend rather than a double, and the doubles kept separately for
+tests that need a backend to misbehave" was written here for the log and is
+[ADR 0011](0011-each-seam-ships-one-implementation.md)'s rule for the cold store as well. The one
+thing that did not carry across is the conformance suite: `wal/waltest` exists because `wal.Log` is
+this library's own invention, where what a cold store owes a Temporal server is Temporal's to state,
+and it states it as four exported suites. So the cold seam ships a store that passes somebody else's
+suite, and exports none of its own — which 0011 records as an open gap rather than as symmetry.

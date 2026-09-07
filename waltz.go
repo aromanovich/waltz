@@ -1,7 +1,7 @@
 // Package waltz puts a write-ahead log in front of a Temporal history shard's
 // cold store, so that many mutations are acked into the log and folded into one
 // cold-store transaction. It implements no persistence itself: the log is a
-// [wal.Log] and the cold store is a [cycle.Applier] with a [cycle.Watermarker],
+// [wal.Log] and the cold store is a [cold.Applier] with a [cold.Watermarker],
 // all three the caller's, and the only log shipped here is wal/memwal, in
 // memory.
 //
@@ -37,6 +37,7 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 	"go.temporal.io/server/temporal"
 
+	"github.com/aromanovich/waltz/cold"
 	"github.com/aromanovich/waltz/cycle"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/walmetrics"
@@ -119,14 +120,14 @@ func checkPolicy(policy cycle.Policy) error {
 // the point of the type: this library implements none of the three. All three
 // are seams the layer is meant to be answerable at without a cluster —
 // wal/memwal is a whole implementation of the WAL contract (ADR 0002), and
-// [cycle.Applier] exists so a drain's outcome can be varied without one. A
+// [cold.Applier] exists so a drain's outcome can be varied without one. A
 // caller that wants the intercept path in process reaches it here rather than
 // by building a second registry, which is the one thing this package asks
 // callers not to do.
 type Backends struct {
 	Log       wal.Log
-	Writer    cycle.Applier
-	Recoverer cycle.Watermarker
+	Writer    cold.Applier
+	Recoverer cold.Watermarker
 }
 
 // Compose is the one graph every process running intercept mode builds. Its

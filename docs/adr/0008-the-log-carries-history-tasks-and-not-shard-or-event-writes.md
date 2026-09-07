@@ -113,7 +113,7 @@ transaction.** A store that catches an intermediate-data-materialization limit a
 delete in pages cannot do so as a statement inside somebody else's transaction, because the pages
 would be separate transactions. The exposure is the same size as the standalone call's — the same
 range, the same predicate — but where that one degrades into paging, this one fails the drain it
-rides and halts the shard. Named rather than closed, and it is a property of the `cycle.Applier`
+rides and halts the shard. Named rather than closed, and it is a property of the `cold.Applier`
 a deployment supplies rather than of this library.
 
 **Every task write and every queue checkpoint is now answered by the shard's apply loop**, which

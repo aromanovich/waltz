@@ -4,8 +4,12 @@ waltz puts a write-ahead log in front of a Temporal history shard's cold store, 
 mutable-state writes are acknowledged into the log and folded into one cold-store transaction. It
 ships as a persistence decorator: you compose it over the plugin that owns your cold data and hand
 the result to `temporal.WithCustomDataStoreFactory`, the same door a custom persistence backend
-already goes through. It implements no persistence itself — the log and the cold store are both the
-caller's, and the only log shipped here is `wal/memwal`, in memory.
+already goes through.
+
+It has two seams — the log and the cold store — and each ships one implementation that runs in this
+process: `wal/memwal` and `cold/memcold`. A deployment replaces both. What the two shipped ones buy
+is that a Temporal server composed over waltz boots, serves and runs a workflow with nothing
+installed: no cluster, no container, no port, no cgo.
 
 The book is [`docs/handbook`](docs/handbook). This page is the shape of the thing; the handbook is
 what it promises and why.
@@ -38,19 +42,26 @@ import (
 	"go.temporal.io/server/temporal"
 
 	"github.com/aromanovich/waltz"
+	"github.com/aromanovich/waltz/cold/memcold"
 	"github.com/aromanovich/waltz/cycle"
 	"github.com/aromanovich/waltz/wal/memwal"
 )
 
 func main() {
-	// Your cold store, behind the two interfaces waltz reaches it through.
-	cold := newColdStore() // cycle.Applier and cycle.Watermarker
+	// The cold store. memcold is the one shipped here — Temporal's own SQL
+	// persistence over a database in this process — and a deployment puts its
+	// own cold.Applier and cold.Watermarker here instead.
+	store, release, err := memcold.New("active")
+	if err != nil {
+		panic(err)
+	}
+	defer release()
 
 	layer, err := waltz.Compose(
 		waltz.Backends{
-			Log:       memwal.New(), // your wal.Log; memwal is the only one shipped
-			Writer:    cold,
-			Recoverer: cold,
+			Log:       memwal.New(), // your wal.Log; memwal is the one shipped here
+			Writer:    store,        // cold.Applier
+			Recoverer: store,        // cold.Watermarker
 		},
 		cycle.Fixed(cycle.Defaults()),
 		waltz.DefaultTaskCategories(),
@@ -61,10 +72,15 @@ func main() {
 		panic(err)
 	}
 
-	// base is the persistence plugin that owns the cold data.
-	var base client.AbstractDataStoreFactory = newPlugin()
+	// base is the persistence factory that owns the cold data — memcold's here,
+	// your plugin's otherwise.
+	var base client.AbstractDataStoreFactory = memcold.NewAbstractDataStoreFactory(store)
 
 	s, err := temporal.NewServer(
+		// The server's own config must name a custom datastore in
+		// Persistence.DataStores; that naming is the whole of how the factory
+		// below enters its persistence graph.
+		temporal.WithConfig(cfg),
 		temporal.WithCustomDataStoreFactory(layer.AbstractFactory(base)),
 	)
 	if err != nil {
@@ -76,7 +92,8 @@ func main() {
 	defer func() {
 		_ = s.Stop()
 		// After the server has stopped: the shutdown drain still needs a store
-		// to write to.
+		// to write to. `defer release()` above runs after this one, which is the
+		// order that leaves the drain a database.
 		layer.Shutdown(context.Background(), 30*time.Second)
 	}()
 }
@@ -84,8 +101,10 @@ func main() {
 
 `Compose` opens nothing, reaches nothing and takes no context — everything that talks to storage
 happens while the backends are built, and whatever they hold stays yours and must outlive the
-layer. `Backends` is a parameter and not something `Compose` builds, which is the point: this
-library implements none of the three.
+layer. `Backends` is a parameter and not something `Compose` builds, and that stays true now that
+two of the three have a shipped implementation: `memcold.New` is called by the caller, above, and a
+composition that reached for it itself would be a second configuration of the store with nothing to
+reconcile it against the one the server was given.
 
 The lifecycle brackets the server's. Composing first means a policy whose tail budget does not add
 up stops the binary rather than a node. Shutting down last means the drain of every window still
@@ -100,6 +119,23 @@ composition with the factory that carries it. `Layer.Options()` is the same thin
 for a caller building `wrapper.NewExecutionStore` or `wrapper.NewShardStore` directly.
 
 ## The two seams
+
+waltz sits between two things it does not own: the log an acknowledgement lands in, and the cold
+store a drain lands on. Both are interfaces, both have exactly one implementation in this tree, and
+both are meant to be replaced.
+
+| | the contract | shipped here | what judges an implementation of it |
+|---|---|---|---|
+| the log | `wal.Log` | `wal/memwal` — the contract in process memory | `wal/waltest`, this repository's own conformance suite: eighteen cases you run against your backend |
+| the cold store | `cold.Applier`, `cold.Watermarker` | `cold/memcold` — Temporal's own SQL persistence over a database in this process | Temporal's four exported persistence suites, which `memcold` runs unmodified |
+
+The rows are not quite mirror images, and the difference is worth having before reading either. The
+log's contract is waltz's own invention, so waltz owes it a suite and ships one. The cold store's is
+Temporal's `ExecutionStore` plus one method waltz invented, so what a cold store owes is mostly
+Temporal's to state — and Temporal states it, as four suites it exports. waltz therefore ships no
+conformance suite at this seam, and that is a real gap rather than a symmetry: **nothing exported
+from here judges somebody else's `cold.Applier`.** What is written down instead is the four
+obligations below, and the worked example of all four is `cold/memcold`.
 
 ### The WAL backend: `wal.Log`
 
@@ -138,7 +174,7 @@ two writers contending for one shard. It asserts external behaviour of `wal.Log`
 no backend. Beside it is `waltest.NewFaulty`, which wraps a log so that a chosen call fails or
 blocks instead of reaching it — for driving what the layer above does when a log misbehaves.
 
-### The cold store: `cycle.Applier` and `cycle.Watermarker`
+### The cold store: `cold.Applier` and `cold.Watermarker`
 
 ```go
 type Applier interface {
@@ -150,10 +186,47 @@ type Watermarker interface {
 }
 ```
 
-**waltz ships no production implementation of either.** `verify/coldtest` is the in-memory double
-the suites here compose against: it records what a drain carried and what watermark it moved, and
-interprets nothing, because what a folded batch *means* has no specification apart from the
-incumbent store's behaviour.
+**The implementation shipped here is `cold/memcold`, and it is Temporal's own store.** It runs
+Temporal's SQL persistence over a SQLite database that lives in this process and dies with it —
+`modernc.org/sqlite`, pure Go, so no cgo, no container, no port and no file. `memcold.Store` embeds
+the `persistence.ExecutionStore` that `sql.NewFactory` vends, so the 28 methods, the schema they
+were written against, the row layouts and the error classes are upstream's, unmodified. It shadows
+none of them. Beside them it adds exactly what waltz needs and Temporal has no method for:
+
+* `Apply` — the folded window's single transaction. `persistence.ExecutionStore` has nowhere to
+  declare a transaction spanning many workflows, so it is opened on the `sqlplugin.DB` handle the
+  store keeps beside the embedded interface. That handle is the fact the whole design rests on.
+* `Watermark` and `SetWatermark` — over one table of waltz's own, `waltz_watermarks`, created
+  beside the plugin's schema rather than borrowed from a column the server also writes.
+* `GetCurrentExecutionWithLastWriteVersion` — the versioned current-row read described under "One
+  thing the base store owes" below, which upstream's `GetCurrentExecution` computes and then
+  discards for want of a field to hold it in.
+
+**The decision behind that is embedding rather than reimplementation, and it is the one to
+understand before proposing anything else here.** A history shard's store is the hardest thing in
+this tree to get right and the easiest to get plausibly wrong. Writing 28 correct methods in order
+to obtain one new one is a cost with no payer: the new method is the only part waltz has an opinion
+about, and the other 28 would be a second, worse copy of code that already exists, needing its own
+schema, its own suites and its own version bumps. Embedding buys them for free and keeps them
+upstream's across a Temporal bump.
+
+**What judges it is Temporal's own suites, and no suite of ours.** `cold/memcold/conformance_test.go`
+runs `tests.NewShardSuite`, `tests.NewExecutionMutableStateSuite`,
+`tests.NewExecutionMutableStateTaskSuite` and `tests.NewHistoryEventsSuite` from
+`go.temporal.io/server/common/persistence/tests` — 75 subtests — exactly as they judge a plugin. A
+suite written here would be this repository's opinion of what a store owes; those are the server's.
+
+They judge the inherited surface and not `Apply`, which is not a method they know about. What judges
+`Apply` is `cold/memcold/apply_test.go` — seven cases over the transaction's ordering, its refusals,
+its attribution and its rollback — and `verify/acceptance`'s both-seams-real run, which drives a
+generated stream through `memwal` and `memcold` at the shipped window and then asks the database
+what it holds.
+
+`verify/coldtest` is still here and is still a double: one value satisfying both interfaces, which
+records what a drain carried and interprets nothing. It is what a suite uses when it needs to *vary*
+a drain's outcome: `coldtest.Refusing(err)` fails every drain with the error a test chose, which
+is how a suite reaches the refused, the shard-lost and the ambiguous classes without a store that
+can be asked to misbehave.
 
 What an implementer owes the contract:
 
@@ -193,7 +266,33 @@ hold. So the `ExecutionStore` waltz decorates must also answer
 `GetCurrentExecutionWithLastWriteVersion` (`baserow.Store`). A store that cannot is refused at
 construction with `baserow.ErrNoVersionedRead`, where the server is still starting and can be told
 what is missing, rather than serving a mode it can confirm a condition under but never refuse it.
-Passthrough does not need it.
+Passthrough does not need it. `memcold` answers it; a plugin that does not is a plugin to extend,
+and the extension is one `SELECT` that keeps a column upstream already reads.
+
+## A real server, over both seams, with nothing installed
+
+`verify/e2e` boots a Temporal server — frontend, history, matching and worker, all four services in
+the test process — over `memwal` and `memcold`, registers a namespace through the frontend, and runs
+a real workflow with a real activity through the SDK. It needs no cluster, no container, no fixed
+port, no cgo and no build tag: the ports come from the OS, the databases are in memory, and the
+whole thing is `go test ./verify/e2e/`.
+
+It runs twice. `TestAWorkflowRunsThroughTheLayer` hands the server the layer's factory;
+`TestAWorkflowRunsWithTheLayerOutOfThePath` hands it the same store bare. Both compose a layer, and
+that is what makes the control worth having — the passthrough arm's claim is that the layer it
+composed saw *nothing*, which is a claim a run with no layer at all could not make. The green
+workflow is the weaker half of both: a layer that quietly fell out of the path completes the same
+workflow just as fast. So each arm ends in a `verify/witness` claim over the layer's own counters —
+shards acquired through the layer, mutations acked, drains committed, history tasks written, task
+pages merged, mutation kinds seen — and the intercept arm then reads each shard's watermark out of
+the database, so a run claiming a drain committed and a store holding nothing cannot both be
+believed.
+
+**What it does not prove.** The database is in memory and dies with the process, so nothing here is
+a durability claim. Nothing is killed, so nothing is a crash-recovery claim — replay is exercised
+over an in-process log by `cycle`'s own tests and by no handover between two processes. One
+workflow on four shards is not load, and no number this suite produces is a performance claim about
+anything.
 
 ## Configuration
 
@@ -217,6 +316,8 @@ fit the node's tail budget. [Chapter 08](docs/handbook/08-configuration.md) is e
 | `wal` | the log contract and its errors |
 | `wal/memwal` | the log in process memory — the one backend shipped |
 | `wal/waltest` | the conformance suite for the contract, and `Faulty` |
+| `cold` | the cold store contract: `Applier`, `Watermarker`, and the four things an implementation owes |
+| `cold/memcold` | that contract over Temporal's own SQL persistence, on a database in this process — the one cold store shipped |
 | `cycle` | the state machine: one goroutine per (shard, epoch) owning the window, the drain, the apply, the replay, the trim and the three reads, so "who is touching this shard" has one answer |
 | `cycle/window`, `cycle/tailstate`, `cycle/trim` | the window's size and age; the tail's arithmetic, which is what the hard bounds bound; the lazy deletion of entries the cold store already holds |
 | `fold` | the compaction: per dirty workflow, one merged request plus the assertions it stands on |
@@ -224,7 +325,7 @@ fit the node's tail budget. [Chapter 08](docs/handbook/08-configuration.md) is e
 | `apply` | what a drain's outcome means: the five classes, and the errors that carry them. It writes nothing |
 | `baserow` | the cold store's two pre-window mutable-state reads, as three packages that may not name each other need them |
 | `walmetrics` | the layer's numbers, emitted through the server's own `metrics.Handler` — which arrives after the layer is composed, hence the late handover |
-| `verify/...` | what judges the layer: the acceptance suites, the guards, the witness, the generators, and the in-memory doubles (`coldtest`, `basetest`, `coldtasks`) |
+| `verify/...` | what judges the layer: the acceptance suites, the end-to-end server run (`e2e`), the guards, the witness, the generators, and the in-memory doubles (`coldtest`, `basetest`, `coldtasks`) |
 
 The split is one-way: nothing outside `verify/` imports it in a non-test file, so what the library
 ships and what judges it cannot be confused for each other.
@@ -232,22 +333,46 @@ ships and what judges it cannot be confused for each other.
 ## Status
 
 This is a materialisation of a long research prototype, and it is worth being exact about what came
-across. The layer's logic came across whole, with its test suites: `go test ./...` is green with
-nothing installed — no cluster, no container, no build tag.
+across and what has been built since. The layer's logic came across whole, with its test suites, and
+both seams now have an implementation in the tree: `go test ./...` is green with nothing installed —
+no cluster, no container, no port, no cgo, no build tag — and that run includes a Temporal server
+booting over waltz and completing a workflow.
 
-What did not come across is every backend that needed one. The prototype ran the `wal.Log` contract
-against five real logs and the cold store against a real Temporal persistence plugin; none of them
-is here, because none of them is this library. What is here in their place is the contract, the
-conformance suite that judges an implementation of it, and one in-memory backend that passes it.
+What is established, in order of how much it says:
 
-So the evidence this repository can produce for itself is the evidence a library can: the contracts
-hold, the layer above them does what the suites say, and the seams are answerable without a
-cluster. The evidence for a *deployment* is a deployment's:
-[chapter 15](docs/handbook/15-the-limits-of-the-evidence.md) is the honest boundary of what the
-green suites claim, and [`patches/`](patches/README.md) holds the fifteen-line patch that puts a
-composition over waltz under upstream Temporal's own functional suites — real frontend, history and
-matching, real workflows — which is the strongest evidence available from outside a production
-cluster.
+* a real server, composed over waltz the production way, acquires its shards through the layer,
+  writes its mutable state into the log, drains it into a database and completes a workflow — with
+  a passthrough control run beside it and a witness over the layer's own counters
+  (`verify/e2e`);
+* a folded window, driven at volume over both real seams, leaves a real Temporal schema holding
+  exactly what the batches said it should, including when the shard's epoch moves out from under a
+  running cycle (`verify/acceptance`);
+* the cold store passes Temporal's own four persistence suites (`cold/memcold`);
+* the log satisfies the five guarantees, and `wal/waltest` would say the same of any implementation
+  a deployment hands it;
+* the fold folds a hundred thousand generated mutations without losing one, with the control that
+  makes its collapse ratio a measurement rather than a number.
+
+What is **not** established, and cannot be from inside this repository:
+
+* **nothing here is durable.** Both shipped backends live in one process's memory and die with it.
+  No fsync, no network and no quorum has ever been in the path of anything in this tree;
+* **no process has ever been killed.** `verify/checker` is the judge written for a run under faults
+  and it has no harness here, because a harness needs processes and processes need storage. Replay
+  is exercised in process; a real handover between two owners on two machines is not;
+* **no backend has been run under load**, and no number produced here is a performance claim.
+  Whether a log answers sooner than a cold store would is a property of that pair, measured on the
+  cluster it runs on;
+* **nothing judges a fold against a store that was not folded for.** That needs a differential
+  oracle — one stream applied twice, sequentially and folded, the two stores required to end
+  identical — and an oracle needs two real cold stores.
+
+[Chapter 15](docs/handbook/15-the-limits-of-the-evidence.md) is that boundary in full, entry by
+entry, with which entries are measurements nobody has taken and which are the shape of a decision.
+[`patches/`](patches/README.md) holds the fifteen-line patch that puts a composition over waltz under
+upstream Temporal's own functional suites against a deployment's real store — wider coverage than
+`verify/e2e`, at the price of a patched checkout, and the strongest evidence available from outside
+a production cluster.
 
 Start with the handbook: [`docs/handbook`](docs/handbook) is the reference (01–11) and the
 reasoning (12–15). [`docs/adr`](docs/adr) holds the decisions somebody will otherwise try to

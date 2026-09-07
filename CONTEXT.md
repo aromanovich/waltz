@@ -255,10 +255,12 @@ linear in generations and in nothing else.
 _Avoid_: round, iteration (neither names the kill that makes it evidence)
 
 **Cold store (холодное хранилище)**:
-Whatever the caller plugs in behind `cycle.Applier` and `cycle.Watermarker` —
-the permanent target of apply, regardless of which WAL backend is in use. This
-library implements none, and `verify/coldtest` is the in-memory double the
-suites here judge against.
+Whatever the caller plugs in behind `cold.Applier` and `cold.Watermarker` —
+the permanent target of apply, regardless of which WAL backend is in use. No
+package of the layer implements one. `cold/memcold` is the one shipped here —
+Temporal's own SQL persistence over a database in this process, judged by
+Temporal's own persistence suites — and `verify/coldtest` is the double beside
+it, for a suite that has to make a drain fail.
 _Avoid_: main storage, base (overloaded)
 
 **WAL backend**:

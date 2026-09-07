@@ -15,12 +15,21 @@ change that trades it away has misunderstood what is being optimised.
 ## What this is
 
 waltz puts a write-ahead log in front of a Temporal history shard's cold store.
-It implements **no persistence**: both seams are the caller's.
+Both seams are the caller's in production, and each has **one** implementation
+here, running in this process:
 
-* the log is a `wal.Log`. The only implementation shipped here is `wal/memwal`,
-  in memory; `wal/waltest` is the conformance suite an author of a real one runs.
-* the cold store is a `cycle.Applier` plus a `cycle.Watermarker`. Nothing here
-  implements one; `verify/coldtest` is the in-memory double the suites use.
+* the log is a `wal.Log`; `wal/memwal` is the contract in memory, and
+  `wal/waltest` is the conformance suite an author of a real one runs.
+* the cold store is a `cold.Applier` plus a `cold.Watermarker`; `cold/memcold`
+  is Temporal's own SQL persistence over an in-process SQLite database, embedded
+  rather than written, with the folded window's transaction added beside the 28
+  inherited methods. Temporal's own four persistence suites judge it.
+  `verify/coldtest` is still the double, for suites that need to vary a drain's
+  outcome.
+
+That pair is why a Temporal server boots over waltz in `go test` with nothing
+installed (`verify/e2e`), and it is not a durability claim: both die with the
+process.
 
 It is consumed the way Temporal's own custom-persistence option is:
 
@@ -32,6 +41,10 @@ temporal.WithCustomDataStoreFactory(wrapper.NewAbstractDataStoreFactory(base, la
 
 The layer packages sit at the **module root** and `verify/` holds what judges
 them ([ADR 0009](docs/adr/0009-the-tree-separates-the-layer-from-what-judges-it.md)).
+`cold/memcold` is the one thing at the root that is neither: it is a *store*,
+sitting under the cold seam, so nothing of the layer may import it and it may
+import nothing of the layer
+([`.claude/rules/cold.md`](.claude/rules/cold.md)).
 The root package `waltz` is the front door — `Compose`, the `wal` configuration
 section, the dynamic-config settings, `AbstractFactory` — and nothing of the
 layer may import it. The direction the layer reads in is
@@ -50,25 +63,30 @@ make check           # both
 go test ./wal/...    # the contract and its conformance suite; milliseconds
 ```
 
-There is no `-p 1` and its absence is deliberate: the only log is in memory and
-the cold store under every test is a double, so the packages share nothing.
-`WAL_ACCEPTANCE_MUTATIONS` shortens or lengthens `verify/acceptance`'s stream,
-which is the longest thing in the run.
+There is no `-p 1` and its absence is deliberate: every backend is in this
+process and every database is keyed by a name minted per store, so the packages
+share nothing. `WAL_ACCEPTANCE_MUTATIONS` shortens or lengthens
+`verify/acceptance`'s stream. `verify/e2e` is the longest thing in the run — it
+starts four Temporal services twice — and `go test ./verify/e2e/` is how to run
+it alone.
 
 Three things a green run does **not** say, and they are worth having before you
 quote one:
 
-* **it is not "the server works".** Nothing here boots a Temporal cluster. Read
-  a green run as "the configuration a person writes composes a layer that
-  writes"; the strongest evidence available is upstream's own functional suites
+* **it is not "the server is production-ready".** A server *does* boot here and
+  complete a workflow over the layer, which is more than the tree could say
+  before — but over a database that dies with the process, with nothing killed
+  and one workflow of load. The wider claim is upstream's own functional suites
   over a composition, which `patches/README.md` makes reachable and a deployment
   runs.
 * **it says nothing about cost.** Whether a log answers sooner than the cold
   store would is a property of that log, measured on the cluster it runs on. A
   number produced here would describe a laptop.
-* **it says nothing about a real cold store.** The double records what a drain
-  carried; what a folded batch *means* to a particular store is that store's
-  answer, judged by driving one stream sequentially and one folded and comparing.
+* **it says nothing about a fold against a store that was not folded for.**
+  `cold/memcold` is a real store and the acceptance lands real batches in it, so
+  a batch that contradicts the schema is now caught. What is still missing is
+  the differential oracle — one stream applied twice, sequentially and folded,
+  the two required to end identical — which needs two real cold stores.
 
 The handbook's
 [15-the-limits-of-the-evidence.md](docs/handbook/15-the-limits-of-the-evidence.md)
@@ -103,9 +121,10 @@ has the three places such a rule may live instead, in the order to try them.
   `paths:` header so it loads when you touch that directory and costs nothing
   otherwise. This is where "what to know before changing this" lives, beside the
   code it is about rather than here.
-* [`docs/adr/`](docs/adr/) — the six decisions somebody will otherwise try to
+* [`docs/adr/`](docs/adr/) — the eight decisions somebody will otherwise try to
   reverse: the log contract, in-process, the configuration's home, the log's
-  boundary, the tree, one entry per append;
+  boundary, the tree, one entry per append, one shipped implementation at each
+  seam, and the cold store embedding Temporal's own persistence;
 * [`docs/handbook/`](docs/handbook/README.md) — the book. 01–11 are the
   reference (components, contracts, the paths, the keys, the series, the
   suites); 12–15 are the deep dives (what a write cost before the layer, the

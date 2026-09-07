@@ -54,7 +54,7 @@ What to know before changing it:
   That difference is one row of `readRoute` (below), which is where the whole
   question "who may answer this read while the shard changes hands" lives;
 * the cold store is reached through a **thunk the wrapper passes**, never named
-  here — the store is the caller's, behind `cycle.Applier`, and `wrapper` still
+  here — the store is the caller's, behind `cold.Applier`, and `wrapper` still
   may not name one. The routing rule for reads turns on the
   *tail* and not on the state — an empty tail is passthrough in either halt
   (which is what keeps sync mode exactly as it was), a non-empty one on

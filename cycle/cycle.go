@@ -3,8 +3,9 @@
 // three reads, so that "who is touching this shard" has one answer.
 //
 // It names no cold store (apply owns that boundary); the store is reached only
-// through [Applier], [Watermarker] and the closures a caller passes in. The
-// states exist because ownership loss is discovered rather than announced: a
+// through [cold.Applier], [cold.Watermarker] and the closures a caller passes
+// in. The states exist because ownership loss is discovered rather than
+// announced: a
 // shard close makes no persistence call. [Chapter 06] is what this implements.
 //
 // [Chapter 06]: ../docs/handbook/06-shard-lifecycle.md
@@ -25,6 +26,7 @@ import (
 
 	"github.com/aromanovich/waltz/apply"
 	"github.com/aromanovich/waltz/baserow"
+	"github.com/aromanovich/waltz/cold"
 	"github.com/aromanovich/waltz/cycle/tailstate"
 	"github.com/aromanovich/waltz/cycle/trim"
 	"github.com/aromanovich/waltz/cycle/window"
@@ -212,8 +214,8 @@ func (c Config) CheckBudget() error {
 // cycle owns none of them.
 type Deps struct {
 	Log       wal.Log
-	Writer    Applier
-	Recoverer Watermarker
+	Writer    cold.Applier
+	Recoverer cold.Watermarker
 	Logger    log.Logger
 	// Registry is required ([ErrNoRegistry]): replay decodes a payload's task
 	// groups through it and an unknown category id fails the replay. It must be
@@ -222,19 +224,6 @@ type Deps struct {
 	Registry tasks.TaskCategoryRegistry
 	// Metrics is where the numbers go; nil is the noop emitter.
 	Metrics *walmetrics.Emitter
-}
-
-// Applier is the write path one drain goes through, and the caller's to supply:
-// waltz writes to no cold store of its own. An interface so a test can vary a
-// drain's outcome without a cluster.
-type Applier interface {
-	Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error
-}
-
-// Watermarker is the recovery half of the same seam, and the only read this
-// package makes of the cold store.
-type Watermarker interface {
-	Watermark(ctx context.Context, shard wal.ShardID) (wal.Seqno, bool, error)
 }
 
 // Stats is what the cycle knows about itself. Read it through [Cycle.Stats],
@@ -970,7 +959,7 @@ func (c *Cycle) drain(ctx context.Context, s *state, cause drainCause) error {
 	case settlesForward:
 	case asksTheWatermark:
 		// The watermark is the only witness; never re-derive the answer from
-		// base versions ([Watermarker]'s whole point). A nil here is a drain
+		// base versions ([cold.Watermarker]'s whole point). A nil here is a drain
 		// that had committed after all, so it settles forward below.
 		if rerr := c.resolve(ctx, s, seqno, err); rerr != nil {
 			// Unreadable, which is not an answer: the seqno becomes the tail's

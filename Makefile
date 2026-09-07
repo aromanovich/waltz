@@ -8,10 +8,11 @@ GOLANGCI := github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 MODERNIZE := golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.23.0
 
 # No `-p 1` here, and its absence is the deliberate half: nothing in this module
-# wants a cluster, a container or a port. The only log is in memory and the cold
-# store under every test is a double, so the packages share nothing and run
-# concurrently. `-count=1` is what keeps a green run from being yesterday's
-# cache.
+# wants a cluster, a container or a fixed port. Every backend lives in the test
+# process and every database is keyed by a name minted per store, so the packages
+# share nothing and run concurrently — including verify/e2e, whose Temporal
+# services take ports from the OS. `-count=1` is what keeps a green run from
+# being yesterday's cache.
 .PHONY: test
 test: ## Run every test in the module (default target)
 	go test ./... -count=1

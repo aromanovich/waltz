@@ -37,11 +37,13 @@ Five seams let the component on either side be replaced or run without a cluster
 | the log | `wal.Log` | `memwal` here; a deployment's own log otherwise | `cycle` |
 | one entry | `mutation.Mutation` + `Encode`/`Decode` | — (a value type and a codec) | `wrapper`, `cycle` |
 | the server's stores | `wrapper.ShardLayer` (four faces) | `cycle.Manager` | `wrapper.ExecutionStore`, `wrapper.ShardStore` |
-| the cold store | `cycle.Applier`, `cycle.Watermarker` | nothing here; a deployment's own, and `verify/coldtest` in tests | `cycle` |
-| the two pre-window reads | `baserow.Store` | the base `ExecutionStore` the wrapper decorates, and `verify/basetest` in tests | `wrapper`, `cycle` |
+| the cold store | `cold.Applier`, `cold.Watermarker` | `memcold` here; a deployment's own store otherwise, and `verify/coldtest` where a suite has to vary a drain's outcome | `cycle` |
+| the two pre-window reads | `baserow.Store` | `memcold` here; the base `ExecutionStore` the wrapper decorates otherwise, and `verify/basetest` in tests | `wrapper`, `cycle` |
 
-Two of the five have no production implementation in this tree at all, and that is the library. What
-waltz is, exactly, is everything between them.
+Two of the five are storage, and each has exactly one implementation in this tree, running in this
+process: `wal/memwal` and `cold/memcold`. Neither is a double — that is what makes a green suite
+above them mean something — and neither is durable, which is where their evidence stops. A
+deployment replaces both. What waltz is, exactly, is everything between them.
 
 The interfaces the server's stores talk to, and the one type that satisfies all four faces at once:
 
@@ -559,7 +561,7 @@ config, so nothing may be keyed on it.
 
 ## `apply` — what a drain's outcome demands
 
-The drain itself is a deployment's. `cycle.Applier` is one method —
+The drain itself is a deployment's. `cold.Applier` is one method —
 `Apply(ctx, shard, epoch, batch) error` — and what it must do is write the batch's merged requests,
 the epoch compare-and-swap and the applied watermark in **one all-or-nothing transaction**. Nothing
 here can check that, and every invariant downstream of the ack rests on it.
@@ -653,7 +655,7 @@ One `Diverged` names one row, with four parts:
 
 ### The recovery rule the watermark exists for
 
-`cycle.Watermarker` is one method — `Watermark(ctx, shard) (wal.Seqno, bool, error)` — and it is the
+`cold.Watermarker` is one method — `Watermark(ctx, shard) (wal.Seqno, bool, error)` — and it is the
 only read this layer makes of the cold store outside a drain. The rule it exists for is: **after an
 unknown outcome, read `appliedSeqno` first, in every outcome.**
 
@@ -671,7 +673,44 @@ on mutated state.
 One obligation on the composition rather than on either interface: **the `Applier` and the
 `Watermarker` must be the same cold store.** A writer moving one watermark while a watermarker reads
 another answers every ambiguous drain with "it did not commit", which halts a shard over a drain that
-had written. `verify/coldtest` is one value satisfying both for exactly that reason.
+had written. `memcold.Store` and `verify/coldtest.Cold` are each one value satisfying both, for
+exactly that reason.
+
+### The implementation shipped at this seam
+
+`cold/memcold` is the one cold store in this tree, and it is Temporal's own. `memcold.Store` embeds
+the `persistence.ExecutionStore` that `sql.NewFactory` vends over a SQLite database living in this
+process — `modernc.org/sqlite`, pure Go, so no cgo, no container, no port and no file — and shadows
+none of that store's 28 methods. The schema, the row layouts, the serialisation and the error
+classes are upstream's. Beside them it adds the three things Temporal has no method for: `Apply`,
+the folded window's single transaction; `Watermark` and `SetWatermark`, over a `waltz_watermarks`
+table of its own; and `GetCurrentExecutionWithLastWriteVersion`, which is `baserow.Store`.
+
+The reason to embed rather than write one is not economy. A history shard's store is the hardest
+thing here to get right and the easiest to get *plausibly* wrong, and a store this repository wrote
+would be judged by this repository's opinion of what a store owes. Temporal's four exported
+persistence suites — `NewShardSuite`, `NewExecutionMutableStateSuite`,
+`NewExecutionMutableStateTaskSuite`, `NewHistoryEventsSuite` — judge this one exactly as they judge
+a plugin. Writing 28 correct methods to obtain one new one is a cost with no payer.
+
+**The transferable part is where the transaction is opened.** `persistence.ExecutionStore` has
+nowhere to declare a write spanning many workflows, so the store keeps the `sqlplugin.DB` handle
+beside the embedded interface and calls `BeginTx` on it. An implementer whose driver offers nothing
+below the per-workflow interface cannot satisfy this contract by trying harder inside it, and should
+say so rather than land a batch in pieces.
+
+Two orderings inside that transaction are the contract rather than transcription, and an engine that
+reorders a transaction's statements has to reproduce both some other way:
+
+* **the epoch first**, so a drain that lost the shard reports a lost shard rather than the version
+  failure a fenced writer finds underneath it;
+* **the task range deletes before any task row the drain writes.** Fold deliberately *keeps* a task
+  that arrived after a range in the same window, and a delete running after that insert would take
+  it away — a timer that never fires rather than a row left behind.
+
+What `memcold` gets for free, and a client on another engine will not, is that the statements take
+effect in the order they are issued: an assertion reads the rows as every earlier request of the
+same batch left them, so a run tombstoned and recreated inside one window needs no special case.
 
 
 ## `cycle` — policy, dependencies and what a cycle reports
@@ -738,17 +777,17 @@ attribution one shade too permissive reports a failure to a caller who did not w
 
 ### `cycle.Deps` and the two interfaces below it
 
-`Deps` is `{Log wal.Log, Writer Applier, Recoverer Watermarker, Logger log.Logger, Registry
-tasks.TaskCategoryRegistry, Metrics *walmetrics.Emitter}`. All are shared across shards and the
+`Deps` is `{Log wal.Log, Writer cold.Applier, Recoverer cold.Watermarker, Logger log.Logger,
+Registry tasks.TaskCategoryRegistry, Metrics *walmetrics.Emitter}`. All are shared across shards and the
 cycle owns none of them. `Registry` is **required** — `NewManager` returns `ErrNoRegistry` for a nil
 one, because replay decodes a payload's task groups through it and nil would be recovery silently
 switched off. It must be the server's own registry, since the archival category exists only where
 archival is configured. A nil `Logger` becomes a noop logger and a nil `Metrics` a noop emitter.
 
-* `Applier` — `Apply(ctx, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error`. `apply.Writer`
-  satisfies it.
-* `Watermarker` — `Watermark(ctx, shard wal.ShardID) (wal.Seqno, bool, error)`. The recovery half of
-  `apply.Recoverer`, and the only read this package makes of the cold store.
+* `cold.Applier` — `Apply(ctx, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error`.
+  `memcold.Store` satisfies it, and so does `verify/coldtest.Cold`.
+* `cold.Watermarker` — `Watermark(ctx, shard wal.ShardID) (wal.Seqno, bool, error)`. The recovery
+  half of the same seam, and the only read this package makes of the cold store.
 
 ### The package's own errors
 
@@ -903,8 +942,12 @@ has to answer for itself — see `cycle.ErrNoBaseRow`.
   `ShardLayer`, and the factory decorators.
 * [`../../apply/failure.go`](../../apply/failure.go) — `Class`, `Classify`, `Refuse`,
   `Attribute` and the attribution an applier hands back.
+* [`../../cold/cold.go`](../../cold/cold.go) — `Applier`, `Watermarker` and the four things
+  an implementation owes; [`../../cold/memcold/apply.go`](../../cold/memcold/apply.go) is the one
+  implementation of them here, with the transaction's order stated statement by statement, and
+  [`memcold.go`](../../cold/memcold/memcold.go) is what the embedding does and does not cover.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Config`, `Defaults`, `Deps`,
-  `Applier`, `Watermarker`, `Stats` and the states; [`policy.go`](../../cycle/policy.go) for
+  `Stats` and the states; [`policy.go`](../../cycle/policy.go) for
   `Policy`, `Moving`, `Fixed` and `Live`; [`manager.go`](../../cycle/manager.go) for the
   registry and `Totals`.
 * [`../../fold/fold.go`](../../fold/fold.go) — the accumulator, `Batch`, `Emitted` and

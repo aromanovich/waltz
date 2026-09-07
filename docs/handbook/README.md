@@ -18,10 +18,14 @@ must also refuse work before a bounded optimisation becomes an unbounded memory 
 explains how those obligations follow from one early acknowledgement and which contracts preserve
 them when processes and storage fail.
 
-waltz implements **no persistence at all**, and that is the shape of everything in this book. The
-log is whatever satisfies `wal.Log` — the one implementation shipped here is in memory. The cold
-store is whatever satisfies `cycle.Applier` and `cycle.Watermarker`, and there is no implementation
-here at all. What waltz is, exactly, is everything between those two seams.
+waltz is **not a persistence implementation**, and that is the shape of everything in this book. The
+log is whatever satisfies `wal.Log`; the cold store is whatever satisfies `cold.Applier` and
+`cold.Watermarker`. What waltz is, exactly, is everything between those two seams. Each seam has one
+implementation here — `wal/memwal` and `cold/memcold`, the second being Temporal's own SQL
+persistence over a database in this process — and neither is storage for anybody's data: they exist
+so that everything above them, up to and including a running Temporal server, can be exercised
+without installing anything. Both die with the process, and
+[chapter 15](15-the-limits-of-the-evidence.md) is what that costs the evidence.
 
 It is written for two people. One **operates** a Temporal cluster with this layer and needs to know
 which knob changes what, what a counter means at three in the morning, and which alerts show fencing
@@ -124,7 +128,7 @@ does.
 | [08-configuration.md](08-configuration.md) | Choosing the operating envelope | How window benefit trades against replay and memory, where the two configuration surfaces divide, every exact key and default, the budget refusal, and three recipes. |
 | [09-operations.md](09-operations.md) | Running, deploying and debugging it | Deployment, start and stop order, rolling restarts and failover, the tree that routes a symptom and the seven runbooks it routes into, and a closing appendix on local development and its traps. |
 | [10-metrics.md](10-metrics.md) | Every series the layer emits | Every series with its type, unit, tag values and emission point; what each counts exactly; the quantities to derive rather than expect; the shape of each alert; and the in-process counters no scrape has. |
-| [11-verification.md](11-verification.md) | How the layer is judged | The log's contract suite and its blind spot, the fold acceptance and the control that makes its ratio a measurement, the witness, the checker, the guards, the doubles, the two house rules, and what is not claimed. |
+| [11-verification.md](11-verification.md) | How the layer is judged | The log's contract suite and its blind spot, the cold store's suites being Temporal's rather than ours, the fold acceptance and the control that makes its ratio a measurement, the run over both real seams, the Temporal server that boots in the test process, the witness, the checker, the guards, the doubles, the two house rules, and what is not claimed. |
 
 ### The deep dives
 
@@ -150,7 +154,8 @@ graph TD
   ACC(("fold.Accumulator: the window"))
   LOG(("wal.Log contract"))
   MW(("memwal: the in-process log"))
-  AP(("cycle.Applier: one drain, one transaction"))
+  MC(("memcold: the in-process store"))
+  AP(("cold.Applier: one drain, one transaction"))
   CS(("the cold store"))
   MET(("walmetrics.Emitter"))
 
@@ -166,6 +171,7 @@ graph TD
   CY -->|drains| AP
   CY -->|trims| LOG
   LOG -->|stores entries| MW
+  CS -->|the one shipped here| MC
   ACC -->|merged requests| AP
   AP -->|commits| CS
   CY -->|emits| MET
@@ -209,8 +215,9 @@ first.
   designs, 14 the provenance of the defaults, and 15 the boundary of the claim.
 * **A measurement is named with what produced it.** A number that cannot be reproduced from the tree
   — a percentage off one run, a byte count on one machine — is a historical observation and not a
-  property of this revision. Since this library ships no storage, no such number can be reproduced
-  here at all, so each one is attributed to **the research prototype** waltz was extracted from,
-  every time it appears. [Chapter 14](14-where-the-defaults-came-from.md) applies the rule to every
+  property of this revision. The two backends here are in this process and exist to exercise the
+  layer, so no such number can be reproduced here in a form that would mean anything about a
+  deployment; each one is therefore attributed to **the research prototype** waltz was extracted
+  from, every time it appears. [Chapter 14](14-where-the-defaults-came-from.md) applies the rule to every
   shipped default and [chapter 15](15-the-limits-of-the-evidence.md) lists what stays unmeasured
   because of it.

@@ -25,9 +25,13 @@ before changing any of it:
   handover;
 * **the collaborators are a parameter too, and that is what makes the rule above
   keepable.** `Backends` — the log, the writer and the recoverer — is handed to
-  `Compose`, and this library implements none of the three. While a composition
+  `Compose`, which builds none of the three. That is unchanged by there being a
+  shipped implementation of each (`wal/memwal`, `cold/memcold`): a composition
+  reaching for one itself would be a second configuration of the store, with
+  nothing to reconcile it against the one the server was handed, and the caller
+  is where both are constructed. While a composition
   built them itself, the rule had no way to be obeyed: `wal.Log` is an interface
-  with implementations outside this module (ADR 0002) and `cycle.Applier` exists
+  with implementations outside this module (ADR 0002) and `cold.Applier` exists
   so a drain's outcome can be varied without a cluster, and no composition could
   reach either. So a second `cycle.NewManager` grew in the tests, twice.
   `Compose` opens nothing, reaches nothing and takes no context, so a

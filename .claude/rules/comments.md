@@ -9,6 +9,7 @@ paths:
   - "wrapper/**"
   - "walmetrics/**"
   - "baserow/**"
+  - "cold/**"
   - "verify/**"
 ---
 

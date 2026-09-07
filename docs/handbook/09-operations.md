@@ -391,20 +391,24 @@ Everything in this repository runs with nothing installed:
 go test ./...
 ```
 
-No cluster, no container, no fixture directory. That is not a convenience — it is what falls out of
-the library shipping no persistence. The only log here is `wal/memwal`, the only cold store is
-`verify/coldtest`, and the only base store is `verify/basetest`, all three in memory, so there is
-nothing for a suite to connect to and nothing to wait for. A suite that needed a cluster would be a
-suite judging somebody else's storage.
+No cluster, no container, no port, no cgo, no fixture directory. That is not a convenience — it is
+what falls out of every backend living in the test process. The log is `wal/memwal`, the cold store
+and the base store are both `cold/memcold` (Temporal's own SQL persistence over an in-memory SQLite
+database, pure Go), and `verify/coldtest` and `verify/basetest` are the doubles a suite reaches for
+when it has to make one of those two misbehave. So there is nothing to connect to and nothing to
+wait for, and `verify/e2e` starts four Temporal services on OS-assigned ports on the same terms.
 
 Two things worth knowing about that, both of which are limits rather than features:
 
-* **a green run says nothing about a real deployment's storage**, and cannot. What each suite does
-  claim is [11-verification.md](11-verification.md); the boundary of the whole set is
+* **a green run says nothing about a real deployment's storage**, and cannot: everything here dies
+  with the process. What each suite does claim is [11-verification.md](11-verification.md); the
+  boundary of the whole set is
   [15-the-limits-of-the-evidence.md](15-the-limits-of-the-evidence.md).
-* **the strongest evidence available to a composition over this library is upstream's own functional
+* **the widest evidence available to a composition over this library is upstream's own functional
   suites**, run against the deployment's real store with waltz between. That is not a target here,
-  because it needs a store; `patches/README.md` is the fifteen-line patch and the recipe for it.
+  because it needs a store worth running them against; `patches/README.md` is the fifteen-line patch
+  and the recipe for it. `verify/e2e` is the in-tree version of the same idea at a fraction of the
+  coverage: one server, one workflow, no installation.
 
 `go vet ./...` and `golangci-lint run` are the other two, and `.golangci.yml` says which linters are
 deliberately off and why — a check switched off in silence is one somebody re-enables and then

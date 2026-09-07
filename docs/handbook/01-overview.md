@@ -119,7 +119,8 @@ graph TD
   ACC(("fold.Accumulator: the window"))
   LOG(("wal.Log contract"))
   MW(("memwal: the in-process log"))
-  AP(("cycle.Applier: one drain, one transaction"))
+  MC(("memcold: the in-process store"))
+  AP(("cold.Applier: one drain, one transaction"))
   CS(("the cold store"))
   MET(("walmetrics.Emitter"))
 
@@ -135,6 +136,7 @@ graph TD
   CY -->|drains| AP
   CY -->|trims| LOG
   LOG -->|stores entries| MW
+  CS -->|the one shipped here| MC
   ACC -->|merged requests| AP
   AP -->|commits| CS
   CY -->|emits| MET
@@ -151,11 +153,11 @@ and a read the window cannot answer, or an assertion the window hands on, falls 
 well. The arrows to `walmetrics.Emitter` are one-way: the emitter may not import anything it
 measures.
 
-Two of the boxes are seams rather than code this library ships. `wal.Log` is the log's contract,
-and `memwal` is the only implementation in the tree; a deployment supplies its own. `cycle.Applier`
-is the cold store's contract, and there is no implementation in the tree at all beyond the in-memory
-double the suites run against; a deployment supplies that too. Everything between the two seams is
-what waltz is.
+Two of the boxes are seams rather than layer code. `wal.Log` is the log's contract and `memwal` is
+the one implementation in the tree; `cold.Applier` is the cold store's contract and `cold/memcold`
+is the one implementation of that. Both shipped backends run in this process and die with it, which
+is enough to boot a server over them and not enough to be anybody's storage: a deployment supplies
+both. Everything between the two seams is what waltz is.
 
 The diagram has five conceptual roles: `wrapper` decides which persistence calls enter the layer;
 `cycle` owns one shard's ordered decisions; `wal` makes them durable; `fold` keeps their readable,
@@ -173,10 +175,12 @@ included below as a reference for readers moving from the diagram into the tree.
 | `mutation/` | what one entry *is*: the protobuf record of one persistence call, plus the record kinds |
 | `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task pages |
 | `baserow/` | the cold store's two mutable-state reads as the write path needs them — one run's row, and the current-execution row with `last_write_version` beside it — shared because wrapper and cycle may not name each other's copy |
+| `cold/` | the cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes |
+| `cold/memcold/` | the one implementation of that contract here: Temporal's own SQL persistence over a database in this process, with the folded window's transaction added beside its 28 methods |
 | `apply/` | what a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries |
-| `cycle/` | one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the reads and replay — the layer's state machine, and the two interfaces the cold store is reached through |
+| `cycle/` | one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the reads and replay — the layer's state machine |
 | `wrapper/` | the seam into a running server: a decorator over a base data store factory, whose `ExecutionStore` and `ShardStore` the history service talks to |
-| `node/` | the composition a server builds: the `wal` section of the datastore options, and the components it names |
+| `waltz` (the module root) | the composition a server builds: the `wal` section of the datastore options, and the components it names |
 | `walmetrics/` | the layer's metric definitions and the emitter, on the server's own metrics handler |
 
 [Chapter 03](03-components.md#the-packages-in-dependency-order) takes each of these apart
@@ -292,10 +296,13 @@ is [chapter 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes)
 
 ## What this is not
 
-* **Not a persistence implementation.** waltz stores nothing. The log is whatever satisfies
-  `wal.Log`, the cold store is whatever satisfies `cycle.Applier` and `cycle.Watermarker`, and the
+* **Not a persistence implementation.** The layer stores nothing. The log is whatever satisfies
+  `wal.Log`, the cold store is whatever satisfies `cold.Applier` and `cold.Watermarker`, and the
   drain hands the applier a folded batch rather than rows: the cold store's schema stays the base
-  implementation's and nothing in this tree ever names a column.
+  implementation's and no package of the layer ever names a column. One implementation of each seam
+  ships beside the layer so that everything above them can be run without installing anything —
+  `wal/memwal` and `cold/memcold` — and neither is storage anyone should keep data in: both die with
+  the process.
 * **Not a cross-shard log.** The unit is one shard's log with one writer, and the writer is made
   single by epoch fencing. There is no multi-writer shard and no cross-cluster story. The limit
   belongs to the layer's interface and not to the store: nothing here offers an operation that
@@ -320,11 +327,12 @@ is [chapter 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes)
 
 ### The boundaries of what has been demonstrated
 
-Two boundaries belong with the design and not with the suites. **No performance claim is made**:
-this library ships no storage, so there is no configuration of it whose latency or throughput could
-be quoted, and the numbers in these pages that came off a running cluster came off the research
-prototype this library was extracted from — they are named as such wherever they appear. And **the
-workload the design is aimed at is an assumption**, so every saving named above is conditional on it.
+Two boundaries belong with the design and not with the suites. **No performance claim is made**: the
+storage that ships here is two in-process backends that exist so the layer can be exercised, so
+there is no configuration whose latency or throughput would mean anything, and the numbers in these
+pages that came off a running cluster came off the research prototype this library was extracted
+from — they are named as such wherever they appear. And **the workload the design is aimed at is an
+assumption**, so every saving named above is conditional on it.
 
 [Chapter 15](15-the-limits-of-the-evidence.md) is the collected boundary — what each green target
 does and does not establish, which limits are measurements nobody has taken and which are the shape
@@ -346,9 +354,11 @@ above is [chapter 08](08-configuration.md).
   eleven-of-28 partition and the refused twelfth, method by method.
 * [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — the one window onto
   shard ownership, and how an acquire is told from a heartbeat.
-* [`../../cycle/cycle.go`](../../cycle/cycle.go) — the state machine, `cycle.Defaults()`'s
-  shipped watermarks, and `Applier` and `Watermarker`, which are the whole of what the layer asks
-  of a cold store.
+* [`../../cycle/cycle.go`](../../cycle/cycle.go) — the state machine and `cycle.Defaults()`'s
+  shipped watermarks.
+* [`../../cold/cold.go`](../../cold/cold.go) — `Applier` and `Watermarker`, which are the whole of
+  what the layer asks of a cold store, and [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go)
+  is the one that ships.
 * [`../../apply/failure.go`](../../apply/failure.go) — the five classes a drain's outcome sorts
   into, and which of them may be retried.
 * [`../../fold/merge.go`](../../fold/merge.go) — what "rewrites the run's row whole"

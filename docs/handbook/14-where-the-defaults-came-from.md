@@ -26,8 +26,9 @@ open the file, read the constant, do the arithmetic. Others are **observations**
 once, on one machine, at one revision. An observation is not worth less, but it is worth exactly
 what the saved result says and no more, and this chapter marks which of the two is behind each
 number. **Every observation below was made on the research prototype this library was extracted
-from, on one workload against one store**, and none of them is re-runnable here: this library ships
-no storage for a measurement to be taken against. They are quoted so that a reader knows a number had
+from, on one workload against one store**, and none of them is re-runnable here: the two backends in
+this tree are in-process ones that exist to exercise the layer, so a curve taken against them would
+describe a map and a SQLite database in memory. They are quoted so that a reader knows a number had
 evidence, and named so that nobody mistakes that evidence for their own deployment's.
 
 ## The premise under all of them

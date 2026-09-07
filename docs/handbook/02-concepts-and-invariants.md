@@ -220,7 +220,7 @@ the witness to whether that transaction committed.
 
 **Apply.** The step that turns folded summary updates into cold-store writes: one transaction
 carrying the merged requests, the appliedSeqno bump and the epoch compare-and-swap. Who performs it
-is `cycle.Applier`, which this library does not implement — the drain hands over a `fold.Batch` and
+is `cold.Applier`, which this library does not implement — the drain hands over a `fold.Batch` and
 never a column. What the layer keeps of it is `apply`, the package that says what a drain's outcome
 demands of its caller: the five classes an error sorts into, and which of them may be retried.
 
@@ -334,8 +334,13 @@ construction; what makes the page honest is the order the rows are emitted in.
 and paginates.
 
 **Cold store.** Whatever a deployment's persistence implementation writes its rows into: the
-permanent target of apply, reached only through `cycle.Applier` and `cycle.Watermarker`. This
-library implements none of it, and nothing above those two interfaces names a column.
+permanent target of apply, reached only through `cold.Applier` and `cold.Watermarker`. No package of
+the layer names a column, and none may name a store. `cold/memcold` is the one implementation of
+those two interfaces here — Temporal's own SQL persistence over a database in this process, which is
+what everything above the seam is exercised against, and which is a real store rather than a stub:
+it is judged by Temporal's own persistence suites and not by any of ours. A deployment supplies its
+own, and what it owes is the four obligations in
+[chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for).
 *Not to be confused with:* "main storage", "base" — both overloaded.
 
 **WAL backend.** An implementation of the log contract: order, fencing, cumulative ack,
@@ -536,7 +541,7 @@ and the guards.
 
 Two of them are claims about things this library does not implement, and they are stated anyway
 because a deployment that breaks either loses acknowledged data. I4's cold-store half and I5 are
-both obligations on the `cycle.Applier` a deployment supplies: nothing here can check them, and the
+both obligations on the `cold.Applier` a deployment supplies: nothing here can check them, and the
 "how it is verified" column says so rather than naming a suite that does not judge them. I9 is the
 same shape one seam lower, on the log.
 
@@ -546,7 +551,7 @@ same shape one seam lower, on the log.
 | **I2** | A mutation is confirmed to its caller ⟺ its seqno ≤ commitSeqno. No ack before durability. | [`wal/wal.go`](../../wal/wal.go) guarantee 3 (cumulative ack); the cycle answers after `Append` returns | the log conformance suite [`wal/waltest`](../../wal/waltest/waltest.go), which every implementation runs |
 | **I3** | Readers see state as of commitSeqno: everything confirmed, nothing unconfirmed. | [`fold/overlay.go`](../../fold/overlay.go) and [`cycle/read.go`](../../cycle/read.go) — reads run on the cycle's own goroutine | `cycle`'s read tests over a window that is deliberately left undrained |
 | **I4** | Fencing is end to end: the log append is protected by the contract's fence semantics, and the cold-store write by the same epoch in the same transaction. | [`wal/wal.go`](../../wal/wal.go) (`Log.Fence`); the cold-store half is the applier's, which is handed the epoch on every `Apply` | `waltest`'s zombie-owner and two-claimant cases cover the log half; the applier's half is a deployment's obligation and nothing here judges it |
-| **I5** | appliedSeqno is persisted atomically with each batch, and a batch it already covers is never applied twice. | the applier's own transaction: `cycle.Applier` is handed a batch and `cycle.Watermarker` reads back what it committed | `cycle`'s recovery tests, over an applier whose outcome the test chooses; that the real one is atomic is a deployment's obligation |
+| **I5** | appliedSeqno is persisted atomically with each batch, and a batch it already covers is never applied twice. | the applier's own transaction: `cold.Applier` is handed a batch and `cold.Watermarker` reads back what it committed | `cycle`'s recovery tests, over an applier whose outcome the test chooses; that the real one is atomic is a deployment's obligation |
 | **I6** | Log entries are self-contained state deltas, not commands: applying an entry needs nothing but the entry. | [`mutation/encode.go`](../../mutation/encode.go) — the record mirrors the persistence request field for field | the codec's field-set guard: one recorded decision per mirrored field |
 | **I7** | The layer does not model an ack level: it applies the range deletions it was asked for, in the order it was asked. | [`fold/histtasks.go`](../../fold/histtasks.go), handed to the applier inside the drain's `fold.Batch` | `fold`'s task tests and the task-page corpus test; the `wal_dropped_tasks` / `wal_written_tasks` pair |
 | **I8** | Compaction barriers: a snapshot resets what was accumulated for the run, an update merges, a deletion is a tombstone. | [`fold/fold.go`](../../fold/fold.go) and [`fold/merge.go`](../../fold/merge.go) | `fold`'s barrier tests, and the condition corpus that drives a generated stream through the accumulator the way a cycle does |

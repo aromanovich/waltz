@@ -1,7 +1,7 @@
 // Package apply is what a drain's outcome means: the class the cycle branches
 // on, the errors that carry it, and the readback that names which row diverged.
 //
-// It writes nothing. The write path is the caller's, behind cycle.Applier, and
+// It writes nothing. The write path is the caller's, behind cold.Applier, and
 // an implementation of that interface speaks back to the cycle in this
 // vocabulary — [Refuse] for what it turned away before anything reached the
 // cold store, [Attribute] to turn a bare condition failure into the rows it was
@@ -46,7 +46,7 @@ const (
 
 	// ClassUnknownOutcome: an ambiguous code reached apply and the transaction
 	// may or may not have committed. Read the watermark before anything else
-	// (cycle.Watermarker); re-folding by version instead corrupts.
+	// (cold.Watermarker); re-folding by version instead corrupts.
 	ClassUnknownOutcome
 )
 

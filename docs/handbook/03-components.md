@@ -36,6 +36,12 @@ non-test file.** The first such import puts test scaffolding into the binary an 
 files are exempt and must be, since `fold`'s and `cycle`'s own tests legitimately fold a generated
 stream from `verify/mutgen`.
 
+`cold/memcold` is at the module root and is the one thing there that is not the layer: it is a
+*store*, sitting under the cold seam where a deployment's own store sits. It is not under `verify/`
+because it is not a judge and not a double — it is Temporal's own persistence over a database in
+this process, and a server composed over it serves real workflows. What it is not is durable, which
+is why nothing here calls it a production store.
+
 There is no binary here at all. waltz is a library: the composition it produces is handed to a
 `temporal-server` main somebody else writes, through `temporal.WithCustomDataStoreFactory`.
 
@@ -53,11 +59,13 @@ order a mutation actually travels.
 | `mutation` | What one log entry *is*: the protobuf record of one persistence call, and the eight kinds. | `Mutation`, `Kind`, `Part`, `Encode`, `Decode` | any persistence implementation — the record mirrors Temporal's requests; the store that eventually writes them is the applier's business |
 | `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — two packages need this pair and neither may name the other's copy, so it imports Temporal's persistence and nothing more |
 | `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page merge. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
+| `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. | `Applier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
+| `cold/memcold` | That contract satisfied, and the one cold store shipped: Temporal's own SQL persistence over a database in this process, embedded whole, with the folded window's transaction added beside its 28 methods. It is what sits *under* the layer rather than part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | everything of this layer — a store that could see the layer would be judged by the thing sitting on top of it |
 | `apply` | What a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries. | `Class`, `Classify`, `Diverged`, `InvariantViolationError` | `wal.Log` and `wal.Entry` — pacing and trim are the cycle's policy, not the outcome's |
 | `cycle/window` | The size and age of what a cycle folded since its last drain, as a type whose counters cannot be written from outside. | `Window`, `Taken`, `Watermarks`, `Trip` | `fold`, `walmetrics` — the window counts, it does not fold, and it publishes nothing |
 | `cycle/tailstate` | The tail's arithmetic in one place: everything invariant [I10](02-concepts-and-invariants.md#the-invariants) bounds, plus the off-loop mirror of it. | `Tail`, `Mirror`, `New`, `NewMirror`, `WatermarkMove`, `Unresolved` | `fold` — the tail is arithmetic over what the loop acked, not the log those seqnos index nor the window they outlive |
 | `cycle/trim` | The lazy deletion of entries the cold store already holds: the cadence, the one trim in flight, the two counters. | `Trimmer`, `New`, `Cadence` | `fold`, `cycle/tailstate` — a cadence over a watermark it is handed; it may reach neither the thing that moves that watermark nor the thing that folds |
-| `cycle` | The state machine: one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the three reads and replay, plus the node's registry of them. And the two interfaces the cold store is reached through. | `Cycle`, `Manager`, `NewManager`, `Deps`, `Config`, `Defaults`, `Policy`, `Fixed`, `Live`, `Moving`, `State`, `Stats`, `Totals`, `Counters`, `Applier`, `Watermarker` | any persistence implementation — the cold store arrives as `Applier` and `Watermarker`, and there may be no second door |
+| `cycle` | The state machine: one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the three reads and replay, plus the node's registry of them. | `Cycle`, `Manager`, `NewManager`, `Deps`, `Config`, `Defaults`, `Policy`, `Fixed`, `Live`, `Moving`, `State`, `Stats`, `Totals`, `Counters` | any persistence implementation — the cold store arrives as `cold.Applier` and `cold.Watermarker`, and there may be no second door |
 | `wrapper` | The seam into a running server: a decorator over a base data store factory whose `ExecutionStore` and `ShardStore` the history service talks to. | `Options`, `ShardLayer`, `ShardObserver`, `ShardWriter`, `ShardReader`, `MetricsSink`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory`, `DataStoreFactory`, `NewDataStoreFactory`, `ErrCompleteHistoryTaskUnsupported` | any persistence implementation, and `cycle` — wrap, don't fork: the decorator is defined over upstream's interface, and composing it with a base store is the binary's job |
 | `waltz` (the module root) | The composition a server builds: the `wal` config section, the dynamic-config settings, the components they name, the lifecycle, and the factory that is the door out. | `Compose`, `Layer`, `Backends`, `Config`, `WAL`, `Parse`, `Registry`, `TaskCategories`, `DefaultTaskCategories`, `NewPolicy`, `AbstractFactory` | — (it composes everything, which is the point) |
 | `walmetrics` | Where the numbers go: the metric definitions and the emitter, on the server's own handler. | `Emitter`, `New`, and the `metrics.*Def` values (`InterceptedWrites`, `Drains`, `TailBytes`, …) | `wal`, `fold`, `apply`, `cycle`, `wrapper`, `mutation` — the metric names are the layer's vocabulary, so nothing that can be measured may be imported here |
@@ -96,8 +104,8 @@ graph TD
   CY(("cycle.Cycle: one per shard and epoch"))
   ACC(("fold.Accumulator"))
   TR(("trim.Trimmer"))
-  AP(("cycle.Applier"))
-  WM(("cycle.Watermarker"))
+  AP(("cold.Applier"))
+  WM(("cold.Watermarker"))
   LOG(("wal.Log"))
   CS(("the cold store"))
 
@@ -120,8 +128,8 @@ graph TD
 
 How to read this. Nothing crosses a shard boundary below `cycle.Manager`: the manager resolves a
 shard to its one cycle, and everything under that cycle belongs to that shard alone. Two paths reach
-the cold store from the layer, and both are interfaces the deployment implements — `cycle.Applier`,
-the layer's only *write* door, and `cycle.Watermarker`, which reads back what the last drain
+the cold store from the layer, and both are interfaces the deployment implements — `cold.Applier`,
+the layer's only *write* door, and `cold.Watermarker`, which reads back what the last drain
 committed when its outcome was unknown. The wrapper's own arrows to the cold store are the transits:
 the calls the layer has no shape for.
 
@@ -195,12 +203,15 @@ most:
   `wrapper.ShardWriter` and `wrapper.ShardReader`, and why translating a cycle's answer into the
   store's error types lives in `cycle` (`write.go`'s one write door, over `decide.go`'s `storeError`)
   rather than in the wrapper.
-* **No package here names a persistence implementation at all** — not even the root, which composes
-  everything. That is the whole of what makes waltz a library: the log arrives as a `wal.Log`, the
-  cold store as a `cycle.Applier` and a `cycle.Watermarker`, and the base store as whatever factory
-  the caller hands `wrapper.NewAbstractDataStoreFactory`. `cycle` is where the ban costs the most and
-  matters the most: it holds the log, the accumulator and the write path at once, so one import of a
-  store would give the shard a second write path beside the one every suite here judges.
+* **No package of the layer names a persistence implementation at all** — not even the root, which
+  composes everything. That is the whole of what makes waltz a library: the log arrives as a
+  `wal.Log`, the cold store as a `cold.Applier` and a `cold.Watermarker`, and the base store as
+  whatever factory the caller hands `wrapper.NewAbstractDataStoreFactory`. `cycle` is where the ban
+  costs the most and matters the most: it holds the log, the accumulator and the write path at once,
+  so one import of a store would give the shard a second write path beside the one every suite here
+  judges. **`cold/memcold` is the one package in the tree that *is* a store**, and the ban reads the
+  same way from its side: nothing in the layer may import it, and it may import nothing of the
+  layer. It sits under the seam, where a deployment's own store sits.
 * **`walmetrics` is named by both ends of the layer** — the wrapper counts what crosses it, the
   cycle counts what the accumulator did — so it must be reachable from both, which is exactly why it
   may reach neither. The hazard is specific: a metric is easiest to add where the number already is,
@@ -354,18 +365,24 @@ thing to know before opening it:
 
 * **instruments** measure or drive, and assert nothing — `mutgen`, `mutbuild`, `drive`, `foldrun`,
   `coldtest`, `basetest`, `coldtasks`, `checker`, `witness`;
-* **judgements** say yes or no — `acceptance`, `guard`.
+* **judgements** say yes or no — `acceptance`, `e2e`, `guard`.
 
 What each one claims is [chapter 11](11-verification.md#the-map-of-verify). None of them needs a
-cluster, because none of them can have one: this library ships no storage for a cluster to be made
-of.
+cluster, and that is now a stronger statement than "none of them can have one": both seams have an
+implementation that runs in this process, so `verify/e2e` boots four Temporal services over the
+layer without installing anything. What no package here can have is *storage that survives the
+process*, which is where the limits in [chapter 15](15-the-limits-of-the-evidence.md) begin.
 
 ## Where this lives in the code
 
 * [`../../wal/wal.go`](../../wal/wal.go) — the contract's five guarantees, stated on
   `Log` and its five methods.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Cycle`, its `job` channel, the fields
-  that live off the loop, `Deps`, and the `Applier`/`Watermarker` pair.
+  that live off the loop, and `Deps`.
+* [`../../cold/cold.go`](../../cold/cold.go) — `Applier` and `Watermarker`, and the four
+  things an implementation of them owes; [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go)
+  is the one that ships, and [`apply.go`](../../cold/memcold/apply.go) is the drain's transaction
+  statement by statement.
 * [`../../cycle/manager.go`](../../cycle/manager.go) — the registry the wrapper's shard
   hook talks to, and `Totals`.
 * [`../../cycle/held.go`](../../cycle/held.go) — the node's one mutex, and why no method

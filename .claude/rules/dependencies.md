@@ -9,6 +9,7 @@ paths:
   - "wrapper/**"
   - "walmetrics/**"
   - "baserow/**"
+  - "cold/**"
   - "verify/**"
 ---
 
@@ -29,12 +30,16 @@ pull in. The second is the rule for a package that legitimately sits above one
 that does the forbidden thing.
 
 **"A cold store" below means any persistence implementation** — a Temporal
-persistence plugin, a database driver, a client of one. This library implements
-none, and the whole of how it reaches one is `cycle.Applier`,
-`cycle.Watermarker` and the base store the wrapper decorates, all three the
-caller's. So the ban is not layering hygiene: an import of one anywhere here is
-this library growing a store of its own, which is the one thing it says it does
-not have.
+persistence plugin, a database driver, a client of one. The layer reaches one
+through `cold.Applier`, `cold.Watermarker` and the base store the wrapper
+decorates, and through nothing else. So the ban is not layering hygiene: an
+import of one anywhere in the layer is a second write path beside the seam every
+suite here judges.
+
+**`cold/memcold` is the one package that is a store**, which is why it has a row
+of its own below rather than an exemption. It sits at the seam and not in the
+layer: nothing in the layer may import it, and it may import nothing of the
+layer.
 
 ## The tree rules (ADR 0009)
 
@@ -60,9 +65,11 @@ not have.
 | `baserow` | everything else of this layer, a cold store | the pre-window pair is named once for three packages that may not name each other's: what it may import is Temporal's persistence, and the moment it imports more, one of the three stops being able to reach it |
 | `mutation` | a cold store | the record format mirrors Temporal's requests; what eventually writes them is the caller's |
 | `fold` | a cold store, `apply` | fold folds what it is handed: no cold store, no log |
-| `apply` | a cold store | it says what a drain's outcome *means* and writes nothing; the write path is behind `cycle.Applier` |
+| `apply` | a cold store | it says what a drain's outcome *means* and writes nothing; the write path is behind `cold.Applier` |
 | `wrapper` | a cold store | wrap, don't fork: the decorator is defined over upstream's interface, and composing it with a store is the caller's job |
 | `walmetrics` | `wal`, `fold`, `apply`, `cycle`, `wrapper`, `mutation` | the metric names are the layer's vocabulary: nothing that can be measured may be imported here |
+| `cold` | the Temporal server, a cold store, **every store implementation** | the seam is stated for the author of a store that is not in this repository, so it may not know one — and `memcold` least of all |
+| `cold/memcold` | everything of this layer | the shipped store is a store and nothing else: it answers Temporal's own interfaces, and an import of the layer would make the thing under test part of the layer testing it |
 | `cycle` | a cold store | the cycle drives the seam; it does not open one beside it |
 | `cycle/tailstate` | a cold store, `fold` | the tail is arithmetic over what the loop acked: not the log those seqnos index, and not the window they outlive |
 | `cycle/window` | a cold store, `fold`, `walmetrics` | the window is arithmetic over what the loop folded: it counts, it does not fold, and it publishes nothing |
@@ -162,12 +169,12 @@ Where the one-line *why* is not the whole reason:
   vocabulary is how it would start interpreting.
 * **`basetest`** is the same argument at the other cold-store seam, and it
   differs from `coldtest` in one way worth stating: it **does** name
-  `baserow`, where `coldtest` satisfies `cycle.Applier` by shape and names
-  nothing. That is the difference between the two seams rather than an
-  inconsistency — the seam `coldtest` stands at is `cycle`'s, so naming it would
-  give the double reach into the thing it is a double for, while `baserow` is a
-  leaf whose whole purpose is to be reachable from the three packages that read
-  through it. What the rule buys is the same in both: `cycle`, `apply`
+  `baserow`, where `coldtest` satisfies `cold.Applier` by shape and names
+  nothing. Both seams are leaves now and either double may name its own, so this
+  is a difference in what each needs rather than in what each is allowed: a
+  delegated assertion is stated over `baserow`'s absence rule, which is a
+  contract to be held to, where an applier's shape is the whole of what
+  `coldtest` stands in for. What the rule buys is the same in both: `cycle`, `apply`
   and the guards had a pair of maps and an absence rule apiece, and absence is
   the rule a delegated assertion is stated over — a double answering it its own
   way leaves the suite green and the rule unjudged.

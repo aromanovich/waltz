@@ -375,10 +375,13 @@ survives a set-headed window and each kind's rendering byte for byte — and tha
 argument: the rule was written from the divergence, not the divergence found from the rule.
 
 That instrument is the **oracle** — one stream applied twice, once mutation by mutation through a
-real store and once folded, with the two stores required to end identical — and it cannot exist in
-this repository, which ships no store to run either half against. It is named here anyway, because a
-deployment building the strongest possible check of the fold builds that and not the unit test above:
-the unit test is what you write *after* the oracle has told you what to pin.
+real store and once folded, with the two stores required to end identical — and it still does not
+exist here. `cold/memcold` supplies a store both halves could run against, which is what
+`TestBothSeamsRealNoServer` uses for the folded half; what it does not supply is the reason to
+believe the comparison. A store this repository built its folded path against, judged by a
+sequential path through the same code, would agree with itself. The oracle is worth building over
+the store a deployment actually cares about, and it is what that deployment builds instead of the
+unit test above: the unit test is what you write *after* the oracle has told you what to pin.
 
 ### A golden dump
 

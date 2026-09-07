@@ -8,38 +8,44 @@ proves little when the fault was staged before the supposedly durable write was 
 Verification must therefore establish more than behaviour at the end. It must show that the
 mechanism participated, that the experiment was capable of exposing a difference, and that the
 failure occurred in the interval the claim is about. This chapter develops those three obligations
-through the log's contract suite, the fold acceptance, the witness and the guards, then states the
+through the log's contract suite, the fold acceptance, the server that boots over both seams, the
+witness and the guards, then states the
 limits of each. Its last sections are reference: the exact boundary of the two words this repository
 judges with, the map of `verify/`, and what is not claimed.
 
-**Every suite here runs with nothing installed.** That is the shape of the whole chapter and it is a
-consequence rather than a convenience: this library implements no persistence, so there is nothing
-for a suite to connect to. What is judged is the layer, over an in-memory log, an in-memory cold
-store and an in-memory base store. What is *not* judged is any real storage — including the pairing
-of a real log with a real cold store, which is where a deployment's own risk lives.
+**Every suite here runs with nothing installed** — no cluster, no container, no port, no cgo, no
+build tag. That is the shape of the whole chapter, and it is a consequence of where the storage is
+rather than of there being none: both seams have an implementation that lives in this process, so a
+suite has somewhere real to append and somewhere real to commit, and one of them boots four Temporal
+services over the pair. What is *not* judged is any storage that survives the process — no fsync, no
+network, no quorum, no handover between two machines — which is where a deployment's own risk lives.
 [Chapter 15](15-the-limits-of-the-evidence.md) is that boundary collected.
 
 Nothing under `verify/` runs in production: no package outside it may import it in a non-test file.
 What lives on the other side of that line is
 [chapter 03](03-components.md#the-tree-has-two-halves).
 
-## Three levels of evidence
+## The levels of evidence
 
 The suites differ less by size than by the question they can answer:
 
 | Level | Question | Typical evidence | What it still cannot prove |
 |---|---|---|---|
-| behavioural result | did the caller or cold store end in the expected state? | a store double's recorded batches, a merged page's contents | that the WAL path participated |
-| mechanism witness | did the intended append, held read, merge or drain actually occur? | `cycle.Totals`, wrapper counts, captured emissions | that a production server composes the same path |
+| behavioural result | did the caller or cold store end in the expected state? | the rows a drain left in `memcold`, a store double's recorded batches, a merged page's contents | that the WAL path participated |
+| mechanism witness | did the intended append, held read, merge or drain actually occur? | `cycle.Totals`, wrapper counts, captured emissions | that a server composes the same path |
+| composition | does a Temporal server, built the production way, actually reach the layer and complete work over it? | four services in one process, a workflow through the SDK, and a witness saying the layer saw it | that the storage underneath survives anything |
 | failure history | was an acknowledged call preserved across a staged fault, with nothing invented? | a journal of calls and outcomes, read back against the log and the watermark | failures nobody stages |
 
 No level makes the others redundant. End-state equality without participation can certify
 passthrough; counters without behavioural equality can certify a mechanism that produced the wrong
-answer; a final snapshot without a recorded history cannot say what was acknowledged before a kill.
+answer; a server that comes up says nothing about what it wrote; and a final snapshot without a
+recorded history cannot say what was acknowledged before a kill.
 
-The third level is the one this repository can only half provide. `verify/checker` is the judge for
-it, written and tested here; the harness that would kill processes and hand it a journal is a
-deployment's, because killing a process means having a process, and a process means storage.
+The third level arrived with the shipped cold store, and is `verify/e2e` below. The fourth is the
+one this repository can only half provide. `verify/checker` is the judge for it, written and tested
+here; the harness that would kill processes and hand it a journal is a deployment's, because killing
+a process means having a process that owns storage worth recovering, and both backends here die with
+the test.
 
 ---
 
@@ -82,6 +88,38 @@ two-process failover can see it, and this repository has no second process to ru
 That is the single most important thing for a deployment to know about the suite it is about to run
 against its own log: a green contract suite says the log's *logic* is right and says nothing about
 whether the fence reaches another machine. Whoever supplies the log owes that test to themselves.
+
+---
+
+## The cold store's suites are Temporal's
+
+The other seam is judged the other way round, and the asymmetry is worth stating rather than
+smoothing over. `wal.Log` is this library's own invention, so this library owes it a suite. A cold
+store's obligations to a *server* are Temporal's to state, and Temporal states them: four suites
+exported from `go.temporal.io/server/common/persistence/tests`, which `cold/memcold` runs unmodified
+in `conformance_test.go` — `NewShardSuite`, `NewExecutionMutableStateSuite`,
+`NewExecutionMutableStateTaskSuite` and `NewHistoryEventsSuite`, 75 subtests over one store per
+suite. They judge `memcold` exactly as they judge a plugin, and they passed on the first wiring
+attempt with no store code written, which is the evidence that the embedding
+([chapter 04](04-contracts.md#the-implementation-shipped-at-this-seam)) is the right shape and not
+merely a saving.
+
+**Those suites do not judge `Apply`**, and cannot: the folded window's transaction is a method
+upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is seven cases —
+the ordering of the transaction, the refusals that must happen before it opens, the attribution a
+condition failure carries, and the rollback that undoes the requests that had already run — each
+proved by staging the defect that reds it. `verify/acceptance` is the volume half, below.
+
+**Nothing here judges somebody else's `cold.Applier`.** A deployment writing one gets the four
+obligations in [chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for), `memcold`
+as the worked example, and its own store's suites — and that gap is real, where the log seam's is
+covered by an exported suite.
+
+Two smaller judgements live in the same package and are worth knowing because they hold up
+everything above: `isolation_test.go` says two stores share no rows and that the store reached
+through the abstract factory is the same database as the one reached directly. Staging the defect —
+a fixed database name — makes both red **while the four conformance suites stay green**, which is
+what says those suites are not a guard against cross-store bleed and these two are.
 
 ---
 
@@ -173,15 +211,91 @@ reaches exclusively is redundant or unreachable, and both look exactly like a wi
 `TestReadingAroundTheLayerIsAsRedAsReadingThroughIt` and `TestTheEmptyLayerIsAssertedNotAssumed` are
 the two that state the failure this module exists for.
 
+### Both seams real: the same shape, into a database
+
+`TestBothSeamsRealNoServer` is the second acceptance run, and what it adds is that the batch is
+*executed*. One `cycle.Manager` at `cycle.Defaults()`, `wal/memwal` under one side and
+`cold/memcold` under the other, the shard taken through the database's own range id so the drain's
+epoch CAS is a real one, and a generated stream of 6,000 mutations over 32 hot workflows driven
+through `Manager.Write` — the same call the wrapper makes. The window is the shipped one, and that
+is the whole reason the run means anything: at a window of one nothing folds, no assertion is ever
+settled against a row an earlier request of the same transaction wrote, and the run stays green with
+the fold path deleted.
+
+The applier is a **ledger**: it delegates to `memcold.Apply` and then works out from the batch alone
+what the database must now hold — the `db_record_version` each request leaves per run, which runs a
+tombstone removed, and the run each workflow's current row must name. Never a readback, because an
+expectation read out of the store agrees with the store by construction. What the test then asserts
+is every one of those rows through the store's own reads, plus: the store's watermark equals the
+last drain's own and equals the last seqno acked, the log's lower end moved *while the run was
+going*, and its upper end is still the last entry acked.
+
+That trim assertion is the one that changed under staging, and the reason is worth copying. Written
+as an end-of-run check it stayed green with a trim staged to run a thousand seqnos **ahead** of the
+watermark — the trim is detached, it empties the log while appends continue, and by the end of a run
+that drained everything those entries are applied and the damage is invisible. Only a crash would
+have found it. So the invariant is sampled every 64 mutations inside the drive loop instead, reading
+the log's lower end first and the watermark second, since the watermark only rises and a drain
+committing between the two reads can only make the comparison stricter.
+
+`TestAShardThatLosesItsEpochMidRun` is invariant [I2](02-concepts-and-invariants.md#the-invariants)
+with both seams real. After 2,000 mutations another owner takes the shard in the database — the
+range id moves, which is all an acquire is from underneath — and the log is deliberately left
+unfenced, so the loss is discovered where it has to be, inside the drain's own transaction, with a
+window of acknowledged mutations riding on it. Afterwards: the write path answers a
+`*persistence.ShardOwnershipLostError`, the cycle is `StateHaltedLost`, the database matches the
+ledger's snapshot from *before* the loss, every run only a refused drain would have written is
+absent, the applied position is still the last committed drain's, and the log holds every seqno up
+to what was acked. Nothing acknowledged lost, nothing unapplied invented.
+
+---
+
+## A server, in this process
+
+`verify/e2e` is the composition level, and it is the one claim no suite below it can make. It builds
+a Temporal server the production way — a custom datastore named in `Persistence.DataStores`, the
+layer's factory handed to `temporal.WithCustomDataStoreFactory` — starts frontend, history, matching
+and worker in the test process, registers a namespace through the frontend, and runs a workflow with
+an activity through the SDK. Ports come from the OS, the databases are `memcold`'s and one more for
+visibility, and nothing is installed.
+
+**The green workflow is the weaker half.** A server whose layer fell out of the path completes the
+same workflow just as fast, which is exactly the failure [the witness](#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it)
+exists for. So the run has two arms, both of which *compose* a layer and differ only in the one
+value the server is handed:
+
+* `TestAWorkflowRunsThroughTheLayer` states `witness.Windowed`, shards acquired, mutable state,
+  history tasks and merged task reads, plus the mutation kinds a workflow of that shape must
+  produce — a create and updates. Beside the witness it requires directly that mutations were
+  acked, that a drain committed, that the applied position moved, that history tasks were written,
+  and that **the shards' watermarks are readable out of the database**, so a run claiming a drain
+  committed and a store holding nothing cannot both be believed;
+* `TestAWorkflowRunsWithTheLayerOutOfThePath` is the control: the same store bare, and
+  `witness.NoLayer` over the layer it composed and did not install. That claim is only available
+  because the control composes a layer at all — a run with none could not make it — and it goes red
+  if the "passthrough" arm quietly still had a layer in it.
+
+Two things this suite established about itself are worth carrying. The drains it counts are the
+**age** watermark's: one workflow is nowhere near 256 mutations, and staging `Age = time.Hour` makes
+the run red with a non-zero acked count and a zero applied count, which is what says the drains were
+the policy's and not an artefact of shutdown. And a claim was *removed* rather than weakened — a
+short workflow makes no `AddHistoryTasks` call at all, since history tasks ride the folded
+mutable-state writes, so the claim that was written first was wrong and the witness caught it.
+
+**What it does not prove.** The databases are in memory and die with the process, so nothing here is
+a durability claim. Nothing is killed, so nothing is a crash-recovery claim. One workflow on four
+shards is not load, and no timing this suite produces is a performance claim.
+[Chapter 15](15-the-limits-of-the-evidence.md) is where each of those sits as an entry.
+
 ---
 
 ## The checker: judging a run nobody was there for
 
-`verify/checker` is the judge for the third level of evidence — *nothing acked was lost and nothing
+`verify/checker` is the judge for the last level of evidence — *nothing acked was lost and nothing
 applied was invented, while nodes were being killed*. It is here in full, tested in full, and it has
-no harness in this repository to feed it, because a harness needs processes and processes need
-storage. What follows is therefore both a description and an instruction manual for whoever builds
-that harness over their own deployment.
+no harness in this repository to feed it: killing a process is only a test if what the process owned
+is still there afterwards, and both backends here die with it. What follows is therefore both a
+description and an instruction manual for whoever builds that harness over their own deployment.
 
 **It is a journal, not a look.** The measurement that shapes everything else: a cycle trims to the
 applied watermark with no safety lag, so the surviving log is bounded by roughly
@@ -249,7 +363,10 @@ opposite of a unit test and the reason they are collected apart.
   the widest blast radius: a layer that does not satisfy `ShardLayer` is a layer nobody can install.
 
 Two guards that were in the research prototype are named here because they are the ones a deployment
-should rebuild rather than inherit, and neither can live in a library that ships no storage:
+should rebuild rather than inherit. Neither became available when the two seams got an
+implementation, and the reason is the same for both: each is a statement about a *deployment's* own
+storage — an engine's transaction counters, an applier's statement text — and neither the map that
+`memwal` is nor the upstream statements `memcold` issues can stand in for one.
 
 * **an append-immediacy guard** for [I9](02-concepts-and-invariants.md#the-invariants) — drive
   ordinary appends through the front door and read the storage engine's own transaction counters out
@@ -273,10 +390,14 @@ extracted after several packages had written the same thing slightly differently
 failure mode a double has: two copies that disagree leave a rule green and unjudged.
 
 * **`verify/coldtest`** — the cold store a drain lands in, in memory. One value satisfies both
-  `cycle.Applier` and `cycle.Watermarker`, and that is the point rather than a convenience: a
+  `cold.Applier` and `cold.Watermarker`, and that is the point rather than a convenience: a
   composition whose drains land somewhere the watermark does not read back is a shard that replays
   what it already applied, and no test built that way could ever notice. It is a double and not a
   cold store — it records what a drain carried and what watermark it moved, and interprets nothing.
+  It did not become redundant when `cold/memcold` arrived, and the division is worth keeping
+  straight: a suite that needs a drain to **land** uses the store, and a suite that needs a drain to
+  fail in a chosen way uses `coldtest.Refusing(err)`, because a correct store cannot be asked to
+  return the error a test is about.
 * **`verify/basetest`** — the pre-window rows in memory, the second adapter at the seam
   `baserow.Store` names. Absence is what makes it worth a package: a row that is not there arrives
   as a NotFound and becomes a nil row, and a double answering absence its own way leaves every
@@ -346,7 +467,7 @@ drive; they assert nothing. **Judgements** say yes or no.
 | `verify/mutgen` | the mutation-stream generator, deterministic from its seed |
 | `verify/mutbuild` | one well-formed mutation of a named shape, for a unit test |
 | `verify/drive`, `verify/foldrun` | the writing half of a run, and the loop that folds it window by window |
-| `verify/coldtest`, `verify/basetest`, `verify/coldtasks` | the cold store, the pre-window rows, and a model of the base's task pagination — all in memory |
+| `verify/coldtest`, `verify/basetest`, `verify/coldtasks` | the doubles: a drain's outcome on demand, the pre-window rows, and a model of the base's task pagination. The *store* is `cold/memcold`, outside `verify/` |
 | `verify/checker` | the journal and its assertions A1–A10, for a run under faults |
 | `verify/witness` | the claims a run makes about the layer's own counters, as a pure function of values |
 
@@ -354,22 +475,26 @@ drive; they assert nothing. **Judgements** say yes or no.
 
 | package | what it says |
 |---|---|
-| `verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement |
+| `verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said and hold nothing a drain that lost the shard carried |
+| `verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
 | `verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
+| `cold/memcold` | *(not under `verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the seven cases over the one method those suites do not know about |
 | `wal/waltest` | an implementation of `wal.Log` satisfies the five guarantees — the one judgement here written to be run against somebody else's code |
 
 Who judges what. Circles are judgements, boxes are what they are stated over.
 
 ```mermaid
 graph LR
-  A(("verify/acceptance")) --> F["fold, over a generated stream"]
+  A(("verify/acceptance")) --> F["fold, over a generated stream and into a real database"]
+  E(("verify/e2e")) --> S["a Temporal server composed over both seams"]
   G(("verify/guard")) --> D["decisions somebody may revert"]
   W(("wal/waltest")) --> L["any wal.Log implementation"]
+  MC(("cold/memcold")) --> T["Temporal's own four persistence suites"]
   WI["verify/witness"] --> C["the layer's own counters"]
   CH["verify/checker"] --> J["a journal of a run under faults"]
 ```
 
-The three judgement packages, with the two judging *modules* drawn beside them: `witness` and
+The judgement packages, with the two judging *modules* drawn beside them: `witness` and
 `checker` state claims rather than run them, and each is a judgement's claims pulled into a module of
 its own so that the thing whose job is to catch a silent pass is itself judged by a table test.
 
@@ -433,10 +558,14 @@ suites above and are stated where they are:
   is exercised over an in-process log by `cycle`'s own tests; what is not exercised is a real
   handover, and the instrument for that is `verify/checker` with a harness this repository does not
   have;
-* **nothing here judges the fold against a real store.** The acceptance judges that the fold is
-  self-consistent at volume — every mutation lands in exactly one window, the windows collapse, the
-  refusal path runs — and not that a folded batch leaves a cold store where the sequential path would
-  have. That claim needs an oracle, and an oracle needs a store.
+* **nothing here judges the fold against the sequential path.** A folded batch now *executes*
+  against a real Temporal schema, which is what `TestBothSeamsRealNoServer` added and which catches
+  a merged request no store would take. What is still unjudged is the stronger claim — that a folded
+  batch leaves a store where mutation-by-mutation writing would have left it — and that needs a
+  differential oracle running one stream twice into two stores. `memcold` is one store; the oracle
+  needs the second to be one a deployment cares about;
+* **nothing here survives its own process.** Both backends are in memory. No suite has ever fsynced,
+  crossed a network, waited on a quorum, or been killed.
 
 ---
 
@@ -446,7 +575,17 @@ suites above and are stated where they are:
   cases, and the guarantee each is stated under;
   [`fault.go`](../../wal/waltest/fault.go) is `Faulty`.
 * [`../../verify/acceptance/acceptance_fold_test.go`](../../verify/acceptance/acceptance_fold_test.go)
-  — the stream, the window, the assertions and the knob control at the other end of the dial.
+  — the stream, the window, the assertions and the knob control at the other end of the dial;
+  [`acceptance_seams_test.go`](../../verify/acceptance/acceptance_seams_test.go) is the same shape
+  over both real seams, with the ledger that says what the database must hold.
+* [`../../cold/memcold/conformance_test.go`](../../cold/memcold/conformance_test.go) — Temporal's
+  four suites over the shipped store, and why a suite of ours is not beside them;
+  [`apply_test.go`](../../cold/memcold/apply_test.go) is the one method they do not reach, and
+  [`isolation_test.go`](../../cold/memcold/isolation_test.go) is the pair the four suites stay green
+  without.
+* [`../../verify/e2e/server.go`](../../verify/e2e/server.go) — the server's configuration, the
+  readiness probe and the log gate; [`e2e_test.go`](../../verify/e2e/e2e_test.go) is the two arms
+  and what each claims.
 * [`../../verify/mutgen/mutgen.go`](../../verify/mutgen/mutgen.go) — the generator and the
   determinism rules it is written under; [`corpus.go`](../../verify/mutgen/corpus.go) is the report
   a stream makes about itself.

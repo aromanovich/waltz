@@ -1,7 +1,7 @@
 // Package coldtest is the cold store a drain lands in, in memory.
 //
 // It is the only adapter here at the two seams the apply cycle reaches the cold
-// store through, [cycle.Applier] and [cycle.Watermarker]: the real one is the
+// store through, [cold.Applier] and [cold.Watermarker]: the real one is the
 // caller's, and needs a store — so every package composing a layer to test
 // something else wrote a pair of its own, and the seam that exists "so a test
 // can vary a drain's outcome without a cluster" had no adapter that did.
@@ -26,7 +26,7 @@ import (
 // somewhere the watermark does not read back is a shard that replays what it
 // already applied.
 //
-// It satisfies cycle.Applier and cycle.Watermarker by shape. Naming them would
+// It satisfies cold.Applier and cold.Watermarker by shape. Naming them would
 // make this package know the cycle, which it has no reason to.
 type Cold struct {
 	mu      sync.Mutex

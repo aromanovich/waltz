@@ -7,8 +7,9 @@ what a database does with that query, and the two conclusions the whole design f
 for the reader changing the layer, and for the operator deciding what the layer can and cannot be
 expected to improve.
 
-**The worked example is one store, named as such.** waltz implements no persistence and this chapter
-would be empty without a concrete incumbent to describe, so what follows is the store the design was
+**The worked example is one store, named as such.** waltz is not a persistence implementation — the
+one store in the tree exists so the layer can be exercised, and it is not what anybody deploys — so
+this chapter would be empty without a concrete incumbent to describe. What follows is the store the design was
 built and measured against in the research prototype: an implementation of Temporal's persistence API
 over a distributed SQL database with immediate single-partition transactions. Every structural claim
 below is that store's rather than a law about stores. What generalises is stated as such, and the two
@@ -260,9 +261,9 @@ latency is not a goal.
 The reasoning is a property of *that* log, not of logs. A log whose acknowledgement costs a single
 network hop to the nearest quorum would buy latency, and putting one under the layer would change
 what a caller waits for without changing anything above it. That is precisely why `wal.Log` is a
-contract and why this library ships no real implementation of it: the seam exists so the class of
-backend can change without an invariant moving, and choosing the backend is the deployment's
-decision rather than this library's.
+contract and why the one implementation shipped here is a log in memory rather than a candidate: the
+seam exists so the class of backend can change without an invariant moving, and choosing the backend
+is the deployment's decision rather than this library's.
 [Chapter 04](04-contracts.md#what-the-contract-does-not-say-what-an-append-costs) is where that
 argument is made in the contract's own terms.
 

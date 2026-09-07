@@ -63,7 +63,7 @@ The conventional answer for a repository nothing imports, and the one a reader o
 would expect. Two facts rule it out. [ADR 0002](0002-wal-contract-is-backend-independent.md)
 promises the `wal` contract *together with its conformance suite* to the author of a second backend,
 who is by definition outside this module — and `wal/waltest` cannot live under `internal/` at all.
-The same is true of `verify/coldtest`: a caller writing a `cycle.Applier` over their own store needs
+The same is true of `verify/coldtest`: a caller writing a `cold.Applier` over their own store needs
 a double to test the seam against.
 
 What is left for `internal/` to buy is protection against an external importer of `fold` or `cycle`,
@@ -94,6 +94,23 @@ Grouping already delivers what the rename was for.
 What was done instead: a `doc.go` or a package comment whose first line says in plain words what the
 package is, the handbook for the order nesting cannot express, and the `CONTEXT.md` entries for
 Wrapper, Node, Cycle and Checker.
+
+## Amendment — a third thing at the module root, and one more judge
+
+[ADR 0011](0011-each-seam-ships-one-implementation.md) put an implementation at the cold seam, and
+the two-group split does not describe it. `cold/` is the layer (the contract the cycle drives), but
+`cold/memcold/` is a **store**: it does not run in production, it does not judge, and it is not a
+double. So the module root now holds three kinds of thing rather than two, and what keeps that
+legible is a dependency rule rather than a directory — nothing of the layer may import `memcold`,
+and `memcold` may import nothing of the layer.
+
+`verify/` gains `e2e/`, which is a judgement in the sense the section below uses: it boots a
+Temporal server over the layer and states what the layer must have seen.
+
+The sentence in "the tests somewhere other than beside the code" that says "the cold store is
+`verify/coldtest`" is superseded: the cold store is `cold/memcold` and `verify/coldtest` is the
+double beside it. The reasoning it was supporting — that nothing here needs a cluster, so every
+package's tests sit beside it — is unchanged and is now stronger.
 
 ## Amendment — the rules are read, not run
 
