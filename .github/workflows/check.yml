@@ -1,0 +1,56 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A push that supersedes an earlier one cancels it: nothing here writes
+# anywhere, so a half-finished run has nothing to leave behind.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    # The suite is under a minute on a laptop. A run that reaches this limit is
+    # a test waiting on something rather than a slow one, and waiting is the
+    # failure mode this module is built to not have.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # go.mod is the single statement of the version; naming one here too
+          # is a second place to forget.
+          go-version-file: go.mod
+          cache: true
+      # No services, no containers: both shipped backends live in the test
+      # process, so this is the whole suite including the Temporal server that
+      # internal/verify/e2e boots.
+      - run: make test
+      # Both linters are `go run`ed from pins in the Makefile, so the first run
+      # on a cold cache pays to build them and later ones do not.
+      - run: make lint
+
+  handbook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/handbook/package-lock.json
+      # Parses every mermaid block and resolves every link and heading anchor.
+      # site/ is not checked in, so this is the only thing that catches a broken
+      # one before a reader does.
+      - run: npm ci
+        working-directory: docs/handbook
+      - run: npm run check
+        working-directory: docs/handbook
