@@ -1,0 +1,41 @@
+name: release
+
+# Pushing a tag publishes the handbook as one downloadable file. The release
+# itself is created here if it does not exist yet, so either order works: tag
+# first and let this make the release, or draft the release and push the tag.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  handbook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/handbook/package-lock.json
+      - run: npm ci
+        working-directory: docs/handbook
+      # A release must not ship a book with a diagram that does not parse or a
+      # link that resolves to nothing.
+      - run: npm run check
+        working-directory: docs/handbook
+      # WALTZ_REF is what the file's links to source land on: the tag being
+      # released, so they keep saying what the prose beside them says.
+      - run: npm run build:single
+        working-directory: docs/handbook
+        env:
+          WALTZ_REF: ${{ github.ref_name }}
+      - run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes
+          gh release upload "$TAG" docs/handbook/site/waltz-handbook.html --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
