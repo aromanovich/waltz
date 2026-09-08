@@ -50,9 +50,9 @@ afterwards, inside its own fx graph. So the handler travels back down the same s
 
 Keep one ambiguity in mind for the rest of the chapter. A blank dashboard means no traffic, or
 passthrough mode, or a layer that never received the real handler. Scraped metrics describe what was
-emitted; they cannot prove that the intended path ran.
-[Chapter 11](11-verification.md#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it)
-uses an in-process witness for that stronger claim.
+emitted; they cannot prove that the intended path ran. [Chapter
+11](11-verification.md#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it) uses an
+in-process witness for that stronger claim.
 
 ```mermaid
 flowchart LR
@@ -369,9 +369,9 @@ quietly go stale.
   **not yet settled**.
 
 They part company at a drain that settles its entries without moving the watermark. That is what the
-third position, `resolved`, is for, and
-[chapter 02](02-concepts-and-invariants.md#three-positions-not-two) has it. Both series are emitted
-so that a dashboard can see the gap rather than average it away.
+third position, `resolved`, is for, and [chapter
+02](02-concepts-and-invariants.md#three-positions-not-two) has it. Both series are emitted so that a
+dashboard can see the gap rather than average it away.
 
 The gap can open in the surprising direction — a tail reading **below** its unapplied count — and
 that reading is worth chasing. Three kinds of drain settle without moving the watermark, and two of

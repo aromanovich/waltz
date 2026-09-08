@@ -96,8 +96,8 @@ split well below it.
 Nothing in the query enforces the assumption. If one shard's rows grow across a split boundary, or a
 split lands in the middle of one shard's range, the same code silently starts paying for
 coordination: the query text does not change, the write still succeeds, and it now costs a
-coordinator round. The log has the same hole one level up.
-[Chapter 04](04-contracts.md#what-the-contract-does-not-say-what-an-append-costs) states it there as
+coordinator round. The log has the same hole one level up. [Chapter
+04](04-contracts.md#what-the-contract-does-not-say-what-an-append-costs) states it there as
 invariant I9, and nothing inside this library can check it either. Below the layer, in the store's
 own table, the property is not even this repository's to state: it belongs to whoever operates the
 store.
@@ -152,10 +152,10 @@ never of how many rows it asserts about or writes. Assertions travel as list par
 a transaction asserting one row and one asserting two hundred emit identical text, and the server
 compiles it once. That is not an accident of the incumbent. It is the property the layer's own drain
 has to keep when it folds many workflows into one such query, and a statement whose text grew with
-the batch would compile slowly enough on a real store to time one out.
-[Chapter 11](11-verification.md#the-guards) therefore describes a drain query-shape guard for a
-deployment to build against its own applier, since nothing in this tree can watch that for a store it
-has never seen.
+the batch would compile slowly enough on a real store to time one out. [Chapter
+11](11-verification.md#the-guards) therefore describes a drain query-shape guard for a deployment to
+build against its own applier, since nothing in this tree can watch that for a store it has never
+seen.
 
 ## Event history rides separately, and first
 
@@ -163,10 +163,10 @@ Event history is not in that table at all. New event batches go to their own tab
 `(tree_id, branch_id, node_id, txn_id)`, with a tree row per branch — a different table, a different
 key space, and a different partitioning.
 
-They are also written **before** the conditional write, not inside it.
-`CreateWorkflowExecution` and `UpdateWorkflowExecution` each begin by calling the history store, and
-only then the mutable-state store. In the example store that first stage is **one transaction per
-row**, all of them started in parallel and all of them finished before the conditional write is sent.
+They are also written **before** the conditional write, not inside it. `CreateWorkflowExecution` and
+`UpdateWorkflowExecution` each begin by calling the history store, and only then the mutable-state
+store. In the example store that first stage is **one transaction per row**, all of them started in
+parallel and all of them finished before the conditional write is sent.
 
 A batch of events is one row. So:
 
@@ -176,12 +176,12 @@ A batch of events is one row. So:
 * a transition that starts a new history branch pays an extra tree row, and so an extra transaction,
   on top of that.
 
-The layer keeps that stage where it was and changes its shape.
-`wrapper.ExecutionStore.appendEvents` walks the mutation's `EventSlots()` and puts each batch down
-through the base store's `AppendHistoryNodes` — one call per batch, in order rather than in parallel.
-It does so before the mutation is handed to the cycle, because a mutation acked with its events
-unwritten would point at history nodes nobody wrote. What that costs the design is
-[the ceiling on the win](#therefore-fewer-writes-and-the-ceiling-on-the-win), below.
+The layer keeps that stage where it was and changes its shape. `wrapper.ExecutionStore.appendEvents`
+walks the mutation's `EventSlots()` and puts each batch down through the base store's
+`AppendHistoryNodes` — one call per batch, in order rather than in parallel. It does so before the
+mutation is handed to the cycle, because a mutation acked with its events unwritten would point at
+history nodes nobody wrote. What that costs the design is [the ceiling on the
+win](#therefore-fewer-writes-and-the-ceiling-on-the-win), below.
 
 ```mermaid
 graph TD
@@ -218,10 +218,10 @@ The rows inside the interval when the delete runs are exactly the rows the calle
 written, so naming a time interval and naming those rows come to the same thing. They stop being the
 same thing the moment something holds a write back past a delete — which is exactly what a window
 does. That is why the layer resolves ranges against the window rather than modelling a per-category
-ack level, and that rule is invariant I7
-([chapter 02](02-concepts-and-invariants.md#i7-at-more-length) states it,
-[chapter 07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write) owns its read side);
-this chapter only records where the shape came from.
+ack level, and that rule is invariant I7 ([chapter
+02](02-concepts-and-invariants.md#i7-at-more-length) states it, [chapter
+07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write) owns its read side); this
+chapter only records where the shape came from.
 
 ## Immediate and distributed transactions
 
@@ -265,9 +265,8 @@ Stated plainly, and carrying the assumption above:
 
 That claim is not one of the numbered invariants, and it could not be. I1–I11 name what the layer's
 own code and suites enforce; this is a property of the system the layer sits in front of, which
-neither can reach.
-[Chapter 02](02-concepts-and-invariants.md#the-invariants-without-a-number) draws the same
-distinction from the other side.
+neither can reach. [Chapter 02](02-concepts-and-invariants.md#the-invariants-without-a-number) draws
+the same distinction from the other side.
 
 ## What follows: a log on the same database buys no latency
 
@@ -276,10 +275,10 @@ The consequence is not about the layer's construction. It is about the log under
 An append to a durable log **built on the same database** costs about what the write it replaces
 costs: one conditional immediate transaction, to the same cluster, over adjacent keys of one table.
 That is word for word the description of the store write it is supposed to be cheaper than. Such a
-log therefore **cannot acknowledge faster than the store**, and buys nothing in latency. The research
-prototype's first backend was exactly that log, and it is why
-[chapter 01](01-overview.md#what-one-write-costs-with-and-without-the-layer) states outright that
-latency is not a goal.
+log therefore **cannot acknowledge faster than the store**, and buys nothing in latency. The
+research prototype's first backend was exactly that log, and it is why [chapter
+01](01-overview.md#what-one-write-costs-with-and-without-the-layer) states outright that latency is
+not a goal.
 
 That reasoning is about *that* log, not about logs in general. A log whose acknowledgement costs a
 single network hop to the nearest quorum would buy latency, and putting one under the layer would
@@ -288,9 +287,8 @@ the seam exists so that the class of backend can change without any invariant mo
 the only implementation shipped here, `wal/memwal`, is a log in process memory. It is a real backend
 — it passes the same conformance suite any other would — but it dies with the process, so it is not
 a candidate for a deployment to run. Which backend to run is a deployment's decision, not this
-library's.
-[Chapter 04](04-contracts.md#what-the-contract-does-not-say-what-an-append-costs) is where that
-argument is made in the contract's own terms.
+library's. [Chapter 04](04-contracts.md#what-the-contract-does-not-say-what-an-append-costs) is
+where that argument is made in the contract's own terms.
 
 ## Therefore: fewer writes, and the ceiling on the win
 
@@ -318,8 +316,8 @@ store's database it is false.
 
 **No measurement.** This chapter says what a write is *made of*. It does not say how many rows one
 costs, or by what factor the layer makes them fewer. **That measurement does not exist.** Every
-number above is a schema constant or a count of statements, and
-[chapter 15](15-the-limits-of-the-evidence.md#write-amplification-against-the-incumbent-has-never-been-measured)
+number above is a schema constant or a count of statements, and [chapter
+15](15-the-limits-of-the-evidence.md#write-amplification-against-the-incumbent-has-never-been-measured)
 lists write amplification among the measurements deliberately not made.
 
 ## Where this lives in the code

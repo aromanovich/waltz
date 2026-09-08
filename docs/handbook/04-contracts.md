@@ -24,11 +24,10 @@ tables below are the reference for those decisions.
 
 This chapter is the reference for the interfaces themselves. For the mechanism behind them, read
 [chapter 03](03-components.md) for who stands where, [chapter 05](05-write-path.md) for a write end
-to end, [chapter 06](06-shard-lifecycle.md) for ownership and replay, and
-[chapter 07](07-read-path.md) for the overlay and the task merge. The invariants cited by number
-below — I1, I2, I4, I5, I7, I9, I10 and I11 — are stated in
-[chapter 02](02-concepts-and-invariants.md), and the metrics that watch them are in
-[chapter 10](10-metrics.md).
+to end, [chapter 06](06-shard-lifecycle.md) for ownership and replay, and [chapter
+07](07-read-path.md) for the overlay and the task merge. The invariants cited by number below — I1,
+I2, I4, I5, I7, I9, I10 and I11 — are stated in [chapter 02](02-concepts-and-invariants.md), and the
+metrics that watch them are in [chapter 10](10-metrics.md).
 
 ## The seams, at a glance
 
@@ -506,16 +505,15 @@ none.
 | `AppendHistoryNodes`, `DeleteHistoryNodes`, `ReadHistoryBranch`, `ForkHistoryBranch`, `DeleteHistoryBranch`, `GetHistoryTreeContainingBranch`, `GetAllHistoryTreeBranches` | transit |
 
 That is 8 intercepted writes + 3 reads answered from the layer + 1 refusal + 16 transits = 28.
-`ErrCompleteHistoryTaskUnsupported` is a
-`serviceerror.NewUnimplemented`: the log's deletion record is a range per category, not a key, and a
-second deletion shape would be another thing every reader, drain and replay has to agree about. A
-range is also the shape the caller already has: a queue checkpoint is a `[old, new)` interval, and
-the log's deletion record is that checkpoint restated. Its one caller is the admin handler's
-`RemoveTask`, and that caller is already unreliable against an intercepting node — a delete forwarded
-to the cold store for a task still sitting in the window finds no row, removes nothing and reports
-success. The choice is between a refusal an operator sees and a success an operator believes. On a
-node in intercept mode the admin remove-task API is therefore unavailable, by design rather than by
-omission.
+`ErrCompleteHistoryTaskUnsupported` is a `serviceerror.NewUnimplemented`: the log's deletion record
+is a range per category, not a key, and a second deletion shape would be another thing every reader,
+drain and replay has to agree about. A range is also the shape the caller already has: a queue
+checkpoint is a `[old, new)` interval, and the log's deletion record is that checkpoint restated.
+Its one caller is the admin handler's `RemoveTask`, and that caller is already unreliable against an
+intercepting node — a delete forwarded to the cold store for a task still sitting in the window
+finds no row, removes nothing and reports success. The choice is between a refusal an operator sees
+and a success an operator believes. On a node in intercept mode the admin remove-task API is
+therefore unavailable, by design rather than by omission.
 
 Obligations of the intercepted path, which the store discharges:
 
@@ -644,8 +642,8 @@ the pre-window row, and the window already knows what it held.
 
 A third rule is about the shape of the query rather than its assertions: **a drain's statement text
 must be a function of assertion kinds and delete families, never of how many mutations the window
-folded.** Why that is a requirement rather than a nicety is
-[chapter 13](13-designs-that-were-rejected.md#a-folded-window-as-a-concatenation-of-the-stores-own-queries).
+folded.** Why that is a requirement rather than a nicety is [chapter
+13](13-designs-that-were-rejected.md#a-folded-window-as-a-concatenation-of-the-stores-own-queries).
 
 ### `apply.Class` — sorting the outcome
 
@@ -916,9 +914,9 @@ parameter rather than something it builds — that is the point of the type, and
 library. All three are seams through which the layer is testable without a cluster, and the layer
 itself implements none of them: the implementations shipped here, `wal/memwal` for the log and
 `cold/memcold` for the other two, sit *under* the seam, where a deployment's own storage sits.
-`Registry` is constructible only by `TaskCategories(dc, cfg)` or
-`DefaultTaskCategories()`: a composition accepting upstream's interface directly would accept the
-plain default registry too, which is a second answer to which registry a node decodes a tail with.
+`Registry` is constructible only by `TaskCategories(dc, cfg)` or `DefaultTaskCategories()`: a
+composition accepting upstream's interface directly would accept the plain default registry too,
+which is a second answer to which registry a node decodes a tail with.
 
 `Layer`'s narrow surface:
 

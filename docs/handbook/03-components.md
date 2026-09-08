@@ -269,13 +269,13 @@ That is what makes the accumulator single-threaded with no lock at all. Work rea
 before you add one. **Everything on this goroutine is serialised behind the accumulator and the
 drain**, so a job that waits on the cold store holds up every write to the shard.
 
-Serving the *reads* here too is a correctness decision, not tidiness. The window empties when a drain
-*starts*, and the tail settles only when that drain's transaction *commits*; between those two
+Serving the *reads* here too is a correctness decision, not tidiness. The window empties when a
+drain *starts*, and the tail settles only when that drain's transaction *commits*; between those two
 moments a mutation is in neither the window nor the store. A read served on any other goroutine can
 land in that interval. What it returns is not a stale answer but a write undone — and for a task
 page, a task lost rather than late, because a queue that reads its range and finds nothing completes
-that range. Both consequences are
-[chapter 07](07-read-path.md#why-a-read-served-anywhere-else-is-not-merely-stale).
+that range. Both consequences are [chapter
+07](07-read-path.md#why-a-read-served-anywhere-else-is-not-merely-stale).
 
 ### What lives off the loop
 

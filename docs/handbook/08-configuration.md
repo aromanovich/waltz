@@ -151,8 +151,8 @@ Three mechanical consequences of `sync`, for anyone reading a sync-mode run's nu
   becomes durable before its condition has been verified, and replay reads that bit back so an
   inherited provisional entry whose condition fails is dropped rather than treated as a divergence.
 
-What `drain_on_read` does to a read is
-[chapter 07](07-read-path.md#2-routing-a-read-and-drainonread) and
+What `drain_on_read` does to a read is [chapter
+07](07-read-path.md#2-routing-a-read-and-drainonread) and
 [`../../cycle/read.go`](../../cycle/read.go); what `sync` does inside a write is `Cycle.add` in
 [`../../cycle/cycle.go`](../../cycle/cycle.go).
 
@@ -317,12 +317,12 @@ trips.
 
 What the budget bounds is **encoded bytes**, not resident memory. Decoded protobufs and the
 accumulator's indices make the live heap several times larger, so a node sized by reading
-`tailBudgetBytes` as a memory figure is sized wrong.
-[Chapter 14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident) has the multiplier
-the research prototype measured, what the shipped budget therefore costs with every shard at its
-bound, and what moves it. Re-measure that multiplier for the workload being deployed rather than
-trusting it, and size the node from your own result. The settings to change are
-`wal.tailBudgetBytes` and `wal.hardMaxBytes`, and both need a restart.
+`tailBudgetBytes` as a memory figure is sized wrong. [Chapter
+14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident) has the multiplier the
+research prototype measured, what the shipped budget therefore costs with every shard at its bound,
+and what moves it. Re-measure that multiplier for the workload being deployed rather than trusting
+it, and size the node from your own result. The settings to change are `wal.tailBudgetBytes` and
+`wal.hardMaxBytes`, and both need a restart.
 
 **Read traffic does not enter this budget**, because the read path retains nothing
 ([chapter 07](07-read-path.md#1-route-only-reads-whose-answer-can-be-split)). What a shard holds is

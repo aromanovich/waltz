@@ -76,8 +76,8 @@ On the research prototype this library was extracted from, the drain's query was
 concatenation, so its *structure* — not just its values — grew with every row in the batch, and no
 compilation of it was ever cached. A window of 32 was enough to put that prototype's drain into a
 compilation timeout. A timeout arrives ambiguous: the drain neither committed nor provably did not,
-so the layer halted the shard rather than retry.
-[Chapter 13](13-designs-that-were-rejected.md#a-folded-window-as-a-concatenation-of-the-stores-own-queries)
+so the layer halted the shard rather than retry. [Chapter
+13](13-designs-that-were-rejected.md#a-folded-window-as-a-concatenation-of-the-stores-own-queries)
 has why that shape was refused.
 
 The shape that replaced it buys **constancy**: the query's shape is a function of which assertion
@@ -115,13 +115,13 @@ An operator meets the same interaction from the other side: when task drops clim
 
 ## Nothing is claimed about latency
 
-Whether the layer costs or saves latency is entirely a property of the pair a deployment chooses: the
-log it appends to, and the store it would otherwise have committed to. If the two are the same class
-of storage, the append costs about what the write it replaced cost, and the benefit is fewer and
-smaller later writes to the cold store rather than a faster call —
-[chapter 12](12-the-write-before-the-layer.md#what-follows-a-log-on-the-same-database-buys-no-latency)
-argues that case. If the log is cheaper to append to than the store is to commit to, there is a
-latency win, and **nothing here measures it**.
+Whether the layer costs or saves latency is entirely a property of the pair a deployment chooses:
+the log it appends to, and the store it would otherwise have committed to. If the two are the same
+class of storage, the append costs about what the write it replaced cost, and the benefit is fewer
+and smaller later writes to the cold store rather than a faster call — [chapter
+12](12-the-write-before-the-layer.md#what-follows-a-log-on-the-same-database-buys-no-latency) argues
+that case. If the log is cheaper to append to than the store is to commit to, there is a latency
+win, and **nothing here measures it**.
 
 That is why `wal.Log` is a contract: the seam exists so the class of backend can change without an
 invariant moving. What this repository can say about an implementation of it is exactly what
@@ -166,9 +166,9 @@ not caught is a merged request the schema *accepts* and which is nevertheless no
 sequential path would have produced. Catching that needs a differential oracle: one stream applied
 twice, once sequentially and once folded, the two stores required to end identical. `memcold`
 supplies one of the two stores; it cannot supply the argument, because a rule agreeing with its own
-re-implementation is not evidence
-([chapter 13](13-designs-that-were-rejected.md#a-unit-test-per-fold-rule) is why). The oracle stays
-a deployment's to build, over the store it actually cares about.
+re-implementation is not evidence ([chapter
+13](13-designs-that-were-rejected.md#a-unit-test-per-fold-rule) is why). The oracle stays a
+deployment's to build, over the store it actually cares about.
 
 Four places where the folded path knowingly answers differently from upstream's sequential path are
 known and deliberate, and each is written down beside the code it is about:

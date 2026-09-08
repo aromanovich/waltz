@@ -247,14 +247,14 @@ own transaction, so that watermark is the only witness to whether the drain comm
 of the watermark itself fails, the cycle knows neither answer.
 
 Halting there would turn a blip into a lost shard. So instead the drain's seqno becomes a **floor on
-the tail** (`tailstate.Tail.Stall`): nothing settles or commits over it, and both writers and readers
-are refused until one readable watermark ends the stall. A watermark at or above the drain's seqno
-means it committed after all. A watermark below it — or none recorded at all — means it did not, and
-the shard halts on the invariant side.
-What the refusals look like, and why the age tick is the only thing that can heal a stall, is
-[chapter 05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read). For this chapter the
-point is the placement: a stall is a property of the *tail*, not a fourth `State`, so a shard that
-recovers from one has nothing to un-halt.
+the tail** (`tailstate.Tail.Stall`): nothing settles or commits over it, and both writers and
+readers are refused until one readable watermark ends the stall. A watermark at or above the drain's
+seqno means it committed after all. A watermark below it — or none recorded at all — means it did
+not, and the shard halts on the invariant side. What the refusals look like, and why the age tick is
+the only thing that can heal a stall, is [chapter
+05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read). For this chapter the point is
+the placement: a stall is a property of the *tail*, not a fourth `State`, so a shard that recovers
+from one has nothing to un-halt.
 
 ---
 
@@ -403,12 +403,12 @@ Nor does it pin ownership: if Temporal independently acquires a higher rangeID, 
 installs a fresh cycle and retires this one, and the successor replays the same evidence. Capture the
 log promptly rather than assuming the halted cycle will keep it indefinitely.
 
-What a halted shard answers a *reader* is
-[chapter 07](07-read-path.md#2-routing-a-read-and-drainonread). Briefly: an empty tail passes
-through to the cold store in either halt, and a non-empty one refuses. The refusal is
-`ShardOwnershipLost` under `halted-lost`, and the halt's own error, cause included, under
-`halted-invariant`. The one exception is a task read under `halted-lost`, which is refused whatever
-the tail holds, because its one caller would complete a range it was handed short.
+What a halted shard answers a *reader* is [chapter
+07](07-read-path.md#2-routing-a-read-and-drainonread). Briefly: an empty tail passes through to the
+cold store in either halt, and a non-empty one refuses. The refusal is `ShardOwnershipLost` under
+`halted-lost`, and the halt's own error, cause included, under `halted-invariant`. The one exception
+is a task read under `halted-lost`, which is refused whatever the tail holds, because its one caller
+would complete a range it was handed short.
 
 Every transition in this chapter is instrumented. The table below is the whole of it in one place —
 a reference to come back to once the transitions above are familiar, not a way of learning them:

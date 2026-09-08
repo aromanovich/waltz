@@ -307,9 +307,8 @@ the base alone could let the queue complete past 20. The only valid page is the 
 `GetHistoryTasks` is therefore the one read that merges rather than renders, and it is answered in
 two halves. The cycle decides **who may answer a page, when, and whether the window is usable yet**,
 which is [section 2](#2-routing-a-read-and-drainonread) above; `fold.Accumulator.TaskPage` decides
-**what one page holds** — the cut, the token, the batch
-arithmetic, the dedup, the subtraction of undrained range deletes — and it sits beside the window it
-reads.
+**what one page holds** — the cut, the token, the batch arithmetic, the dedup, the subtraction of
+undrained range deletes — and it sits beside the window it reads.
 
 The base page reaches `fold` as a callback (`fold.BasePage`, taking a batch size and a token) rather
 than as a page. The merge chooses its own batch size and its own token, but the round trip stays the
@@ -387,13 +386,13 @@ The token this layer hands back is its own (`taskPageToken`), framed with a four
 No state is kept between calls: those fields are the whole cursor.
 
 Three facts leave the cut no freedom: a page may not exceed `BatchSize`; the base's token is in the
-base store's own format, which this layer may neither parse nor synthesise; and a scheduled range can
-name only a fire time as a resume point.
-Therefore **the cut is at the end of a base page or below its first row, never inside one**. Either
-the whole base page is emitted and its token advances, or none of it is and the incoming token comes
-back untouched. A partially emitted base page would mean lost rows on one side and duplicates on the
-other. The base is asked for `BatchSize` minus what the window contributes, so window tasks
-*displace* cold-store rows rather than adding to them.
+base store's own format, which this layer may neither parse nor synthesise; and a scheduled range
+can name only a fire time as a resume point. Therefore **the cut is at the end of a base page or
+below its first row, never inside one**. Either the whole base page is emitted and its token
+advances, or none of it is and the incoming token comes back untouched. A partially emitted base
+page would mean lost rows on one side and duplicates on the other. The base is asked for `BatchSize`
+minus what the window contributes, so window tasks *displace* cold-store rows rather than adding to
+them.
 
 Two floors on that arithmetic are what make the pagination terminate. `BatchSize` itself is floored
 at one, because a page of zero rows would make the pagination endless. And the ask is
@@ -426,8 +425,8 @@ It is counted rather than raised, because a read is the wrong place to discover 
 The page is still correct — the base's row wins and the duplicate is dropped — so the merge finishes
 the page and records the number in three places: `TaskPageStats.Collisions`,
 `cycle.Counters.TaskCollisions`, and the `wal_merged_task_collisions` series. The expected value is
-zero. What to do when it is not zero is
-[chapter 09](09-operations.md#f-merged-page-collisions-are-non-zero).
+zero. What to do when it is not zero is [chapter
+09](09-operations.md#f-merged-page-collisions-are-non-zero).
 
 `TaskPageStats` is an instrument rather than a contract; its other fields (`BaseCalls`, `BaseRows`,
 `BaseDiscarded`, `WindowTouched`, `Comparisons`, `FromWindow`) are what the corpus tests measure the
@@ -448,10 +447,9 @@ shard reloads, and those tasks are never deleted.
 Because a merged read offers the window, a queue can complete a range covering a task whose row is
 still in the tail. If the drain then wrote that row anyway, it would land **below** the queue's
 deletion watermark: the server's `queueBase.rangeCompleteTasks` deletes `[old, new)` with `old` only
-rising, so no later
-range covers the row and every reader scope is rebuilt above it. The row would be permanent garbage.
-There is exactly one such row for every task the drop removes — the rows I7 declines to write are
-precisely the rows that would leak.
+rising, so no later range covers the row and every reader scope is rebuilt above it. The row would
+be permanent garbage. There is exactly one such row for every task the drop removes — the rows I7
+declines to write are precisely the rows that would leak.
 
 Nothing anywhere would notice such a row. Task rows are plain upserts into `executions`, a range
 completion is a bare `DELETE`, and no check compares an inserted key against a boundary already
@@ -583,9 +581,9 @@ The hit counters do the other job, and that is why both kinds exist. A test suit
 over a layer that came out empty as over one doing its work, so a run needs a **witness**: an
 assertion that the layer was exercised at all. The acceptance builds one out of `ReadsHeld` and
 `TaskReadsMerged` rather than out of `Reads` and `TaskReads`, because reads that never crossed a
-held workflow are exactly what an empty layer looks like.
-[Chapter 11](11-verification.md#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it)
-owns the witness; [chapter 10](10-metrics.md) owns every series named here, with its tags and units.
+held workflow are exactly what an empty layer looks like. [Chapter
+11](11-verification.md#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it) owns the
+witness; [chapter 10](10-metrics.md) owns every series named here, with its tags and units.
 
 ## Where this lives in the code
 

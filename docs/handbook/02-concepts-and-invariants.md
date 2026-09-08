@@ -141,9 +141,9 @@ of it, and [the log picture](#the-log-picture) below is the whole geometry.
 
 **Mutation.** One `ExecutionStore`-level write request the log carries, and the unit of atomicity:
 one mutation is one log entry. Eight request shapes exist — create, update, conflict-resolve, set,
-delete, delete-current, and the two task calls.
-*Not to be confused with:* "operation", "write", "update" — all three are ambiguous about
-granularity, and "mutation" no longer implies mutable state (see the next entry).
+delete, delete-current, and the two task calls. *Not to be confused with:* "operation", "write",
+"update" — all three are ambiguous about granularity, and "mutation" no longer implies mutable state
+(see the next entry).
 
 The two deletions — `DeleteWorkflowExecution` and `DeleteCurrentWorkflowExecution` — travel through
 the log for a reason of their own, and not the one the two task calls have. A deletion must take
@@ -173,11 +173,11 @@ and that fails in both directions.
 
 In the log they take effect in the order the caller wrote them.
 
-Every task belongs to a **category**, and a category is one of two kinds, which decides what its rows
-are keyed and ranged on: an **immediate** category (transfer, visibility, replication) is keyed on
-task id, a **scheduled** category (timers) on fire time. The distinction is Temporal's rather than
-the layer's, and it survives into every range the layer carries.
-*Not to be confused with:* "task write", which names only half of it.
+Every task belongs to a **category**, and a category is one of two kinds, which decides what its
+rows are keyed and ranged on: an **immediate** category (transfer, visibility, replication) is keyed
+on task id, a **scheduled** category (timers) on fire time. The distinction is Temporal's rather
+than the layer's, and it survives into every range the layer carries. *Not to be confused with:*
+"task write", which names only half of it.
 
 **Deletion range (`fold.TaskRange`).** A `[InclusiveMin, ExclusiveMax)` of one task category, as the
 caller's own checkpoint states it. It does not outlive the drain that carries it, and what that
@@ -225,8 +225,8 @@ pass and measures nothing.
 **Drain.** One pass of the apply cycle over a folded window. A non-empty batch is written in one
 transaction and moves appliedSeqno; an empty batch writes no transaction and settles its entries in
 memory without moving the watermark. A transactional drain is all-or-nothing, and appliedSeqno is
-the witness to whether that transaction committed.
-*Not to be confused with:* stopping a layer or a node, which is `Shutdown` (it drains *and* closes).
+the witness to whether that transaction committed. *Not to be confused with:* stopping a layer or a
+node, which is `Shutdown` (it drains *and* closes).
 
 **Apply.** The step that turns folded summary updates into cold-store writes: one transaction
 carrying the merged requests, the appliedSeqno bump and the epoch compare-and-swap. Who performs it
@@ -289,11 +289,11 @@ Answering here is answering *instead of* the store, so a discarded assertion tha
 the caller the store's own payload, not merely an error of the right Go type. `fold.currentConflict`
 rebuilds `*p.CurrentWorkflowConditionFailedError` from the very state blob the store would have
 deserialised — request ids, run id, execution state and status, last write version — because the
-server takes a current-row failure apart to decide whether to answer "already started" and whether to
-reuse the previous run. A run-row failure carries much less (a message, a next event id, a db record
-version) precisely because nothing dispatches on it.
-*Not to be confused with:* validation, precondition check — both suggest something the store would
-repeat, and this is what answers *instead of* the store.
+server takes a current-row failure apart to decide whether to answer "already started" and whether
+to reuse the previous run. A run-row failure carries much less (a message, a next event id, a db
+record version) precisely because nothing dispatches on it. *Not to be confused with:* validation,
+precondition check — both suggest something the store would repeat, and this is what answers
+*instead of* the store.
 
 **Watermark.** Unqualified, it means appliedSeqno: the position a drain moves. The apply cycle's
 age and size **triggers** are a different thing and are always called triggers.
@@ -359,9 +359,8 @@ construction, so the dedup is a safety net rather than the mechanism. What the p
 rests on is where it may cut: at the end of a base page or below its first row, never inside one.
 The cold store's pagination token is the underlying plugin's own bytes, which this layer may neither
 parse nor synthesise, so a half-emitted base page would lose rows on one side and duplicate them on
-the other.
-*Not to be confused with:* the overlay, which renders one run's state; this concatenates two sources
-and paginates.
+the other. *Not to be confused with:* the overlay, which renders one run's state; this concatenates
+two sources and paginates.
 
 **Cold store.** Whatever a deployment's persistence implementation writes its rows into: the
 permanent target of apply, reached only through `cold.Applier` and `cold.Watermarker`. No package of
@@ -400,8 +399,8 @@ what makes the read correct.
 eleven persistence methods into the layer, refuses a twelfth — `CompleteHistoryTask`, with
 `wrapper.ErrCompleteHistoryTaskUnsupported` — and transits the rest. It wraps the base plugin rather
 than forking it, and it may import no persistence implementation at all, so which store sits
-underneath is the binary's business.
-*Not to be confused with:* adapter, proxy — both suggest translation, and this one decides routing.
+underneath is the binary's business. *Not to be confused with:* adapter, proxy — both suggest
+translation, and this one decides routing.
 
 **Node, or composition.** What a running server composes the layer out of: the `wal` section of the
 custom datastore's options, the policy settings the server's dynamic config carries, the backends
@@ -617,9 +616,9 @@ as a mutation like any other, and resolves it the way it resolves every write-th
 `fold.TaskRange.Covers` is the store's own DELETE predicate, and it is the single answer to three
 questions at once — what the cold store loses, what the window drops, and what a merged read hides.
 
-Two consequences follow, and both are
-[chapter 07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write)'s, which owns I7's read
-side and the two counters used to measure it:
+Two consequences follow, and both are [chapter
+07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write)'s, which owns I7's read side
+and the two counters used to measure it:
 
 * a task created and completed inside one window is never written to the cold store at all;
 * the drop and the leak are the same number. For every task row the drop declines to write there is
@@ -663,13 +662,13 @@ known.
 
 ### I10, at more length
 
-The bound has two units — entries and bytes — and both come off `tailstate.Tail`, not off the window.
-They are not two spellings of one budget: **bytes bound memory**, the resident cost of an unapplied
-tail in the heap of the process that also runs the history service, and **entries bound recovery
-time**, since a successor must decode and fold every inherited entry and that work is per entry
-rather than per byte. Whichever trips first raises the refusal, and the `limit` tag says which. Why
-neither unit works alone, and where the two defaults come from, is
-[chapter 14](14-where-the-defaults-came-from.md#why-the-bound-counts-entries-as-well-as-bytes).
+The bound has two units — entries and bytes — and both come off `tailstate.Tail`, not off the
+window. They are not two spellings of one budget: **bytes bound memory**, the resident cost of an
+unapplied tail in the heap of the process that also runs the history service, and **entries bound
+recovery time**, since a successor must decode and fold every inherited entry and that work is per
+entry rather than per byte. Whichever trips first raises the refusal, and the `limit` tag says
+which. Why neither unit works alone, and where the two defaults come from, is [chapter
+14](14-where-the-defaults-came-from.md#why-the-bound-counts-entries-as-well-as-bytes).
 
 * **entries** going up means the applier is behind, and that a failover would take longer than it
   should;

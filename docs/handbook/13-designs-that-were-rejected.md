@@ -43,8 +43,8 @@ places:
 
 Everything a node knows about its own ownership is as fresh as its last attempt to act. A displaced
 owner that writes nothing is never fenced and needs no fencing: it holds no lock, delays no
-successor, and finds out the moment it acts.
-[Chapter 06](06-shard-lifecycle.md#1-first-exclude-the-failed-owner) owns the exclusion.
+successor, and finds out the moment it acts. [Chapter
+06](06-shard-lifecycle.md#1-first-exclude-the-failed-owner) owns the exclusion.
 
 ### Two ownership tokens, one for the log and one for the store
 
@@ -166,12 +166,12 @@ value is worth 2^20 = 1,048,576 ids. That is why the counter rises without any c
 why task-id uniqueness costs nothing extra. It is true, but it answers a weaker question than the one
 somebody asks on seeing three shard calls stay immediate.
 
-The same circularity is why an acquire is necessarily two writes to two places, and so cannot be made
-atomic: the fence has to land before the rangeID the fence is derived from. `wrapper.ShardStore`
-consequently **observes** `UpdateShard` rather than intercepting it — it fences the log at the new
-epoch, then lets the base store commit the row — and the cost of the non-atomicity is paid at replay
-time.
-[Chapter 06](06-shard-lifecycle.md#1-first-exclude-the-failed-owner) owns the order.
+The same circularity is why an acquire is necessarily two writes to two places, and so cannot be
+made atomic: the fence has to land before the rangeID the fence is derived from.
+`wrapper.ShardStore` consequently **observes** `UpdateShard` rather than intercepting it — it fences
+the log at the new epoch, then lets the base store commit the row — and the cost of the
+non-atomicity is paid at replay time. [Chapter
+06](06-shard-lifecycle.md#1-first-exclude-the-failed-owner) owns the order.
 
 ---
 
@@ -308,8 +308,8 @@ acknowledgement the layer exists for, or answer early anyway, which releases the
 are not in the store yet — the failure the hold exists to prevent.
 
 So the tasks still sitting in the window can only be supplied where the queue reads, by merging them
-into the page it asked for.
-[Chapter 07](07-read-path.md#4-merge-tasks-two-ordered-sources-one-page) owns the merged page.
+into the page it asked for. [Chapter 07](07-read-path.md#4-merge-tasks-two-ordered-sources-one-page)
+owns the merged page.
 
 ### A readiness gate
 
@@ -325,9 +325,9 @@ The shipped design needs neither. A read is a job on the shard's own cycle gorou
 goroutine that runs the drain, so no read can observe the interval between the window emptying and
 the transaction committing; there is nothing there to guard. Replay runs on that same goroutine and
 lazily: the first request to reach the shard triggers it, read or write alike, and it completes
-before that request is answered (`Cycle.startForRead`). The readiness gate is therefore a question of
-**where the work runs**, not a flag.
-[Chapter 07](07-read-path.md#2-routing-a-read-and-drainonread) owns it.
+before that request is answered (`Cycle.startForRead`). The readiness gate is therefore a question
+of **where the work runs**, not a flag. [Chapter
+07](07-read-path.md#2-routing-a-read-and-drainonread) owns it.
 
 ### Answering from the cold store while the window catches up
 
@@ -341,8 +341,8 @@ already been told that write happened; a read that says otherwise is not stale, 
 A variant of the same idea fails for a related reason: answer with the window's state but the base
 row's version. The server's next conditional write then asserts a version that nothing is ever going
 to write, and every write after it fails its condition. The overlay hands out the tail's version
-instead — the one the window's merged request will write —
-[chapter 07](07-read-path.md#3-overlay-mutable-state-base-plus-acknowledged-change).
+instead — the one the window's merged request will write — [chapter
+07](07-read-path.md#3-overlay-mutable-state-base-plus-acknowledged-change).
 
 ### A materialised per-run state, or an index over the window's tasks
 
@@ -367,11 +367,11 @@ One consequence is worth stating on its own: **merge-on-read does not make the q
 it correct.** Each page costs a scan of the window on top of the same cold-store round trip the queue
 would have made without the layer.
 
-What stands in its place is the scan, in
-[chapter 07](07-read-path.md#4-merge-tasks-two-ordered-sources-one-page). This refusal is a judgement
-about a size, so it comes with the condition under which to revisit it: it holds while a window
-carries tens of tasks per category, and stops holding if one routinely carries thousands. The shipped
-window of 256 mutations (`wal.windowMutations`) does not produce that; a much larger one might.
+What stands in its place is the scan, in [chapter
+07](07-read-path.md#4-merge-tasks-two-ordered-sources-one-page). This refusal is a judgement about a
+size, so it comes with the condition under which to revisit it: it holds while a window carries tens
+of tasks per category, and stops holding if one routinely carries thousands. The shipped window of
+256 mutations (`wal.windowMutations`) does not produce that; a much larger one might.
 
 ---
 
@@ -441,10 +441,10 @@ same process, against the same store, in the same run, and the incumbent's answe
 time rather than remembered. The one thing that could reasonably be recorded is the *input* corpus,
 and even that need not be checked in: a stream generated from a seed is regenerated by the seed.
 
-That is why `internal/verify/acceptance` records nothing at all. Its stream comes from a seed, and its
-one number — a collapse ratio — is asserted against a *control run* at the other end of the locality
-knob rather than against a stored value
-([chapter 11](11-verification.md#the-acceptance-one-stream-through-the-fold)).
+That is why `internal/verify/acceptance` records nothing at all. Its stream comes from a seed, and
+its one number — a collapse ratio — is asserted against a *control run* at the other end of the
+locality knob rather than against a stored value ([chapter
+11](11-verification.md#the-acceptance-one-stream-through-the-fold)).
 
 ---
 

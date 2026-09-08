@@ -7,9 +7,9 @@ hundreds of state transitions. Each transition produces an `ExecutionStore` writ
 persistence layer must make durable before reporting success to the caller. Against a persistence
 implementation that is already well built, each of those writes is one immediate transaction: it
 rewrites the workflow's rows and inserts a row per task the transition creates. Nothing about that
-transaction is wasteful on its own, which is the point
-[chapter 12](12-the-write-before-the-layer.md#one-transaction-holds-the-whole-world-of-a-shard)
-makes at length. What grows is not the cost of *one* write; it is the number of writes.
+transaction is wasteful on its own, which is the point [chapter
+12](12-the-write-before-the-layer.md#one-transaction-holds-the-whole-world-of-a-shard) makes at
+length. What grows is not the cost of *one* write; it is the number of writes.
 
 A workflow that lives for a few seconds and dies writes and rewrites the same mutable-state rows
 dozens of times, and creates task rows that are consumed and deleted long before anybody would have
@@ -49,8 +49,8 @@ first.
 The shape of that answer is not new: a durable append-only log in front of the real store, an
 acknowledgement as soon as the log record is on a quorum, and aggregated updates travelling to the
 store later. That is how storage engines are built internally. By published description it is also
-how Temporal Cloud's own custom persistence layer works; the
-[post describing it](https://temporal.io/blog/higher-throughput-and-lower-latency-temporal-clouds-custom-persistence-layer)
+how Temporal Cloud's own custom persistence layer works; the [post describing
+it](https://temporal.io/blog/higher-throughput-and-lower-latency-temporal-clouds-custom-persistence-layer)
 gives the semantics and not the implementation, so everything here is an independent design that
 lands on the same trade.
 
@@ -118,8 +118,8 @@ if this process dies, by whoever replays the log. The caller does not hear about
 That boundary is also why a drain failure under a window is nobody's answer. By the time the drain
 runs, every caller whose mutation is in it has already been told the write succeeded, so the failure
 cannot be returned to any of them and cannot be attributed to any one of them. (Sync mode is the one
-exception, and chapter 08 is where it is described.)
-[Chapter 05](05-write-path.md) follows that distinction through every failure class.
+exception, and chapter 08 is where it is described.) [Chapter 05](05-write-path.md) follows that
+distinction through every failure class.
 
 ## The system map
 
@@ -313,11 +313,11 @@ for, failing inside the transaction. Fencing makes the layer the shard's only wr
 legitimate can have moved a row the accumulator stood behind. When this fires, it is the layer's
 self-audit catching a bug, not a condition an operator should plan around. It halts the shard,
 because every write in the batch was acked before the drain started and there is no caller left to
-tell. Nothing is lost when it fires: the log keeps its entries and the trim stops.
-[Path 6 of chapter 05](05-write-path.md#6-failed-drain--an-invariant-was-violated) is the whole
-story; halts and replay in general are
-[chapter 06](06-shard-lifecycle.md#5-halts-the-two-classes), and what an operator does about a halt
-is [chapter 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
+tell. Nothing is lost when it fires: the log keeps its entries and the trim stops. [Path 6 of
+chapter 05](05-write-path.md#6-failed-drain--an-invariant-was-violated) is the whole story; halts
+and replay in general are [chapter 06](06-shard-lifecycle.md#5-halts-the-two-classes), and what an
+operator does about a halt is [chapter
+09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
 
 ## What this is not
 

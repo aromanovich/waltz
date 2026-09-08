@@ -59,8 +59,8 @@ Two positions run through the whole chapter. **commitSeqno** is the last seqno a
 **appliedSeqno** is the last seqno a drain committed: a watermark held in the cold store, keyed by
 shard, written inside the drain's own transaction, and as far as a trim may ever go. The metric
 `wal_unapplied_entries` reports the difference between them. It is not what I10 bounds — that bound
-counts from a third position, `resolved`, which
-[chapter 02](02-concepts-and-invariants.md#three-positions-not-two) explains.
+counts from a third position, `resolved`, which [chapter
+02](02-concepts-and-invariants.md#three-positions-not-two) explains.
 
 ## 1. The successful write
 
@@ -98,10 +98,10 @@ sequenceDiagram
   Note over HS,CS: the caller is done — the mutable-state rows are not in the cold store yet
 ```
 
-How to read this. One arrow goes from the cycle to the cold store, and
-[chapter 03](03-components.md#the-component-diagram--run-time-calls) says the cycle names no store.
-Both are true. This is the run-time call graph; the cycle makes that call through a `*baserow.Rows`
-value the wrapper handed it, and imports nothing that reaches a store.
+How to read this. One arrow goes from the cycle to the cold store, and [chapter
+03](03-components.md#the-component-diagram--run-time-calls) says the cycle names no store. Both are
+true. This is the run-time call graph; the cycle makes that call through a `*baserow.Rows` value the
+wrapper handed it, and imports nothing that reaches a store.
 
 The caller's answer is the **append**, not the drain. When `UpdateWorkflowExecution` returns nil,
 three things are true and no more: the request's new history events are in the cold store, the
@@ -493,8 +493,8 @@ the failure: every row that is not where fold asserted it, with the asserted and
 and the window slice (`HeadSeqno..TailSeqno`) answering for it. `CutSeqno` is the highest seqno
 anything may acknowledge, one below the lowest diverged entry. Zero means acknowledge nothing, and
 covers three cases at once — no divergence was found, the window's first entry diverged, or the
-readback itself failed. The runbook is
-[chapter 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
+readback itself failed. The runbook is [chapter
+09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
 
 ## 7. Failed drain — the outcome could not be read
 

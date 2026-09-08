@@ -22,9 +22,9 @@ What no suite here judges is storage that outlives the process. Nothing fsyncs, 
 waits on a quorum, or hands a shard from one machine to another — which is where a deployment's own
 risk lives. [Chapter 15](15-the-limits-of-the-evidence.md) collects that boundary.
 
-Nothing under `internal/verify/` runs in production: no package outside it may import it in a non-test file.
-What lives on the other side of that line is
-[chapter 03](03-components.md#the-tree-has-two-halves).
+Nothing under `internal/verify/` runs in production: no package outside it may import it in a
+non-test file. What lives on the other side of that line is [chapter
+03](03-components.md#the-tree-has-two-halves).
 
 ## The levels of evidence
 
@@ -113,9 +113,9 @@ unmodified in `conformance_test.go` — `NewShardSuite`, `NewExecutionMutableSta
 `NewExecutionMutableStateTaskSuite` and `NewHistoryEventsSuite`, 75 subtests in total, one fresh
 store per suite. They judge `memcold` exactly as they judge a plugin, and they pass without
 `memcold` answering a single one of their calls itself: its execution store is upstream's SQL
-persistence, embedded whole. That is what says the embedding
-([chapter 04](04-contracts.md#the-implementation-shipped-at-this-seam)) is the right shape and not
-merely a saving.
+persistence, embedded whole. That is what says the embedding ([chapter
+04](04-contracts.md#the-implementation-shipped-at-this-seam)) is the right shape and not merely a
+saving.
 
 **Those suites do not judge `Apply`**, and cannot: the folded window's transaction is a method
 upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is seven cases —
@@ -257,7 +257,7 @@ away — so the strongest thing it can say is that the layer produced the right 
 `TestBothSeamsRealNoServer` is the second acceptance run, and what it adds is that those requests
 are *executed*, against the schema, the row layouts and the condition failures upstream wrote. It
 puts one `cycle.Manager` at `cycle.Defaults()` between `wal/memwal` on one side and `cold/memcold`
-on the other, takes the shard by moving the database's own range id so the drain's epoch CAS is a
+on the other, takes the shard by moving the database's own `rangeID` so the drain's epoch CAS is a
 real one, and drives a generated stream of 6,000 mutations over 32 hot workflows through
 `Manager.Write` — the same call the wrapper makes.
 
@@ -363,9 +363,9 @@ a process killed between the two lines leaves behind, and which is the truth abo
 Recording the outcome only would make every killed call look like one that was never issued, while
 its entry sits in the log with nothing to account for it. The record is a file rather than memory
 because what it records is a process dying: an in-memory record goes with the node, and the one call
-a run turns on is then the one that is missing.
-`TestTheCallIsDurableBeforeTheStoreIsTouched`, in `internal/verify/drive`, is that ordering made
-permanent; `TestACallWithNoOutcomeIsTheThirdClass`, in `checker` itself, is the class it creates.
+a run turns on is then the one that is missing. `TestTheCallIsDurableBeforeTheStoreIsTouched`, in
+`internal/verify/drive`, is that ordering made permanent; `TestACallWithNoOutcomeIsTheThirdClass`,
+in `checker` itself, is the class it creates.
 
 `NewRecord` takes a node name and an incarnation, and neither is decoration: the line ids are per
 process, so a node restarted onto the same path numbers its second run from 1 and the two runs'
@@ -491,10 +491,9 @@ would have to pick one and silently change the other's meaning.
 
 ## The words for what judges the layer
 
-The layer's own vocabulary is
-[chapter 02](02-concepts-and-invariants.md#the-glossary-in-reading-order). These two terms are
-deliberately absent from it: they name instruments that stand outside the layer and pass judgement
-on it.
+The layer's own vocabulary is [chapter
+02](02-concepts-and-invariants.md#the-glossary-in-reading-order). These two terms are deliberately
+absent from it: they name instruments that stand outside the layer and pass judgement on it.
 
 **Checker.** The judge of a run under faults, stated over a record of what each driver asked for
 and what it was told. It may not import the layer, and that is the point: a judge that dies with the
