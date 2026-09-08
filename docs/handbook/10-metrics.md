@@ -176,7 +176,8 @@ Two readings that catch people out, both deliberate:
   seconds instead — and every existing threshold over the series silently changes meaning by a
   factor of 1000;
 * the tally fallback records the `time.Duration` it was handed, whole, and so does the capture
-  handler the tests use. Neither truncates, so a value from one is not a value from the other.
+  handler the tests use. Neither applies the otel handler's millisecond truncation, so consult
+  each handler's own unit before comparing values.
 
 Read the histogram against the age watermark (`wal.windowAge`, see
 [08-configuration.md](08-configuration.md#3-table-2--the-nine-dynamic-config-settings)) in whatever

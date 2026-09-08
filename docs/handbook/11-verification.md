@@ -92,10 +92,10 @@ back door — which is why `memwal` deliberately has no knobs and no injection p
 
 ### The blind spot, stated where the instrument is
 
-`RunContractSuite` drives **one** `wal.Log` value. So a displaced owner is refused by the same
-in-process record its successor has just rewritten, and **deleting a backend's fence from its
-`Fence` leaves the suite green** — the in-process state still refuses the old epoch. Only a
-two-process failover can see it, and this repository has no second process to run.
+`RunContractSuite` drives **one** `wal.Log` value, in one process. A displaced owner is therefore
+refused by the same in-process object its successor has just fenced — so **a backend whose `Fence`
+records the epoch in memory and never gets it into storage passes every fencing case here.** Only a
+failover between two processes can see that, and this repository has no second process to run.
 
 That is the single most important thing for a deployment to know about the suite it is about to run
 against its own log: a green contract suite says the log's *logic* is right and says nothing about
@@ -121,7 +121,7 @@ merely a saving.
 upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is seven cases —
 the ordering of the transaction, the refusals that must happen before it opens, the attribution a
 condition failure carries, and the rollback that undoes the requests that had already run — each
-proved by staging the defect that reds it. `internal/verify/acceptance` is the volume half, below.
+proved by staging the defect that makes it red. `internal/verify/acceptance` is the volume half, below.
 
 **Nothing here judges somebody else's `cold.Applier`.** A deployment writing one gets the four
 obligations in [chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for), `memcold`
@@ -563,10 +563,11 @@ graph LR
   CH["internal/verify/checker"] --> R["a record of the calls one driver made"]
 ```
 
-The judgement packages, with `witness` drawn beside them: it states claims rather than running them,
-a judgement's claims pulled into a module of its own so that the thing whose job is to catch a silent
-pass is itself judged by a table test. `checker` is drawn beside them too and is not one of them — it
-is the input a judge of a run under faults would need, and that judge is not in this repository.
+`witness` is drawn beside the circles rather than among them, because it states claims rather than
+running them: a judgement's claims pulled into a module of its own, so that the thing whose job is to
+catch a silent pass is itself judged by a table test. `checker` is beside them for a different
+reason — it is the input a judge of a run under faults would need, and that judge is not in this
+repository.
 
 ---
 

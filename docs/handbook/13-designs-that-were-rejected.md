@@ -395,8 +395,10 @@ Two of the divergences such a test misses were invisible to every other instrume
 about the same row: the current-execution row.
 
 The first is *who* writes it. A snapshot-bearing request — a create, a set, a conflict-resolve —
-becomes the merged request's kind for the whole window, whichever position in the window it arrived
-in. The current-execution row, though, is a last-writer effect: what the sequential path would have
+resets the run's accumulator, and the first such request in a window gives the merged request its
+kind, whichever position it arrived in. A second one does not take the kind back: its content
+replaces the snapshot in place, under the envelope the first one established. The
+current-execution row, though, is a last-writer effect: what the sequential path would have
 left there is whatever request touched it last. A fold that rendered the row from the merged
 request's own kind therefore silently drops what the window's other requests wrote to it — right
 keys, right types, wrong value. `fold.WorkflowRecord.CurrentWrite` exists to carry that last write
@@ -415,9 +417,9 @@ survives a set-headed window and each kind's rendering byte for byte. The order 
 happened is the argument: the rule was written from the divergence, not the divergence found from the
 rule.
 
-That instrument is the **oracle**: one stream applied twice, once mutation by mutation through a real
-store and once folded, with the two stores required to end up identical. It does not exist in this
-repository. `cold/memcold` is a store both halves could run against — it is the store
+The differential run that found both is the **oracle**: one stream applied twice, once mutation by
+mutation through a real store and once folded, with the two stores required to end up identical. It
+does not exist in this repository. `cold/memcold` is a store both halves could run against — it is the store
 `TestBothSeamsRealNoServer` uses for the folded half — but what it cannot supply is a reason to
 believe the comparison. A store this repository built its own folded path against, judged by a
 sequential path through that same code, would only be agreeing with itself. The oracle is worth
