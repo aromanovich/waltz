@@ -257,7 +257,8 @@ linear in generations and in nothing else.
 _Avoid_: round, iteration (neither names the kill that makes it evidence)
 
 **Cold store (холодное хранилище)**:
-Whatever the caller plugs in behind `cold.Applier` and `cold.Watermarker` —
+Whatever the caller plugs in behind `cold.Store` — an applier and a watermarker,
+embedded in one interface because one value has to answer both —
 the permanent target of apply, regardless of which WAL backend is in use. No
 package of the layer implements one. `cold/memcold` is the one shipped here —
 Temporal's own SQL persistence over a database in this process, judged by

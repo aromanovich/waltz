@@ -400,14 +400,16 @@ Three distinct refusals, all before anything listens:
   the node rather than leaving it quietly running the mode nobody asked for. The numbers do not
   behave this way: a misspelt *dynamic-config* key is a warning, and the default stands.
 
-There is a fourth failure this library cannot refuse, and it is the one to design the binary
-against: **`Backends.Writer` and `Backends.Recoverer` pointing at different cold stores.** Nothing
-here can tell two stores apart, so the composition succeeds and ordinary traffic is fine. It goes
-wrong only when a drain's outcome is unknown. The cycle then asks the watermarker how far the
-applier's transaction got; the watermarker's store never saw that transaction, so the watermark it
-returns is below the drain's seqno — which is exactly the proof that the drain did not commit. The
-shard halts `halted-invariant` over a drain that had written. Build both from one value; that is the
-whole of the defence.
+A fourth failure used to belong here and no longer does: **a drain landing in one cold store while
+the watermark is read from another.** It is worth knowing because the symptom is unlike the other
+three — the composition succeeds, ordinary traffic is fine, and it goes wrong only when a drain's
+outcome is unknown. The cycle then asks how far the applier's transaction got; the store being asked
+never saw that transaction, so the watermark comes back below the drain's seqno, which is exactly the
+proof that the drain did not commit. The shard halts `halted-invariant` over a drain that had
+written. `Backends.Cold` is one field of one interface (`cold.Store`) because of it, so a binary
+composing through `waltz.Compose` cannot express the mistake. A binary standing up a
+`cycle.Manager` directly still can: `cycle.Deps` keeps `Writer` and `Recoverer` apart for the suites,
+and anything filling them by hand fills both from one value.
 
 ---
 

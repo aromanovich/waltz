@@ -175,7 +175,7 @@ assertion the window cannot settle by itself is checked against it.
 The arrows to `walmetrics.Emitter` are one-way: the emitter may not import anything it measures.
 
 Two of the boxes are seams rather than layer code. `wal.Log` is the log's contract and `wal/memwal`
-is the one implementation in the tree; `cold.Applier` is the cold store's contract and
+is the one implementation in the tree; `cold.Store` is the cold store's contract and
 `cold/memcold` is the one implementation of that. Both shipped backends run in this process and die
 with it. That is enough to boot a real Temporal server over them and exercise everything above them;
 it is not somewhere to keep data, so a deployment supplies both. Everything between the two seams is
@@ -198,7 +198,7 @@ moving from the diagram into the tree.
 | `mutation/` | what one entry *is*: the protobuf record of one persistence call, plus the record kinds |
 | `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task pages |
 | `baserow/` | the cold store's two mutable-state reads as the write path needs them — one run's row, and the current-execution row with `last_write_version` beside it. `wrapper`, `cycle` and `apply` all need the pair and none of them may import another's copy, so it lives here and imports nothing of the layer |
-| `cold/` | the cold store's contract: the `Applier` a drain lands on, the `Watermarker` that reads back the seqno the last drain committed, and the four things an implementation owes — one transaction per drain, the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
+| `cold/` | the cold store's contract: `Store`, which is what a deployment implements — the `Applier` a drain lands on and the `Watermarker` that reads back the seqno the last drain committed, embedded in one interface because one value has to answer both — and the four things an implementation owes — one transaction per drain, the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
 | `cold/memcold/` | the one implementation of that contract here: Temporal's own SQL execution store, embedded whole, over an in-process SQLite database, with the folded window's transaction added beside its 28 inherited methods |
 | `apply/` | what a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries |
 | `cycle/` | one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the reads and replay — the layer's state machine |
@@ -336,7 +336,7 @@ operator does about a halt is [chapter
 ## What this is not
 
 * **Not a persistence implementation.** The layer stores nothing itself. The log is whatever
-  satisfies `wal.Log`; the cold store is whatever satisfies `cold.Applier` and `cold.Watermarker`. A
+  satisfies `wal.Log`; the cold store is whatever satisfies `cold.Store`. A
   drain hands the applier a folded batch rather than rows, so the cold store's schema stays the base
   implementation's and no package of the layer ever names a column. One implementation of each seam
   ships beside the layer — `wal/memwal` and `cold/memcold` — so that everything above them can be
@@ -395,7 +395,7 @@ above is [chapter 08](08-configuration.md).
   shard ownership, and how an acquire is told from a heartbeat.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — the state machine and `cycle.Defaults()`'s
   shipped triggers.
-* [`../../cold/cold.go`](../../cold/cold.go) — `Applier` and `Watermarker`, which are the whole of
+* [`../../cold/cold.go`](../../cold/cold.go) — `Store` and its two halves, which are the whole of
   what the layer asks of a cold store, and [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go)
   is the one that ships.
 * [`../../apply/failure.go`](../../apply/failure.go) — the five classes a drain's outcome sorts

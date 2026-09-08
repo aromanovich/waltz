@@ -26,7 +26,7 @@ import (
 func Example() {
 	// The cold store. memcold is the one shipped here — Temporal's own SQL
 	// persistence over a database in this process — and a deployment puts its
-	// own cold.Applier and cold.Watermarker here instead.
+	// own cold.Store here instead.
 	store, release, err := memcold.New("active")
 	if err != nil {
 		panic(err)
@@ -35,9 +35,8 @@ func Example() {
 
 	layer, err := waltz.Compose(
 		waltz.Backends{
-			Log:       memwal.New(), // your wal.Log; memwal is the one shipped here
-			Writer:    store,        // cold.Applier
-			Recoverer: store,        // cold.Watermarker
+			Log:  memwal.New(), // your wal.Log; memwal is the one shipped here
+			Cold: store,        // your cold.Store
 		},
 		cycle.Fixed(cycle.Defaults()),
 		waltz.DefaultTaskCategories(),

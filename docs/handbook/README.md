@@ -23,8 +23,8 @@ each of those obligations follows from the early acknowledgement, and which cont
 processes and storage fail.
 
 waltz is **not a persistence implementation**, and that shapes every chapter here. The log is
-whatever satisfies `wal.Log`; the cold store is whatever satisfies `cold.Applier` and
-`cold.Watermarker`. waltz is everything between those two seams, and a deployment supplies both ends.
+whatever satisfies `wal.Log`; the cold store is whatever satisfies `cold.Store`. waltz is
+everything between those two seams, and a deployment supplies both ends.
 Each seam has exactly one implementation in this tree: `wal/memwal`, the log in process memory, and
 `cold/memcold`, Temporal's own SQL persistence over a SQLite database in the same process. Neither
 is storage for anybody's data. They exist so that everything above them — up to and including a

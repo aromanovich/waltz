@@ -406,7 +406,7 @@ unless you also mean to restart.
 ## 7. What the section does not configure
 
 Between them, the section and the nine settings say how the layer behaves. Neither says what it is
-built over: the log, the applier and the watermarker are Go values in `waltz.Backends`, handed to
+built over: the log and the cold store are Go values in `waltz.Backends`, handed to
 `waltz.Compose` by the `main` that composes the layer. Two consequences an operator meets:
 
 * **there is no key to point the layer at a different log**, so a change of backend is a deployment

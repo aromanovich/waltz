@@ -1,8 +1,8 @@
 // Package cold is the cold store contract: the seam a drain lands on, as [wal]
-// is the seam an ack lands on. Two interfaces, and in production both are the
-// caller's to satisfy — no package of the layer writes to a store of its own.
-// The one implementation here is cold/memcold, which is not a package of the
-// layer: it sits under this seam where a deployment's store sits.
+// is the seam an ack lands on. [Store] is what a deployment implements, and in
+// production it is the caller's to satisfy — no package of the layer writes to a
+// store of its own. The one implementation here is cold/memcold, which is not a
+// package of the layer: it sits under this seam where a deployment's store sits.
 //
 // A cold store here is whatever holds a Temporal history shard's mutable state,
 // its history tasks, its history events and its replication DLQ: Temporal's own
@@ -48,6 +48,22 @@ import (
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/wal"
 )
+
+// Store is the cold store a deployment hands the layer: both halves of the
+// seam, and one value answering both.
+//
+// The halves are stated apart below because they are called from different
+// places at different times — a drain writes, a recovering owner reads — but
+// they are not separable, and this type is where that is said in a way a
+// composition cannot get wrong. A watermark is only meaningful about the
+// transactions that wrote it (obligation 2 above): read one from a store other
+// than the one the drains landed in and the layer trims a log against a witness
+// that never saw it, or replays entries the store already holds. Neither is
+// visible from here, and both are the acked-is-never-lost rule broken.
+type Store interface {
+	Applier
+	Watermarker
+}
 
 // Applier is the write path one drain goes through, and the caller's to supply.
 // An interface so a test can vary a drain's outcome without a cluster, and so

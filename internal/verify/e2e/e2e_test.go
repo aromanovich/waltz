@@ -99,7 +99,7 @@ func start(ctx context.Context, t *testing.T, intercept bool) *arm {
 	// the budget assertion is a reason not to start, and the shutdown drain
 	// needs a store that is still there.
 	layer, err := waltz.Compose(
-		waltz.Backends{Log: memwal.New(), Writer: store, Recoverer: store},
+		waltz.Backends{Log: memwal.New(), Cold: store},
 		cycle.Fixed(policy()),
 		waltz.DefaultTaskCategories(),
 		logger,

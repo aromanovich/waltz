@@ -65,7 +65,7 @@ func composed(t *testing.T, cfg cycle.Config) (*Layer, *coldtest.Cold) {
 	t.Helper()
 	cold := coldtest.New()
 	layer, err := Compose(
-		Backends{Log: memwal.New(), Writer: cold, Recoverer: cold},
+		Backends{Log: memwal.New(), Cold: cold},
 		cycle.Fixed(cfg),
 		DefaultTaskCategories(),
 		log.NewNoopLogger(), nil)
@@ -112,7 +112,7 @@ func TestShutdownReleasesTheLog(t *testing.T) {
 	logs := &closingLog{Log: memwal.New()}
 	cold := coldtest.New()
 	layer, err := Compose(
-		Backends{Log: logs, Writer: cold, Recoverer: cold},
+		Backends{Log: logs, Cold: cold},
 		cycle.Fixed(cycle.Defaults()),
 		DefaultTaskCategories(),
 		log.NewNoopLogger(), nil)

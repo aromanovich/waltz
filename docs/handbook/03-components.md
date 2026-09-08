@@ -65,7 +65,7 @@ uses: `window`, `tailstate` and `trim`. The order below is the order a mutation 
 | `mutation` | What one log entry *is*: the protobuf record of one persistence call, and the eight kinds. | `Mutation`, `Kind`, `Part`, `Encode`, `Decode` | any persistence implementation — the record mirrors Temporal's requests; the store that eventually writes them is the applier's business |
 | `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — `wrapper`, `cycle` and `apply` all need this pair and none of them may name another's copy, so it imports Temporal's persistence and nothing more |
 | `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page merge. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
-| `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. | `Applier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
+| `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. `Store` is the pair as a deployment supplies it — one value, because a watermark read from a store other than the one the drains landed in is no witness at all. | `Store`, `Applier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
 | `cold/memcold` | That contract satisfied, and the one cold store this repository ships: Temporal's own SQL persistence over an in-memory SQLite database, embedded whole, with the folded window's transaction added beside its 28 inherited methods. It sits *under* the layer rather than being part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | everything of this layer — a store that could see the layer would be judged by the thing sitting on top of it |
 | `apply` | What a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries. | `Class`, `Classify`, `Diverged`, `InvariantViolationError` | `wal.Log` and `wal.Entry` — pacing and trim are the cycle's policy, not the outcome's |
 | `cycle/window` | The size and age of what a cycle folded since its last drain, as a type whose counters cannot be written from outside. | `Window`, `Taken`, `Watermarks`, `Trip` | `fold`, `walmetrics` — the window counts, it does not fold, and it publishes nothing |
@@ -364,7 +364,7 @@ and the emitter, which is lock-free. Everything else is per-shard and single-thr
 `waltz.Compose` is the one graph every process running intercept mode builds, and there may not be a
 second. It opens nothing, reaches nothing and takes no context. It takes five inputs:
 
-* `Backends` — the log, the applier and the watermarker;
+* `Backends` — the log and the cold store;
 * a `cycle.Policy`;
 * a `waltz.Registry` of task categories;
 * an optional `log.Logger`, which nil replaces with a noop;
@@ -410,7 +410,7 @@ here can have *storage that survives the process*, which is where the limits in
   `Log` and its five methods.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Cycle`, its `job` channel, the fields
   that live off the loop, and `Deps`.
-* [`../../cold/cold.go`](../../cold/cold.go) — `Applier` and `Watermarker`, and the four
+* [`../../cold/cold.go`](../../cold/cold.go) — `Store`, its two halves, and the four
   things an implementation of them owes; [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go)
   is the one that ships, and [`apply.go`](../../cold/memcold/apply.go) is the drain's transaction
   statement by statement.

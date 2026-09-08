@@ -381,8 +381,8 @@ the layer names a column, and none may name a store. `cold/memcold` is the one i
 those two interfaces here: Temporal's own SQL persistence, embedded whole, over a SQLite database
 that lives in this process and dies with it. Everything above the seam is exercised against it, and
 it is a real store rather than a stub — Temporal's own persistence suites judge it exactly as they
-judge a plugin. A deployment supplies its own, and what it owes is four things, each stated on
-`cold.Applier` and `cold.Watermarker`: one drain is one transaction, the watermark commits inside
+judge a plugin. A deployment supplies its own as one `cold.Store`, and what it owes is four things, each stated on
+its two halves: one drain is one transaction, the watermark commits inside
 it, the epoch is asserted first, and the outcome comes back in `apply`'s five classes. What each
 demands of the cycle is [chapter 04](04-contracts.md#apply--what-a-drains-outcome-demands), and why
 the watermark has to ride that transaction is [the recovery

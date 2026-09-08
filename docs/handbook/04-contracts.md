@@ -38,7 +38,7 @@ Five seams let the component on either side be replaced or run without a cluster
 | the log | `wal.Log` | `memwal` here; a deployment's own log otherwise | `cycle` |
 | one entry | `mutation.Mutation` + `Encode`/`Decode` | — (a value type and a codec) | `wrapper`, `cycle` |
 | the server's stores | `wrapper.ShardLayer` (four faces) | `cycle.Manager` | `wrapper.ExecutionStore`, `wrapper.ShardStore` |
-| the cold store | `cold.Applier`, `cold.Watermarker` | `memcold` here; a deployment's own store otherwise, and `internal/verify/coldtest` where a suite has to vary a drain's outcome | `cycle` |
+| the cold store | `cold.Store` (`cold.Applier` + `cold.Watermarker`) | `memcold` here; a deployment's own store otherwise, and `internal/verify/coldtest` where a suite has to vary a drain's outcome | `cycle` |
 | the two pre-window reads | `baserow.Store` | `memcold` here; the base `ExecutionStore` the wrapper decorates otherwise, and `internal/verify/basetest` in tests | `wrapper`, `cycle`, `apply` |
 
 Two of the five seams are storage, and each has exactly one implementation in this tree, running in
@@ -115,6 +115,10 @@ classDiagram
     <<interface>>
     Watermark(ctx, shard)
   }
+  class ColdStore {
+    <<interface>>
+    Applier and Watermarker at once
+  }
   class Store {
     <<interface>>
     GetWorkflowExecution(ctx, req)
@@ -122,11 +126,12 @@ classDiagram
   }
   class Cycle
   class Rows
-  class ColdStore {
+  class Deployment {
     a deployment's own
   }
   ColdStore ..|> Applier
   ColdStore ..|> Watermarker
+  Deployment ..|> ColdStore
   Rows ..> Store : reads through
   Cycle ..> Log : appends, reads, trims
   Cycle ..> Applier : drains through
@@ -135,9 +140,13 @@ classDiagram
 
 How to read this. `cycle` names no storage at all. Everything below it arrives as one of these
 interfaces: the log, the applier, the watermarker, and — handed down per write rather than held —
-the pre-window reads behind `baserow.Store`. That is what lets a test vary a drain's outcome without
-a cluster, and it is why `memwal` can be a whole implementation of the log rather than a stub with
-the interesting parts missing.
+the pre-window reads behind `baserow.Store` (the `Store` node above; `ColdStore` is `cold.Store`).
+That is what lets a test vary a drain's outcome without a cluster, and it is why `memwal` can be a
+whole implementation of the log rather than a stub with the interesting parts missing.
+
+The cycle reaches the two halves separately and a deployment supplies one value for both, which is
+the asymmetry `cold.Store` exists to hold: it is what a deployment implements, and the halves are
+what the layer consumes.
 
 ## `wal.Log` — the write-ahead log contract
 
@@ -719,11 +728,15 @@ it was asking about halts on the invariant side, which keeps the entries and sto
 next owner replays them — [chapter 05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read)
 follows that path and [chapter 06](06-shard-lifecycle.md) has the halt.
 
-One obligation on the composition rather than on either interface: **the `Applier` and the
-`Watermarker` must be the same cold store.** A writer moving one watermark while a watermarker reads
-another answers every ambiguous drain with "it did not commit", which halts a shard over a drain that
-had written. `memcold.Store` and `internal/verify/coldtest.Cold` are each one value satisfying both, for
-exactly that reason.
+**The `Applier` and the `Watermarker` must be the same cold store**, and `cold.Store` — the two
+embedded in one interface — is where that is said in a form a composition cannot get wrong. A writer
+moving one watermark while a watermarker reads another answers every ambiguous drain with "it did not
+commit", which halts a shard over a drain that had written. `cold.Store` is what a deployment
+implements and what `waltz.Backends.Cold` takes, so the mistake is not expressible there.
+`cycle.Deps` still holds the halves in two fields, and that is deliberate: a suite that wants a
+watermark to stop answering while its applier goes on committing has no other way to say so. So the
+obligation survives for a caller standing up a `cycle.Manager` by hand, and for nobody else.
+`memcold.Store` and `internal/verify/coldtest.Cold` are each one value satisfying both.
 
 ### The implementation shipped at this seam
 
@@ -921,11 +934,11 @@ refuses a nil policy rather than dereferencing it at the first decision. `logger
 becomes a noop logger. `handler` is optional too, and nil is the production value, the server
 handing one down later through `MetricsSink`.
 
-`Backends{Log, Writer, Recoverer}` is where a composed layer's bytes go, and it is `Compose`'s
-parameter rather than something it builds — that is the point of the type, and the point of the
-library. All three are seams through which the layer is testable without a cluster, and the layer
-itself implements none of them: the implementations shipped here, `wal/memwal` for the log and
-`cold/memcold` for the other two, sit *under* the seam, where a deployment's own storage sits.
+`Backends{Log, Cold}` is where a composed layer's bytes go, and it is `Compose`'s parameter rather
+than something it builds — that is the point of the type, and the point of the library. Both are
+seams through which the layer is testable without a cluster, and the layer itself implements
+neither: the implementations shipped here, `wal/memwal` for the log and `cold/memcold` for the
+store, sit *under* the seam, where a deployment's own storage sits.
 `Registry` is constructible only by `TaskCategories(dc, cfg)` or `DefaultTaskCategories()`: a
 composition accepting upstream's interface directly would accept the plain default registry too,
 which is a second answer to which registry a node decodes a tail with.
@@ -1001,7 +1014,7 @@ has to answer for itself — see `cycle.ErrNoBaseRow`.
   `ShardLayer`, and the factory decorators.
 * [`../../apply/failure.go`](../../apply/failure.go) — `Class`, `Classify`, `Refuse`,
   `Attribute` and the attribution an applier hands back.
-* [`../../cold/cold.go`](../../cold/cold.go) — `Applier`, `Watermarker` and the four things
+* [`../../cold/cold.go`](../../cold/cold.go) — `Store`, its two halves and the four things
   an implementation owes; [`../../cold/memcold/apply.go`](../../cold/memcold/apply.go) is the one
   implementation of them here, with the transaction's order stated statement by statement, and
   [`memcold.go`](../../cold/memcold/memcold.go) is what the embedding does and does not cover.

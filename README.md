@@ -2,8 +2,8 @@
 
 The logic of a write-ahead log for the Temporal server's history shards. **You bring the storage —
 both ends of it**: the log, [`wal.Log`](wal/wal.go#L141), and the database,
-[`cold.Applier`](cold/cold.go#L55) with [`cold.Watermarker`](cold/cold.go#L77). Five methods on the
-log and two on the database are the whole of what waltz asks you to implement.
+[`cold.Store`](cold/cold.go#L63). Five methods on the log and two on the database are the whole of
+what waltz asks you to implement.
 
 Temporal's history service is write-heavy: one workflow moves through hundreds of state transitions,
 and each is a database transaction that rewrites the same mutable-state rows and inserts task rows
@@ -16,8 +16,7 @@ transaction instead of a hundred — whatever an append costs.
 It writes to no disk, opens no connection and speaks no wire protocol; it contains no line of code
 that would. What it is, is everything between two interfaces you implement: the log an
 acknowledgement lands in ([`wal.Log`](wal/wal.go#L141)) and the database a fold lands on
-([`cold.Applier`](cold/cold.go#L55), [`cold.Watermarker`](cold/cold.go#L77)). Both are yours to
-write over whatever storage you run. What waltz owns is the part that is genuinely hard — the
+([`cold.Store`](cold/cold.go#L63)). Both are yours to write over whatever storage you run. What waltz owns is the part that is genuinely hard — the
 window, the fold, the fencing, the replay, the bound on unapplied work, and what each of them must
 do when a write, a process or a shard handover fails.
 
@@ -42,8 +41,8 @@ also why:
   owners on two machines is not.
 - **no backend has been run under load**, and no number produced here is a performance claim.
 
-Taking waltz to production means writing a `wal.Log` over real storage and a `cold.Applier` over
-your real database, and testing the parts this repository cannot reach.
+Taking waltz to production means writing a `wal.Log` over real storage and a `cold.Store` over your
+real database, and testing the parts this repository cannot reach.
 [Chapter 15](docs/handbook/15-the-limits-of-the-evidence.md) is that boundary in full.
 
 **Built against `go.temporal.io/server` v1.29.6 and Go 1.26.** The server version is not a soft
@@ -102,7 +101,7 @@ import (
 func main() {
 	// The cold store. memcold is the one shipped here — Temporal's own SQL
 	// persistence over a database in this process — and a deployment puts its
-	// own cold.Applier and cold.Watermarker here instead.
+	// own cold.Store here instead.
 	store, release, err := memcold.New("active")
 	if err != nil {
 		panic(err)
@@ -111,9 +110,8 @@ func main() {
 
 	layer, err := waltz.Compose(
 		waltz.Backends{
-			Log:       memwal.New(), // your wal.Log; memwal is the one shipped here
-			Writer:    store,        // cold.Applier
-			Recoverer: store,        // cold.Watermarker
+			Log:  memwal.New(), // your wal.Log; memwal is the one shipped here
+			Cold: store,        // your cold.Store
 		},
 		cycle.Fixed(cycle.Defaults()),
 		waltz.DefaultTaskCategories(),
@@ -179,7 +177,7 @@ waltz sits between two things it does not own, and a deployment replaces both.
 | | the contract | shipped here | what judges your implementation |
 |---|---|---|---|
 | the log | [`wal.Log`](wal/wal.go#L141) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: eighteen cases, one call |
-| the database | [`cold.Applier`](cold/cold.go#L55), [`cold.Watermarker`](cold/cold.go#L77) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
+| the database | [`cold.Store`](cold/cold.go#L63) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
 
 `wal.Log` is an append-only, fenced, gap-free sequence of entries per shard — five methods, opaque
 payloads, no Temporal type anywhere in it. Running the suite against your backend is one call:
@@ -190,10 +188,16 @@ func TestMyBackendKeepsTheContract(t *testing.T) {
 }
 ```
 
+`cold.Store` is two methods: `Apply`, which commits a folded window as one transaction, and
+`Watermark`, which reads back the seqno that transaction carried. It is one interface rather than
+the two halves it is made of because **one value has to answer both** — a watermark is only
+meaningful about the transactions that wrote it, so a layer reading it from anywhere else trims a
+log against a witness that never saw it.
+
 The two rows are not mirror images, and the asymmetry is worth knowing before you start. The log's
 contract is waltz's own invention, so waltz owes it a suite and ships one. What a *database* owes a
 Temporal server is Temporal's to state, and Temporal states it as four suites it exports — so
-**nothing exported from here judges somebody else's `cold.Applier`.** What is written down instead
+**nothing exported from here judges somebody else's `cold.Store`.** What is written down instead
 is the four obligations an implementation carries, with `cold/memcold` as the worked example of all
 four: [chapter 04](docs/handbook/04-contracts.md) has both.
 

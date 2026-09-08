@@ -1,9 +1,8 @@
 // Package waltz puts a write-ahead log in front of a Temporal history shard's
 // cold store, so that many mutations are acked into the log and folded into one
 // cold-store transaction. It implements no persistence itself: the log is a
-// [wal.Log] and the cold store is a [cold.Applier] with a [cold.Watermarker],
-// all three the caller's, and the only log shipped here is wal/memwal, in
-// memory.
+// [wal.Log] and the cold store is a [cold.Store], both the caller's, and the
+// only log shipped here is wal/memwal, in memory.
 //
 // waltz is developed against go.temporal.io/server v1.29.6 and needs Go 1.26 or
 // newer. The requirement on the server is a floor under minimal version
@@ -121,21 +120,19 @@ func checkPolicy(policy cycle.Policy) error {
 }
 
 // Backends is where a composed layer's bytes go: the log its appends are
-// ordered in, the writer one drain becomes a transaction on, and the watermark
-// an unknown outcome is read from.
+// ordered in, and the cold store one drain becomes a transaction on and an
+// unknown outcome is read back from.
 //
 // They are [Compose]'s parameter rather than something it builds, and that is
-// the point of the type: this library implements none of the three. All three
-// are seams the layer is meant to be answerable at without a cluster —
-// wal/memwal is a whole implementation of the WAL contract (ADR 0002), and
-// [cold.Applier] exists so a drain's outcome can be varied without one. A
-// caller that wants the intercept path in process reaches it here rather than
-// by building a second registry, which is the one thing this package asks
-// callers not to do.
+// the point of the type: this library implements neither. Both are seams the
+// layer is meant to be answerable at without a cluster — wal/memwal is a whole
+// implementation of the WAL contract (ADR 0002), and [cold.Store] exists so a
+// drain's outcome can be varied without one. A caller that wants the intercept
+// path in process reaches it here rather than by building a second registry,
+// which is the one thing this package asks callers not to do.
 type Backends struct {
-	Log       wal.Log
-	Writer    cold.Applier
-	Recoverer cold.Watermarker
+	Log  wal.Log
+	Cold cold.Store
 }
 
 // Compose is the one graph every process running intercept mode builds. Its
@@ -177,9 +174,13 @@ func Compose(
 	emitter := walmetrics.New(handler)
 
 	manager, err := cycle.NewManager(cycle.Deps{
-		Log:       backends.Log,
-		Writer:    backends.Writer,
-		Recoverer: backends.Recoverer,
+		Log: backends.Log,
+		// [cycle.Deps] keeps the two halves apart and this is the only place they
+		// are spliced, so what a deployment cannot express a suite still can: a
+		// watermark that stops answering while its applier goes on committing is
+		// how a replay is driven to abandon a tail it has already applied.
+		Writer:    backends.Cold,
+		Recoverer: backends.Cold,
 		Registry:  categories.Categories(),
 		Logger:    logger,
 		Metrics:   emitter,

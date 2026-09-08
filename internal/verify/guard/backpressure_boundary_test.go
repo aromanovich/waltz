@@ -109,7 +109,7 @@ func TestTheRefusalSurvivesTheWholeInterceptPath(t *testing.T) {
 	cfg.HardMaxEntries = 1
 
 	layer, err := waltz.Compose(
-		waltz.Backends{Log: memwal.New(), Writer: noDrain(), Recoverer: coldtest.New()},
+		waltz.Backends{Log: memwal.New(), Cold: noDrain()},
 		cycle.Fixed(cfg),
 		waltz.DefaultTaskCategories(),
 		nil, nil)

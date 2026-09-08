@@ -20,7 +20,7 @@ here, running in this process:
 
 * the log is a `wal.Log`; `wal/memwal` is the contract in memory, and
   `wal/waltest` is the conformance suite an author of a real one runs.
-* the cold store is a `cold.Applier` plus a `cold.Watermarker`; `cold/memcold`
+* the cold store is a `cold.Store`, an applier plus a watermarker; `cold/memcold`
   is Temporal's own SQL persistence over an in-process SQLite database, embedded
   rather than written, with the folded window's transaction added beside the 28
   inherited methods. Temporal's own four persistence suites judge it.
