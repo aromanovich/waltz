@@ -1,28 +1,37 @@
 # waltz
 
-A write-ahead log for the Temporal server's history shards.
+The logic of a write-ahead log for the Temporal server's history shards. **You bring the storage —
+both ends of it.**
 
 Temporal's history service is write-heavy: one workflow moves through hundreds of state transitions,
 and each is a database transaction that rewrites the same mutable-state rows and inserts task rows
-that are often deleted moments later. waltz puts a durable per-shard log in front of that database,
-acknowledges a write as soon as the log holds it, and folds many acknowledged writes into one later
-transaction. A hundred transitions become a hundred log appends plus one database transaction
-instead of a hundred — whatever an append costs.
+that are often deleted moments later. The idea is to put a durable per-shard log in front of that
+database, acknowledge a write as soon as the log holds it, and fold many acknowledged writes into
+one later transaction. A hundred transitions become a hundred log appends plus one database
+transaction instead of a hundred — whatever an append costs.
 
-The server does not know. waltz ships as a persistence decorator: you compose it over the plugin
-that owns your data and hand the result to `temporal.WithCustomDataStoreFactory`, the same door a
-custom persistence backend already goes through. Temporal goes on believing it writes to a database,
-reads from a database, and that what it read is true.
+**waltz is not a persistence implementation, and that is the first thing to understand about it.**
+It writes to no disk, opens no connection and speaks no wire protocol; it contains no line of code
+that would. What it is, is everything between two interfaces you implement: the log an
+acknowledgement lands in (`wal.Log`) and the database a fold lands on (`cold.Applier`,
+`cold.Watermarker`). Both are yours to write over whatever storage you run. What waltz owns is the
+part that is genuinely hard — the window, the fold, the fencing, the replay, the bound on
+unapplied work, and what each of them must do when a write, a process or a shard handover fails.
+
+The server does not know any of this. waltz ships as a persistence decorator: you compose it over
+the plugin that owns your data and hand the result to `temporal.WithCustomDataStoreFactory`, the
+same door a custom persistence backend already goes through. Temporal goes on believing it writes
+to a database, reads from a database, and that what it read is true.
 
 ## Status: read this first
 
 **This is a research materialisation, not a deployable system.** The logic is complete and tested;
 the storage is not there.
 
-waltz owns no storage by design — it sits between a log and a database, and a deployment supplies
-both. What ships here are two *in-process* implementations of those seams, so that everything above
-them can be exercised with nothing installed. They are why `go test ./...` boots a real Temporal
-server and runs a real workflow on a fresh clone, and they are also why:
+Because the storage is yours, this repository has to supply something at both seams in order to run
+at all — so it ships two implementations that live *in the test process*. They are why
+`go test ./...` boots a real Temporal server and runs a real workflow on a fresh clone. They are
+also why:
 
 - **nothing here is durable.** Both live in one process's memory and die with it. No fsync, no
   network and no quorum has ever been in the path of anything in this tree.
