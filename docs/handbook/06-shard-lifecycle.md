@@ -16,9 +16,9 @@ requirements lead to four mechanisms, in this order:
   log;
 * an invariant violation halts for a different reason, preserving the log for investigation.
 
-That is the derivation rather than the chapter's table of contents — the sections below take the
-same ground in the order a cycle lives it, from acquisition through replay and retirement to trim,
-so the fourth mechanism above is not the fourth section below.
+That list is the derivation, not the table of contents. The sections below cover the same ground in
+the order a cycle lives it — acquisition, replay, retirement, trim — so the fourth mechanism above
+is not the fourth section below.
 
 The write path itself is [chapter 05](05-write-path.md); the reads a halted or
 superseded shard answers are [chapter 07](07-read-path.md); what an operator does about either halt
@@ -39,19 +39,21 @@ sequence: epoch → cycle → watermark and retained log → replay.
 ## 1. First exclude the failed owner
 
 A shard has one owner because a workflow is a sequential machine: every transition reads the previous
-state and writes the next one. Two nodes writing one run lose a transition outright — both read, both
-build a successor, both commit, and the second overwrites the first — and, worse, they hand out ids
-for deferred work from two allocations. A task row is found and deleted by its id, so two rows under
-one id are not a lost write but two writes that nobody reading by number can tell apart. One owner
-per shard is what buys the ordering as well as the exclusion.
+state and writes the next one. Two nodes writing one run lose a transition outright. Both read the
+same state, both build a successor, both commit, and the second overwrites the first. The second
+failure is quieter: each node hands out ids for deferred work from its own allocation, and a task row
+is found and deleted by its id. Two rows under one id are not a lost write — they are two writes that
+nobody reading by number can tell apart. One owner per shard buys the ordering as well as the
+exclusion.
 
 Before a successor examines the inherited tail, it must make further appends by the predecessor
-impossible. Otherwise replay and live writes could interleave under two owners, and no watermark
-could say which history is authoritative. This exclusion is fencing: a check at the point of the
-write, rather than a term the owner keeps in its own memory — the failed owner is frequently not gone
-at all, since a collection pause, swap or a partition returns a process that learned nothing about
-its own death. [Chapter 13](13-designs-that-were-rejected.md#a-lease-with-a-timer) has the lease that
-was refused and what its refusal forces.
+impossible. Otherwise replay and live writes interleave under two owners, and no watermark can say
+which history is authoritative. That exclusion is **fencing**: a check made at the point of the
+write, not a term the owner keeps in its own memory. The distinction matters because the failed owner
+is frequently not gone at all — a collection pause, a swap or a partition returns a process that
+learned nothing about its own death. [Chapter
+13](13-designs-that-were-rejected.md#a-lease-with-a-timer) has the lease that was refused and what its
+refusal forces.
 
 The layer is never *told* directly that it owns a shard. Temporal's persistence API has no
 "acquire" call, and closing a shard makes no persistence call whatsoever. What it does have is
@@ -60,8 +62,8 @@ two different meanings:
 
 | Where it comes from | Shape | Meaning |
 |---|---|---|
-| the shard controller renewing its range — on acquire, and whenever the shard exhausts its task-id range | `RangeID = PreviousRangeID + 1` | the shard changing hands, or its range being renewed: a **new epoch** |
-| the shard's periodic info update | `RangeID == PreviousRangeID` | a **heartbeat** that carries no news |
+| the shard controller renewing its range (`renewRangeLocked`) — on acquire, and whenever the shard exhausts its task-id range | `RangeID = PreviousRangeID + 1` | the shard changing hands, or its range being renewed: a **new epoch** |
+| the shard's periodic info update (`updateShardInfo`) | `RangeID == PreviousRangeID` | a **heartbeat** that carries no news |
 
 Comparing those two fields is the whole of the distinction, and
 [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) is where it is made:
@@ -75,14 +77,14 @@ if s.layer != nil && request.RangeID != request.PreviousRangeID {
 return s.base.UpdateShard(ctx, request)
 ```
 
-Two properties of those six lines are load-bearing.
+Two properties of that code are load-bearing.
 
 **The order.** The observer runs *before* the base store commits the rangeID bump, so the WAL is
 fenced at the new epoch first and the rangeID lands second. A failed fence therefore fails the
-acquire without the base store being called at all, and leaves the previous owner's rangeID in
-place for the shard controller to retry. The invariant this protects is that the epoch in the log
-may never lag the epoch in the database — a database that had moved ahead of a log nobody fenced
-would let two writers hold what each believes is the current range.
+acquire without the base store being called at all, and leaves the previous owner's rangeID in place
+for the shard controller to retry. The invariant this protects is that the epoch in the log may never
+lag the epoch in the database. If the database moved ahead of a log nobody had fenced, two writers
+would each hold what it believes is the current range.
 
 **The test is inequality, not "greater than".** A `RangeID` that went *backwards* is not silently
 treated as a heartbeat; it reaches the observer and is refused there.
@@ -146,10 +148,10 @@ Four cases, in the order [`../../cycle/manager.go`](../../cycle/manager.go) take
    cycle it displaced — outside the registry's lock, and without draining it (see
    [§5](#5-halts-the-two-classes) and [§6](#6-stopping-a-node)).
 
-Nothing reaps an idle cycle, and that is deliberate rather than an omission: an acquire is
-observable and a close is not, so a cycle is retired only by a higher epoch superseding it or by the
-node shutting down. What an idle one costs is one goroutine and an empty accumulator — a leak
-bounded by the shard count.
+Nothing reaps an idle cycle, and that is deliberate rather than an omission. An acquire is observable
+and a close is not, so a cycle is retired only by a higher epoch superseding it or by the node
+shutting down. An idle one costs one goroutine and an empty accumulator: a leak bounded by the number
+of shards this node holds, since the registry keeps one cycle per shard.
 
 ---
 
@@ -168,31 +170,33 @@ Two consequences a writer must know:
 
 * **an epoch may grow without an ownership change.** The history service renews `rangeID` whenever a
   shard exhausts its allocated task-id range, which happens on a perfectly healthy shard that never
-  changed hands. That range is not a second allocation to keep consistent with the first: it is
-  derived from the counter by a shift — `nextTaskID = rangeID << RangeSizeBits`, `RangeSizeBits`
-  being 20 in the history service's defaults — so one epoch names a block of 2^20 = 1,048,576 ids,
-  handed out from memory rather than one database round trip at a time. Two owners can never hold one
-  value of the counter, so they can never share a block, and uniqueness costs nothing extra. A
-  growing epoch is therefore *not* evidence of a failover, and the layer treats a renewal
-  exactly as it treats an acquire: fence at the new epoch, retire the old cycle, install a fresh one
-  that replays whatever the old one had acked and not yet applied. That is why the append path can
-  never assume "my tail is empty because I have never lost the shard" — a renewal is enough to leave
-  one behind.
+  changed hands. That range is not a second allocation to keep consistent with the counter; it is
+  derived from the counter by a shift, `nextTaskID = rangeID << RangeSizeBits`, with `RangeSizeBits`
+  set to 20 in the history service's defaults. So one epoch names a block of 2^20 = 1,048,576 task
+  ids, handed out from memory rather than one database round trip at a time. Two owners can never
+  hold one value of the counter, so they can never share a block, and uniqueness costs nothing extra.
+  A growing epoch is therefore *not* evidence of a failover. The layer treats a renewal exactly as it
+  treats an acquire: fence at the new epoch, retire the old cycle, install a fresh one that replays
+  whatever the old one had acked and not yet applied. That is why the append path can never assume
+  "my tail is empty because I have never lost the shard" — a renewal alone is enough to leave a tail
+  behind.
 * **whoever hands epochs out owes the log a strictly greater epoch per acquire.** Fencing cannot
-  separate two writers holding the *same* epoch: they would both pass the fence and race for
-  seqnos. Epoch `0` is not a valid epoch at all (`wal.ErrZeroEpoch`) — it is the "nobody owns this"
-  reading of an absent fence.
+  separate two writers holding the *same* epoch: both pass the fence, and then they race for seqnos.
+  Epoch `0` is not a valid epoch at all (`wal.ErrZeroEpoch`); it is the "nobody owns this" reading of
+  an absent fence.
 
-That obligation is discharged upstream, by a conditional write. An acquire is a read of the shard
-row followed by a write of one greater value that demands, in the write itself, that the old value
-still be the one that was read: a `ShardStore.UpdateShard` registers
-`AssertShard(true, PreviousRangeID)` and `UpsertShard(RangeID, …)` on one transaction. Two nodes that
-both read `N` cannot both install `N+1` — one transaction's assertion fails, and its author is told
-nothing except that its write did not happen. The server drains its in-flight requests before it
-renews, because those requests are conditioned on the number about to move. **Weakening that
-assertion to a plain upsert would break fencing silently**: two holders of one epoch pass the log's
-fence and pass the drain's epoch assertion alike, so no error is raised anywhere, and the layer has
-neither a metric nor an assertion that could report it. The guarantee is entirely upstream.
+That obligation is discharged upstream, by a conditional write. An acquire reads the shard row and
+then writes one greater value, and the write itself demands that the row still hold the value that
+was read: the persistence plugin's `UpdateShard` puts `AssertShard(true, PreviousRangeID)` and
+`UpsertShard(RangeID, …)` on one transaction. Two nodes that both read `N` cannot both install `N+1`.
+One transaction's assertion fails, and its author is told nothing except that its write did not
+happen. The server drains its in-flight requests before it renews, because those requests are
+conditioned on the number about to move.
+
+**Weakening that assertion to a plain upsert would break fencing silently.** Two holders of one epoch
+pass the log's fence and pass the drain's epoch assertion alike, so no error is raised anywhere, and
+this layer has neither a metric nor an assertion that could report it. The guarantee is entirely
+upstream.
 
 The epoch check is also made once more, at the write boundary: `cycle.Manager.Write` compares the
 `rangeID` the caller wrote under against the epoch this node's cycle holds, and answers
@@ -238,15 +242,16 @@ it `halted-lost` on the way out, because being superseded is exactly what that s
 ### The state that is not a state: a stalled tail
 
 There is a fourth condition an operator will meet, and it is deliberately **not** a `State`: a drain
-whose outcome could not be *read*. `apply` moves the cold store's watermark by writing it inside the
-drain's own transaction, so the watermark is the only witness to whether a drain committed; when the
-read of that watermark itself fails, the cycle knows neither answer.
+whose outcome could not be *read*. The applier writes the cold store's watermark inside the drain's
+own transaction, so that watermark is the only witness to whether the drain committed. When the read
+of the watermark itself fails, the cycle knows neither answer.
 
-Halting there would turn a blip into a lost shard, so instead the drain's seqno becomes a **floor on
+Halting there would turn a blip into a lost shard. So instead the drain's seqno becomes a **floor on
 the tail** (`tailstate.Tail.Stall`): nothing settles or commits over it, and both writers and readers
 are refused until one readable watermark ends the stall. A watermark at or above the drain's seqno
-means it committed after all; one below means it did not, and the shard halts on the invariant
-side. What the refusals look like and why the age tick is the only thing that can heal a stall is
+means it committed after all. A watermark below it — or none recorded at all — means it did not, and
+the shard halts on the invariant side.
+What the refusals look like, and why the age tick is the only thing that can heal a stall, is
 [chapter 05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read). For this chapter the
 point is the placement: a stall is a property of the *tail*, not a fourth `State`, so a shard that
 recovers from one has nothing to un-halt.
@@ -261,9 +266,9 @@ lost — invariant I2 says every acknowledged mutation is durable in that log �
 acknowledgement becomes useful again only after the next owner applies or otherwise settles that
 tail.
 
-Replay is [`../../cycle/replay.go`](../../cycle/replay.go), and it is `Cycle.start`
-grown a body: it runs lazily, inside the cycle's own goroutine, on the **first request** that
-reaches the shard — read or write alike.
+Replay lives in [`../../cycle/replay.go`](../../cycle/replay.go) and is the body of `Cycle.start`. It
+runs lazily, inside the cycle's own goroutine, on the **first request** that reaches the shard —
+read or write alike.
 
 ```mermaid
 sequenceDiagram
@@ -283,45 +288,51 @@ sequenceDiagram
     CY->>REQ: now served
 ```
 
-How to read this: the request is not refused and there is no "replaying" flag to check — it is
-simply parked on the loop behind the replay, on its own context. That placement **is** the readiness
-gate. It also means a *read* triggers replay exactly as a write does, and that is not an
-optimisation. A read answered from a cold store the log is ahead of would be stale with nothing to
-say so; a task page short a key is worse than stale, because its one caller completes the range it
-read and acks past whatever was missing.
+How to read this: the request is not refused, and there is no "replaying" flag for anyone to check.
+It is simply parked on the loop behind the replay, on its own context. That placement **is** the
+readiness gate. It also means a *read* triggers replay exactly as a write does, which is a
+correctness requirement rather than an optimisation. A read answered from a cold store the log is
+ahead of would be stale with nothing to say so, and a task page short a key is worse than stale:
+its one caller completes the range it read and acks past whatever was missing.
 
 Six rules the loop applies, entry by entry:
 
-* **an entry above this cycle's epoch means we are the zombie.** A successful fence cuts off every
-  lower epoch, so an entry the log holds *above* ours was written by an owner that fenced after us:
-  halt `halted-lost`, before a row is written. This is checked here rather than left to the apply
-  transaction's epoch CAS, because the fence and the rangeID bump are not atomic — in between, a
-  zombie's CAS would still succeed. The halt's cause carries the exported constant
-  `cycle.FencedAway`, so an instrument can tell this road to a fence from an append's.
+* **an entry above this cycle's epoch means this cycle is the zombie.** A successful fence cuts off
+  every lower epoch, so an entry the log holds at a *higher* epoch was written by an owner that
+  fenced after this one. The cycle halts `halted-lost`, before a row is written. Replay checks this
+  rather than leaving it to the apply transaction's epoch compare-and-swap, because the fence and the
+  rangeID bump are not atomic: in the gap between them a zombie's compare-and-swap still succeeds.
+  The halt's cause carries the exported constant `cycle.FencedAway`, so an instrument can tell this
+  road to a fence from an append's.
 * **a seqno that is not the expected one halts on the invariant side.** Gap-freedom is guarantee 4
   of the log contract; a log with a hole is not the log these invariants are written against.
 * **a decode failure is fatal to the replay** — a newer codec, or a task category this node has no
-  registration for. The entry is already acked, so there is nothing to do but stop. This is why
-  `cycle.Deps.Registry` is required and `NewManager` refuses a nil one with `cycle.ErrNoRegistry`:
-  a node that decoded with no registry would recover nothing, silently, until its first failover.
-* **the ack is the answer — with one exception the writer records.** Every assertion is verified
-  before the entry becomes durable, so a condition failure at apply time is a genuine divergence and
-  halts the shard. An entry the writer marked *provisional* was acked before its condition was
-  decided — sync mode's drain answers its caller itself — so that entry's condition may legitimately
-  fail, and replay drops it rather than halting: the drop settles the seqno with the watermark held
-  back, since the entry was never written, and counts `wal_replay_dropped_entries`. The mark is the
-  writer's because nothing a replay can read separates the two classes afterwards — both present as
-  "acknowledged, above the watermark, not applied" — and the flag's zero value means "verified", so
-  an unmarked entry can never be dropped silently. A drain is all-or-nothing, so a provisional entry
-  travels a batch alone: the window in front of it is drained first and it is drained by itself
+  registration for. The entry is already acked, so there is nothing to do but stop. An entry that
+  decodes but names a different shard halts the same way. This is why `cycle.Deps.Registry` is
+  required and `NewManager` refuses a nil one with `cycle.ErrNoRegistry`: a node that decoded with no
+  registry would recover nothing, silently, until its first failover.
+* **the ack is the answer — with one exception the writer records.** Normally every assertion is
+  verified before the entry becomes durable, so a condition failure at apply time is a genuine
+  divergence and halts the shard. Sync mode is the exception: there the drain answers the caller
+  itself, so the entry is acked before its condition has been decided, and the writer marks it
+  *provisional*. Such an entry may legitimately fail its condition on replay, and replay drops it
+  rather than halting. The drop settles the seqno with the watermark held back, since the entry was
+  never written, and counts `wal_replay_dropped_entries`. The mark has to come from the writer
+  because nothing a replay can read separates the two classes afterwards: both present as
+  "acknowledged, above the watermark, not applied". The flag's zero value means "verified", so an
+  unmarked entry can never be dropped silently. A drain is all-or-nothing, so a provisional entry
+  travels a batch alone — the window in front of it is drained first and it is drained by itself
   after, both under `trigger="replay"`.
 * **an entry the previous owner had already settled re-folds to nothing.** `resolved` lived only in
   that process's memory, so the successor cannot tell a settled no-op from work — and does not need
-  to. Re-folding one costs a decode and produces no database statement, which is exactly what the
-  old owner concluded about it. That is the whole reason the third position may die with the
-  process while the other two are persisted.
-* **transactions are cut by the two size triggers only.** The age trigger is not consulted, since
-  everything here is already as old as the incident. Replay also has **no bound of its own**:
+  to. Re-folding one costs a decode and produces no database statement, which is exactly what the old
+  owner concluded about it. That is why `resolved` may die with the process while the other two
+  positions survive it: `commitSeqno` is readable from the log and `appliedSeqno` from the cold
+  store.
+* **transactions are cut by the two size watermarks only** — `Mutations` and `Bytes`, the same pair a
+  running cycle drains on, so a replayed transaction is the size of an ordinary one. The age
+  watermark is not consulted, since every entry here is already as old as the incident. Replay also
+  has **no bound of its own**:
   invariant I10 bounds what a *running* cycle acks, and a tail that somehow exceeds it must still be
   replayed or the shard is unrecoverable.
 
@@ -333,39 +344,41 @@ Six rules the loop applies, entry by entry:
 * **no re-running of the condition authority.** Its callers are all gone.
 * **no rebuilding of a window the previous owner drained.** An entry below the watermark is a row
   the cold store already holds.
-* **no re-derivation of an unknown outcome from base versions.** The watermark is read first, in
-  every outcome; re-reading base versions instead applies a committed batch twice, because the
-  commit is what moved the base. A version could not even *name* the missing set: it advances per
-  committed transaction and a transaction carries a whole folded batch, so there is no arithmetic
-  from a version to a seqno — and a batch that committed but was never heard from reads exactly like
-  a batch that never happened. Only the commit itself can record the position, which is what
-  `applied_seqno` is and why it is written inside the drain's own transaction.
+* **no re-derivation of an unknown outcome from base versions.** The watermark is read first,
+  whatever the outcome. Deriving the answer from base row versions instead would apply a committed
+  batch twice, because the commit is what moved those versions. A version could not even *name* what
+  is missing: it advances once per committed transaction, and a transaction carries a whole folded
+  batch, so there is no arithmetic from a version back to a seqno. A batch that committed but was
+  never heard from reads exactly like a batch that never happened. Only the commit itself can record
+  the position — which is what `applied_seqno` is, and why it is written inside the drain's own
+  transaction.
 
 ### An abandoned attempt gives back what it took
 
-A replay that fails without halting — a log read that errored — leaves the cycle unstarted, and
-everything the attempt moved is dropped with it: the accumulator and window are replaced, the acked
-bytes go back to the floor, and its counters are a value the cycle never adopts. A retry reads the
-watermark again and re-acks everything above it, so keeping any of that would count one incident
-once per attempt — and since the tail is what invariant I10 reads before a write is queued, the leak's
-first symptom would be a perfectly healthy shard refusing its writers. Halted *inside* a replay is
-the opposite case: no attempt follows, so the tail stays as the evidence reads are refused on, and
-the counters stay with it.
+A replay that fails without halting — a log read that errored, say — leaves the cycle unstarted, and
+everything the attempt moved is dropped with it. The accumulator and window are replaced, the acked
+bytes go back to the floor, and the attempt's counters are a value the cycle never adopts. The reason
+is that a retry reads the watermark again and re-acks everything above it, so keeping any of that
+would count one incident once per attempt. The tail is what invariant I10 reads before a write is
+queued, so the first symptom of such a leak would be a perfectly healthy shard refusing its writers.
+
+Halting *inside* a replay is the opposite case. No further attempt follows, so the tail stays where
+it is — it is the evidence that reads are refused on — and the counters stay with it.
 
 ---
 
 ## 5. Halts: the two classes
 
-Replay depends on two different kinds of refusal, and treating them alike would turn ordinary
-failover into an incident or a correctness incident into an endless failover loop. A halted cycle
-never leaves the state it halted in. Both halts keep the log — the entries are the evidence — and
-both stop the trim, because the log is no longer the halted cycle's to shorten.
+A cycle stops for good in one of two states, and the difference decides what happens next. Treating
+them alike would turn an ordinary failover into an incident, or a correctness incident into an
+endless failover loop. A halted cycle never leaves the state it halted in. Both halts keep the log —
+the entries are the evidence — and both stop the trim, because the log is no longer the halted
+cycle's to shorten.
 
 | | `halted-lost` | `halted-invariant` |
 |---|---|---|
 | What it means | the shard was fenced away: another node owns it | a divergence this process owns |
-| Reached by | `wal.ErrFenced` on an append, `apply.ClassShardLost` at a drain, a replayed entry above this cycle's epoch, or `Retire` on a running cycle — which is the one
-way in that emits nothing, since a rangeID renewal and a graceful shutdown both take it | a condition failure at a drain, `cycle.ErrTailNotEmpty`, a decode or seqno violation at replay, an unreadable drain proven not to have committed, or any apply class nobody enumerated |
+| Reached by | `wal.ErrFenced` on an append, `apply.ClassShardLost` at a drain, a replayed entry above this cycle's epoch, or `Retire` on a running cycle — the one way in that emits nothing, since a rangeID renewal and a graceful shutdown both take it | a condition failure at a drain, `cycle.ErrTailNotEmpty`, a decode or seqno violation at replay, an unreadable drain proven not to have committed, or any apply class nobody enumerated |
 | Who continues the work | the next owner: it fences, replays the tail and applies it | the halted cycle never resumes. The layer asks nobody to take over, although Temporal may independently acquire a higher rangeID, install a successor and make it replay the same tail |
 | At the store boundary | translated to `ShardOwnershipLost`, which is what the shard's write path matches to re-acquire | returned unchanged rather than translated to ownership-lost, so this error does not request a failover; a separate background acquisition at a higher rangeID still supersedes the halted cycle |
 | Operator response | none — this is fencing working | page: [runbook (b)](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes) |
@@ -382,14 +395,14 @@ writes, and only if it writes. The fence does not stop anyone from entering; it 
 useless. So the absence of `wal_halts{state="halted-lost"}` on a node is not evidence that the node
 still owns its shards, only evidence that it has not tried to write under a superseded epoch.
 
-The other half of that rule is enforced in code, at `storeError` in
+**Only one of the two classes asks for a failover**, and that rule is enforced at `storeError` in
 [`../../cycle/decide.go`](../../cycle/decide.go): only `StateHaltedLost` maps to
-`ShardOwnershipLost`. Converting `halted-invariant` would hand a divergence this process owns to the
-next owner as an ordinary failover — it would fence, replay the same entries, and meet the same
-assertion. Leaving the error unrecognised does not revive the cycle or request that handoff. It also
-does not pin ownership: if Temporal independently acquires a higher rangeID, `ShardAcquired`
-installs a fresh cycle and retires this one, and the successor replays the same evidence. Capture
-the log promptly rather than assuming the halted cycle will keep it indefinitely.
+`ShardOwnershipLost`. Converting `halted-invariant` too would hand a divergence this process owns to
+the next owner as an ordinary failover, and that owner would fence, replay the same entries and meet
+the same assertion. Leaving the error unrecognised does not revive the cycle or request that handoff.
+Nor does it pin ownership: if Temporal independently acquires a higher rangeID, `ShardAcquired`
+installs a fresh cycle and retires this one, and the successor replays the same evidence. Capture the
+log promptly rather than assuming the halted cycle will keep it indefinitely.
 
 What a halted shard answers a *reader* is
 [chapter 07](07-read-path.md#2-routing-a-read-and-drainonread). Briefly: an empty tail passes
@@ -398,8 +411,8 @@ through to the cold store in either halt, and a non-empty one refuses. The refus
 `halted-invariant`. The one exception is a task read under `halted-lost`, which is refused whatever
 the tail holds, because its one caller would complete a range it was handed short.
 
-Every transition in this chapter is instrumented, and this is the whole of it in one place — read
-it once the transitions above are familiar rather than as a way of learning them:
+Every transition in this chapter is instrumented. The table below is the whole of it in one place —
+a reference to come back to once the transitions above are familiar, not a way of learning them:
 
 | Transition | Emitted / counted |
 |---|---|
@@ -420,10 +433,10 @@ Three ways a cycle stops, and they are not interchangeable.
 **`Cycle.Retire()` — stop without draining.** The epoch has been fenced out, so what the cycle holds
 is not its own to apply: the entries stay in the log for the next owner. It stamps a running cycle
 `halted-lost`, stops the loop and waits for it to finish, waits for any trim in flight, and answers
-with what the cycle counted. Stopping it and taking its count are one operation rather than two a
-caller has to order — before the stop the loop can still count, and after it there is no loop left
-to ask. `Layer.RetireShard(shard)` is that verb one level out, named apart from `Shutdown`
-precisely because it writes nothing; it stands in for what a process that died leaves behind.
+with what the cycle counted. Stopping the cycle and taking its count are one operation rather than
+two the caller has to order: before the stop the loop can still count, and after it there is no loop
+left to ask. `Layer.RetireShard(shard)` is the same verb one level out, named apart from `Shutdown`
+precisely because it writes nothing — it stands in for what a process that died leaves behind.
 
 **`Cycle.Close(ctx)` — drain, then retire.** This is the shutdown path. A halted cycle drains
 nothing and returns its halt.
@@ -433,11 +446,12 @@ nothing and returns its halt.
 one transaction per shard, and then closes the log. A drain that does not commit is logged
 (`WARN apply cycle: the shutdown drain did not commit`) and does not stop the rest.
 
-**The detach is the point.** The budget is placed on `context.WithTimeout(context.WithoutCancel(ctx), budget)`
-— a context detached from the caller's cancellation. A shutdown drain runs where a context has just
-been cancelled, because that is what shutdown *means*; one inheriting that cancellation returns at
-once, leaving a tail behind and nothing anywhere that says so. The budget is the caller's; a minute
-is what the research prototype's main passed.
+**The detach is the point.** The budget is placed on
+`context.WithTimeout(context.WithoutCancel(ctx), budget)`, a context detached from the caller's
+cancellation. A shutdown drain runs where a context has just been cancelled, because that is what
+shutdown *means*. A drain context that inherited that cancellation would return at once, leaving a
+tail behind and nothing anywhere that says so. How long the budget is stays the caller's decision;
+the callers in this repository pass a minute.
 
 ```mermaid
 sequenceDiagram
@@ -457,10 +471,11 @@ sequenceDiagram
 ```
 
 How to read this: the registry is emptied in one step, so a second `Close` finds nothing to drain.
-The ordering constraint the caller owns is on either side of this diagram — the cold store the
-applier writes through must still be open when `Shutdown` runs, and the server closes its own data
-store factory on the way down, so a layer whose applier rides that factory drains into a closed
-client.
+One ordering constraint is the caller's rather than the layer's, and it sits outside this diagram on
+both sides — the cold store the applier writes through must still be open when `Shutdown` runs. The
+server closes its own data store factory on the way down, so a layer whose applier rides that factory
+drains into a closed client. [Chapter 09](09-operations.md#2-start-and-stop-order) has the order a
+custom main must use.
 
 **A node killed without a graceful stop** leaves whatever its windows held: entries acked into the
 log, above the watermark, unapplied. Nothing cleans that up in place — there is no reaper, no
@@ -478,14 +493,15 @@ request.
 ## 7. Trim, as part of the lifecycle
 
 Trimming is what keeps a shard's log from growing without end. It deletes entries the cold store
-already holds — up to the committed watermark, with no safety lag, since recovery reads the
-watermark rather than the log.
+already holds — up to the committed watermark, with no safety lag, since recovery reads the watermark
+rather than the log. A backend's reads get dearer as its log gets longer, so this is part of the
+latency budget rather than hygiene.
 
 * **The cadence is two numbers, whichever trips first**: `cycle.Config.TrimEvery` drains since the
   last trim (16 by default) and `cycle.Config.TrimAfter` elapsed time (60 s by default). Both are
-  read at the decision, so they may move under a shard this node is already holding. A `DeleteRange`
-  per drain would be a transaction per drain for no gain. [Chapter 08](08-configuration.md) has the
-  configuration keys.
+  read at the decision, so they may move under a shard this node is already holding. There is a
+  cadence at all because a `DeleteRange` per drain would be a transaction per drain for no gain.
+  [Chapter 08](08-configuration.md) has the configuration keys.
 * **It runs beside the loop, not in it.** `cycle/trim` is its own package for exactly that reason: a
   stuck log may not stop a shard from acking and applying. One trim runs at a time; a cadence that
   comes due while a trim is in flight is **skipped rather than queued**, since the next one takes a
@@ -521,8 +537,10 @@ watermark rather than the log.
   `ShardOwnershipLost` and which deliberately does not), `writeRefused` and the settlement rules.
 * [`../../cycle/trim/trim.go`](../../cycle/trim/trim.go) — the cadence, the single trim
   in flight, and the two counters.
-* [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Watermarker`, the read a recovering owner makes
-  before anything else, and the stall that follows when it cannot be made.
+* [`../../cold/cold.go`](../../cold/cold.go) — `cold.Watermarker`, the read a recovering owner makes
+  before anything else, and why the watermark must commit inside the drain's own transaction.
+* [`../../cycle/tailstate/tailstate.go`](../../cycle/tailstate/tailstate.go) — `Tail.Stall`, the
+  floor a drain with no readable outcome leaves, and `Tail.Resolve`, which ends it.
 * [`../../waltz.go`](../../waltz.go) — `Layer.Shutdown` and its detached context, and
   `RetireShard` beside it.
 * [`../../wal/wal.go`](../../wal/wal.go) — `Epoch` (identical to `rangeID`, invariant

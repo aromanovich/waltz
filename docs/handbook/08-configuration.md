@@ -1,26 +1,28 @@
 # Choosing the operating envelope
 
 The layer buys fewer cold-store transactions by holding acknowledged work outside the cold store.
-Every useful tuning decision changes one side of that exchange. A larger window can collapse more
-mutations, but leaves more work to replay and more bytes in memory. More frequent trimming shortens
-the retained log, but spends more transactions. A larger hard tail admits a longer disturbance,
-but only if the node has memory for every shard it may own.
+Every tuning decision here changes one side of that exchange. A larger window collapses more
+mutations into one transaction, but leaves more work to replay after a crash and more bytes in
+memory. Trimming more often shortens the retained log, but spends a transaction each time. A larger
+per-shard tail bound lets a shard ride out a longer disturbance, but only if the node has memory for
+every shard it may own at once.
 
 Configuration is easier to reason about as four questions:
 
 1. **Is the layer enabled at all?** The presence of the static `wal` section answers this.
 2. **When should acknowledged work drain or trim?** Five live settings control the running cycle.
-3. **How much unapplied work may one node accept?** Four start-up settings, three of which are one
-   memory budget.
+3. **How much unapplied work may one node accept?** Four start-up settings, three of which are the
+   terms of one memory budget.
 4. **Is this production operation or an attribution experiment?** `sync` and `drain_on_read`
    deliberately trade the normal batching path for easier measurement.
 
 The exact keys, defaults and failure modes follow those questions. Three recipes at the end cover
 passthrough, the shipped operating point and a small test window.
 
-There are exactly **two surfaces that configure run-time behaviour** and no third. Whether the layer
-is on, and the two experimental switches, live in the server configuration; numeric operating policy
-lives in dynamic config. Nothing about this layer's run-time behaviour is a command-line flag.
+**Two surfaces configure run-time behaviour, and there is no third.** Whether the layer is on, and
+the two experimental switches, live in the server's configuration file; every number of the
+operating policy lives in the server's dynamic config. Nothing about this layer's run-time behaviour
+is a command-line flag.
 
 One thing is deliberately not configuration at all: **where the log lives and what the cold store
 is.** Both arrive as Go values in `waltz.Backends`, built by the `main` that composes the layer. This
@@ -33,14 +35,14 @@ to one.
 
 The layer's own section is a key named `wal` **inside the custom datastore's `options` map** — the
 same map from which the persistence implementation underneath reads its own endpoint and database.
-That placement is deliberate: `options` is `map[string]any` in the server's own config struct, so it
-is the one place in the file format that already admits keys the server does not know, and a store's
-own decoder ordinarily drops keys it has no field for. A `wal:` key therefore costs an existing
+That placement is deliberate. `options` is a `map[string]any` in the server's own config struct, so
+it is the one place in the file format that already admits keys the server does not know. A store's
+own decoder ordinarily drops keys it has no field for, so adding a `wal:` key costs an existing
 deployment nothing.
 
 Only the **default** datastore's options are read (`persistence.defaultStore`), because the
-ExecutionStore and ShardStore the layer decorates are that store's. A `wal` section on some other
-datastore is read by nobody.
+ExecutionStore and the ShardStore the layer decorates belong to that datastore. A `wal` section on
+any other datastore is read by nobody.
 
 ```yaml
 persistence:
@@ -98,31 +100,36 @@ flowchart TD
 ```
 
 How to read this: one map, two parsers, and neither reads the other's keys. Everything the layer
-learns from this file is on the right-hand branch; everything on the left is the store's, and the
-layer never so much as looks at it.
+learns from the server config comes down the `wal:` branch; the rest of the options map goes to the
+store's own parser, and this layer never reads it. The nine numbers are not in this file at all —
+they reach the same `cycle.Policy` from the dynamic-config file.
 
 ---
 
 ## 2. Table 1 — the `wal` section's keys
 
-Two keys live on this strict, restart-only surface, and both answer whether the node is running one
-of the two attribution modes. No numeric operating limit lives here, and nothing here says what the
-layer is built over.
+Two keys live on this strict, restart-only surface. Each switches the node into an attribution
+mode — a configuration you turn on to find out where an observed number came from, not a policy to
+run in production. No numeric operating limit lives here, and nothing here says what the layer is
+built over.
 
-The shipped path leaves both booleans false. Setting `sync` isolates the drain by making each writer
-wait for a one-mutation transaction; nothing collapses, and a condition failure the drain discovers
-*after* the ack still has exactly one caller to attribute it to. That is the weaker property rather
-than the stronger one: a windowed write settles every assertion before the append, and is
-attributable at any window size
-([chapter 05](05-write-path.md#3-failed-write--the-condition-did-not-hold)).
-Setting `drain_on_read` isolates the overlay by emptying the window
-before a read; the answer then comes from the cold store at the cost of a transaction for every read
-that crosses held work. These are experiments for asking where behaviour came from, not alternative
-production policies: each turns off the mechanism it is meant to expose.
+The shipped configuration leaves both false.
+
+`sync: true` isolates the drain. Every writer waits for a transaction carrying its own mutation and
+nothing else, so nothing collapses, and a condition failure the drain discovers *after* the ack has
+exactly one caller to attribute it to. That is a weaker property than the windowed path's, not a
+stronger one: a windowed write settles every assertion *before* the append, so it is attributable at
+any window size ([chapter 05](05-write-path.md#3-failed-write--the-condition-did-not-hold)).
+
+`drain_on_read: true` isolates the overlay. The window is applied before the read it would have been
+merged into, so the answer comes from the cold store alone — at the cost of a transaction for every
+read that crosses held work.
+
+Each switch turns off the mechanism it exists to expose, which is why neither is a production mode.
 
 | key | type | default | effect | what a typo costs |
 |---|---|---|---|---|
-| `sync` | bool | `false` | `true` drains inside every write and hands the drain's outcome back to the caller, instead of acking the write to the log and applying it later. The debugging configuration, not a shipped mode: the window is one mutation, so nothing collapses and a write costs an append **plus** an apply transaction — more than the store alone. This book describes the layer without it, and where a chapter says a counter is zero, that is the reason | `snyc: true` is a refusal to start — which is the whole reason this key is on the strict surface |
+| `sync` | bool | `false` | `true` drains inside every write and hands the drain's outcome back to the caller, instead of acking the write to the log and applying it later. The debugging configuration, not a shipped mode: the window is one mutation, so nothing collapses and a write costs an append **plus** an apply transaction — more than the store alone. This book describes the layer with `sync` off; where a chapter says a series is always zero — `trigger="sync"`, for instance — that is why | `snyc: true` is a refusal to start, which is the whole reason this key is on the strict surface |
 | `drain_on_read` | bool | `false` | `true` makes a read drain the window first, so all three reads are answered by the cold store. An attribution instrument, not a shipped mode; it costs a transaction per read that crosses a window | as above: an unknown key is a refusal to start |
 
 Both are read once, when the node composes its layer. There is no way to change them without a
@@ -137,29 +144,32 @@ Three mechanical consequences of `sync`, for anyone reading a sync-mode run's nu
   *caller* triggers carries `trigger="sync"` ([chapter 10](10-metrics.md#3-the-reference-table)).
   A sync node still emits `trigger="explicit"` on a graceful shutdown and `trigger="replay"` on
   recovery, so an alert on "any non-sync drain here" fires on every restart;
-* no delegated base read is taken at all. The check returns as soon as the accumulator has been
-  consulted, because the drain inside the same call asserts everything those reads would have — which
-  is also why the mutation is encoded with `mutation.EncodeProvisional`: it is durable before its
-  condition was verified.
+* no delegated base read is taken. `Cycle.check` returns as soon as the accumulator has been
+  consulted, because the drain later in the same call asserts everything those reads would have.
+  That is also why a sync-mode mutation is encoded with `mutation.EncodeProvisional`: the entry
+  becomes durable before its condition has been verified, and replay reads that bit back so an
+  inherited provisional entry whose condition fails is dropped rather than treated as a divergence.
 
 What `drain_on_read` does to a read is
 [chapter 07](07-read-path.md#2-routing-a-read-and-drainonread) and
-[`../../cycle/read.go`](../../cycle/read.go); what `sync` does inside a write is
-[`../../cycle/write.go`](../../cycle/write.go).
+[`../../cycle/read.go`](../../cycle/read.go); what `sync` does inside a write is `Cycle.add` in
+[`../../cycle/cycle.go`](../../cycle/cycle.go).
 
 ---
 
 ## 3. Table 2 — the nine dynamic-config settings
 
 Every *number* of the policy is a setting of the server's own dynamic config, under the same `wal.`
-name the section has. They are declared in `settings.go` at the module root and take their defaults from
-`cycle.Defaults()` **by reference**, so there is no second copy of the measured policy anywhere.
+prefix the section's key has. They are declared in [`../../settings.go`](../../settings.go) at the
+module root, and each states its default as a field of `cycle.Defaults()` rather than by repeating
+the number, so there is no second copy of the measured policy anywhere.
 
 The nine settings form two groups. Five answer *when should accumulated work move?* They are read at
 the decision that consults them, so a change takes effect on a shard this node already holds, with
 no re-acquire and no replay. Four answer *how much tail may this process accept?* They are **read at
-start-up**, because their values participate in a budget check before the node connects; changing
-one **needs the history services restarted**.
+start-up** — three of them are the factors of a memory budget the node checks before it connects to
+anything, and the fourth is read alongside them. Changing any of the four **needs the history
+services restarted**.
 
 | key | type | default | when it is read | what it bounds | raising / lowering it |
 |---|---|---|---|---|---|
@@ -173,32 +183,38 @@ one **needs the history services restarted**.
 | `wal.maxShards` | int | `256` | **START-UP** | what one node may own at once — **not** the cluster's shard count. The default is a steady-state figure doubled, so that a node picking up a departed neighbour's shards does not trip the budget assertion; [chapter 14](14-where-the-defaults-came-from.md) has where the steady-state figure came from | the other factor of the same product |
 | `wal.tailBudgetBytes` | int | `2147483648` | **START-UP** | the **encoded** bytes of unapplied tail one node may hold — not heap, which is several times larger ([chapter 14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident)) | `hardMaxBytes × maxShards` must fit in it or the node refuses to start |
 
-> **Why the four marked START-UP are read once rather than live**: three of the four are the
-> factors of the budget assertion, which exists to refuse a node *before it boots*, and a factor
-> that could move afterwards would leave that refusal standing for numbers the node no longer runs
-> at. `hardMaxEntries` is the fourth and is not a factor of it — entries bound recovery time rather
-> than memory ([I10](02-concepts-and-invariants.md#i10-at-more-length)) — but it is asserted
-> alongside them at boot, and a recovery budget that could halve itself under a running node is one
-> nobody wrote either.
+> **Why the four marked START-UP are read once rather than live.** Three of them —
+> `hardMaxBytes`, `maxShards` and `tailBudgetBytes` — are the factors of the budget assertion,
+> whose whole purpose is to refuse a node *before it boots*. A factor that could move afterwards
+> would leave that refusal standing for numbers the node is no longer running at.
+> `hardMaxEntries` is the fourth. It is not a factor of the product — entries bound recovery time
+> rather than memory ([I10](02-concepts-and-invariants.md#i10-at-more-length)) — but it is read
+> alongside the other three at boot, because a recovery budget that could halve itself under a
+> running node is one nobody wrote either.
 
-Where each of these numbers came from — which follow from a measurement or from another default,
-and which are start values nothing derives — is
-[chapter 14](14-where-the-defaults-came-from.md).
+[Chapter 14](14-where-the-defaults-came-from.md) has where each of these numbers came from: which
+follow from a measurement, which follow from another default, and which are start values nothing
+derives.
 
 ### What a zero means, per key
 
-They do not all mean the same thing, and this matters because a dynamic-config value can be set to
-anything at any moment.
+A zero does not mean the same thing on every key. That matters because a dynamic-config value can be
+set to anything at any moment, including under a node that is already running.
 
 * `wal.windowMutations` and `wal.windowBytes` at zero **drain every write**. Degenerate, but
   somebody can mean it.
 * `wal.trimEvery` and `wal.trimAfter` at zero **trim at every drain**. Likewise.
-* `wal.windowAge` at zero or negative is **read as the default**, not obeyed. The loop re-arms its
-  age timer at that interval, so zero is a tick that is due the moment it is set — a goroutine
-  spinning at a whole CPU per held shard. That is not a policy anybody means.
+* `wal.windowAge` at zero or negative is **read as the default**, not obeyed. The cycle re-arms its
+  age timer from this value, so a zero would fire the tick immediately and then again, forever: a
+  goroutine spinning at a whole CPU for every shard the node holds. That is not a policy anybody
+  means.
 * The four start-up bounds at zero or negative are **read as their defaults** too. Their zero would
-  be "refuse every write", which stops the shard, or "hold an unbounded tail", which is exactly what
-  I10 exists to prevent.
+  read either as "refuse every write", which stops the shard, or as "hold an unbounded tail", which
+  is exactly what I10 exists to prevent.
+
+The filling happens in `cycle.Config.fill`, and it runs at every answer the policy gives rather than
+only at the one it was built from — so a dynamic-config key set to zero on a running node is caught
+at the next decision, with no restart.
 
 ### A process with no dynamic config
 
@@ -206,17 +222,22 @@ If the server is started with no dynamic-config file, it uses a noop client, and
 stands at its own default — which is `cycle.Defaults()`. Nothing is refused and no warning is emitted: a
 node with no dynamic config runs the measured policy.
 
-The same holds inside the layer: building a policy over a nil collection means the settings' own
-defaults rather than a refusal. A process with no config file at all — a harness driven by flags, a
-test driven by an environment variable — does not render its numbers into dynamic-config key space
-in order to read them back. It overlays onto the section's static half and hands the result over as
-a `cycle.Fixed` policy.
+The same holds inside the layer: `waltz.NewPolicy(nil, section)` builds a policy at the settings'
+own defaults rather than refusing.
+
+A process with no config file at all — a harness driven by flags, a test driven by an environment
+variable — need not render its numbers into dynamic-config key space in order to read them back. It
+builds a `cycle.Config` directly (`WAL.StaticConfig()` is the section overlaid on
+`cycle.Defaults()`) and hands it to `waltz.Compose` wrapped in `cycle.Fixed`, which is the policy
+that does not move.
 
 ---
 
 ## 4. The two surfaces, and why the line falls where it does
 
-The line is **the cost of a typo**, and only that. It is not liveness.
+What decides which surface a key belongs on is **the cost of a typo**, and nothing else. It is not
+whether the value can change while the node runs: four of the nine dynamic-config settings are read
+once at start-up, and they are still on the dynamic surface.
 
 ```mermaid
 flowchart LR
@@ -226,35 +247,36 @@ flowchart LR
   E --> F["the default stands, silently"]
 ```
 
-How to read this: identity and behaviour go on the surface where a mistake is loud, numbers go on the
-surface where a mistake is quiet.
+How to read this: what the layer *is* goes on the surface where a mistake is loud, and the numbers it
+runs at go on the surface where a mistake is quiet.
 
 * `sync` and `drain_on_read` are what the layer **is** — what it does inside a write and inside a
   read. `snyc: true` must not be a node quietly running differently, and neither must a `WAL:` the
   layer never sees. So they are on the strict surface.
-* Every number is on the consolidated surface. A mistyped `wal.windowMutations` (say, `wal.windowMutatons`) is a node at the
-  measured policy — a different order of wrong, and the price of having one place to look for a
-  number.
+* Every number is on the dynamic-config surface. A mistyped `wal.windowMutations` — say
+  `wal.windowMutatons` — leaves the node at the measured policy. That is a different order of wrong,
+  and it is the price of having one place to look for a number.
 
-There is no private half of the section, and that is why an instrument nothing ships with is on it
-anyway. The decoder runs with `ErrorUnused`, so a key it does not declare is a refusal to start, and
-a run against a real server binary configures itself from a real yaml file. Anything such a run can
-set is therefore a key the section is obliged to declare, document and default to off.
+The section has no private half. A run against a real server binary configures itself from a real
+yaml file, and the section's decoder runs with `ErrorUnused`, so a key the section does not declare
+is a refusal to start. Anything such a run needs to set is therefore a key the section is obliged to
+declare, document and default to off — which is why `sync` and `drain_on_read`, which no deployment
+ships with, are documented keys in Table 1 rather than hidden ones.
 
 Two consequences follow, and both are enforced:
 
-**No key may live on both surfaces.** Every configurable field of the policy is claimed by exactly
-one of the two tables above — Table 1's `sync` and `drain_on_read`, or Table 2's nine settings. A
-field on neither is one no configuration reaches; a field on both is a number two surfaces can
-disagree about, and this design deliberately has **no precedence rule** to settle such a
-disagreement. A test at the module root fails either way round.
+**No key may live on both surfaces.** Every configurable field of `cycle.Config` is claimed by
+exactly one of the two tables above — Table 1's `sync` and `drain_on_read`, or Table 2's nine
+settings. A field on neither is one no configuration reaches; a field on both is a number the two
+surfaces can disagree about, and there is deliberately **no precedence rule** to settle such a
+disagreement. `TestEveryPolicyFieldIsConfigurableOnce`, at the module root, fails either way round.
 
-**A key that moved is refused by name.** The numbers used to be section keys, in `snake_case`
-(`window_mutations`, `hard_max_bytes`, and so on). Writing one of those in the `wal:` section today
-is not reported as an unrecognised key — the layer recognises the old name, refuses, and tells you
-the dynamic-config setting to write instead and whether that setting needs a restart. That refusal
-*is* the migration: a silent migration would be a node running a window the file it was given does
-not describe.
+**A key that moved is refused by name.** The numbers were once section keys, in `snake_case`:
+`window_mutations`, `hard_max_bytes`, and so on. Writing one of those in the `wal:` section today is
+not reported as an unrecognised key. The layer recognises the old name, refuses to start, and names
+the dynamic-config setting to write instead along with whether that setting needs a restart. The
+refusal *is* the migration: migrating the value silently would leave a node running a window the
+file it was given does not describe.
 
 ---
 
@@ -270,10 +292,12 @@ At the shipped defaults it fits **exactly**: `8388608 × 256 = 2147483648`. So r
 `wal.hardMaxBytes` or `wal.maxShards` without raising `wal.tailBudgetBytes` is a node that refuses
 to start.
 
-The refusal happens inside `waltz.Compose`, which opens nothing and reaches nothing: it is
-arithmetic over values from the two config surfaces, so a node whose numbers do not fit is refused
-without a round trip. A `main` that checks the budget before it opens its own clients is refused
-before anything connects to anything, and that ordering is the caller's to choose.
+`waltz.Compose` asserts it, through `cycle.NewManager`, and neither opens anything nor reaches
+anything: the check is arithmetic over values already in memory from the two config surfaces, so a
+node whose numbers do not fit is refused without a round trip. The same assertion is available to
+the composing `main` as `policy().CheckBudget()`. Calling it there, before the log and the cold
+store are opened, refuses the node before anything connects to anything — that ordering is the
+caller's to choose, but the assertion itself cannot be skipped.
 
 ```mermaid
 flowchart TD
@@ -286,32 +310,35 @@ flowchart TD
   G --> H["temporal.WithCustomDataStoreFactory"]
 ```
 
-How to read this: `Compose` asserts the budget itself, so the check cannot be skipped; putting it
-ahead of opening anything is what makes a configuration mistake cost zero round trips.
+How to read this: `Compose` asserts the budget whatever the caller does, so the check cannot be
+skipped; running it ahead of opening anything is what makes a configuration mistake cost zero round
+trips.
 
 What the budget bounds is **encoded bytes**, not resident memory. Decoded protobufs and the
 accumulator's indices make the live heap several times larger, so a node sized by reading
 `tailBudgetBytes` as a memory figure is sized wrong.
 [Chapter 14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident) has the multiplier
 the research prototype measured, what the shipped budget therefore costs with every shard at its
-bound, and what moves it — that chapter owns the number, and quoting it here is how the two would
-drift. It is a number to re-measure for the workload being deployed rather than to trust. Size the
-node from that result; the settings to change are `wal.tailBudgetBytes` and `wal.hardMaxBytes`, and
-both need a restart.
+bound, and what moves it. Re-measure that multiplier for the workload being deployed rather than
+trusting it, and size the node from your own result. The settings to change are
+`wal.tailBudgetBytes` and `wal.hardMaxBytes`, and both need a restart.
 
 **Read traffic does not enter this budget**, because the read path retains nothing
 ([chapter 07](07-read-path.md#1-route-only-reads-whose-answer-can-be-split)). What a shard holds is
 a function of what has been acknowledged and not yet applied, and of nothing else.
 
-**The per-shard bound does not bound what a node may inherit.** It limits what one *running* cycle
-may newly acknowledge, not what a recovering node may be obliged to apply: a neighbour that picks up
-many shards at once inherits the sum of their tails, and no setting caps that sum. What keeps it
-survivable is the shape of replay — a recovering cycle reads the log in pages the size of the window
-and cuts its transactions on the ordinary size watermarks, so one recovering shard's working set is a
-window rather than a tail, however long the tail is. What remains is that several of those working
-sets stack in one process, on top of whatever live traffic the node is already carrying. That is why
-`wal.maxShards` is what a node may own *at once*, and why a budget computed for the steady state
-rather than for the concurrent-recovery case is one that holds until the first time it matters.
+**The per-shard bound does not bound what a node may inherit.** `hardMaxBytes` limits what one
+*running* cycle may newly acknowledge. It does not limit what a recovering node may be obliged to
+apply: a node that picks up many shards at once inherits the sum of their tails, and no setting caps
+that sum.
+
+Replay is what keeps that survivable. A recovering cycle reads the log in pages the size of the
+window — `wal.windowMutations` entries at a time — and cuts its transactions on the ordinary size
+watermarks, so one recovering shard's working set is a window rather than a tail, however long the
+tail is. What remains is that several of those working sets stack in one process, on top of whatever
+live traffic the node is already carrying. That is why `wal.maxShards` is what a node may own *at
+once*, and why a budget computed for the steady state rather than for the concurrent-recovery case
+holds until the first time it matters.
 
 ---
 
@@ -352,7 +379,7 @@ outside.
 ### 6c. A small window, for testing
 
 A window of a few mutations makes drains frequent and merge-on-read easy to hit, while still holding
-more than one mutation at a time.
+more than one mutation at a time. The section is the same empty one as in 6b; only the numbers move.
 
 ```yaml
 options:
@@ -360,6 +387,8 @@ options:
     database: "/local"
     wal: {}
 ```
+
+Dynamic config:
 
 ```yaml
 wal.windowMutations:   [{value: 2}]
@@ -375,17 +404,17 @@ unless you also mean to restart.
 
 ## 7. What the section does not configure
 
-The section says how the layer behaves and never what it is built over. The log, the applier and the
-watermarker are Go values in `waltz.Backends`, and the `main` that composes the layer is where they
-come from. Two consequences an operator meets:
+Between them, the section and the nine settings say how the layer behaves. Neither says what it is
+built over: the log, the applier and the watermarker are Go values in `waltz.Backends`, handed to
+`waltz.Compose` by the `main` that composes the layer. Two consequences an operator meets:
 
 * **there is no key to point the layer at a different log**, so a change of backend is a deployment
   of a different binary rather than a configuration change and a restart;
 * **whatever the log needs — its own schema, its own migration, its own capacity — is that log's
   deployment step and not this layer's.** Nothing here creates a table, and nothing here refuses to
-  start because a table is missing. A log that is not ready fails the first `Fence`, which is a shard
-  that cannot be acquired, and [chapter 09](09-operations.md) is where that is read off the
-  instruments.
+  start because a table is missing. A log that is not ready fails the first `Fence`, which surfaces
+  as a shard that cannot be acquired; [chapter 09](09-operations.md) shows what that looks like on
+  the instruments.
 
 ---
 
@@ -403,5 +432,5 @@ come from. Two consequences an operator meets:
   each decision rather than a value, and the two constructors for it.
 * [`../../cycle/replay.go`](../../cycle/replay.go) — the page size a replay reads with
   and the watermarks it cuts on: why a recovering shard's working set is a window and not a tail.
-* [`../../waltz.go`](../../waltz.go) — `Compose`, where the budget is asserted, and `Backends`,
-  which is everything this file does not configure.
+* [`../../waltz.go`](../../waltz.go) — `Compose`, which asserts the budget by way of
+  `cycle.NewManager`, and `Backends`, which is everything this file does not configure.

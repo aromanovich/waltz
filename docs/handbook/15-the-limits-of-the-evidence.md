@@ -5,13 +5,13 @@ different question: read together, what do the green targets actually assert, an
 open? It is for whoever has to decide whether the evidence covers the deployment in front of them,
 and for whoever is about to file one of the gaps below as work.
 
-**The boundary that produces most of this chapter is one sentence, and it is no longer the one it
-used to be.** waltz once implemented no persistence at all, so nothing here could run against
-storage. Both seams now have an implementation — `wal/memwal` and `cold/memcold` — and the boundary
-moved rather than dissolved: **everything here lives in one process's memory and dies with it.** So
-a suite can append, commit, boot a Temporal server and read rows back, and no suite can fsync, cross
-a network, wait on a quorum, hand a shard to another machine, or be killed. Every claim that depends
-on storage outliving its process is still somebody else's to make.
+**Everything here lives in one process's memory and dies with it.** That one sentence produces most
+of this chapter, and it is a narrower boundary than it once was: waltz shipped no persistence at all
+to begin with, so nothing could run against storage, and both seams now have an implementation —
+`wal/memwal` for the log, `cold/memcold` for the cold store. The boundary moved rather than
+dissolved. A suite can append, commit, boot a Temporal server and read rows back. No suite can
+fsync, cross a network, wait on a quorum, hand a shard to another machine, or be killed. Every claim
+that depends on storage outliving its process is still somebody else's to make.
 
 ## Which numbers survive a release
 
@@ -20,9 +20,9 @@ at all.
 
 **The first kind is constants and test bounds.** They follow from the code as it stands, so a reader
 re-derives them by opening the file rather than by trusting a terminal window somebody pasted into a
-ticket. The shipped watermarks — 256 mutations, 262144 bytes, 5 s, a trim every 16 drains or 60 s —
-are of this kind, as are the per-shard bounds of 8192 entries and 8 MiB and the node budget of 256
-shards and 2 GiB.
+ticket. The shipped watermarks — 256 mutations, 256 KiB, 5 s, a trim every 16 drains or 60 s — are
+of this kind, as are the per-shard bounds of 8192 entries and 8 MiB and the node budget of 256
+shards and 2 GiB. All of them are `cycle.Defaults()`.
 
 **The second kind is percentages, one run's counters, and bytes measured on one machine.** Without
 the saved output, the exact command that produced it and the commit it ran at, such a number is a
@@ -36,7 +36,7 @@ the rejection of a two-mutation window — it is attributed to **the research pr
 was extracted from**, every time, because that is the only honest form it has here.
 [Chapter 14](14-where-the-defaults-came-from.md) is where each of them lives with its provenance.
 
-Most of what follows is a second-kind number that was never taken.
+Most of the gaps below are second-kind measurements nobody has made.
 
 ## Write amplification against the incumbent has never been measured
 
@@ -48,49 +48,51 @@ What is known is the **composition** of one write — one append, plus a share o
 transaction. That is a structural fact, derived from what the code does. What is not known is the
 **magnitude**. Two instruments come close and neither closes it:
 
-* `fold.Stats.CollapseRatio` is mutations in over dirty workflows out. `TestAcceptanceFoldNoCluster`
-  prints it, and the generator's own report prints its own ratio beside it. What that test *asserts*
-  is a floor of 1.5 on the fold ratio with the reuse knob on, exactly 1.00 on the generator's ratio
-  with the knob at zero, and that the generator's ratio with the knob on is strictly above the same
-  ratio with the knob at zero — a claim that the ratio is visibly a function of the knob, not a
-  measurement of a workload;
+* `fold.Stats.CollapseRatio` is mutations in over dirty workflows out.
+  `TestAcceptanceFoldNoCluster` prints it beside the generator's own ratio. But read what that test
+  *asserts*: the fold ratio is above 1.5 with the reuse knob on; the generator's ratio is exactly
+  1.00 with the knob at zero; and the generator's ratio with the knob on is strictly above its value
+  with the knob at zero. Those three assertions say the ratio moves with the knob. None of them
+  measures a workload;
 * the two I7 counters, `wal_dropped_tasks` and `wal_written_tasks`, would give a deployment the share
   of task rows a drain did not write **for its own traffic**.
   [Chapter 07](07-read-path.md#why-the-metric-is-two-counters-and-not-a-ratio) already says the share
   is a workload measurement rather than a constant of the implementation.
 
 The direct measurement — **how many cold-store rows one state transition rewrites under the
-incumbent, and by what factor that number falls under the layer** — does not exist anywhere, and
-cannot be taken here: it needs the incumbent a deployment actually runs, under that deployment's
-workload, and an in-process database exercised by a generated stream is neither. That is why chapter 01's cost section is
-written without multipliers: it says what a write consists of and refuses to say how much smaller the
-result is.
+incumbent, and by what factor that number falls under the layer** — does not exist anywhere, and it
+cannot be taken here. It needs the incumbent a deployment actually runs, under that deployment's
+workload, and an in-process database driven by a generated stream is neither of those. That is why
+chapter 01's cost section is written without multipliers: it says what a write consists of and
+refuses to say how much smaller the result is.
 
-This is a limit rather than a bug because the structural claim stands without the number and is
-stated as structural. Nothing is being withheld; a reader who takes "write amplification falls" as a
-measured result is taking a derivation for an experiment.
+This is a limit rather than a bug: the structural claim holds without the number, and the book states
+it as structural. Nothing is being withheld. A reader who takes "write amplification falls" for a
+measured result has taken a derivation for an experiment.
 
 ## The shipped window has never been run against a store that has to plan
 
-The drain's query used to be built by concatenation, which made its *structure* grow per row and put
-a window of 32 into a compilation timeout — ambiguously, so the shard halted.
+The drain's query used to be built by text concatenation, so its *structure* — not just its values —
+grew with every row in the batch, and no compilation of it was ever cached. A window of 32 was
+enough to put the drain into a compilation timeout. A timeout arrives ambiguous: the drain neither
+committed nor provably did not, so the layer halted the shard rather than retry.
 [Chapter 13](13-designs-that-were-rejected.md#a-folded-window-as-a-concatenation-of-the-stores-own-queries)
-has that failure.
+has that failure in full.
 
 The shape that replaced it buys **constancy**: the query's shape is a function of which assertion
-kinds and which delete families a batch carries, and not of how many rows it touches. But that
-constancy is a property of **the applier**, which for a deployment is its own code, and there is
-nothing here to hold it for one. [Chapter 11](11-verification.md#the-guards) names it as one of the
-two guards a deployment rebuilds rather than inherits.
+kinds and which delete families a batch carries, and not of how many rows it touches. That
+constancy is a property of **the applier**, and a deployment's applier is its own code, so nothing
+here can hold the property for one. [Chapter 11](11-verification.md#the-guards) names it as one of
+the two guards a deployment rebuilds rather than inherits.
 
-What has changed is the second half of the old form of this entry, and it is worth being exact.
-Drains at the shipped window *are* sent somewhere now: `TestBothSeamsRealNoServer` folds 6,000
-mutations at `cycle.Defaults()` into `cold/memcold`, one transaction per window, against Temporal's
-own schema and statements. So a merged request the schema will not take is caught. What is still
-untested is the thing the concatenation failure was actually about — **a window's transaction
-against a store far enough away, and loaded enough, for its planning cost to matter.** An in-process
-SQLite database compiles a statement in the time a map lookup takes; no run here has ever sent a
-256-mutation drain across a network to a store with a query planner under contention.
+Half of this gap has closed, and it is worth being exact about which half. Drains at the shipped
+window are executed somewhere: `TestBothSeamsRealNoServer` folds 6,000 mutations at
+`cycle.Defaults()` into `cold/memcold`, one transaction per window, against Temporal's own schema
+and statements. A merged request the schema will not take is therefore caught. What is still
+untested is the thing the concatenation failure was about — **a window's transaction against a store
+far enough away, and loaded enough, for its planning cost to matter.** An in-process SQLite database
+compiles a statement in the time a map lookup takes; no run here has ever sent a 256-mutation drain
+across a network to a store with a query planner under contention.
 
 ## The price of moving deferred work into the log is not measured
 
@@ -101,11 +103,11 @@ ranges.** A queue processor's call therefore queues behind whatever the loop is 
 a drain, the queue waits for the drain to finish.
 
 [Chapter 05](05-write-path.md#2-the-drain-itself) states the general form of this for writes. The
-queues are the callers most exposed to it, because they run on their own timers and carry their own
-deadlines rather than a caller's.
+queues are the callers most exposed to that serialisation, because they run on their own timers and
+carry deadlines of their own rather than a caller's.
 
 **The shape was known in advance and accepted deliberately; its price has not been measured.** It is
-neither a defect nor an oversight — it is a design consequence with an empty measurement beside it.
+a design consequence with an empty measurement beside it, not a defect and not an oversight.
 An operator meets the same interaction from the other side: when task drops climb, runbook
 [(e)](09-operations.md#e-task-drops-are-climbing) reaches first for the incumbent's
 `history.*ProcessorUpdateAckInterval`, and that knob changes how often a queue's call meets a drain.
@@ -114,10 +116,10 @@ An operator meets the same interaction from the other side: when task drops clim
 
 Whether the layer costs or saves latency is entirely a property of the pair a deployment chooses: the
 log it appends to, and the store it would otherwise have committed to. If the two are the same class
-of storage, the append costs about what the write it replaced cost and the benefit is fewer and
-smaller later writes to the cold store, never a faster call
-([chapter 12](12-the-write-before-the-layer.md#what-follows-a-log-on-the-same-database-buys-no-latency)
-has that argument). If the log is cheaper to append to than the store is to commit to, there is a
+of storage, the append costs about what the write it replaced cost, and the benefit is fewer and
+smaller later writes to the cold store rather than a faster call —
+[chapter 12](12-the-write-before-the-layer.md#what-follows-a-log-on-the-same-database-buys-no-latency)
+argues that case. If the log is cheaper to append to than the store is to commit to, there is a
 latency win, and **nothing here measures it**.
 
 That is why `wal.Log` is a contract: the seam exists so the class of backend can change without an
@@ -147,9 +149,9 @@ A deployment's log is where the interesting failures live, and it is judged by
 `cold/memcold` is Temporal's own SQL persistence over a SQLite database in this process. It is not a
 double: the 28 execution-store methods are upstream's, embedded, and Temporal's four exported
 persistence suites judge them exactly as they judge a plugin. A folded window executes against that
-schema, with those statements and those error classes, which is what the suites above it now rest
-on. `internal/verify/coldtest` is still here beside it and is still a double, for the suites that need a
-drain to be refused or to fail ambiguously.
+schema, with those statements and those error classes, which is what the suites above it rest on.
+`internal/verify/coldtest` sits beside it and is a double, for the suites that need a drain to be
+refused or to fail ambiguously.
 
 Two limits survive that, and the second is the sharpest in this chapter.
 
@@ -157,30 +159,37 @@ Two limits survive that, and the second is the sharpest in this chapter.
 what a batch does to a schema and it cannot say anything about durability, recovery, or a store that
 is still there after a kill.
 
-**Nothing here says a folded batch leaves a cold store where the sequential path would have.** The
-batches execute, so a merged request the schema rejects is caught — that is new. What is not caught
-is a merged request the schema *accepts* and which is not what mutation-by-mutation writing would
-have produced. That claim needs a differential oracle: one stream applied twice, once sequentially
-and once folded, the two stores required to end identical. `memcold` supplies one of the two
-stores and not the argument, because a rule and its own re-implementation agreeing is not evidence;
-[chapter 13](13-designs-that-were-rejected.md#a-unit-test-per-fold-rule) is why, and it stays a
-deployment's to build over the store it actually cares about.
+**Nothing here says a folded batch leaves the cold store in the state mutation-by-mutation writing
+would have left it.** The batches execute, so a merged request the schema rejects is caught. What is
+not caught is a merged request the schema *accepts* and which is nevertheless not what the
+sequential path would have produced. Catching that needs a differential oracle: one stream applied
+twice, once sequentially and once folded, the two stores required to end identical. `memcold`
+supplies one of the two stores; it cannot supply the argument, because a rule agreeing with its own
+re-implementation is not evidence
+([chapter 13](13-designs-that-were-rejected.md#a-unit-test-per-fold-rule) is why). The oracle stays
+a deployment's to build, over the store it actually cares about.
 
-Four places where `memcold` knowingly answers differently from upstream's sequential path — the
-`dbRecordVersion == 0` fallback it cannot mirror, the `last_write_version` column a create's
-assertion is compared against, the reduced current row a conflict-resolve writes, and a row count
-other than one classified as a condition failure rather than a `NotFound` — are recorded in
-`cold/memcold/apply.go`, each beside the code it is about. Three of the four are consequences of the layer
-having already acknowledged on the other reading, which is to say they are the fold's shape reaching
-the store; a deployment's applier meets the same four questions.
+Four places where the folded path knowingly answers differently from upstream's sequential path are
+known and deliberate, and each is written down beside the code it is about:
+
+| the difference | recorded in |
+|---|---|
+| upstream's `dbRecordVersion == 0` fallback, which compares `next_event_id` against the request's condition, has no analogue: a run assertion here is always `DBRecordVersion − 1` | `cold/memcold/rows.go` |
+| a create's current-row assertion is compared against `current_executions.last_write_version`, where upstream's sequential path joins and compares `executions.last_write_version` | `cold/memcold/current.go` |
+| a conflict-resolve's current row carries a reduced execution state, because that is what fold hands the applier | `fold/assert.go` |
+| a row count other than one on an execution-row write is a condition failure here rather than upstream's `NotFound` | `cold/memcold/rows.go` |
+
+Three of the four follow from the layer having already acknowledged the write: what fold checked
+before the ack and what the drain asserts have to be the same question asked twice, so the fold's
+shape reaches the store. A deployment's applier meets the same four questions.
 
 ## Event history stays outside the log
 
 Event history is written by `AppendHistoryNodes` on the incumbent path, before the mutable-state
-write, and never enters the layer. Chapter 01 lists that among the things the layer deliberately is
-not. Stated as a bound rather than as scope, it is the stronger claim: **a workflow that makes
-hundreds of state transitions still performs hundreds of history writes by the old path, whatever the
-layer does with its mutable state.**
+write, and never enters the layer. [Chapter 01](01-overview.md#what-this-is-not) lists that among
+the things the layer deliberately is not. Read as a bound rather than as a statement of scope, it
+says more: **a workflow that makes hundreds of state transitions still performs hundreds of history
+writes by the old path, whatever the layer does with its mutable state.**
 
 The fold can collapse the mutable-state half of the cost to one apply transaction per window. It
 cannot touch the other half at all. So the benefit of the whole construction is bounded above by the
@@ -188,7 +197,8 @@ share of a deployment's cold-store writes that are mutable-state writes rather t
 and a deployment dominated by event history has less to gain than a collapse ratio alone would
 suggest.
 
-Nothing measures this away. It follows from the wrapper's method partition, which is a decision.
+No measurement removes this bound. It follows from the wrapper's method partition, which is a
+decision rather than a gap.
 
 ## No partition between layer nodes is staged
 
@@ -201,26 +211,27 @@ fencing.
 What is unstaged, and could be staged by whoever has processes to kill, is everything on the other
 side of the two seams: a failure of the log, a failure of the cold store, a split of either's
 storage, a slow replica. Neither the harness that would stage those runs nor the judge that would
-read one back is in this repository; `internal/verify/checker` is one half of such a run's input and judges
-nothing. The distinction is what makes the list readable — the node-to-node entry describes the
-shape of the design, the rest describe the reach of a harness that does not exist in this repository.
+read one back is here; `internal/verify/checker` is one half of such a run's input and judges
+nothing. The distinction matters when you read the table at the end of this chapter: the
+node-to-node entry describes the shape of the design, and every other entry describes the reach of a
+harness nobody has written.
 
 ## The saving on deferred work is not observable from outside
 
 Invariant [I7](02-concepts-and-invariants.md#the-invariants) is the rule that makes a dropped task
-row correct. It is **not something a judge outside the layer can assert, and cannot be** — and the
-reason is not that
-the deletion is invisible. The range deletion is `mutation.KindRangeCompleteTasks`, a log entry like
-any other, folded into the window and restored by replay, so an outside observer sees it. What no
-observer sees is the **drop**: a row the drain did not write exists nowhere. A reader of the log and
+row correct: a committed drain need not write task rows whose range a queue had already completed
+past. **No judge outside the layer can assert that rule.** Not because the deletion is invisible —
+the range deletion is `mutation.KindRangeCompleteTasks`, a log entry like any other, folded into the
+window and restored by replay, so an outside observer sees it. What no observer sees is the
+**drop**: a row the drain did not write exists nowhere. A reader of the log and
 the cold store therefore finds the range record, finds no row, and cannot separate a correct drop
 from a loss without reproducing the fold — which is exactly the thing such a judge may not import.
 
-What holds the rule is therefore the mechanism's own tests — `fold/tasks_test.go`,
+What holds the rule is therefore the mechanism's own tests: `fold/tasks_test.go`,
 `fold/histtasks_test.go` and `cycle/tasks_test.go`, where the pagination, the ordering, the dedup and
-the deletion rule are pinned at their smallest, over `internal/verify/coldtasks`' model of a base store's two
-paginations. That is a real limit twice over: the saving is a row that was never written, and the
-base pagination it is judged against is a model rather than a store.
+the deletion rule are each pinned at their smallest. They run over `internal/verify/coldtasks`, a
+model of a base store's two paginations. That is a real limit twice over — the saving is a row that
+was never written, and the pagination it is judged against is a model rather than a store.
 
 ## Nothing cross-cluster
 
@@ -230,7 +241,7 @@ are out of scope and nothing here has ever replicated between clusters.
 
 ## What a green run means
 
-Stated exactly, and it is shorter than it looks:
+Stated exactly, a green `go test ./...` says this and no more:
 
 * the fold acceptance folded a hundred thousand generated mutations without losing one, and the
   windows collapsed at a ratio the control shows to be a function of the generator's knob;
@@ -280,9 +291,9 @@ and telling them apart is the reader's job:
 1. **closed by a measurement against a real deployment.** Someone runs the shipped window against
    their own store, or measures the incumbent's write amplification. These need a cluster and an
    afternoon, not a design;
-2. **closed by work nobody has started.** A harness that kills processes, and the judge that reads
-   the record back; a
-   differential oracle against a real store. These need a deployment first and then a project;
+2. **closed by work nobody has started.** A harness that kills processes and the judge that reads
+   the record back; a differential oracle against a real store. These need a deployment first and
+   then a project;
 3. **not closable at all, because the entry describes the boundary of a decision that was taken.**
    Measuring them harder does not move them; they are what the design is.
 
@@ -315,16 +326,19 @@ that was chosen.
   interprets nothing, with the reason written at the top.
 * [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go) — the store that is not a double,
   what the embedding covers and what it does not;
-  [`apply.go`](../../cold/memcold/apply.go) has the four places it knowingly answers differently from
-  upstream's sequential path.
+  [`apply.go`](../../cold/memcold/apply.go) is the drain's transaction statement by statement, and
+  [`rows.go`](../../cold/memcold/rows.go) and [`current.go`](../../cold/memcold/current.go) carry
+  three of the four places the folded path knowingly answers differently from upstream's sequential
+  path. The fourth is in [`../../fold/assert.go`](../../fold/assert.go).
 * [`../../internal/verify/coldtasks/coldtasks.go`](../../internal/verify/coldtasks/coldtasks.go) — the two paginations
   it models, and the paragraph headed "what can make it a lie".
-* [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one log here, and why it has no
-  knobs.
-* [`../../fold/fold.go`](../../fold/fold.go) — `Stats.CollapseRatio`, printed everywhere
-  and asserted as a property of the generator's knob.
-* [`../../walmetrics/walmetrics.go`](../../walmetrics/walmetrics.go) — `wal_dropped_tasks`
-  and `wal_written_tasks`, the two counters a deployment measures its own saving with.
+* [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one log here: a map of shards
+  under one mutex, and why its next seqno is state rather than derived from the rows around it.
+* [`../../fold/fold.go`](../../fold/fold.go) — `Stats.CollapseRatio`, printed by every acceptance run
+  and asserted only as a property of the generator's knob.
+* [`../../walmetrics/walmetrics.go`](../../walmetrics/walmetrics.go) — `wal_dropped_tasks` and
+  `wal_written_tasks`, both tagged by task category, the two counters a deployment measures its own
+  saving with.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the method
   partition: which calls become log records, and which stay on the incumbent path.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Defaults()`, the shipped watermarks

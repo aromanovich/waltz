@@ -5,63 +5,71 @@
 Temporal's history service is write-heavy by construction. A single workflow can move through
 hundreds of state transitions. Each transition produces an `ExecutionStore` write that the
 persistence layer must make durable before reporting success to the caller. Against a persistence
-implementation that is already well built, each of those writes is one immediate transaction
-touching the workflow's rows plus a row per task it creates — nothing about it is wasteful on its
-own, which is the point [chapter 12](12-the-write-before-the-layer.md#one-transaction-holds-the-whole-world-of-a-shard)
-makes at length. The cost that grows is therefore not the cost of *one* write; it is the number of
-writes. A workflow that
-lives for a few seconds and dies writes and rewrites the same mutable-state rows dozens of times,
-and creates task rows that are consumed and deleted long before anybody would have wanted them
-stored. That profile — many thousands of short workflows, each moving through hundreds of
-transitions in seconds — is the deployment this design targets, and it is an assumption rather than
-a measurement; [chapter 14](14-where-the-defaults-came-from.md#the-premise-under-all-of-them) says
-what rests on it.
+implementation that is already well built, each of those writes is one immediate transaction: it
+rewrites the workflow's rows and inserts a row per task the transition creates. Nothing about that
+transaction is wasteful on its own, which is the point
+[chapter 12](12-the-write-before-the-layer.md#one-transaction-holds-the-whole-world-of-a-shard)
+makes at length. What grows is not the cost of *one* write; it is the number of writes.
 
-Suppose those transitions belong to one workflow on one history shard. The first update writes a
+A workflow that lives for a few seconds and dies writes and rewrites the same mutable-state rows
+dozens of times, and creates task rows that are consumed and deleted long before anybody would have
+wanted them stored. Many thousands of such short workflows, each moving through hundreds of
+transitions in seconds, is the deployment this design targets. That profile is an assumption rather
+than a measurement; [chapter 14](14-where-the-defaults-came-from.md#the-premise-under-all-of-them)
+says what rests on it.
+
+Follow one such workflow on one history shard. The first update writes a
 new mutable-state row and creates a timer task. The next update rewrites the same state. Before the
-workflow finishes, the timer is consumed and its task range is completed. The cold store has paid
+workflow finishes, the timer is consumed and its task range is completed. The database has paid
 for every version of the row and for a task whose entire lifetime fitted between two nearby
 transitions.
 
-`ExecutionStore` holds two things with different shapes, and only one of them is worth a window.
-**Event history** is what a workflow replays against: a transition *appends* batches of events to
-their own tables and never rewrites a batch it already wrote. **Mutable state** is the current state
-of one run — which activities are started and how often they were retried, which timers are set,
-which children are outstanding, where the history ends and what version all of it is at — and a
-transition rewrites the run's row **whole** while adding and deleting the rows of its collections one
-at a time. `InternalWorkflowMutation` carries exactly that shape: the entire `ExecutionInfoBlob` even
-for a delta, plus a per-member upsert and delete map for each collection. The asymmetry is why the
-layer intercepts mutable state and lets history transit — an appended batch is not rewritten by the
-next transition, so holding it saves nothing, while a run row rewritten dozens of times per short
-workflow is where the collapse lives.
+`ExecutionStore` holds two kinds of data with different shapes, and only one of them can be
+collapsed. **Event history** is what a workflow replays against: a transition *appends* batches of
+events to their own tables and never rewrites a batch it already wrote. **Mutable state** is the
+current state of one run — which activities are started and how often they were retried, which
+timers are set, which children are outstanding, where the history ends and what version all of it is
+at. A transition rewrites the run's row **whole**, and adds and deletes the rows of its collections
+one at a time. `InternalWorkflowMutation` carries exactly that shape: the entire `ExecutionInfoBlob`
+even for a delta, plus a per-member upsert and delete map for each collection.
 
-The tempting solution is to batch those writes. An ordinary batch, however, delays the caller until
-the batch commits and turns an efficiency mechanism into a latency queue; and a buffer that holds
-writes without answering reads breaks the server on the next call, because the server reads back what
-it just wrote across the same interface
-([chapter 13](13-designs-that-were-rejected.md#a-buffer-inside-the-history-service)). To answer
-earlier, the system needs another way to make the write durable first.
+That asymmetry is why the layer intercepts mutable state and lets event history pass straight
+through to the store. An appended batch is never rewritten by the next transition, so holding it
+back saves nothing. A run row rewritten dozens of times in one short workflow's lifetime can be held
+back and written once.
 
-The shape of that answer is not new. A durable append-only log in front of the real store, an
-acknowledgement once the log record is on a quorum, and aggregated updates travelling to the store
-later, is how storage engines are built internally; by published description it is also how Temporal
-Cloud's own custom persistence layer works — the
+The tempting solution is to batch those writes, and two things go wrong if you batch them naively.
+An ordinary batch makes the caller wait until the batch commits, which turns an efficiency mechanism
+into a latency queue. And a buffer that holds writes without answering reads breaks the server on
+the very next call, because the server reads back what it just wrote across the same interface
+([chapter 13](13-designs-that-were-rejected.md#a-buffer-inside-the-history-service)). To answer the
+caller before the cold store has the write, the system needs some other way to make it durable
+first.
+
+The shape of that answer is not new: a durable append-only log in front of the real store, an
+acknowledgement as soon as the log record is on a quorum, and aggregated updates travelling to the
+store later. That is how storage engines are built internally. By published description it is also
+how Temporal Cloud's own custom persistence layer works; the
 [post describing it](https://temporal.io/blog/higher-throughput-and-lower-latency-temporal-clouds-custom-persistence-layer)
 gives the semantics and not the implementation, so everything here is an independent design that
-lands on the same trade. What is not standard is doing it under a server that must not know: Temporal
-goes on believing that it writes to a database, reads from a database, and that what it read is true.
-Every mechanism in this book sits at one place where that belief breaks.
+lands on the same trade.
+
+What is not standard is doing it under a server that must not know. Temporal goes on believing that
+it writes to a database, reads from a database, and that what it read is true. Every mechanism in
+this book sits at one place where that belief breaks.
 
 ## An early acknowledgement creates a second truth
 
-waltz puts a durable per-shard log in front of the cold store. Every intercepted write becomes one
-log entry. In the shipped windowed configuration described by this chapter, once the append is
-durable the cycle folds the mutation into an in-memory accumulator and normally returns to the
-caller. The workflow's mutable-state rows in the cold store have not changed yet. The diagnostic
-`sync` setting deliberately changes this order by making the caller wait for the drain; chapter 08
-names that exception once rather than teaching it as an operating mode.
+waltz puts a durable per-shard log in front of the database, which this book calls the **cold
+store**: Temporal's own persistence, with its own schema, unchanged and unaware of the layer. Every
+intercepted write becomes one log entry. In the shipped windowed configuration described by this
+chapter, once the append is durable the cycle folds the mutation into an in-memory accumulator —
+the **window** — and returns to the caller, unless this write is the one that fills the window. The
+workflow's mutable-state rows in the cold store have not changed yet. The diagnostic `sync` setting
+deliberately changes this order by making the caller wait for the drain; chapter 08 names that
+exception once rather than teaching it as an operating mode.
 
-That separation is the design's useful trick and the source of nearly everything else in this
+That separation is what buys the collapse, and it is the source of nearly everything else in this
 book. A confirmed write now exists in the log and the window, but not in the cold store. As a result:
 
 * the stored row is missing writes the caller has already been told are safe, so a read is answered

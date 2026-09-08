@@ -1,16 +1,17 @@
 # Where the defaults came from
 
 [Chapter 08](08-configuration.md#3-table-2--the-nine-dynamic-config-settings) gives every shipped
-number and says what it bounds. This chapter says where each one came from: which defaults follow
-from a measurement or from another default, which are start values nobody has since re-derived, and
-which of the two the reader is looking at. It is for whoever is about to move one.
+number and says what it bounds. This chapter says where each one came from, and sorts the nine into
+two piles: defaults that follow from a measurement or from another default, and start values nobody
+has re-derived since. It is for whoever is about to move one.
 
 ## The rule this chapter follows
 
 A shipped number here is one of two things.
 
-**Derived.** It follows from a measurement, from another default, or from an arithmetic the node
-asserts before it boots. Moving it alone is either incoherent or a refusal to start.
+**Derived.** It follows from a measurement, from another default, or from arithmetic the node asserts
+before it boots. Move it on its own and you get either a policy that no longer adds up or a node that
+refuses to start.
 
 **Chosen.** A start value that answered the question at the time and that nothing has since
 re-opened. Nothing derives it.
@@ -21,15 +22,17 @@ the invention passes review, and the next reader treats a sentence somebody made
 they may not cross. Everything below either names the derivation or states that the project records
 none.
 
-There is a second division, and it cuts across the first. Some justifications are **re-derivable** —
-open the file, read the constant, do the arithmetic. Others are **observations**: a curve measured
-once, on one machine, at one revision. An observation is not worth less, but it is worth exactly
-what the saved result says and no more, and this chapter marks which of the two is behind each
-number. **Every observation below was made on the research prototype this library was extracted
-from, on one workload against one store**, and none of them is re-runnable here: the two backends in
-this tree are in-process ones that exist to exercise the layer, so a curve taken against them would
-describe a map and a SQLite database in memory. They are quoted so that a reader knows a number had
-evidence, and named so that nobody mistakes that evidence for their own deployment's.
+A second division cuts across the first. Some justifications are **re-derivable**: open the file,
+read the constant, do the arithmetic. Others are **observations** — a curve measured once, on one
+machine, at one revision. An observation is not worth less, but it is worth exactly what the saved
+result says and no more, and this chapter marks which of the two stands behind each number.
+
+**Every observation below was made on the research prototype this library was extracted from, on one
+workload against one store.** None of them can be re-run here. The two backends in this tree,
+`wal/memwal` and `cold/memcold`, exist to exercise the layer in process, so a curve taken against
+them would describe a map under a mutex and a SQLite database in memory. The observations are quoted
+so you know a number had evidence behind it, and attributed so nobody mistakes that evidence for
+their own deployment's.
 
 ## The premise under all of them
 
@@ -41,19 +44,23 @@ rewriting the same mutable-state rows dozens of times on the way.
 **That profile is an assumption, and nothing in the project turns it into an observation.** No
 profile of a named installation, no vendor figure, no measurement of a deployment — it is the
 design's accepted starting point, and it was accepted rather than established. This matters more
-than any single default, because every benefit the layer claims scales with it. A shard whose
-workflows are long-lived and quiet re-touches nothing inside one window, and a window that re-touches
-nothing collapses nothing: `fold.Stats.CollapseRatio` reports 1.00 for such a stream, which reads
-like a pass and measures nothing.
+than any single default, because every benefit the layer claims scales with it.
 
-So the defaults are not wrong for such a deployment. They are simply points chosen on a curve that
-deployment does not have, and an operator whose workload is that shape is entitled to re-derive them
-rather than inherit them.
+Consider the opposite shard: workflows that are long-lived and quiet, each touched at most once
+inside a window. Such a window has nothing to merge, and `fold.Stats.CollapseRatio` — mutations in
+over dirty workflows out — reports 1.00 for it: one merged request written for every mutation acked.
+That is the layer doing bookkeeping and no folding, and 1.00 reads like a passing number rather than
+like the warning it is.
+
+None of that makes the defaults wrong for such a deployment. They are points chosen on a curve that
+deployment does not sit on, and an operator whose workload is that shape is entitled to re-derive
+them rather than inherit them.
 
 ## The drain watermarks: 256 mutations and 256 KiB
 
-`cycle.Defaults()` ships `Mutations: 256` and `Bytes: 256 << 10`, and the comment beside them calls
-the pair the measured collapse knee — "changing either means re-measuring".
+`cycle.Defaults()` ships `Mutations: 256` and `Bytes: 256 << 10`. The field comment beside them in
+`cycle/cycle.go` calls the pair the measured collapse knee, and adds that "changing either means
+re-measuring".
 
 **The mutation watermark is the one default here with a real curve behind it.** The measurement
 swept the window and read the collapse off it: 128 mutations buys about 89% of the achievable
@@ -61,86 +68,91 @@ collapse, 256 buys 99.6%, and above that the curve is flat while the worst-case 
 256 is therefore not a preference — it is the last point on the curve that pays for itself.
 
 The curve was measured on the research prototype, and **nothing in this tree re-runs it.** What
-survives in the code is the conclusion — the constant and the word "knee" — and what a reader wanting
-the curve would have to do is write the measurement, because the tree does not contain it. It is also
-a curve of one workload: the collapse a window buys is a function of how often a deployment
-re-touches a workflow inside one window, so 256 is a defensible start value and not a number to
-inherit without looking.
+survives in the code is the conclusion: the constant, and the word "knee" in the comment beside it.
+If you want the curve, you will have to write the measurement yourself. It is also a curve of one
+workload — the collapse a window buys is a function of how often a deployment re-touches a workflow
+inside one window — so 256 is a defensible start value and not a number to inherit without looking.
 
-Two facts about the shipped watermark that a reader will otherwise mis-read:
+Two facts about the shipped watermark that are easy to mis-read:
 
 * **the byte watermark is the mutation watermark restated, not a second measurement.** 256 KiB is
-  256 mutations at about a kilobyte each, and the rounding is generous: the generated corpus's mean
-  encoded mutation is 653 bytes, so 256 of them is about 163 KiB and the mutation trigger is the one
-  that fires on a stream of that shape. What the byte trigger buys independently is the other shape —
-  a window of 256 mutations carrying large payloads would otherwise be one outsized transaction;
-* **the watermark is not the effective window, and under load it is not even the trigger.** A shape
-  `fold` cannot express force-drains the window (`fold.ErrRefused`), and that happens often enough to
-  set the pace by itself: in `TestAcceptanceFoldNoCluster`, at a window of 1024 and 32 concurrently
-  hot workflows, about one mutation in a hundred is refused and drains average roughly 90 mutations.
-  The same shape held at cluster distance on the research prototype: at a window of 256 every drain
-  was a refusal drain and the size watermark never fired inside a test.
+  256 mutations at about a kilobyte each, and the kilobyte is rounded up: the generated corpus
+  averages 653 encoded bytes a mutation, so 256 of them come to about 163 KiB. On a stream of that
+  shape the mutation trigger is always the one that fires. The byte trigger earns its place on the
+  other shape — 256 mutations carrying large payloads, which would otherwise become one outsized
+  transaction;
+* **the watermark is not the effective window, and under load it is not even the trigger.** A window
+  holding a shape `fold` cannot express is force-drained on the spot (`fold.ErrRefused`), and that
+  happens often enough to set the pace by itself. In `TestAcceptanceFoldNoCluster`, at a configured
+  window of 1024 and a hot set of 32 workflows, about one mutation in a hundred is refused and drains
+  average roughly 90 mutations, under a tenth of the window the test asked for. The same shape held
+  at cluster distance on the research prototype: at a window of 256 every drain was a refusal drain,
+  and the size watermark never fired inside a test at all.
 
-The second point is the load-bearing one for anybody tuning: **raising the mutation watermark past
-the refusal cadence changes nothing at all**, because the window is already being cut short by a
-mechanism the watermark does not control.
+That refusal cadence is what matters when you tune: **raising the mutation watermark above it changes
+nothing**, because the window is already being cut short by a mechanism the watermark does not
+control.
 
 ## The age watermark: five seconds
 
-`Age: 5 * time.Second`, and the code is explicit about its own status — "a recovery-budget choice,
-not a measured one". The collapse curve does not constrain it, because under load the refusals and
-the size watermarks drain first; what it governs is the **idle** tail, and therefore what a
-successor would have to replay after a hard restart of a shard nobody was writing to.
+`Age: 5 * time.Second`. The field comment is explicit about the number's standing: "a
+recovery-budget choice, not a measured one". The collapse curve does not constrain it, because under
+load the refusals and the size watermarks drain first. What the age governs is the **idle** tail, and
+therefore what a successor would have to replay after a hard restart of a shard nobody was writing
+to.
 
-**Out of what budget?** Nothing in the project says. There is no ADR, no code comment, no test and
-no configuration note that names an acceptable recovery time, or a failover duration the layer is
-meant to fit inside. The design the layer was built from recorded the choice as explicitly unmeasured
-and gave a range to pick a value out of; the budget that would justify one point inside that range —
-how long a shard may take to come back, and why that long — is written nowhere. The
-honest statement is the one this chapter can make and stop: **five seconds is chosen, and the
-quantity it was chosen against is not recorded.**
+**Out of what budget?** Nothing in the project says. No design note, no code comment, no test and no
+configuration note names an acceptable recovery time or a failover duration the layer is meant to fit
+inside. The design the layer was built from recorded the choice as explicitly unmeasured and gave a
+range to pick a value out of; what would justify one point inside that range — how long a shard may
+take to come back, and why that long — is written nowhere. So the honest statement is the short one:
+**five seconds is chosen, and the quantity it was chosen against is not recorded.**
 
-Two things the number does that are recorded, and that bound how far it may sensibly move:
+Two things the number does *are* recorded, and they bound how far it may sensibly move:
 
-* it is also the re-ask cadence for a stalled applier. A cycle whose last drain had no readable
-  outcome refuses its writers and its readers, and the age tick is the one clock it has left to
-  re-ask the cold store with — so raising the age lengthens the shortest possible stall, not just the
-  idle tail;
-* it is short enough that a run sampling the layer's counters has to wait for it: a suite's writes
-  land in its last seconds, so an immediate sample sees a full window and no drain at all. Any
-  witness taken over a real run has to allow for it.
+* **it is also the re-ask cadence for a stalled applier.** A cycle whose last drain had no readable
+  outcome refuses its writers and its readers. No write arrives to bring a drain with it, so the age
+  tick is the one clock it has left to re-ask the cold store with. Raising the age therefore
+  lengthens the shortest possible stall, not just the idle tail;
+* **a run that samples the layer's counters has to wait it out.** A suite's last writes land in its
+  final seconds, so a sample taken the moment the workflow finishes sees a full window and no drain
+  at all. The end-to-end run does exactly that wait: `waitForDrain` in `internal/verify/e2e` polls
+  the layer's totals until a drain appears, and gives the five-second watermark up to `drainWait`,
+  60 seconds, to fire.
 
 ## The trim cadence: 16 drains or 60 seconds
 
-`TrimEvery: 16` and `TrimAfter: 60 * time.Second`. What the code records is a floor and not a
-derivation: at 1, trim is a `DeleteRange` per drain — a transaction per drain for no gain. Nothing
-records why 16 rather than 8 or 32, and nothing records why 60 seconds. They are start values, free
-to move on read-cost grounds. **Both are chosen.**
+`TrimEvery: 16` and `TrimAfter: 60 * time.Second`. What the code records is a floor rather than a
+derivation: at `TrimEvery: 1`, a trim is a `DeleteRange` per drain — a transaction per drain for no
+gain. Nothing records why 16 rather than 8 or 32, and nothing records why 60 seconds. They are start
+values, free to move on read-cost grounds. **Both are chosen.**
 
-What the pair does derive is worth more than its own justification, because it is the one bound a
-post-mortem depends on. Trim goes to the committed applied watermark **with no safety lag**, so the
-surviving log is bounded by `TrimEvery × Mutations` entries
-however long the run was. At the shipped defaults that is 16 × 256 = **4096 entries**, plus whatever
-the tail currently holds, independent of how long the shard has been running. The time trigger only
-shortens it: a low-traffic shard trims at 60 seconds whether or not sixteen drains have happened.
+What the pair derives matters more than where it came from, because it is the bound a post-mortem
+depends on: how much of the log is still there when you go looking. Trim goes to the committed
+applied watermark **with no safety lag**, so what survives is at most `TrimEvery × Mutations`
+entries, plus whatever the tail currently holds. At the shipped defaults that is 16 × 256 =
+**4096 entries**, and it is the same 4096 whether the shard has been running for a minute or a
+month. The time trigger only shortens it: a low-traffic shard trims at 60 seconds whether or not
+sixteen drains have happened.
 
 The two triggers are therefore one knob and not two, and a run that needs the whole log has to move
-**both**: one that raised only the drain count has its whole history erased by the age trigger
-anyway, and comes back red against a layer that did nothing wrong.
+**both**. Raise `TrimEvery` alone and `TrimAfter` deletes the history anyway, and the run comes back
+red against a layer that did nothing wrong.
 
 ## The per-shard tail bound: 8192 entries and 8 MiB
 
 `HardMaxEntries: 8192` and `HardMaxBytes: 8 << 20` are invariant
-[I10](02-concepts-and-invariants.md#i10-at-more-length)'s bound on one shard's tail. Their
-provenance differs, and a reader re-tuning them should know which half they are holding.
+[I10](02-concepts-and-invariants.md#i10-at-more-length)'s bound on one shard's tail. The two halves
+have different provenance, and you should know which one you are holding before you re-tune it.
 
 **`hardMaxBytes` is arithmetic.** It is the node's tail budget divided by the shards one node may
 own: 2 GiB over 256 shards is 8 MiB. That is the whole derivation, and it means the number cannot be
 raised by itself — the product is asserted at start-up.
 
-A second reading is recorded beside it, as a check rather than as the origin: against the 256 KiB
-watermark, 8 MiB lets the applier fall **32 windows** behind before a shard starts refusing, which is
-a cold-store incident rather than a burst.
+There is a second reading of the same number, and it is a sanity check rather than the origin:
+against the 256 KiB watermark, 8 MiB is **32 windows**, so the applier can fall thirty-two windows
+behind before the shard starts refusing writes. By then you are looking at a cold-store incident and
+not a burst.
 
 **`hardMaxEntries` is chosen.** 8192 follows from no record size, no replay time and no measurement
 in the tree. The only structure available is the same arithmetic against the watermarks, and it
@@ -151,15 +163,17 @@ moving a bound.
 
 ### Why the bound counts entries as well as bytes
 
-The code gives the rule in one sentence: neither unit works alone, because "one workflow near the
-server's 8 MB mutable-state limit turns an entries-only bound into a byte budget with no ceiling,
-and bytes alone bound no replay". Both halves of that are load-bearing, and they bound two different
-resources.
+The field comment on `Config.HardMaxEntries` gives the rule in one sentence: neither unit works
+alone, because "one workflow near the server's 8 MB mutable-state limit turns an entries-only bound
+into a byte budget with no ceiling, and bytes alone bound no replay". Both halves of that are
+load-bearing, and they bound two different resources.
 
-* **Bytes bound memory.** The tail lives in the heap of the process running the history service. One
-  workflow near the server's own limits — which admit a 2 MB blob and 8 MB of mutable state — would
-  reach an entries-only bound's byte cost hundreds of entries early, and an entries-only bound would
-  never notice.
+* **Bytes bound memory.** The tail lives in the heap of the process running the history service, so
+  what it costs is bytes. The server's own limits admit a 2 MB event blob
+  (`limit.blobSize.error`) and 8 MB of mutable state per execution
+  (`limit.mutableStateSize.error`), and a shard writing mutations near those sizes fills 8 MiB in a
+  handful of entries — four, at 2 MB apiece — where the entries bound would happily have let it hold
+  8192. An entries-only bound would never notice.
 * **Entries bound recovery time.** A successor inherits every acknowledged, unapplied entry of every
   shard it picks up, and must decode it, fold it and carry it into the cold store. That work is *per
   entry*, so the time to bring a shard back is proportional to the number of entries in its tail and
@@ -172,9 +186,11 @@ bytes, while the server's own limits allow a single mutation thousands of times 
 at the 2 MB blob, twelve thousand at 8 MB of mutable state. A bound stated in one unit is a bound
 that admits the other unit's worst case unchecked.
 
-Which unit tripped is on the refusal's `limit` tag, and it is a different operator sentence in each
-case: `bytes` says this node is close to holding more than it should, `entries` says a failover
-would take longer than it should. The refusal itself is
+Which unit tripped is on the refusal's `limit` tag, and the two tag values are different operator
+sentences. `bytes` says this node is close to holding more than it should, which
+[`cycle/decide.go`](../../cycle/decide.go) reads as one workflow near the server's own blob limits.
+`entries` says a failover would take longer than it should, which the same file reads as an applier
+that is simply behind. The refusal itself is
 [chapter 05](05-write-path.md#4-failed-write--backpressure-i10)'s.
 
 ## The node budget: 256 shards and 2 GiB
@@ -214,38 +230,43 @@ graph TD
   WM -.->|"times the trim cadence: 4096 entries survive a trim"| TR
 ```
 
-How to read this. Solid edges are derivations the tree records; the two dotted edges are arithmetic
-that holds at the shipped defaults and derives neither end of itself — what each of them produces is
-the figure on the edge, not the node it points at. The edge count is not the guide to what may be
-moved: `AGE` and `TB` have no incoming edge and are chosen, but so are `HE` and `TR`, whose incoming
-edges are arithmetic standing beside the number rather than a derivation of it — and `MS` has no
-incoming edge only because the assumption under it, 128 shards in steady state, is nowhere in the
-tree to draw.
+How to read this. A solid edge is a derivation the tree records. A dotted edge is arithmetic that
+happens to hold at the shipped defaults and derives neither of the numbers it joins: what it produces
+is the figure written on the edge, not the node it points at.
+
+Do not read the arrows as permission to move something. `AGE` and `TB` have no incoming edge and are
+chosen — but so are `HE` and `TR`, whose incoming edges are arithmetic standing beside the number
+rather than a derivation of it. `MS` has no incoming edge for a third reason again: the assumption
+under it, 128 shards per node in steady state, is nowhere in the tree to draw from.
 
 ### What the start-up check does and does not promise
 
-The three numbers meet in one assertion, made by `waltz.Compose`, which opens nothing:
+The three numbers meet in one assertion:
 
 ```
 hardMaxBytes × maxShards  ≤  tailBudgetBytes
 ```
 
-At the shipped defaults it fits exactly — 8388608 × 256 = 2147483648 — which is why raising either
-factor without raising the budget is a node that refuses to start.
-[Chapter 08](08-configuration.md#5-the-budget-refusal) owns that refusal.
+`cycle.Config.CheckBudget` states it, `cycle.NewManager` runs it before it returns a manager, and
+`waltz.Compose` therefore fails over it — before the layer has opened anything, since composing
+reaches no cluster. At the shipped defaults the product fits exactly: 8388608 × 256 = 2147483648.
+There is no headroom, so raising either factor without raising the budget gives you a node that
+refuses to start. [Chapter 08](08-configuration.md#5-the-budget-refusal) owns that refusal.
 
-**It is a budget of encoded bytes, and not a promise about heap.** `Config.CheckBudget` says so
-itself: what is resident is decoded protos plus the accumulator's indices, not the wire format the
-budget counts. A node sized by reading 2 GiB as a memory figure is a node sized wrong, and the next
-section is by how much. [Chapter 08's key table](08-configuration.md#3-table-2--the-nine-dynamic-config-settings)
+**It is a budget of encoded bytes, and not a promise about heap.** `Config.CheckBudget` says so in
+its own doc comment: what is resident is decoded protos plus the accumulator's indices, not the wire
+format the budget counts. Size a node by reading 2 GiB as a memory figure and you will size it
+wrong; the next section says by how much. [Chapter 08's key table](08-configuration.md#3-table-2--the-nine-dynamic-config-settings)
 carries the same warning on the cell itself, because that cell is what an operator reads.
 
 ## What the budget costs resident
 
-This number is a measurement, and it was taken on the research prototype rather than here. The probe
-filled one accumulator the way a stuck applier leaves one — drained only when fold refuses, every
-drained batch held exactly as an unfinished apply holds it — and weighed the live heap against a
-second pass that generated the same stream and threw it away. It needed no cluster, so of every
+If the budget counts encoded bytes, how much heap does a byte of budget actually cost? That question
+has a measurement behind it, taken on the research prototype rather than here.
+
+The probe filled one accumulator the way a stuck applier leaves one — drained only when fold refuses,
+every drained batch held exactly as an unfinished apply holds it — and weighed the live heap against
+a second pass that generated the same stream and threw it away. It needed no cluster, so of every
 measurement in this chapter it is the one easiest to rebuild. Two locality settings, three tail
 sizes:
 
@@ -258,12 +279,13 @@ sizes:
 | 0.8 | 1 MB | 1790 | 1.15 | 8699128 | 8.29 |
 | 0.8 | 8 MB | 14285 | 1.14 | 69451960 | 8.28 |
 
-One reading, and it is flatter than the two knobs suggest. **The multiplier is about 8.2× and flat**:
-all six points — a 32× range of tail sizes crossed with both locality settings — lie between 8.11 and
-8.40, so that is what a byte of encoded tail cost resident there. What the probe does *not* show is a
-locality effect, and the collapse column says why: the probe caps no workflow pool, so a reuse of 0.8
-collapses barely more than 0.0 does (1.12–1.15 against 1.03–1.05) and the multiplier does not move
-with it. What a genuinely collapsing tail would save is not measured here.
+The table has one reading, and it is flatter than the two knobs suggest. **The multiplier is about
+8.2× and it does not move**: all six points — a 32× range of tail sizes crossed with both locality
+settings — lie between 8.11 and 8.40, so that is what a byte of encoded tail cost resident there.
+
+What the probe does *not* show is a locality effect, and the collapse column says why. The probe caps
+no workflow pool, so a reuse of 0.8 collapses barely more than 0.0 does: 1.12–1.15 against 1.03–1.05.
+Neither run had much to merge, so neither tells you what a genuinely collapsing tail would save.
 
 So `hardMaxBytes` at 8 MiB is on the order of 68 MB resident per shard, and the shipped node
 budget — 2 GiB over 256 shards — is around **17 GB of live heap** if every shard sat at its bound.
@@ -276,17 +298,20 @@ afterwards.** The 17 GB is a consequence of the choice, not the constraint that 
 
 ## A small window costs more than it looks: the research prototype's 16
 
-There is no such number in this repository, and it is recorded here because a deployment running
-upstream's functional suites over waltz will pick one and the reasoning transfers.
+Nothing in this repository ships a window of 16. It is recorded here because anyone driving
+upstream's functional suites over waltz has to pick a small window, and this is what happened to the
+last person who did.
 
 The research prototype drove two of upstream's functional suites at a **window of 16** rather than at
 the shipped 256, wanting several drains inside a run rather than none.
 
 **Why not 2**, which it used before: measured, and rejected. At a window of 2 a shard's loop spends
-most of its time inside a drain transaction, and every write and read for that shard queues behind it
-— enough, on a single emulated node, to push upstream's timing-sensitive suites past their own
-deadlines. Reproducibly red there: `TestSignalWorkflowTestSuite`, `TestAddTasksSuite` and even
-`TestUserTimersTestSuite`. All green at the shipped window, and all green at 16.
+most of its time inside a drain transaction, and every write and read for that shard queues behind
+it. On a single emulated node that was enough to push upstream's timing-sensitive suites past their
+own deadlines: `TestSignalWorkflowTestSuite`, `TestAddTasksSuite` and `TestUserTimersTestSuite` were
+reproducibly red there. All three are green at the shipped window of 256, and green at 16.
+[Chapter 08's small-window recipe](08-configuration.md#6c-a-small-window-for-testing) sets 2, so this
+is the caveat to carry into it.
 
 **Why 16 and not any other value between 2 and 256:** not recorded. What was recorded is that it is
 green, that it still produces several drains where 256 would produce none, and that it is affordable.
@@ -318,16 +343,20 @@ because there is no derivation to argue with — and knowing which numbers those
 rest of the table usable. Five of the nine above have nothing under them, and those five are where
 somebody with a real workload has the most to gain and the least to contradict.
 
-The four that are derived are derived from measurements taken elsewhere, on one workload against one
-store. That does not make them wrong; it makes them start values with an argument attached rather
-than constants.
+The four derived ones are not derived alike. `windowMutations` and `windowBytes` rest on a
+measurement taken elsewhere, on one workload against one store — which does not make them wrong, but
+does make them start values with an argument attached rather than constants. `hardMaxBytes` is
+arithmetic over `tailBudgetBytes`, and `tailBudgetBytes` is itself chosen. `maxShards` doubles an
+assumption nobody wrote down.
 
-The derived ones are the opposite, and two of them cannot be moved alone at all:
+What "derived" does buy you is that the number resists being moved on its own. Three ways it
+resists, and only the first two announce themselves:
 
-* the three factors of the budget product are checked before the node boots, so raising one is a
-  refusal to start until the others follow;
-* `hardMaxEntries` and `hardMaxBytes` are two units of **one** bound. A node honouring one from a
-  different edit than the other is a bound nobody wrote;
+* the three factors of the budget product are checked before the node boots, so raising one of them
+  is a refusal to start until the others follow;
+* `hardMaxEntries` and `hardMaxBytes` are two units of **one** bound, which is why both are read once
+  at start-up: a node honouring one of them from a different edit than the other is a bound nobody
+  wrote;
 * moving a drain watermark silently re-scales the two arithmetics that stand on it — the 32 windows
   of tail and the 4096 entries of surviving log — because neither is enforced anywhere. Nothing goes
   red; the two ratios simply stop being what this chapter says they are.
@@ -347,3 +376,5 @@ chapter like this one to record that there is none.
   trips first, and why the trim runs beside the loop rather than in it.
 * [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)
   — the effective window: the refusal rate, the average drain, and the hot-set knob behind them.
+* [`../../internal/verify/e2e/e2e_test.go`](../../internal/verify/e2e/e2e_test.go) — `waitForDrain`
+  and `drainWait`: what a run over a real server has to allow the age watermark.

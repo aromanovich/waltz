@@ -4,15 +4,19 @@
 
 A mutation crosses the same handful of packages at run time: the wrapper intercepts it, the cycle
 orders it, the log makes it durable, fold compacts it, and the applier writes the result. It is
-tempting to infer package dependencies from those calls. That inference is wrong, and the distinction
-explains much of the tree.
+tempting to read that sequence as the import graph. It is not one. Two different boundaries are at
+work here, and telling them apart explains most of the tree's shape.
 
 A **run-time boundary** says who may call whom while serving a shard. A **knowledge boundary** says
 which concepts a package is allowed to name at compile time. `cycle`, for example, calls a log and
 an applier, but it knows no storage of any kind — both arrive as interfaces. `fold` handles
 Temporal-shaped mutations, but knows no cold store and no log. `apply` knows what a drain's outcome
-demands, but not the log whose entries caused that transaction. These omissions are what make failure
-outcomes, compaction, and backend conformance testable independently.
+demands, but not the log whose entries caused that transaction.
+
+Each of those omissions buys a test you could not otherwise write. `apply` names no log, so you can
+vary a drain's outcome without one. `fold` names no store, so you can fold a generated stream of
+mutations with nothing running. `wal` names no Temporal type, so a new backend is judged by the
+contract suite and nothing else.
 
 The boundaries also keep policy in one owner. If the applier could trim the log, it would need to
 know replay policy and the cycle's unresolved state. If `fold` could read the store, a pure
@@ -31,25 +35,27 @@ The repository's Go code lives in two source groups:
 * **the module root and its packages** — what runs inside a production `temporal-server` process.
 * **`internal/verify/`** — what judges it. Nothing here runs alongside the layer in production.
 
-One rule holds the split in place: **no package outside `internal/verify/` may import `internal/verify/**` in a
-non-test file.** The first such import puts test scaffolding into the binary an operator runs; test
-files are exempt and must be, since `fold`'s and `cycle`'s own tests legitimately fold a generated
-stream from `internal/verify/mutgen`.
+One rule holds the split in place: **no package outside `internal/verify/` may import a package under
+`internal/verify/` in a non-test file.** The first such import puts test scaffolding into the binary
+an operator runs. Test files are exempt and must be: `fold`'s own tests fold a generated mutation
+stream from `internal/verify/mutgen`, and `cycle`'s build mutations with
+`internal/verify/mutbuild` and page tasks through `internal/verify/coldtasks`.
 
-`cold/memcold` is at the module root and is the one thing there that is not the layer: it is a
-*store*, sitting under the cold seam where a deployment's own store sits. It is not under `internal/verify/`
-because it is not a judge and not a double — it is Temporal's own persistence over a database in
-this process, and a server composed over it serves real workflows. What it is not is durable, which
-is why nothing here calls it a production store.
+`cold/memcold` sits in the first group and is the one thing there that is not the layer: it is a
+*store*, sitting under the cold seam where a deployment's own store sits. It is not under
+`internal/verify/` because it is not a judge and not a double — it is Temporal's own SQL persistence
+over an in-memory SQLite database, and a server composed over it serves real workflows. That
+database dies with the process, so nothing here calls `memcold` a production store.
 
-There is no binary here at all. waltz is a library: the composition it produces is handed to a
+Neither group holds a `main` package. waltz is a library: the composition it produces is handed to a
 `temporal-server` main somebody else writes, through `temporal.WithCustomDataStoreFactory`.
 
 ## The packages, in dependency order
 
-The directories are siblings because Go cannot nest them in dependency order: `cycle` imports `fold`,
-but `fold` stands alone, so putting `fold` inside `cycle` would be a lie. The order below is the
-order a mutation actually travels.
+Most of these directories are siblings at the module root even where one imports another. `cycle`
+imports `fold`, but so does `apply`, and `fold` imports neither. A nested directory says the parent
+owns what is under it, so the only packages under `cycle/` are the three nothing outside the cycle
+uses: `window`, `tailstate` and `trim`. The order below is the order a mutation actually travels.
 
 | Package | Role, in one line | Key exported types | May not import — and why |
 |---|---|---|---|
@@ -57,10 +63,10 @@ order a mutation actually travels.
 | `wal/memwal` | The contract in process memory: the one implementation this library ships, so everything above the log tests without a cluster. | `Backend`, `New` | the same, for the same reason |
 | `wal/waltest` | The conformance suite an implementation runs, plus `Faulty`, a log wrapped so a chosen call fails. | `RunContractSuite`, `Faulty`, `Fault`, `Once`, `Always` | the same, **plus every implementation including `memwal`** — a suite that could name one would special-case it and stop being about the contract |
 | `mutation` | What one log entry *is*: the protobuf record of one persistence call, and the eight kinds. | `Mutation`, `Kind`, `Part`, `Encode`, `Decode` | any persistence implementation — the record mirrors Temporal's requests; the store that eventually writes them is the applier's business |
-| `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — two packages need this pair and neither may name the other's copy, so it imports Temporal's persistence and nothing more |
+| `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — `wrapper`, `cycle` and `apply` all need this pair and none of them may name another's copy, so it imports Temporal's persistence and nothing more |
 | `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page merge. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
 | `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. | `Applier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
-| `cold/memcold` | That contract satisfied, and the one cold store shipped: Temporal's own SQL persistence over a database in this process, embedded whole, with the folded window's transaction added beside its 28 methods. It is what sits *under* the layer rather than part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | everything of this layer — a store that could see the layer would be judged by the thing sitting on top of it |
+| `cold/memcold` | That contract satisfied, and the one cold store this repository ships: Temporal's own SQL persistence over an in-memory SQLite database, embedded whole, with the folded window's transaction added beside its 28 inherited methods. It sits *under* the layer rather than being part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | everything of this layer — a store that could see the layer would be judged by the thing sitting on top of it |
 | `apply` | What a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries. | `Class`, `Classify`, `Diverged`, `InvariantViolationError` | `wal.Log` and `wal.Entry` — pacing and trim are the cycle's policy, not the outcome's |
 | `cycle/window` | The size and age of what a cycle folded since its last drain, as a type whose counters cannot be written from outside. | `Window`, `Taken`, `Watermarks`, `Trip` | `fold`, `walmetrics` — the window counts, it does not fold, and it publishes nothing |
 | `cycle/tailstate` | The tail's arithmetic in one place: everything invariant [I10](02-concepts-and-invariants.md#the-invariants) bounds, plus the off-loop mirror of it. | `Tail`, `Mirror`, `New`, `NewMirror`, `WatermarkMove`, `Unresolved` | `fold` — the tail is arithmetic over what the loop acked, not the log those seqnos index nor the window they outlive |
@@ -70,12 +76,12 @@ order a mutation actually travels.
 | `waltz` (the module root) | The composition a server builds: the `wal` config section, the dynamic-config settings, the components they name, the lifecycle, and the factory that is the door out. | `Compose`, `Layer`, `Backends`, `Config`, `WAL`, `Parse`, `Registry`, `TaskCategories`, `DefaultTaskCategories`, `NewPolicy`, `AbstractFactory` | — (it composes everything, which is the point) |
 | `walmetrics` | Where the numbers go: the metric definitions and the emitter, on the server's own handler. | `Emitter`, `New`, and the `metrics.*Def` values (`InterceptedWrites`, `Drains`, `TailBytes`, …) | `wal`, `fold`, `apply`, `cycle`, `wrapper`, `mutation` — the metric names are the layer's vocabulary, so nothing that can be measured may be imported here |
 
-Four packages may import `wal` for value types such as `Seqno`, but may **not name the
-operational types `wal.Log` or `wal.Entry`**: `fold`,
-`apply`, `tailstate` and `window`. They fold, classify and count what they are handed. `cycle/trim`
-is the one sub-package that may name `wal.Log`, and that is the same rule seen from the other side —
-the trim's whole job is the log, and giving it a package of its own is what keeps `wal.Log` off the
-type where the watermark moves.
+Four packages fold, classify and count what they are handed: `fold`, `apply`, `cycle/tailstate` and
+`cycle/window`. They may use `wal`'s value types — `Seqno` above all — but may **not name the
+operational types `wal.Log` or `wal.Entry`**. `cycle/trim` is the one sub-package that may name
+`wal.Log`, and that is the same rule seen from the other side: the trim's whole job is the log, and
+giving it a package of its own is what keeps `wal.Log` off `tailstate.Tail`, the type the watermark
+moves on.
 
 The wrapper's row says *wrap, don't fork*, and the seam it wraps is not one this layer found. **Temporal
 decorates the same `DataStoreFactory` twice in its own tree** — `common/persistence/faultinjection` and

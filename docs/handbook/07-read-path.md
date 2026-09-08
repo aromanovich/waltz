@@ -11,8 +11,8 @@ window contains the acknowledged changes on top of it. A correct read must combi
 
 * a mutable-state read **overlays** a window snapshot or delta on the cold row;
 * a history-task read **merges** two ordered streams and subtracts acknowledged range deletes;
-* both execute on the shard's cycle goroutine, so a drain cannot expose the interval in which the
-  window has been taken but its transaction has not committed.
+* both run on the shard's cycle goroutine — the same goroutine the drain runs on — so no read can
+  land in the gap between a drain emptying the window and its transaction committing.
 
 This chapter derives those rules from the split-state example and then gives the exact routing,
 pagination and accounting contracts. It also explains invariant
@@ -24,8 +24,9 @@ task rows.
 The version-42 example gives the routing rule: a read must enter the layer when an intercepted write
 can have changed its answer without changing the cold store yet. `wrapper.ExecutionStore`
 decorates the base `ExecutionStore`. Of its 28 methods, intercept mode answers eleven
-differently and refuses a twelfth. Three of the eleven are reads. Everything
-else transits — the wrapper calls the base store's method of the same name and returns what it said.
+differently and refuses a twelfth (`CompleteHistoryTask`). Eight of the eleven are the writes the
+record format has a shape for; the other three are reads. The remaining 16 transit — the wrapper
+calls the base store's method of the same name and returns what it said.
 
 | Read method | Intercept mode | Why |
 |---|---|---|
@@ -46,21 +47,28 @@ not in the log, because `rangeID` is both the fencing token and the task-id allo
 In passthrough mode (`wrapper.Options.Layer == nil`) all 28 methods transit, reads included. What
 the word "mode" names is [chapter 01](01-overview.md#what-mode-names-here).
 
-Sync mode is not a third position of that switch: its window is empty at every call boundary, so
+Sync mode is not a third position of that switch. Its window is empty at every call boundary, so
 every read still routes, still overlays and still merges — over an empty set. Nothing is turned off
-and no branch is skipped. What that costs a run trying to demonstrate anything is
-[§6](#6-routed-counters-not-hit-counters).
+and no branch is skipped. What does change is the evidence a run leaves: the *hit* counters of
+[§6](#6-routed-counters-not-hit-counters) stay at zero for a sync run, because the window they
+count crossings of is never occupied when a read arrives.
 
 Routing covers readers inside the owning process and no others. The layer moves a shard's truth into
-that process's memory, so a reader anywhere else sees the cold store as it stands — behind by up to a
-window, and never a mixture, because the cold store is always a consistent past state. That is the
-price of living inside the server process rather than beside it, and on this surface it costs
-nothing: the one read such a caller would use is `ListConcreteExecutions`, which is a scan no
-outside reader depends on. The task read is the exception, and there the layer refuses rather than
-falling through —
-transit for state, refusal for deferred work (§2).
+that process's memory, so a reader in any other process sees the cold store as it stands: behind by
+up to a window, but never a mixture of the two, because the cold store is always a consistent past
+state. That is the price of living inside the server process rather than beside it, and on this
+surface it costs almost nothing — the one read such a caller would use is `ListConcreteExecutions`,
+a scan no outside reader depends on.
+
+The task read is the exception. A process that holds no cycle for the shard is refused rather than
+passed through to the cold store, because a page short a tail would be completed and acked past
+(`noCycleRoute`, and §2 for the rest of the rule).
 
 ### Why a read served anywhere else is not merely stale
+
+The section above was about a reader in another process. This one is about a reader in *this*
+process that does not run on the shard's cycle goroutine, and why that placement is a correctness
+requirement rather than a convenience.
 
 The layer has two sources of truth for a shard at any moment: the **window** (the in-memory
 accumulator, holding what has been acked into the log and not yet applied) and the **cold store**
@@ -81,30 +89,40 @@ unobservable. The cost is plain: one shard's reads and writes serialise.
 
 For `GetHistoryTasks` the same interval is worse than stale, and the reason is easy to miss. A
 persistence write does not only write: it also notifies the shard's queue processors that there is
-new work, so it is tempting to think a task reaches its queue by that route and the read is merely a
-backstop. It is the other way round. **A notification carries no work** — a processor takes at most
-a hint out of it (whether anything arrived, or the earliest fire time among what did) and then
-re-reads persistence, and not one object a notification delivered is ever executed. So the bell is a
-latency optimisation and not a delivery channel: the system stays correct if every notification is
-lost, and does not stay correct if the read is.
+new work. It is tempting to conclude that a task reaches its queue along that path and that the read
+is merely a backstop. It is the other way round. **A notification carries no work.** A processor
+takes at most a hint out of it — whether anything arrived, or the earliest fire time among what did
+— and then re-reads persistence; no object a notification delivered is ever executed. The
+notification is a latency optimisation, not a delivery channel: the system stays correct if every
+notification is lost, and does not stay correct if the read is.
 
 The server's own hold-back (`getExclusiveReaderHighWatermark`) sits above this boundary and cannot be
 stretched to cover the window: it is released when the persistence write returns success, which for
 an intercepted write is the log append, with the tasks still in the window
 ([chapter 13](13-designs-that-were-rejected.md#extending-the-servers-own-hold-back)). So a queue that
 reads its range and finds nothing there **completes that range** and acks past a key it never saw.
-The task is not late; it is lost, and no later read will show it. The other read designs the argument
-reached for — a readiness gate, answering from the cold store while the window catches up — are
-[chapter 13](13-designs-that-were-rejected.md#reads)'s.
+The task is not late; it is lost, and no later read will show it. Two other read designs were
+considered and refused — a readiness gate, and answering from the cold store while the window
+catches up; [chapter 13](13-designs-that-were-rejected.md#reads) has both.
 
 ## 2. Routing a read, and `DrainOnRead`
 
 Section 1 said which methods route. This one says whether the cycle they route to may answer at all,
-which is the question the overlay and the merge below both stand on. All three reads share one order,
-`Cycle.prelude`: the readiness gate, the count, the routing rule, and the drain `DrainOnRead` may
-ask for. Every position is load-bearing. At the gate, a running cycle that has not replayed an
-inherited tail replays it now — a read on an unreplayed tail would be answered from a cold store the
-log is ahead of, with no indication that the answer is stale.
+which is the question the overlay and the merge below both stand on. All three reads go through
+`Cycle.prelude`, in one order: the readiness gate, the count, the routing rule, and the drain
+`DrainOnRead` may ask for.
+
+Every position in that order is load-bearing.
+
+* **The gate first.** A running cycle that has not replayed an inherited tail replays it here. A read
+  on an unreplayed tail would be answered from a cold store the log is ahead of, with no indication
+  that the answer is stale — and the replay resets the accumulator the read is about to look at, so
+  a view taken before it is a view of the wrong window.
+* **The count before the routing rule**, so that a read the rule sends to the cold store is still
+  counted as a read this shard routed. The count inside the prelude is the two mutable-state reads';
+  a task read counts its page on the way in, before the gate, and §6 says why.
+* **The drain last**, and only when `DrainOnRead` is on. Its two reasons for being there are below,
+  with the instrument itself.
 
 The routing decision, for all three reads.
 
@@ -128,13 +146,23 @@ flowchart TD
 ```
 
 How to read this. Every refusal is returned **unwrapped**, because the shard's read and write paths
-type-switch on the concrete error value. The two readers deliberately part in three places: a
-mutable-state read has callers that legitimately do not own the shard, so it falls through to the
-cold store. A task read has exactly one caller, whose page — if short a tail — would be completed
-and acked past, so it is refused instead. The rules themselves are values in
-[`../../cycle/decide.go`](../../cycle/decide.go) (`noCycleRoute`, `loopRoute`,
-`stoppedRoute`, `supersededRoute`), and the shard-lifecycle side of them —
-epochs, halts, replay — is [chapter 06](06-shard-lifecycle.md).
+type-switch on the concrete error value.
+
+The two readers part deliberately, and always the same way: a mutable-state read has callers that
+legitimately do not own the shard, so it falls through to the cold store, while a task read has
+exactly one caller, whose page — if short a tail — would be completed and acked past, so it is
+refused. Three moments in the diagram are that difference:
+
+| The cycle | Mutable-state read | Task read |
+|---|---|---|
+| the registry holds none for this shard (`noCycleRoute`) | the base store answers | `ShardOwnershipLost` |
+| halted-lost (`loopRoute`) | the base store answers if the tail is empty, else `ShardOwnershipLost` | `ShardOwnershipLost`, whatever the tail holds |
+| retired, its goroutine gone (`stoppedRoute`) | the same tail rule | `ShardOwnershipLost`, re-issued on the successor by `Manager.taskPage` |
+
+Each rule is a function of plain values — a state, a tail, which reader is asking — in
+[`../../cycle/decide.go`](../../cycle/decide.go), so its whole domain can be enumerated in a test
+with no cycle running. The shard-lifecycle side of them — epochs, halts, replay — is
+[chapter 06](06-shard-lifecycle.md).
 
 One route only a task read reaches: `retryOnSuccessor`. If the shard changed hands while one page was
 being built, the page is discarded and the read re-issued on the cycle that replaced it — the fresh
@@ -152,11 +180,12 @@ the overlay's. Three facts about it:
   visible in the same series as every other drain;
 * it runs **after** the routing rule, because a halted cycle may not drain and a stalled one is
   refused before it;
-* it does not take the merge out of the task path ([section 4](#4-merge-tasks-two-ordered-sources-one-page)),
-  only the window: the merge still runs, over a
-  window the drain just emptied, so the tokens and the pagination are unchanged and
-  `TaskReadsMerged` honestly stops counting. For the two mutable-state reads the view is re-taken
-  after the drain, since the first view was of a window that no longer exists.
+* it empties the window, but it does not take the merge out of the task path
+  ([section 4](#4-merge-tasks-two-ordered-sources-one-page)). The merge still runs, over a window
+  the drain has just emptied, so the tokens and the pagination are unchanged and `TaskReadsMerged`
+  — pages that carried a task out of the window — falls to zero, which is the honest report that
+  the merge contributed nothing. For the two mutable-state reads the view is re-taken after the
+  drain, since the first view was of a window that no longer exists.
 
 The counters are taken **before** the drain on purpose: the window held that run when the read
 arrived, and counting after the drain would report the empty window the drain just left behind.
@@ -177,24 +206,29 @@ run into exactly four shapes, and a reader branches on nothing else (`fold.RunSh
 | `RunTombstone` | the window deleted the run | no — the answer is "no such execution", whatever the cold store still holds |
 
 `RunView.NeedsBase()` is `RunAbsent || RunDelta`, and it is a **correctness predicate**, not an
-optimisation: `RunAbsent` and `RunDelta` are statements *about* the base, while `RunSnapshot` and
-`RunTombstone` **replace** it. No snapshot-shaped write at this interface leaves the run's earlier rows
-behind: a Set and a conflict-resolve's reset carry a `DeleteStateItems` for the run alongside the new
-state, and a Create — plain, as the new run behind a continue-as-new, or behind a tombstone — either
-asserts the run's absence or rides in the same transaction as the delete that removed it. Either way,
-once the drain commits the run's state is that snapshot and nothing else. Merging the cold
-store's leftovers into a `RunSnapshot` answer would hand the reader signals, activities, timers and
-child executions that the drain is about to delete — state that exists at no point on the sequential
-path. The round trip saved is the side effect, and a shape added to the enum has to answer the same
-question the same way. `RunView.Render` is where the merge happens, and it is
-`applyMutationToSnapshot` and no other function — the same fold the drain will write, so **a read
-answers with what the drain will write**.
+optimisation. `RunAbsent` and `RunDelta` are statements *about* the base; `RunSnapshot` and
+`RunTombstone` **replace** it. Saving a round trip is the side effect, not the point — and a fifth
+shape added to the enum would have to answer the same question the same way.
+
+The reason a snapshot must not be merged with the base is that no snapshot-shaped write leaves the
+run's earlier rows behind. A Set and a conflict-resolve's reset carry the persistence plugin's own
+`DeleteStateItems` for the run alongside the new state; a Create — plain, as the new run behind a
+continue-as-new, or behind a tombstone — either asserts the run's absence or rides in the same
+transaction as the delete that removed it. Either way, once the drain commits, the run's state is
+that snapshot and nothing else. Merging the cold store's leftovers into a `RunSnapshot` answer would
+hand the reader signals, activities, timers and child executions that the drain is about to delete
+— state that exists at no point on the sequential path.
+
+`RunView.Render` is where the merge happens, and it merges with `applyMutationToSnapshot` and no
+other function. That is the same fold the drain will write, so **a read answers with what the drain
+will write**.
 
 The current-execution row is a separate question with its own four shapes (`fold.CurrentShape`):
-`CurrentUnheld`, `CurrentWritten`, `CurrentGone`, and `CurrentGuarded`. The last is one or more
-`DeleteCurrentWorkflowExecution` guards standing over the base with no window write above them. The
-store removes the row only if it names that run, so the answer is that guard evaluated against the
-base row.
+`CurrentUnheld`, `CurrentWritten`, `CurrentGone`, and `CurrentGuarded`. `CurrentGuarded` is one or
+more `DeleteCurrentWorkflowExecution` guards standing over the base with no window write above them.
+Each guard names a run and removes the row only if the row is that run's, so the answer is those
+guards evaluated against the base row: no current execution if the base names any of them,
+otherwise the base row unchanged.
 
 Here is version 41 becoming version 42: an `UpdateWorkflowExecution` was acked into the log, the
 drain has not run, and a `GetWorkflowExecution` for the same run arrives.
@@ -222,11 +256,12 @@ sequenceDiagram
     ES-->>HS: response
 ```
 
-How to read this. The cold store is still consulted, because a delta needs a base; what the caller
-gets back is the base with the window folded onto it. The version handed out is the one carried by
-the window's **last** write for that run
-(`Emitted.TailSeqno`'s request) — the one the merged request will write — because handing out the
-base's would make the server's next conditional write assert a version nothing writes.
+How to read this. The cold store is still consulted, because a delta needs a base, and what the
+caller gets back is the base with the window folded onto it. The `DBRecordVersion` handed out is not
+the base's: it is the one carried by the window's **last** write for that run, which is the version
+the merged request will write. Handing out the base's would make the server's next conditional write
+assert a version nothing writes. What the drain asserts is a different number and is unaffected by
+this — that stays the head-of-window `fold.RunAssertion.BaseVersion`.
 
 Nothing in the overlay mutates: the accumulator's maps and the caller's base row are both copied into
 a private snapshot before anything merges, so a later fold cannot rewrite an answer already handed
@@ -312,13 +347,17 @@ sequenceDiagram
 ```
 
 How to read this. The base is called **at most once per page**, and not at all once its token says it
-is exhausted. The subtraction of the window's undrained range deletes is applied to the base's rows
-and to nothing else — the window's own tasks were already swept when each range folded in. Without
-that subtraction the layer's correctness would rest on a property of its caller — that a queue never
-re-reads below a range it has completed — which is not this layer's property to rely on. It subtracts
-the **ranges** and not their maximum, applying `fold.TaskRange.Covers` per range: pending ranges for
-a category need not be contiguous, and a row in a gap between two of them is one no pending delete
-covers, so hiding it would leave it invisible to the reader and still present in the store.
+is exhausted.
+
+The subtraction of the window's undrained range deletes is applied to the base's rows and to nothing
+else, because the window's own tasks were already swept when each range folded in. Without it the
+layer's correctness would rest on a property of its caller — that a queue never re-reads below a
+range it has completed — and that is not this layer's property to rely on.
+
+It subtracts the **ranges** and not their maximum, applying `fold.TaskRange.Covers` once per range.
+Pending ranges for a category need not be contiguous: a row lying in a gap between two of them is
+one no pending delete covers, so hiding it would leave it invisible to the reader and still present
+in the store.
 
 ### The ordering and dedup rules
 
@@ -335,8 +374,8 @@ covers, so hiding it would leave it invisible to the reader and still present in
 
 ### The page-token rules
 
-The token this layer hands back is its own (`taskPageToken`), framed with a four-byte magic so it
-can be told apart from the base store's. It carries three things and no more:
+The token this layer hands back is its own (`taskPageToken`), framed with a four-byte magic —
+`wal1` — so it can be told apart from the base store's. It carries three things and no more:
 
 * `Base` — the cold store's own token, **verbatim**. This layer may not parse or synthesise it.
 * `BaseDone` — whether the base is exhausted. A flag rather than an empty `Base`, because an empty
@@ -355,17 +394,20 @@ other. The base is asked for `BatchSize` minus what the window contributes, so w
 *displace* cold-store rows rather than adding to them.
 
 Two floors on that arithmetic are what make the pagination terminate. `BatchSize` itself is floored
-at one, because a page of zero rows would make the pagination endless; and the ask is
+at one, because a page of zero rows would make the pagination endless. And the ask is
 `max(BatchSize - the window's share, 1)`, because asking the store for nothing would end the
 pagination with rows still in it. Displacement is therefore never total, however full the window is.
-The second floor also bounds the waste the never-cut-inside-a-base-page rule introduces:
-the branch where the window alone overflows the page implies the window contributed at least
-`BatchSize` tasks, hence an ask of exactly one, so **at most one base row is discarded per page** —
-and the incoming token is handed back untouched, so that row comes back next time rather than being
-lost. One degenerate case falls out of the same arithmetic: when the base's first row ties the
-window's first, nothing is strictly below it and cutting there would emit an empty page for ever, so
-the merge emits that single deduplicated entry — which is emitting the base page whole, and therefore
-allowed by the cut rule.
+
+The second floor also bounds the waste that the never-cut-inside-a-base-page rule introduces.
+Reaching the branch where the window alone overflows the page means the window contributed at least
+`BatchSize` tasks, which means the ask was exactly one, so **at most one base row is discarded per
+page** — and the incoming token is handed back untouched, so that row comes back on the next call
+rather than being lost.
+
+One degenerate case falls out of the same arithmetic. When the base's first row ties the window's
+first, nothing is strictly below it, and cutting there would emit an empty page for ever. So the
+merge emits that single deduplicated entry instead — which is emitting the base page whole, and
+therefore allowed by the cut rule.
 
 A token this layer did not write is handled too: it means an earlier page was answered by the base
 alone, on a shard whose cycle was retired mid-pagination. The merge carries on with the base alone
@@ -388,20 +430,22 @@ merge's cost with.
 
 ## 5. Invariant I7 — the tasks a drain does not write
 
-A queue expresses its progress to the store in exactly one way: a **range completion**, its
+A queue expresses its progress to the store in exactly one way: a **range completion**, which is its
 checkpoint — a delete of `[old boundary, new boundary)`, the boundaries abutting and only growing.
 Between checkpoints that progress lives in the queue's memory and reaches the shard row on a jittered
-timer, so the database knows less about a queue's progress than the queue does. The order inside one
-checkpoint is load-bearing upstream: the range is completed **first** and the queue's state written
-to the shard row afterwards, because a state persisted first would leave the watermark above a
-deletion that then failed — the shard reloads, and those tasks are never deleted.
+timer, so the database knows less about a queue's progress than the queue does.
+
+The order inside one checkpoint is load-bearing, and it is the server's order, not this layer's: the
+range is completed **first**, and the queue's state is written to the shard row afterwards. Persist
+the state first and a failed deletion leaves the watermark above rows that are still there — the
+shard reloads, and those tasks are never deleted.
 
 Once a reader can be offered the window, it can ack past a task that is still in the tail. If the
-drain then wrote that row anyway, it would land **below** the reader's deletion watermark:
-`rangeCompleteTasks` deletes `[old, new)` with `old` only rising, so no later range covers it and
-every reader scope is rebuilt above it. The row would be permanent garbage — and there is exactly one
-of them per task the drop removes, so what the drop saves and the leak the deferred write introduces
-are the same event counted twice.
+drain then wrote that row anyway, it would land **below** the reader's deletion watermark: the
+server's `queueBase.rangeCompleteTasks` deletes `[old, new)` with `old` only rising, so no later
+range covers the row and every reader scope is rebuilt above it. The row would be permanent garbage.
+There is exactly one such row for every task the drop removes — the rows I7 declines to write are
+precisely the rows that would leak.
 
 Nothing anywhere would notice such a row. Task rows are plain upserts into `executions` and a range
 completion is a bare `DELETE`; no check compares an inserted key against a boundary already

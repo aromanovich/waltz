@@ -1,26 +1,29 @@
 # What one write cost before the layer
 
-Every claim this handbook makes about what the layer saves is a claim relative to something: one
-Temporal state transition against a persistence implementation with no layer in front of it. This
-chapter is that something, in full — the rows one transition touches, the query that touches them,
-what a database does with that query, and the two conclusions the whole design follows from. It is
-for the reader changing the layer, and for the operator deciding what the layer can and cannot be
+Everything this handbook claims the layer saves is measured against a baseline: one Temporal state
+transition written by a persistence implementation with no layer in front of it. This chapter
+describes that baseline in full — the rows one transition touches, the query that touches them, what
+a database does with that query, and the two conclusions the whole design follows from. Read it if
+you are changing the layer, or if you are an operator deciding what the layer can and cannot be
 expected to improve.
 
-**The worked example is one store, named as such.** waltz is not a persistence implementation — the
-one store in the tree exists so the layer can be exercised, and it is not what anybody deploys — so
-this chapter would be empty without a concrete incumbent to describe. What follows is the store the design was
-built and measured against in the research prototype: an implementation of Temporal's persistence API
-over a distributed SQL database with immediate single-partition transactions. Every structural claim
-below is that store's rather than a law about stores. What generalises is stated as such, and the two
-conclusions at the end are the ones that do.
+**The baseline here is one particular store, and the chapter says so throughout.** waltz is not a
+persistence implementation: the one store in this tree, `cold/memcold`, runs Temporal's own SQL
+persistence over a SQLite database inside the test process so that the layer can be exercised, and
+it dies with the process. Nobody deploys it, so without a concrete incumbent this chapter would have
+nothing to describe. What follows is instead the store the design was built and measured
+against in the research prototype: an implementation of Temporal's persistence API over a
+distributed SQL database whose single-partition transactions are *immediate* — a word this chapter
+leans on, and defines in [its own section](#immediate-and-distributed-transactions). Every
+structural claim below is that store's, not a law about stores. Where something generalises, the
+text says so, and the two conclusions at the end are the parts that do.
 
 ## One transaction holds the whole world of a shard
 
-The store puts the shard row, the current-execution rows, the run rows, the elements of a run's
-mutable state and the deferred-work rows **into one table**, and tells them apart by a discriminator
-encoded in the key rather than in a column. The key is composite and its first component is the shard
-number:
+The store puts five kinds of row **into one table**: the shard row, the current-execution rows, the
+run rows, the elements of a run's mutable state, and the deferred-work rows — the history tasks a
+transition leaves behind for a queue to pick up. No column says which kind a row is. The kind is
+encoded in the primary key, whose first component is the shard number:
 
 ```text
 PRIMARY KEY (shard_id, namespace_id, workflow_id, run_id,
@@ -32,10 +35,10 @@ Each row kind is a pattern of NULLs and empty strings in that key: the shard row
 `(shard_id, "", "", "", NULL, …)`, a current-execution row is `(shard_id, ns, wf, "", …)`, a run's own
 row is `(shard_id, ns, wf, run, NULL, …)`, a state item or buffered event carries the same four
 columns plus an `event_type`/`event_id`/`event_name` triple, and a task row is
-`(shard_id, NULL, NULL, NULL, category, visibility_ts, task_id, …)`. Two dozen columns serve all five;
-which of them are non-NULL is what the kind means. One place in the code owns that spelling,
-deliberately — a second copy of it is how two halves of one store come to disagree about a row they
-both wrote.
+`(shard_id, NULL, NULL, NULL, category, visibility_ts, task_id, …)`. Two dozen columns serve all
+five kinds, and which of them are non-NULL is what the kind means. Exactly one place in the store's
+code spells those patterns out. That is deliberate: if two parts of the store each built keys their
+own way, they would sooner or later disagree about a row they both wrote.
 
 NULL sorts below the empty string, which sorts below any real identifier, so the key order lays one
 shard out like this:
