@@ -8,9 +8,9 @@
 // its history tasks, its history events and its replication DLQ: Temporal's own
 // persistence.ExecutionStore and persistence.ShardStore, reached through the
 // [Applier] a drain hands its batch to. The layer folds many acked mutations
-// into one batch and
-// hands it over once; what the store owes back is four things, and each is a
-// way the acked-is-never-lost rule can be broken from below.
+// into one batch and hands it over once; what the store owes back is four
+// things, and each is a way the acked-is-never-lost rule can be broken from
+// below.
 //
 //  1. One drain is one transaction. A batch that lands half-applied leaves rows
 //     no replay can reconstruct: the mutations behind it were acked, folded and
@@ -49,11 +49,48 @@ import (
 // An interface so a test can vary a drain's outcome without a cluster, and so
 // the class of store can change without an invariant moving.
 type Applier interface {
+	// Apply commits everything batch carries — the merged request per dirty
+	// workflow, the history-task work, the range completions — and
+	// batch.Watermark(), in one transaction, under an epoch it compare-and-sets
+	// first. The four obligations in this package's doc say why each of those
+	// is not negotiable.
+	//
+	// The error is the whole of what the cycle learns, and it is read through
+	// apply.Classify rather than compared: return nil only if the transaction
+	// committed, a *persistence.ShardOwnershipLostError if the epoch had moved,
+	// a condition failure if an assertion did not hold, and apply.Refuse for
+	// input this store cannot express. Anything else is an unknown outcome, and
+	// that is the right answer for every ambiguous transport code — a timeout,
+	// a dropped connection, a context deadline. Do not round one down to a
+	// failure: the cycle answers an unknown outcome by reading the watermark,
+	// and answers a failure by giving up on the batch.
 	Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error
 }
 
-// Watermarker is the recovery half of the same seam, and the only read the
-// apply cycle makes of the cold store.
+// Watermarker is the recovery half of the same seam: the only read the layer
+// makes through this contract, though not its only read of the store — intercept
+// mode also asserts on baserow.Store's current-execution row.
 type Watermarker interface {
+	// Watermark reads back the seqno of the last [Applier.Apply] that committed
+	// for this shard — the value that transaction wrote inside itself, never a
+	// value derived from the rows and never one cached in this process.
+	//
+	// The three results are three different answers and the cycle acts on each
+	// differently:
+	//
+	//   - (seqno, true, nil) — every entry up to and including seqno is in this
+	//     store. A new owner replays from seqno+1; a drain whose outcome was
+	//     unknown committed if seqno is at or above the one it carried.
+	//   - (_, false, nil) — no drain has ever committed for this shard. The
+	//     seqno is ignored, and a new owner replays the log from the bottom.
+	//   - (_, _, err) — the answer could not be read. This is not "false", and
+	//     the difference is the point: after an unknown outcome, false means the
+	//     drain did not commit and an error means nobody knows yet. The cycle
+	//     stalls the tail on an error and retries; it halts the shard on false.
+	//
+	// Reporting a seqno above what actually committed is the one failure that
+	// loses data: the layer would trim entries the store never received and
+	// replay from above them. Under an ambiguous write, answer with the error
+	// or with what is durably recorded — never with what was probably written.
 	Watermark(ctx context.Context, shard wal.ShardID) (wal.Seqno, bool, error)
 }
