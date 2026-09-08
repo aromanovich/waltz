@@ -450,8 +450,9 @@ one transaction per shard, and then closes the log. A drain that does not commit
 `context.WithTimeout(context.WithoutCancel(ctx), budget)`, a context detached from the caller's
 cancellation. A shutdown drain runs where a context has just been cancelled, because that is what
 shutdown *means*. A drain context that inherited that cancellation would return at once, leaving a
-tail behind and nothing anywhere that says so. How long the budget is stays the caller's decision;
-the callers in this repository pass a minute.
+tail behind and nothing anywhere that says so. How long the budget is stays the caller's decision:
+waltz is a library, it has no `main`, and it applies no default. The call sites here pass either 30
+seconds or a minute.
 
 ```mermaid
 sequenceDiagram

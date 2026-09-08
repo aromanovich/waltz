@@ -29,25 +29,26 @@ wraps the abstract data store factory the server would otherwise have used, and 
 config — keeps upstream's shape, so an existing deployment's command lines carry over.
 
 What that binary owns, and this library does not, is **everything that has to exist before a shard is
-acquired**: the log's storage and whatever schema it needs, the cold store's, and the credentials for
-both. There is no `--setup-wal` here and no schema step, because there is no schema: the log is a
-`wal.Log` value the binary constructs, and if constructing it requires a migration, that migration
-belongs to the log's own deployment.
+acquired**: the log's storage and whatever schema that needs, the cold store's storage and schema,
+and the credentials for both. This library ships no setup command and no schema step, because it has
+no schema of its own. The log is a `wal.Log` value the binary constructs, and if constructing it
+requires a migration, that migration belongs to the log's own deployment.
 
 ### The checklist
 
-1. **Write the `wal` section.** It is a two-key map — `sync` and `drain_on_read` — inside the default
-   datastore's own `options`, and writing the section at all is what turns intercept mode on. An
-   **absent** section is passthrough; an unknown key inside it is a refusal to start, not a fallback
-   to passthrough. Every *number* is a dynamic-config setting under `wal.*`. Where the section goes
+1. **Write the `wal` section.** It is a two-key map — `sync` and `drain_on_read` — in the `options`
+   of the datastore `persistence.defaultStore` names, and writing the section at all is what turns
+   intercept mode on. An **absent** section is passthrough; an unknown key inside it is a refusal to
+   start, not a fallback to passthrough. Every *number* is a dynamic-config setting under `wal.*`
+   instead of a key here. Where the section goes
    in the config tree, what each key costs when mistyped, and the ready-made configurations are
    [08-configuration.md](08-configuration.md#1-where-the-section-goes).
 
 2. **Make the log ready before any node starts.** Whatever that means for the log being deployed —
    a migration, a topic, a set of tables, a quorum that is up. Nothing in this layer creates it and
-   nothing verifies it, so a log that is not ready is discovered at the first `Fence`, which is a
-   shard that cannot be acquired. A binary that wants the earlier, louder failure does the check
-   itself, before it composes the layer.
+   nothing verifies it, so a log that is not ready is discovered at the first `Log.Fence` — which
+   reaches the operator as a shard the node cannot acquire, and nothing more specific. A binary that
+   wants the earlier, louder failure does the check itself, before it composes the layer.
 
 3. **Restart the history services.** Both keys on the strict surface (`sync`, `drain_on_read`) and
    the four start-up dynamic-config settings (`wal.hardMaxEntries`, `wal.hardMaxBytes`,
@@ -55,9 +56,9 @@ belongs to the log's own deployment.
    a restart of the processes that run the history service.
 
 4. **Verify.** Watch `wal_intercepted_writes` become non-zero: it is the series that says traffic is
-   going through the log at all. A binary that logs its own start-up line ought to say which mode it
-   composed and at what window, because the failure this catches is silent from both ends — a node
-   that came up in passthrough under a file asking for intercept looks healthy, and so does a node
+   going through the log at all. Have the binary log a start-up line naming the mode it composed and
+   the window it composed at. The failure that line catches is silent from both ends: a node that
+   came up in passthrough under a file asking for intercept looks healthy, and so does a node
    intercepting when nobody meant it to.
 
 ---
@@ -119,8 +120,8 @@ sequenceDiagram
 ```
 
 How to read this: the arrow into `waltz.Layer` before `NewServer` is the refusal, because a budget
-that does not fit ends the process there. The last three arrows are the drain, placed after `Server.Stop`
-returned on purpose, and the binary's own close placed after the drain.
+that does not fit ends the process there. The `Shutdown` and `Log.Close` arrows are the drain, and
+they sit after `Server.Stop` on purpose; the binary closes what it opened only after that.
 
 ---
 
@@ -142,21 +143,25 @@ ownership rules are [06-shard-lifecycle.md](06-shard-lifecycle.md).
 * on `kill -9` there is no drain, and the node leaves a **tail**: entries acked into the log and
   not yet applied to the cold store. Nothing is lost.
 
-**What the next owner replays**: it reads the watermark, then the range `(appliedSeqno, commitSeqno]` in
-pages of the window's own size, folds them into a fresh accumulator, cuts them into transactions by
-the size watermarks, and ends in a drain. The age watermark is not consulted — everything here is
-already as old as the incident. Replay is triggered by the first read or write that reaches the
-shard, inside the cycle's own goroutine, so a request arriving mid-replay is parked on the loop
-rather than refused.
+**What the next owner replays**: it reads the cold store's `appliedSeqno` watermark, then every log
+entry above it, a page of `wal.windowMutations` entries at a time. Those entries are folded into a
+fresh accumulator and cut into transactions by the same size watermarks a live window uses, and the
+replay ends in a drain — so the window is empty before the first caller is served. The age watermark
+is not consulted, because every entry here is already as old as the incident. What triggers the
+replay is the first read or write to reach the shard, and it runs on the cycle's own goroutine, so a
+request that arrives mid-replay waits behind it rather than being refused.
 
 **What to expect in the metrics during a failover**:
 
 * `wal_replayed_entries` rises on the new owner — this is the only place it moves, so a failover
   with a flat counter here means the tail was empty;
 * `wal_drains` gains `trigger="replay"` observations;
-* `wal_halts` gains `state="halted-lost"` on the *old* owner, if it is still alive: its next drain
-  asserts the shard's epoch before it writes anything, finds the epoch moved on, and has its whole
-  batch refused. That is fencing working, and it must not page;
+* `wal_halts` gains `state="halted-lost"` on the *old* owner, if it is still alive and tries to
+  write. The new owner's `Log.Fence` at the higher epoch cuts off every append below it, so the old
+  cycle's next write comes back `wal.ErrFenced` and it halts there, before the entry is acked. A
+  cycle that drains without taking a new write — on the age tick, say — reaches the same halt from
+  the other side: its transaction fails the cold store's epoch CAS, which classifies as
+  `apply.ClassShardLost`. That is fencing working, and it must not page;
 * `wal_unapplied_entries` spikes on the new owner and falls back as the replay drains.
 
 During a rolling restart, do the nodes one at a time and let `wal_unapplied_entries` settle before
@@ -221,9 +226,11 @@ conditions below; the keys are
   [chapter 14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident) was measured on
   another one.
 * **What `unresolved` means.** The last drain returned an unknown outcome and the cycle could not
-  read `appliedSeqno`, its only witness to whether the transaction committed. This is a stalled
-  tail, not a halt: writers and readers are refused so nothing can be applied over an ambiguous
-  transaction. No size knob clears it.
+  read `appliedSeqno`, its only witness to whether the transaction committed. The error names the
+  seqno it is stuck on: `shard N's apply cycle cannot read the outcome of its drain at seqno S, and
+  takes no writes until it can`. This is a stalled tail, not a halt: writers and readers are both
+  refused so that nothing can be applied over an ambiguous transaction. No size knob clears it, and
+  it is refused ahead of a full tail, since waiting will not clear it either.
 * **What to do for `unresolved`.** Restore reads of the cold store's `appliedSeqno` watermark — the
   seqno the drain's own transaction carried, read back through `cold.Watermarker`. The age tick
   re-reads it without operator intervention: a watermark at or above the drain's seqno
@@ -250,21 +257,28 @@ import ban in [03-components.md](03-components.md) exist to allow.
 
 ### (b) A shard halted — and which of the two classes
 
-* **Symptom.** `wal_halts` moved. Which refusal the shard answers with depends on the class, and it
-  is the cheapest way to tell them apart: `ShardOwnershipLost` under `halted-lost`, and the halt's
-  own error, matching `cycle.ErrHalted`, under `halted-invariant`.
+* **Symptom.** `wal_halts` moved. The refusal callers get is the cheapest way to tell the two classes
+  apart: `ShardOwnershipLost` under `halted-lost`, and the halt's own error — which matches
+  `cycle.ErrHalted` and carries the cause wrapped inside it — under `halted-invariant`.
 * **What it means — read the `state` tag, and never sum the two:**
   * `state="halted-lost"` — the shard was fenced away. This is fencing working: the halted cycle
-    drops its *window*, the tail is kept, nothing is trimmed, and the next owner replays it. Writes come back as
-    `ShardOwnershipLost`, which the server handles by re-acquiring. Expect it on every failover and
-    on every rolling restart. **Not an alert.**
+    discards its *window*, the acked entries stay in the log, nothing is trimmed, and the next owner
+    replays them. Writes come back as `ShardOwnershipLost`, which the server handles by re-acquiring.
+    Expect it on every failover and on every rolling restart. **Not an alert.**
   * `state="halted-invariant"` — an assertion failed inside a window whose failure could not be
     pinned on one caller. There is no retry and no failover: the layer deliberately does not convert
     this into an ownership-lost, because handing a divergence to the next owner as an ordinary
     failover would spread it. **This is the one that pages.**
-* **What to check.** For `halted-invariant`, the log line carrying the cause (an
-  `apply.InvariantViolationError`, an encode failure, or `cycle.ErrTailNotEmpty` — "the log holds an
-  entry at a seqno this cycle replayed past"). Correlate with `wal_replayed_entries` on that shard.
+* **What to check.** For `halted-invariant`, the `apply cycle halted` log line. It carries the shard
+  id, the state and the cause, and the cause is the only thing that says which assertion failed.
+  Several roads lead here. The ones you will see: an `apply.InvariantViolationError` from a drain;
+  `cycle.ErrTailNotEmpty` — "the log holds an entry at a seqno this cycle replayed past", which means
+  a second writer at this cycle's own epoch; a decode failure, a seqno gap or a shard-id mismatch
+  while replaying the tail; a drain whose outcome was unreadable and which a later watermark then
+  proved had not committed; an acked entry this cycle could not fold at all; and any apply class
+  nobody enumerated. The metrics cannot narrow it further:
+  none of the series here carry a shard tag ([chapter 10](10-metrics.md#2-three-shape-decisions-because-they-change-how-you-read-the-numbers)),
+  so one shard's state comes from the log lines and from `waltz.Layer.ShardStats(shard)`.
 * **What to do.** `halted-lost`: nothing. `halted-invariant`: capture the shard's log before
   anything trims it (a halted cycle's log is not its own to shorten, so it will still be there), and
   treat it as a correctness incident.
@@ -291,11 +305,13 @@ import ban in [03-components.md](03-components.md) exist to allow.
   `trigger="bytes"`; a node draining almost only on `trigger="age"` is idle rather than behind.
   `wal_drained_mutations` against `wal_drained_workflows` gives the collapse ratio: if it is near 1,
   the batches are not collapsing and the drains are as expensive as the writes.
-* **One shape that is not the cold store being slow.** A completed task range large enough to trip a
-  limit of the store's own fails the *whole drain* that carried it: the range delete rides the
-  drain's single transaction and so cannot page the way a standalone `RangeCompleteHistoryTasks`
-  can. It arrives as an apply error like any other and no series distinguishes it, so read the
-  drain's logged error; the mechanism is [05-write-path.md](05-write-path.md).
+* **One shape that is not a slow cold store.** A completed task range travels the log like any other
+  write, so its delete runs inside the drain's single transaction. A standalone
+  `RangeCompleteHistoryTasks` is free to split a very large range across several statements; a
+  folded one is not, so a range big enough to trip a limit of the cold store's own fails the *whole
+  drain* that carried it rather than degrading. It arrives as an ordinary apply error and no series
+  distinguishes it, so read the drain's logged error. The mechanism is
+  [05-write-path.md](05-write-path.md).
 * **What to do.** Address the cold store. If the shard is simply hot, `wal.windowMutations` and
   `wal.windowBytes` are read at the decision, so they can be moved without a restart — but lowering
   them gives collapse away, and raising them holds more unapplied work per shard.
@@ -354,9 +370,10 @@ import ban in [03-components.md](03-components.md) exist to allow.
   when the drain carrying it commits — so **any** non-zero value means something is wrong: a second
   writer for the shard, a drain whose window release did not happen, or a merge reading a stale
   window.
-* **What to check.** `wal_merged_task_pages` (are pages being routed at all?), `wal_halts` on the
-  same shard, and whether two processes could be holding it — the acquire path and the epoch fence
-  are [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go).
+* **What to check.** `wal_merged_task_pages` (are pages being routed at all?) and `wal_halts`. Both
+  are node-wide — no series here carries a shard tag — so to get to a shard, read the log lines and
+  `waltz.Layer.ShardStats(shard)`, and ask whether two processes could be holding it: the acquire
+  path and the epoch fence are [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go).
 * **What to do.** Treat it as a correctness incident, like `halted-invariant`. There is no knob; the
   merge itself is [`../../fold/taskpage.go`](../../fold/taskpage.go) and
   [`../../cycle/tasks.go`](../../cycle/tasks.go).
@@ -374,19 +391,21 @@ Three distinct refusals, all before anything listens:
 * **A log that will not open.** This one is the composing binary's, not the layer's: `Compose` takes
   a `wal.Log` that already exists, so a log that cannot be constructed is a refusal in the `main`
   before the layer is reached, and its message is that binary's to write.
-* **Moved or unknown config key.** A key that used to live in the `wal` section and is now a
-  dynamic-config setting is refused **by name**, saying which setting to write instead and whether
-  it is read at the decision or once at start-up. Any other unrecognised key in the section is
-  refused by the strict decoder: `snyc: true` must not be a node quietly ignoring the key it was
-  meant to set. A misspelt *dynamic-config* key behaves differently — a warning and the default
-  standing silently — which is why the two booleans are on the strict surface and every number is
-  not.
+* **Moved or unknown config key.** Each of the nine `wal.*` dynamic-config settings has a legacy
+  spelling as a key of the section, and writing that spelling is refused **by name**: the message
+  says which setting to write instead, and whether it is read at each decision or once at start-up.
+  Any other unrecognised key in the section is refused by the strict decoder, so `snyc: true` stops
+  the node rather than leaving it quietly running the mode nobody asked for. The numbers do not
+  behave this way: a misspelt *dynamic-config* key is a warning, and the default stands.
 
-There is a fourth shape this library deliberately cannot refuse, and it is the one worth designing a
-binary against: **an applier and a watermarker that are not the same cold store.** Both halves work,
-and every ambiguous drain is then answered with "it did not commit", which halts a shard over a
-drain that had written. Nothing here can tell two stores apart, so a composition that builds both
-from one value is the only defence there is.
+There is a fourth failure this library cannot refuse, and it is the one to design the binary
+against: **`Backends.Writer` and `Backends.Recoverer` pointing at different cold stores.** Nothing
+here can tell two stores apart, so the composition succeeds and ordinary traffic is fine. It goes
+wrong only when a drain's outcome is unknown. The cycle then asks the watermarker how far the
+applier's transaction got; the watermarker's store never saw that transaction, so the watermark it
+returns is below the drain's seqno — which is exactly the proof that the drain did not commit. The
+shard halts `halted-invariant` over a drain that had written. Build both from one value; that is the
+whole of the defence.
 
 ---
 
@@ -400,12 +419,13 @@ Everything in this repository runs with nothing installed:
 go test ./...
 ```
 
-No cluster, no container, no port, no cgo, no fixture directory. That is not a convenience — it is
-what falls out of every backend living in the test process. The log is `wal/memwal`, the cold store
-and the base store are both `cold/memcold` (Temporal's own SQL persistence over an in-memory SQLite
-database, pure Go), and `internal/verify/coldtest` and `internal/verify/basetest` are the doubles a suite reaches for
-when it has to make one of those two misbehave. So there is nothing to connect to and nothing to
-wait for, and `internal/verify/e2e` starts four Temporal services on OS-assigned ports on the same terms.
+No cluster, no container, no port to configure, no cgo, no fixture directory. That falls out of
+every backend living in the test process: the log is `wal/memwal`, and the cold store and the base
+store are both `cold/memcold` — Temporal's own SQL persistence over an in-memory SQLite database,
+through the pure-Go `modernc.org/sqlite` driver. When a suite has to make one of those two
+misbehave it reaches for the doubles in `internal/verify/coldtest` and `internal/verify/basetest`.
+So there is nothing to connect to and nothing to wait for, and `internal/verify/e2e` starts four
+Temporal services on OS-assigned ports on the same terms.
 
 Two things worth knowing about that, both of which are limits rather than features:
 
@@ -415,9 +435,11 @@ Two things worth knowing about that, both of which are limits rather than featur
   [15-the-limits-of-the-evidence.md](15-the-limits-of-the-evidence.md).
 * **the widest evidence available to a composition over this library is upstream's own functional
   suites**, run against the deployment's real store with waltz between. That is not a target here,
-  because it needs a store worth running them against; `patches/README.md` is the fifteen-line patch
-  and the recipe for it. `internal/verify/e2e` is the in-tree version of the same idea at a fraction of the
-  coverage: one server, one workflow, no installation.
+  because it needs a store worth running them against. What it takes is one patch —
+  `patches/temporal/0001-custom-persistence-test-base-factory.patch`, fifteen lines against
+  `tests/testcore/test_cluster.go` — and `patches/README.md` is the recipe.
+  `internal/verify/e2e` is the in-tree version of the same idea at a fraction of the coverage: one
+  server, one workflow, no installation.
 
 `go vet ./...` and `golangci-lint run` are the other two, and `.golangci.yml` says which linters are
 deliberately off and why — a check switched off in silence is one somebody re-enables and then
@@ -433,18 +455,19 @@ disables again.
   hazard bites `until cmd | grep -q marker` under `set -o pipefail`: `grep -q` exits on the first
   match and SIGPIPEs the writer, so the loop never succeeds. Capture into a variable and match that.
 
-* **A run under `-race` costs memory per package, not per machine.** The suites here stand up whole
-  compositions in process, so a default `-p` on a many-core machine runs many of them at once and
-  the binary is OOM-killed — which reports as `signal: killed` with no `--- FAIL` line anywhere, and
-  reads exactly like a hang rather than like a resource limit.
+* **A run under `-race` costs memory per test binary, and `go test` runs several binaries at once.**
+  The suites here stand up whole compositions in process, and `-p` defaults to the number of cores,
+  so a many-core machine runs that many of them side by side and the kernel kills one. You will see
+  `signal: killed` with no `--- FAIL` line anywhere, which reads like a hang rather than like a
+  resource limit. Lower `-p` until the run fits.
 
 ---
 
 
 ## Where this lives in the code
 
-* [`../../waltz.go`](../../waltz.go) — `Compose`, `Layer.Shutdown` and the budget refusal; the
-  package doc states the lifecycle bracket.
+* [`../../waltz.go`](../../waltz.go) — `Compose`, which reaches the budget assertion through
+  `cycle.NewManager`, and `Layer.Shutdown`; the package doc states the lifecycle bracket.
 * [`../../settings.go`](../../settings.go) — the nine `wal.*` dynamic-config
   settings, which are live and which are read once, and the refusal for a key that moved.
 * [`../../config.go`](../../config.go) — the section's strict decoder and the miscased-section

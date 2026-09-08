@@ -213,8 +213,8 @@ side of the two seams: a failure of the log, a failure of the cold store, a spli
 storage, a slow replica. Neither the harness that would stage those runs nor the judge that would
 read one back is here; `internal/verify/checker` is one half of such a run's input and judges
 nothing. The distinction matters when you read the table at the end of this chapter: the
-node-to-node entry describes the shape of the design, and every other entry describes the reach of a
-harness nobody has written.
+node-to-node entry describes the shape of the design, while the entry beside it — no failure of the
+log or the store is staged — describes the reach of a harness nobody has written.
 
 ## The saving on deferred work is not observable from outside
 
@@ -229,9 +229,10 @@ from a loss without reproducing the fold — which is exactly the thing such a j
 
 What holds the rule is therefore the mechanism's own tests: `fold/tasks_test.go`,
 `fold/histtasks_test.go` and `cycle/tasks_test.go`, where the pagination, the ordering, the dedup and
-the deletion rule are each pinned at their smallest. They run over `internal/verify/coldtasks`, a
-model of a base store's two paginations. That is a real limit twice over — the saving is a row that
-was never written, and the pagination it is judged against is a model rather than a store.
+the deletion rule are each pinned at their smallest. The merged read in `cycle/tasks_test.go` runs
+over `internal/verify/coldtasks`, a model of a base store's two paginations. That is a real limit
+twice over — the saving is a row that was never written, and the pagination it is judged against is
+a model rather than a store.
 
 ## Nothing cross-cluster
 

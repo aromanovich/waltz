@@ -63,7 +63,7 @@ misread of everything after it.
 | **history** | a workflow's event history | the history *service*, or a history *task* | "event history" and "history service" are written out in full |
 | **replay** | re-running workflow code over its event history | what a new owner does with an inherited tail | the Temporal sense is never used, only contrasted |
 | **watermark** | a queue's deletion watermark | unqualified, appliedSeqno | the drain's size thresholds are `window.Watermarks` in code and its age threshold is `cycle.Config.Age`; all three are **triggers** everywhere else, which is also what the metric tag calls them |
-| **node** | a history node, meaning a process | `node`, the composition a process builds; and `history_node`, a row of the event tree | the composition sense is always the package; event-tree rows are never called nodes in prose |
+| **node** | a history node, meaning a process | the composition a process builds, which is `waltz.Layer`; and `history_node`, a row of the event tree | the process itself is called the server; event-tree rows are never called nodes in prose |
 | **range** | the shard's rangeID | a task deletion range, or a task read range | `rangeID` is always one word |
 | **immediate** | nothing in particular | two different things, and they never appear in one sentence: an *immediate transaction* is one a store settles without a distributed coordinator, while an *immediate category* is a task category keyed on task id rather than on a fire time | the noun after the word is always written |
 | **state** | a workflow's mutable state | `cycle.State`, one of `running`, `halted-lost`, `halted-invariant` | the three values are written in full, never "halted" or "lost"; the workflow's is always "mutable state" |
@@ -96,14 +96,14 @@ transaction asserts. It is *identical to Temporal's rangeID* — one token, not 
 * **Zero is not a valid epoch** (`wal.ErrZeroEpoch`), and whoever hands epochs out owes the log a
   strictly greater one per acquire: fencing cannot separate two writers holding the same epoch.
 
-This is **fencing, not locking**, and the difference is the whole of how ownership works here. A lock
-does not let a second claimant inside, so it has to know who is inside and be able to take the
-entrance away from one that hung. A fence stops nobody from entering: it stands at the point of the
-write. `rangeID` is a fence token in the exact sense — a monotonic number checked by the *accepting*
-side rather than by the claimant, inside the same transaction as the write itself. So a zombie owner
-never has to be told that it is a zombie and nobody waits for it to work that out; its write does not
-happen and then get rolled back, it does not happen. On the happy path the check costs nothing,
-because it rides a transaction that had to be made anyway. Why not a lease with a timer instead:
+This is **fencing, not locking**, and the difference decides how ownership works here. A lock has to
+keep the second claimant out, so something must track who holds it and be able to revoke it from an
+owner that has hung. A fence keeps nobody out. It sits at the write instead: `rangeID` is a fence
+token in the exact sense — a monotonic number checked by the side that *accepts* the write, inside
+the same transaction as the write itself. So a zombie owner is never told that it is a zombie, and
+nothing waits for it to work that out. Its append is refused and its apply transaction fails its
+compare-and-swap, so there is nothing to roll back. On the happy path the check costs nothing,
+because it rides a transaction that had to happen anyway. Why not a lease with a timer instead:
 [chapter 13](13-designs-that-were-rejected.md#a-lease-with-a-timer).
 
 *Not to be confused with:* term, generation — the same concept in other literature, and neither word
@@ -183,7 +183,8 @@ the layer's, and it survives into every range the layer carries.
 **Deletion range (`fold.TaskRange`).** A `[InclusiveMin, ExclusiveMax)` of one task category, as the
 caller's own checkpoint states it. It does not outlive the drain that carries it, and what that
 means for the tasks on either side of it is [I7 below](#i7-at-more-length).
-*Not to be confused with:* ack level, bound — both describe the compensation this design replaced.
+*Not to be confused with:* an ack level, which is a standing per-category cursor a queue keeps above
+the store. A deletion range is one caller's request, and it dies with the drain that carries it.
 
 **Window.** The slice of the tail that one apply batch folds. In the general case it is the whole
 tail; a partial drain takes a prefix. Fold's rule is stated over a window: for each run, the
@@ -203,11 +204,13 @@ only — no Temporal business logic — and there are three of them worth memori
 Two things about the shape of that, both of which read as arbitrary until they are stated:
 
 * **the unit is the workflow, not the run.** One merged request can carry more than one run — that
-  is what continue-as-new and conflict resolution look like — and the current-execution facts are the
-  workflow's rather than any one run's, so `fold.WorkflowRecord` holds them once (the head-of-window
-  assertion, the row the window would write, and whether the window's net effect was to remove it).
-  Apply registers them at the request `fold.Emitted.FirstOfWorkflow()` marks, which is also why the
-  collapse ratio's denominator counts workflows.
+  is what continue-as-new and conflict resolution look like — and the current-execution facts are
+  the workflow's rather than any one run's. `fold.WorkflowRecord` therefore holds them once: the
+  head-of-window assertion on the current row, the row the window would write, and whether the
+  window's net effect was to remove that row. Apply registers those assertions on exactly one
+  request of the batch, the one `fold.Emitted.FirstOfWorkflow()` marks, so two requests of the same
+  workflow cannot assert the same row twice or disagree about it. It is also why the collapse
+  ratio's denominator counts workflows.
 * **the rules are mechanical because a rule stated in Temporal's terms would be a second
   implementation of the server's semantics.** The layer sits under a component that changes on its
   own schedule; anything it re-derives about that component's meaning is a copy it must keep in step,
@@ -277,9 +280,12 @@ assertion is registered as a statement of the transaction, because only there is
 write it guards. The first is for the caller and the second is for correctness; in sync mode the
 first is skipped, since the drain runs inside the call and its outcome is what the caller is told.
 
-The predicate is read-only on the accumulator, and an assertion the window cannot determine is
-**refused** (`fold.ErrRefused`) rather than admitted — the refusal hands it to the next window,
-where it is a head again.
+The predicate is read-only on the accumulator. An assertion the window cannot determine is
+**refused** (`fold.ErrRefused`) rather than admitted, and the recovery is always the same: drain the
+window, retry the mutation at the head of a fresh one, where the assertion is recorded rather than
+answered here. `fold.Accumulator.AddOrDrain` and `fold.Accumulator.CheckOrDrain` are that recovery
+written once. It terminates because an empty window determines every assertion, so a second refusal
+of the same mutation is itself an invariant violation.
 
 Answering here is answering *instead of* the store, so a discarded assertion that does not hold owes
 the caller the store's own payload, not merely an error of the right Go type. `fold.currentConflict`
@@ -344,24 +350,28 @@ Three things about how the refusal is raised:
 *Not to be confused with:* throttling, rate limit — both name a pace, and this is a bound on memory.
 
 **Overlay.** The read interface of the fold accumulator: a read is the base row from the cold store
-plus what the window holds for that workflow, gated at commitSeqno. `fold.RunShape` is the whole of what
-a reader branches on — absent, snapshot, delta, tombstone.
+plus what the window holds for that workflow, gated at commitSeqno. `fold.RunShape` is the whole of
+what a reader branches on — absent, snapshot, delta, tombstone.
 
 **Merge-on-read.** One page of a task read answered from the window and the cold store at once:
-ascending, deduplicated, inside the requested range and no longer than the caller's batch size,
-minus the window's undrained deletion ranges — which are subtracted from the cold store's half of
-it. The dedup is a safety net rather than the mechanism, since the two sources are disjoint by
-construction; what makes the page honest is the order the rows are emitted in.
+ascending, deduplicated, inside the requested range, and no longer than the caller's batch size. The
+window's undrained deletion ranges come off the cold store's half of the page and nothing else,
+since the window's own half was swept as each range folded in. The two sources are disjoint by
+construction, so the dedup is a safety net rather than the mechanism. What the page's correctness
+rests on is where it may cut: at the end of a base page or below its first row, never inside one.
+The cold store's pagination token is the underlying plugin's own bytes, which this layer may neither
+parse nor synthesise, so a half-emitted base page would lose rows on one side and duplicate them on
+the other.
 *Not to be confused with:* the overlay, which renders one run's state; this concatenates two sources
 and paginates.
 
 **Cold store.** Whatever a deployment's persistence implementation writes its rows into: the
 permanent target of apply, reached only through `cold.Applier` and `cold.Watermarker`. No package of
 the layer names a column, and none may name a store. `cold/memcold` is the one implementation of
-those two interfaces here — Temporal's own SQL persistence over a database in this process, which is
-what everything above the seam is exercised against, and which is a real store rather than a stub:
-it is judged by Temporal's own persistence suites and not by any of ours. A deployment supplies its
-own, and what it owes is the four obligations in
+those two interfaces here: Temporal's own SQL persistence, embedded whole, over a SQLite database
+that lives in this process and dies with it. Everything above the seam is exercised against it, and
+it is a real store rather than a stub — Temporal's own persistence suites judge it exactly as they
+judge a plugin. A deployment supplies its own, and what it owes is the four obligations in
 [chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for).
 *Not to be confused with:* "main storage", "base" — both overloaded.
 
@@ -388,16 +398,18 @@ branches:
 *Not to be confused with:* worker, loop — both understate that placing a read on this goroutine is
 what makes the read correct.
 
-**Wrapper.** The seam into a running server: a decorator over a base `DataStoreFactory` that
-takes eleven persistence methods into the layer, refuses a twelfth and transits the rest. Named for
-what it does structurally — wrap, don't fork — and it may import no persistence implementation at
-all, so which store sits underneath is the binary's business.
+**Wrapper.** The seam into a running server: a decorator over a base `DataStoreFactory` that takes
+eleven persistence methods into the layer, refuses a twelfth — `CompleteHistoryTask`, with
+`wrapper.ErrCompleteHistoryTaskUnsupported` — and transits the rest. It wraps the base plugin rather
+than forking it, and it may import no persistence implementation at all, so which store sits
+underneath is the binary's business.
 *Not to be confused with:* adapter, proxy — both suggest translation, and this one decides routing.
 
 **Node, or composition.** What a running server composes the layer out of: the `wal` section of the
-custom datastore's options plus the policy settings the server's dynamic config carries, the
-components they name, and the registry's lifecycle. A composition, not a cluster member — the server
-is the node, and this is what it builds. Every key is [chapter 08](08-configuration.md).
+custom datastore's options, the policy settings the server's dynamic config carries, the backends
+they run over, and the task-category registry a tail is decoded with. A composition, not a cluster
+member — the server is the node, and this is what it builds. `waltz.Compose` is the call, and
+`waltz.Layer` is what it hands back. Every key is [chapter 08](08-configuration.md).
 
 Terms from elsewhere in the handbook, stated once so they are not re-derived:
 
@@ -440,10 +452,12 @@ graph TD
 That is the spine rather than the whole vocabulary. What is deliberately not on it:
 
 * **wrapper** and **node** — the seam that puts a mutation on the line at all;
-* **epoch**, **condition authority**, **base row** and **backpressure** — rules every step is
-  subject to rather than steps of their own, and so are the **cut point** and the two mutation
-  shapes, the **task record** and its **deletion range**;
-* **replay** — the same line walked again by a new owner, over a tail it inherited, and the **WAL
+* **epoch**, **condition authority**, **base row**, **backpressure** and the **cut point** — rules
+  every step is subject to rather than steps of their own;
+* the **task record** and its **deletion range** — carried by the same log and folded into the same
+  accumulator, but keyed by category rather than by workflow, so they never take part in the
+  per-workflow collapse the spine describes;
+* **replay** — the same line walked again by a new owner over a tail it inherited; the **WAL
   backend** is whatever implements the log underneath it.
 
 ---
@@ -545,8 +559,9 @@ rather than merely wrong:
   and leaves nowhere to put the progress mark atomically: five transactions over five runs leave
   four intermediate states, and nothing in the cold store tells them apart.
 * Moving appliedSeqno in a second transaction after the batch's own makes an unknown outcome
-  unresolvable rather than merely ambiguous — the mark did not move and the data may already be
-  applied, so the one question the whole recovery path asks stops having one answer.
+  unresolvable rather than merely ambiguous. Recovery asks one question — did the last drain commit?
+  — and answers it by reading the watermark back. Split across two transactions, the mark can stand
+  still while the data is already applied, and reading it answers nothing.
 
 Two simplifications a reader is likely to propose are not on that list, because refusing them is an
 argument rather than a definition: fencing only at the cold store, and putting the shard's own
@@ -620,15 +635,15 @@ I8's barriers govern the run's **state**, and three rules sit beside them. Each 
 otherwise have to infer from a merged request, and the last two fail silently when they are not
 known.
 
-* **Tasks are exempt from both destructive barriers, not just the tombstone.** The tombstone half is
-  the familiar one: a deleted run's tasks survive as orphaned tasks on the emitted delete, because a
-  task already acknowledged has to end up either in the cold store or still in the window. The
-  snapshot half is the same rule stated the other way round — a create, conflict-resolve or set
-  resets everything else about the run and leaves its accumulated tasks alone, concatenating them
-  through the barrier, because tasks are queue records rather than workflow state and rewriting a
-  workflow's state wholesale does not cancel work already promised. `fold.mergeTasks` is called from
-  the merge, the snapshot-delta and the snapshot-replacing paths alike, and the last of them saves
-  the prior task map across the replacement.
+* **Tasks are exempt from both destructive barriers, not just the tombstone.** A task the layer has
+  already acknowledged must end up either in the cold store or still in the window, so neither
+  barrier may drop one. On the tombstone side, a deleted run's tasks survive as orphaned tasks on
+  the emitted delete. On the snapshot side, a create, conflict-resolve or set resets everything else
+  about the run and leaves its accumulated tasks alone, concatenating them through the barrier:
+  tasks are queue records rather than workflow state, and rewriting a workflow's state wholesale
+  does not cancel work already promised. `fold.mergeTasks` is called from the merge, the
+  snapshot-delta and the snapshot-replacing paths alike, and the last of those saves the prior task
+  map across the replacement.
 * **Upsert and delete of one key are resolved inside the accumulator, per key, before anything is
   emitted.** The store's transaction does not emit statements in the order they were registered: it
   emits every delete family first and then every upsert. So a window that emitted an unresolved pair
@@ -637,16 +652,17 @@ known.
   so the later operation wins and the key leaves the other set entirely. This is a constraint on
   anyone adding a keyed collection to the fold: merging one without the resolution compiles, passes
   any test that compares merged requests, and shows up as a row that should be gone and is not.
-* **Buffered events do not merge**, which is a fourth barrier rule beside I8's three. Each arriving mutation's
-  `NewBufferedEvents` blob is stripped out of the merged request and appended to a per-run list in
-  arrival order, so the merged request's own slot is always nil, and at drain time each accumulated
-  batch becomes a row of its own. The batch carries its run id (`fold.BufferedBatch`) rather than
-  reading it off the request, because a window whose merged state is a snapshot has no mutation to
-  read it from. `ClearBufferedEvents` is a barrier of its own and a different one from a snapshot: it
-  drops the batches the window accumulated before it *and* marks the merged request so the drain
-  clears the run's pre-window rows in the cold store — two halves, because the window and the store
-  hold different generations of the same rows. Concatenating two batches into one row is the failure
-  this rule exists to prevent, and no comparison of merged requests would see it.
+* **Buffered events do not merge**, which is a fourth barrier rule beside I8's three. Each arriving
+  mutation's `NewBufferedEvents` blob is stripped out of the merged request and appended to a
+  per-run list in arrival order, so the merged request's own slot is always nil, and at drain time
+  each accumulated batch becomes a row of its own. The batch carries its run id
+  (`fold.BufferedBatch`) rather than reading it off the request, because a window whose merged state
+  is a snapshot has no mutation left to read it from. `ClearBufferedEvents` is a barrier of its own
+  and a different one from a snapshot: it drops the batches the window accumulated before it *and*
+  marks the merged request so the drain clears the run's pre-window rows in the cold store — two
+  halves, because the window and the store hold different generations of the same rows.
+  Concatenating two batches into one row is the failure this rule exists to prevent, and no
+  comparison of merged requests would see it.
 
 ### I10, at more length
 
@@ -685,18 +701,21 @@ One boundary of the claim, and no setting moves it. The situation the bound is f
 refusing writes while the log keeps acking — presumes an asymmetric failure, and a log that lives in
 the same database as the cold store cannot fail asymmetrically from it: one incident is an incident
 of both halves at once. **The bound makes a cold-store degradation's consequences bounded; it does
-not make the two halves independent.** Which they are is a deployment choice rather than a property
-of the layer, and it is the main thing a deployment decides when it picks the pair. Putting the log
-somewhere the cold store cannot take down is what the contract exists to allow.
+not make the two halves independent.** Whether they are independent is a deployment choice rather
+than a property of the layer, and it is the main thing a deployment decides when it picks the log
+and the cold store. Putting the log somewhere the cold store cannot take down is what the contract
+exists to allow.
 
 ### The invariants without a number
 
-Not every claim made about this layer carries a number, and the absence is deliberate: an unnumbered
-claim is one that has no such name inside the layer. It is one of three things:
+Not every claim this handbook makes about the layer carries a number, and the absence is deliberate:
+an unnumbered claim is one that has no such name inside the code. It is one of three things:
 
-* a property of the incumbent system;
-* a property of an instrument that judges the layer — the witness's named claims;
-* a mechanism local to one chapter.
+* a property of the system as it stands without this layer —
+  [chapter 12](12-the-write-before-the-layer.md);
+* a property of an instrument that judges the layer rather than of the layer itself, such as the
+  witness's own named claims — [chapter 11](11-verification.md);
+* a mechanism local to one chapter, stated where it is used.
 
 Do not renumber them into the list, and do not invent I12.
 

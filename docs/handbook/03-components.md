@@ -136,12 +136,16 @@ How to read this. Nothing crosses a shard boundary below `cycle.Manager`: the ma
 shard to its one cycle, and everything under that cycle belongs to that shard alone. Two paths reach
 the cold store from the layer, and both are interfaces the deployment implements — `cold.Applier`,
 the layer's only *write* door, and `cold.Watermarker`, which reads back what the last drain
-committed when its outcome was unknown. The wrapper's own arrows to the cold store are the transits:
-the calls the layer has no shape for.
+committed when its outcome was unknown. The wrapper's own arrows to the cold store are the transits.
+`wrapper.ExecutionStore` has 28 methods; in intercept mode it answers eleven of them itself — the
+eight writes and the three reads on the diagram — refuses a twelfth, `CompleteHistoryTask`, with
+`wrapper.ErrCompleteHistoryTaskUnsupported`, and hands the other sixteen straight to the store below.
 
-The cold store's two mutable-state reads do not appear as an arrow out of `cycle`, and that is
-deliberate — the cycle may not name a store. They arrive as a `*baserow.Rows` and as closures the
-wrapper passes in with each call, and are invoked *inside* the goroutine that owns the window.
+The two mutable-state reads the write path makes against the cold store — `baserow.Rows.Run` for one
+run's row and `baserow.Rows.Current` for the current-execution row — are missing from the diagram on
+purpose: the cycle may not name a store, so it has no arrow to draw. They reach it as arguments
+instead. The wrapper passes a `*baserow.Rows` with every write and a base closure with every read,
+and the cycle invokes them *inside* the goroutine that owns the window.
 
 Two components sit beside the path rather than on it:
 
@@ -196,19 +200,24 @@ graph LR
   MET -.->|"x"| F
 ```
 
-How to read this. Each solid arrow is a legal import, drawn the same way round as the dashed ones —
-`wal` is at the bottom, the root package at the top. The dashed `x` arrows are the bans that matter
-most:
+How to read this. Every arrow, solid or dashed, points from the importer to the package it would
+import. The solid ones are the legal imports: `wal` imports nothing else in this tree, so every chain
+ends there, and the root package starts them. The dashed `x` arrows are the bans that matter most:
 
-* **`wal` and its implementations may not import the Temporal server.** The contract is
-  backend-independent, which is a requirement rather than an aspiration: a log worth replacing the
-  cold store's durability with is one written by somebody who never has to learn what a shard is.
-* **`fold` may not import `apply`.** A fold that could reach the write path would fetch
-  the base row it is supposed to be given.
-* **`wrapper` may not import `cycle`.** It is why the wrapper talks to the layer through
-  `wrapper.ShardWriter` and `wrapper.ShardReader`, and why translating a cycle's answer into the
-  store's error types lives in `cycle` (`write.go`'s one write door, over `decide.go`'s `storeError`)
-  rather than in the wrapper.
+* **`wal` and its implementations may not import the Temporal server.** An entry's payload is opaque
+  bytes and `wal.Log`'s five methods name no Temporal type, so somebody writing a log over a new
+  backend has one thing to satisfy — `waltest.RunContractSuite` — and never has to learn what a
+  history shard is.
+* **`fold` may not import `apply`.** `apply` names `baserow`, so a fold that could import it would
+  be one hop from the cold store's rows. Instead, an assertion the window cannot settle comes back
+  as a `fold.Delegated`; `Delegated.Settle` then hands each obligation to the caller, which reads the
+  row and judges it with `DelegatedCurrent.Verify` or `DelegatedRun.Verify`. The fold is given the
+  base row; it never fetches one.
+* **`wrapper` may not import `cycle`.** That is why the wrapper reaches the layer through the
+  `wrapper.ShardWriter` and `wrapper.ShardReader` interfaces rather than through a `*cycle.Cycle`,
+  and why turning a cycle's answer into the error types the history service understands lives in
+  `cycle` rather than in the wrapper: `write.go` holds the one write door, and `decide.go`'s
+  `storeError` does the translation.
 * **No package of the layer names a persistence implementation at all** — not even the root, which
   composes everything. That is the whole of what makes waltz a library: the log arrives as a
   `wal.Log`, the cold store as a `cold.Applier` and a `cold.Watermarker`, and the base store as
@@ -224,11 +233,16 @@ most:
   so an import of `fold` here would put "just read `Stats`" one line away, and the emitter would end
   up holding the component it measures.
 
-Two more bans have no place on the diagram because they are about sub-packages:
-**`cycle/tailstate` and `cycle/window` may not import `fold`**, and they are listed
-separately from `cycle` in the table above because a rule stated over the parent covers
-neither. The window's bytes and the tail's bytes are two numbers on purpose, and either type that
-could see the accumulator is one merge away from bounding the wrong one.
+One more ban is missing from the diagram because it is about sub-packages: **`cycle/tailstate` and
+`cycle/window` may not import `fold`.** That is also why the table above lists them separately from
+`cycle` — a rule stated over the parent package covers neither.
+
+The window's bytes and the tail's bytes are two numbers on purpose. The window empties when a drain
+*starts*; the tail empties only when that drain's transaction commits. So after a drain whose outcome
+could not be read, the window is at zero and the tail still holds those entries' bytes. A counter
+type that could see the accumulator would have `fold`'s byte count one line away, and using it for
+both would leave invariant I10 bounding the window instead of the acked-but-unsettled entries it
+exists to bound.
 
 **None of these rules is checked by a test.** They are prose, with the reasoning beside each one —
 see [chapter 11](11-verification.md#1-a-test-asserts-behaviour-never-shape) for the house rule that
@@ -251,15 +265,17 @@ mutable state at that epoch. What it owns:
 * replay, on the first request after an acquire.
 
 That is what makes the accumulator single-threaded with no lock at all. Work reaches the loop as a
-`job`, which is `func(*state)`: a closure over its own arguments and its own result. The consequence
-worth internalising before you add one: **everything on this goroutine is serialised behind the
-accumulator and the drain**, so a job that waits on the cold store holds up every write on the shard.
+`job`, which is `func(*state)`: a closure over its own arguments and its own result. Know the cost
+before you add one. **Everything on this goroutine is serialised behind the accumulator and the
+drain**, so a job that waits on the cold store holds up every write to the shard.
 
-Placing the *reads* on the same goroutine is a correctness decision rather than tidiness. The window
-empties when a drain *starts* and the tail only when its transaction *commits*, so a read served
-anywhere else can fall into the interval where a mutation is in neither source — not a stale answer,
-but a write undone, and for a task page a task lost rather than late. The interval and both
-consequences are [chapter 07](07-read-path.md#why-a-read-served-anywhere-else-is-not-merely-stale).
+Serving the *reads* here too is a correctness decision, not tidiness. The window empties when a drain
+*starts*, and the tail settles only when that drain's transaction *commits*; between those two
+moments a mutation is in neither the window nor the store. A read served on any other goroutine can
+land in that interval. What it returns is not a stale answer but a write undone — and for a task
+page, a task lost rather than late, because a queue that reads its range and finds nothing completes
+that range. Both consequences are
+[chapter 07](07-read-path.md#why-a-read-served-anywhere-else-is-not-merely-stale).
 
 ### What lives off the loop
 
@@ -280,11 +296,13 @@ ownership rule becomes the compiler's job rather than prose. A failed trim halts
 logged and retried at the next cadence.
 
 **There is no mutex on `cycle.Manager`.** The mutex belongs to the unexported `held` type, which owns
-the shard map and the retired counters. That is deliberate and it is a lock-inversion story: every
-read path resolves through `Manager.Shard`, which wants that mutex, so any code holding it while
-calling into a cycle's goroutine would stop every shard on the node — one cycle blocked inside a base
-read and the whole registry waiting behind it. So: **ask a cycle for anything, `Stats` most of all,
-outside the lock.**
+the shard map and the retired counters, and the danger it guards against is a lock inversion. Every
+read path resolves its shard through `Manager.Shard`, which takes that mutex. Code that held it while
+calling into a cycle's goroutine would stop every shard on the node: one cycle blocked inside a base
+read, and the whole registry waiting behind it. Each method on `held` therefore takes the lock,
+finishes its map arithmetic and returns — `held.totals` hands back the live cycles unasked, for
+`Manager.Totals` to question afterwards. **Ask a cycle for anything, `Stats` most of all, outside the
+lock.**
 
 ### The goroutines on one node
 
@@ -324,15 +342,19 @@ and the emitter, which is lock-free. Everything else is per-shard and single-thr
   for one shard, each unaware of the other.
 * **A `Cycle` is created by `Manager.ShardAcquired`**, which fences the log at the new epoch and then
   starts the cycle, in that order — the log's epoch may never lag the database's.
-* **A `Cycle` is retired by a higher epoch superseding it, or by the node closing.** Nothing else
-  reaps one: an acquire is observable and a shard *close* is not, because closing a shard makes no
-  persistence call. So an idle cycle costs a goroutine and an empty accumulator until its node stops
-  — a bounded leak, taken knowingly.
+* **A `Cycle` is retired by a higher epoch superseding it, or by the node closing.** The layer reaps
+  none by itself, because it only sees what crosses the persistence interface: an acquire bumps the
+  rangeID and is therefore visible, while closing a shard makes no persistence call and is not. So a
+  shard the server has quietly stopped serving leaves a goroutine and an empty accumulator behind
+  until its node stops — a bounded leak, taken knowingly. A caller that knows the shard is gone can
+  stop it with `Layer.RetireShard`, which retires without draining.
 * **The layer's lifecycle brackets the server's.** `waltz.Compose` runs before the server is built,
-  so a failed budget assertion stops the binary; `Layer.Shutdown(ctx, budget)` runs after the server
-  has stopped, so the shutdown drain still has a store to write to. The budget goes on a context of
-  the layer's own, detached from the caller's — a shutdown drain runs exactly where a context has
-  just been cancelled. Start and stop order in full is
+  so its two startup assertions — `cycle.Config.CheckBudget`, and a task-category registry that must
+  not be nil — stop the binary rather than a shard. `Layer.Shutdown(ctx, budget)` runs after the
+  server has stopped, so the shutdown drain still has a store to write to. It puts the budget on a
+  context of the layer's own, detached from the caller's, because a shutdown drain runs exactly where
+  a context has just been cancelled and one inheriting that cancellation would return at once. Start
+  and stop order in full is
   [chapter 09](09-operations.md#2-start-and-stop-order).
 
 ## Where the composition happens
@@ -346,38 +368,39 @@ second. It opens nothing, reaches nothing and takes no context. It takes five in
 * an optional `log.Logger`, which nil replaces with a noop;
 * an optional `metrics.Handler`, which nil replaces with a noop.
 
-That is the whole of the door in, and it is deliberately the only one. Every earlier revision of
-this layer had a second constructor that opened a client from a config file, and it is exactly the
-constructor a library must not have: opening storage is what the caller already knows how to do, and
-a composition that does it too has two configurations of the same thing with nothing to reconcile
-them.
+That is the whole of the door in, and deliberately the only one: there is no second constructor that
+opens a client from a config file. Everything that talks to a cluster has already happened by the
+time `Compose` runs — that is why it needs no context — and the backends it is handed stay the
+caller's, so they must outlive the layer. A constructor that opened storage itself would leave two
+configurations of the same thing with nothing to reconcile them.
 
 The door out is `Layer.AbstractFactory(base)`, which returns the value a custom `main` hands to
 `temporal.WithCustomDataStoreFactory`. A caller that wants the pieces separately takes
 `Layer.Options()` and builds the factory itself; `waltz.AbstractFactory(base, opts)` is that pairing
 as one call.
 
-The metrics handler travels the opposite way to everything else: the server's `metrics.Handler`
-exists later than the layer does, so it comes *down* the same seam the stores come up, through
-`wrapper.MetricsSink` — one method, first call wins, with the sequence in
-[chapter 10](10-metrics.md#1-how-the-numbers-get-out). Building a second handler
-from the same configuration was tried and rejected: with the Prometheus reporter it is a second
-listener on the address the server's own handler binds, so one of the two fails to start.
+The metrics handler arrives the other way round from everything else. The server's `metrics.Handler`
+does not exist yet when `Compose` runs, so it reaches the layer afterwards, through
+`wrapper.MetricsSink`: one method, `Use`, whose first call wins, made by the factory as it builds the
+stores. [Chapter 10](10-metrics.md#1-how-the-numbers-get-out) has the sequence. The layer does not
+build a handler of its own from the same configuration: with the Prometheus reporter that is a second
+listener on the address the server's own handler binds, so one of the two would fail to start.
 
 ## `internal/verify/` in brief
 
-Nothing here runs in production. What lives here splits in two, and which half a package is in is the
-thing to know before opening it:
+Nothing here runs in production. The packages split in two, and which half one falls in tells you how
+to read it:
 
 * **instruments** measure or drive, and assert nothing — `mutgen`, `mutbuild`, `drive`, `foldrun`,
   `coldtest`, `basetest`, `coldtasks`, `checker`, `witness`;
 * **judgements** say yes or no — `acceptance`, `e2e`, `guard`.
 
-What each one claims is [chapter 11](11-verification.md#the-map-of-internalverify). None of them needs a
-cluster, and that is now a stronger statement than "none of them can have one": both seams have an
-implementation that runs in this process, so `internal/verify/e2e` boots four Temporal services over the
-layer without installing anything. What no package here can have is *storage that survives the
-process*, which is where the limits in [chapter 15](15-the-limits-of-the-evidence.md) begin.
+What each one claims is [chapter 11](11-verification.md#the-map-of-internalverify). None of them needs
+a cluster, because both seams have an implementation that runs in this process: `wal/memwal` for the
+log and `cold/memcold` for the store. That is what lets `internal/verify/e2e` boot Temporal's
+frontend, history, matching and worker services over the layer with nothing installed. No package
+here can have *storage that survives the process*, which is where the limits in
+[chapter 15](15-the-limits-of-the-evidence.md) begin.
 
 ## Where this lives in the code
 

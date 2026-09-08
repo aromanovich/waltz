@@ -165,9 +165,10 @@ with no cycle running. The shard-lifecycle side of them — epochs, halts, repla
 [chapter 06](06-shard-lifecycle.md).
 
 One route only a task read reaches: `retryOnSuccessor`. If the shard changed hands while one page was
-being built, the page is discarded and the read re-issued on the cycle that replaced it — the fresh
-cycle replays its predecessor's tail before answering, so what it merges is a superset. One retry,
-then the shard is declared lost.
+being built, the page is discarded and the read re-issued on the cycle that replaced it. The fresh
+cycle replays its predecessor's tail before answering, so the window it merges over is a superset of
+the one the superseded cycle held. There is one retry: superseded twice, and the shard is declared
+lost.
 
 **`DrainOnRead` is an instrument, not a shipped mode.** `cycle.Config.DrainOnRead` (written
 `drain_on_read` in the `wal` section, see [chapter 08](08-configuration.md#2-table-1--the-wal-sections-keys))
@@ -311,8 +312,8 @@ arithmetic, the dedup, the subtraction of undrained range deletes — and it sit
 reads.
 
 The base page reaches `fold` as a callback (`fold.BasePage`, taking a batch size and a token) rather
-than as a page, because the merge chooses its own batch size and token while the round trip stays the
-cycle's. `fold` may name no cold store.
+than as a page. The merge chooses its own batch size and its own token, but the round trip stays the
+cycle's, because the `fold` package may not name a store at all.
 
 The window half of a page is a linear scan and a sort, and nothing else. `fold.Accumulator.Tasks`
 walks every home `taskRows` names, sorts what it found by key, and `mergePage` then walks that slice
@@ -385,8 +386,9 @@ The token this layer hands back is its own (`taskPageToken`), framed with a four
 
 No state is kept between calls: those fields are the whole cursor.
 
-The cut has no freedom, and three facts box it in — a page may not exceed `BatchSize`; the base's
-token is the base store's format; and a scheduled range can name only a fire time as a resume point.
+Three facts leave the cut no freedom: a page may not exceed `BatchSize`; the base's token is in the
+base store's own format, which this layer may neither parse nor synthesise; and a scheduled range can
+name only a fire time as a resume point.
 Therefore **the cut is at the end of a base page or below its first row, never inside one**. Either
 the whole base page is emitted and its token advances, or none of it is and the incoming token comes
 back untouched. A partially emitted base page would mean lost rows on one side and duplicates on the
@@ -416,12 +418,15 @@ rather than inventing a window cursor that was never handed out.
 ### The collision counter
 
 `mergeSorted` counts keys that both sources carried. **The two sources are disjoint by
-construction** — the window drops a task exactly when the drain carrying it commits — so a collision
-is not a normal event to be tolerated; it is evidence. It is counted rather than raised, because a
-read is the wrong place to discover an invariant violation: the page is still correct (the base's row
-wins, the duplicate is dropped) and the number goes to `TaskPageStats.Collisions`, to
-`cycle.Counters.TaskCollisions`, and out as the `wal_merged_task_collisions` series. The expected
-value is zero. What to do when it is not zero is
+construction**: the window drops a task exactly when the drain carrying it commits, so no key should
+ever be in both. A collision therefore means the window is still holding a task a committed drain
+already put in the store.
+
+It is counted rather than raised, because a read is the wrong place to discover a broken invariant.
+The page is still correct — the base's row wins and the duplicate is dropped — so the merge finishes
+the page and records the number in three places: `TaskPageStats.Collisions`,
+`cycle.Counters.TaskCollisions`, and the `wal_merged_task_collisions` series. The expected value is
+zero. What to do when it is not zero is
 [chapter 09](09-operations.md#f-merged-page-collisions-are-non-zero).
 
 `TaskPageStats` is an instrument rather than a contract; its other fields (`BaseCalls`, `BaseRows`,
@@ -440,41 +445,46 @@ range is completed **first**, and the queue's state is written to the shard row 
 the state first and a failed deletion leaves the watermark above rows that are still there — the
 shard reloads, and those tasks are never deleted.
 
-Once a reader can be offered the window, it can ack past a task that is still in the tail. If the
-drain then wrote that row anyway, it would land **below** the reader's deletion watermark: the
-server's `queueBase.rangeCompleteTasks` deletes `[old, new)` with `old` only rising, so no later
+Because a merged read offers the window, a queue can complete a range covering a task whose row is
+still in the tail. If the drain then wrote that row anyway, it would land **below** the queue's
+deletion watermark: the server's `queueBase.rangeCompleteTasks` deletes `[old, new)` with `old` only
+rising, so no later
 range covers the row and every reader scope is rebuilt above it. The row would be permanent garbage.
 There is exactly one such row for every task the drop removes — the rows I7 declines to write are
 precisely the rows that would leak.
 
-Nothing anywhere would notice such a row. Task rows are plain upserts into `executions` and a range
-completion is a bare `DELETE`; no check compares an inserted key against a boundary already
-completed. That is not an oversight, because in the unmodified system the row cannot appear: the work
-and the state are written **at the same moment**, by the same transaction, and a queue does not
-complete a range with somebody's task write still in flight. Acknowledging a write before its task
-rows are in the store destroys the first of those two properties, and I7 is what fills the hole it
-opens. It fills it by **never writing such a row** rather than by detecting one, because detection is
-exactly what the surrounding system cannot do — no reading of any metric will tell an operator that a
-row landed below a completed boundary.
+Nothing anywhere would notice such a row. Task rows are plain upserts into `executions`, a range
+completion is a bare `DELETE`, and no check compares an inserted key against a boundary already
+completed. That is not an oversight. In the unmodified server the row cannot appear, because a task
+row and the mutable state that produced it are written **at the same moment, by the same
+transaction**, and a queue does not complete a range while somebody's task write is still in flight.
 
-**I7 is the rule that the drop is correct**: a task row whose range a caller has already completed is
-not written. The layer does not model an ack level and does not need to — it applies the range
-deletes its callers asked for, in the order they asked for them. A range delete needs no
-interpretation; it already says *every row below this key is garbage*.
+Acknowledging a write before its task rows reach the store destroys that simultaneity, and I7 is
+what fills the hole it opens. It fills the hole by **never writing such a row** rather than by
+detecting one, because detecting one is what the surrounding system cannot do: no metric anywhere
+will tell an operator that a row landed below a completed boundary.
 
-Three things about the shape are decisions rather than mechanics:
+**I7 states the drop**: a task row whose range a caller has already completed is not written. The
+layer does not model an ack level and does not need to. It applies the range deletes its callers
+asked for, in the order they asked for them, and a range delete needs no interpretation — it already
+names the rows the caller is finished with.
+
+Three things about the drop are decisions rather than mechanics:
 
 * **the drop is the range, not a bound.** A `RangeCompleteHistoryTasks` folding into the window
-  sweeps every task the window already holds inside `[min, max)`, under the store's own per-category
-  predicate, `fold.TaskRange.Covers`: immediate on task id, scheduled on fire time, at
-  **microsecond** resolution, because that is the resolution a store's timestamp column is expected
-  to keep. The resolution is not a detail: a maximum a nanosecond above a task's fire time truncates
-  to that fire time in the store and covers nothing there, so comparing finer would drop a row the
-  sequential path keeps — a lost timer, not a leaked row. The sweep happens at fold time and not at
-  drain time because a store's batch ordinarily gathers **every delete before every upsert** inside
-  one transaction: a task and a range that
-  reached the same drain would come out with the row written, whatever the window meant by folding
-  the range over it. The fold is the only place the caller's order can still be honoured.
+  sweeps every task the window already holds inside `[min, max)`. The predicate is the store's own,
+  `fold.TaskRange.Covers`: an immediate category ranged on task id, a scheduled one on fire time, at
+  **microsecond** resolution — the resolution a store's timestamp column keeps.
+
+  That resolution is load-bearing. Take a range whose maximum is one nanosecond above a task's fire
+  time. In the store both truncate to the same microsecond, so `key < max` is false and the `DELETE`
+  leaves the row alone. Compare finer in the window and the sweep would drop the task anyway, which
+  is a lost timer rather than a leaked row.
+
+  The sweep runs when the range folds in rather than when the drain runs, because a store's batch
+  ordinarily gathers **every delete before every upsert** inside one transaction. A task and a range
+  that reached the same drain would come out with the row written, whatever the window meant by
+  folding the range over it. The fold is the only place where the caller's order still survives.
 * **a task arriving after a range is kept.** The log's order is the caller's, so such a task is one
   the caller wrote after the delete, and the sequential path writes it. Pending ranges therefore die
   with the drain that applies them; nothing about a deletion outlives it.
@@ -482,36 +492,39 @@ Three things about the shape are decisions rather than mechanics:
   drops, and what a merged read hides. An answer that differed between the three would be a row that
   is invisible and still there.
 
-One operational asymmetry rides along with the range that reaches the drain. A range is a predicate
-rather than a key tuple, so unlike the drain's other delete families it cannot collapse into one
-statement per family: each range is its own statement, and the drain's statement count is a function
-of how many ranges the batch was handed and never of how many rows they cover. A range too large for
-one statement therefore fails the drain it rides rather than degrading into pages the way the
-standalone call does ([chapter 05](05-write-path.md#2-the-drain-itself) has why). This is
-named rather than closed, and it is worth knowing at the console: the symptom is a drain failing for
-the size of somebody's queue checkpoint.
+One operational asymmetry comes with the ranges a drain carries. A range is a predicate, not a key
+tuple, so unlike the drain's other delete families it cannot collapse into one statement per family.
+Each range is its own statement, and the drain's statement count is therefore a function of how many
+ranges the batch was handed — never of how many rows those ranges cover.
 
-Where a task row can live inside a window is stated once, `fold.Accumulator.taskRows`:
+A range too large for one statement fails the drain it rides in, rather than degrading into pages
+the way the standalone call does ([chapter 05](05-write-path.md#2-the-drain-itself) has why). That
+limitation is named rather than closed, and it is worth knowing at the console: you will see it as a
+drain failing for the size of somebody's queue checkpoint.
+
+`fold.Accumulator.taskRows` enumerates, in one walk, every place a task row can live inside a window:
 
 * each pending request's task slots;
 * that request's orphaned tasks — a tombstoned run's tasks survive its collapse, because a task is
   durable in the tail or in the store;
 * the rows an `AddHistoryTasks` put in beside the workflows.
 
-The read, a range's sweep and the drain's written-count all walk that one enumeration,
-because the failure is silent and asymmetric: a row the read misses is a lost timer, a row the sweep
-misses is a leak.
+The read, a range's sweep and the drain's written count all walk that one enumeration. A home one of
+the three reached and the others did not would fail silently, and fail differently in each
+direction: a row the read misses is a lost timer, a row the sweep misses is a leak.
 
 ### Why the metric is two counters and not a ratio
 
 A committed drain emits, per task category, `wal_dropped_tasks` and `wal_written_tasks` — never a
-share. The reason is that the denominator moves with the drop: a pre-divided number cannot tell
-**"everything was dropped"** from **"there was nothing to drop"**, and those are the two states an
-operator most needs to tell apart. The same two numbers are on the drain itself as
-`fold.TaskWork.Dropped` and `fold.TaskWork.Written`, both keyed by category name, and in
-`cycle.Counters` as `DroppedTasks`, `WrittenTasks` and `AckedRanges`. The last is range deletes
-folded, and its zero means no queue ever completed a range, so the layer is untested rather than
-working.
+share. A share is computed from a denominator the drop itself moves, so it cannot tell **"everything
+was dropped"** from **"there was nothing to drop"** — and those are the two states an operator most
+needs to tell apart.
+
+The same two numbers are on the drain itself as `fold.TaskWork.Dropped` and `fold.TaskWork.Written`,
+both keyed by category name, and in `cycle.Counters` as `DroppedTasks` and `WrittenTasks`.
+`cycle.Counters.AckedRanges` sits beside them, counting range deletes folded. A zero there means no
+queue ever completed a range while the run was going, so nothing exercised the drop at all: the
+layer is untested rather than working.
 
 Only a **committed** drain emits them, and a category the drain did not carry emits nothing at all
 rather than a pair of zeroes.
@@ -523,20 +536,22 @@ checkpoint**. The exact share is a workload measurement, not a constant of the i
 `wal_dropped_tasks` and `wal_written_tasks` to calculate it for the deployment. The shipped cadence
 gives the anchor to read it against: `history.timerProcessorUpdateAckInterval` and its transfer,
 visibility, outbound and archival siblings default to 30 s in the vendored server, against the
-layer's 5 s age watermark — **six drains per queue checkpoint**. Both ends of that ratio belong to
-different owners, and the incumbent's end is the larger one, so the size of the drop is set mostly by
-a knob this layer does not hold. Two readings follow:
+layer's 5 s age watermark (`cycle.Defaults().Age`) — **six drains per queue checkpoint**. The two
+ends of that ratio have different owners: the 30 s is the server's, the 5 s is this layer's. The
+server's is the larger of the two, so the size of the drop is set mostly by a knob this layer does
+not hold. Two readings follow:
 
 * a rising share usually means the window is living longer relative to the queues' checkpoints —
   which is the mechanism working, not a fault. Under load it goes the other way: the mutation and
   byte watermarks fire far more often than the age watermark, so the window is shorter and less is
   dropped.
-* **fewer drains per checkpoint is a bigger share**, so the two sides move it in opposite
-  directions, and which knob is cheap depends on which way you are going. To make the drop **worth
-  more**, the cheap knob is the incumbent's `history.*ProcessorUpdateAckInterval` and *not* this
-  layer's age watermark, which buys the same thing with memory and replay time. To make the share
-  **smaller**, it is this layer's window that shortens — and that is paid in the collapse the layer
-  exists for, which is why the runbook reaches for it last.
+* **fewer drains per checkpoint means a bigger share**, and the two ends of the ratio reach that
+  from opposite directions, so which knob is cheap depends on which way you are going. To make the
+  drop **worth more**, shorten the server's `history.*ProcessorUpdateAckInterval` rather than
+  lengthening this layer's age watermark: a longer window buys the same thing and pays for it in
+  memory and in replay time. To make the share **smaller**, it is this layer's window that shortens
+  — and that is paid in the collapse the layer exists for, which is why the runbook reaches for it
+  last.
 
 Neither direction is a fault to be corrected: the drop is a saving that invariant I7 makes legal,
 and no reading of this share says a task was lost. Compare each category against itself over time:
@@ -546,16 +561,16 @@ immediate and scheduled categories drop at unrelated rates. The runbook is
 ## 6. Routed counters, not hit counters
 
 Four of the layer's read counters count reads **routed at the layer**, not reads the window could
-answer — two series and two in-process. That is deliberate, and the reason is one sentence: *a
-counter that only fired on a hit reads zero on a healthy idle cluster and zero on a layer wired up
-wrong* — two situations an operator has to tell apart at a glance.
+answer — two series and two in-process. That is deliberate. A counter that only fired on a hit would
+read zero on a healthy idle cluster and zero on a layer wired up wrong, and an operator has to tell
+those two apart at a glance.
 
 | Counter | Kind | What it counts |
 |---|---|---|
 | `wal_overlaid_reads` (and `wrapper.Counts.Overlaid`) | **routed** | mutable-state reads sent at the layer, tagged by store method |
 | `wal_merged_task_pages` (and `wrapper.Counts.TaskReads`) | **routed** | `GetHistoryTasks` pages sent at the layer's merge |
 | `cycle.Counters.TaskReads` | **routed** | pages this shard was asked for — counted before the readiness gate, so a page the gate fails is still in it |
-| `cycle.Counters.Reads` | **routed** | overlay reads this shard answered |
+| `cycle.Counters.Reads` | **routed** | overlay reads this shard routed, counted before the routing rule, so a read the rule passes through to the cold store is still in it |
 | `cycle.Counters.ReadsHeld` | **hit** | the subset for which the window held the run or the row |
 | `cycle.Counters.TaskReadsMerged` | **hit** | pages that carried at least one task **out of the window** |
 | `cycle.Counters.TaskCollisions` | evidence | keys both sources carried; node-wide |
@@ -564,10 +579,11 @@ wrong* — two situations an operator has to tell apart at a glance.
 merged. Renaming it would break every alert expression written over it, so the distinction lives in
 the metric's description instead.
 
-The hit counters are what a **witness** rests on, which is the whole reason both kinds exist. A test
-suite is just as green over a layer that came out empty as over one doing its job, so the acceptance
-asserts on `ReadsHeld` and `TaskReadsMerged` rather than on `Reads` and `TaskReads`: reads that never
-crossed a held workflow are what an empty layer looks like.
+The hit counters do the other job, and that is why both kinds exist. A test suite is just as green
+over a layer that came out empty as over one doing its work, so a run needs a **witness**: an
+assertion that the layer was exercised at all. The acceptance builds one out of `ReadsHeld` and
+`TaskReadsMerged` rather than out of `Reads` and `TaskReads`, because reads that never crossed a
+held workflow are exactly what an empty layer looks like.
 [Chapter 11](11-verification.md#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it)
 owns the witness; [chapter 10](10-metrics.md) owns every series named here, with its tags and units.
 

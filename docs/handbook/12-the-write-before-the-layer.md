@@ -67,83 +67,95 @@ One transition of workflow alpha touches its current row, its run's row and that
 of the same shard. It touches nothing outside the shard, and nothing in the picture belongs to two
 shards at once.
 
-Everything below follows from that adjacency. **This is the generalising part**: a store worth
-putting waltz in front of is one where a transition is already cheap, and the usual reason it is
-cheap is that everything one transition touches sits next to everything else it touches.
+Everything below follows from that adjacency, and **adjacency is the part that generalises**. A store
+worth putting waltz in front of is one where a transition is already cheap, and the usual reason it
+is cheap is that the rows one transition touches lie together, so one part of the storage can settle
+the whole write by itself.
 
 ## The single-partition assumption
 
 The rows one transition touches are adjacent, so the key range a conditional write covers sits in one
-place in the key space. One partition is what makes the write *immediate* — a transaction one
-partition settles alone, with no coordinator round — and the rest of this chapter turns on the word,
-so [the section that defines it](#immediate-and-distributed-transactions) is worth a look now if it
-is not already familiar. The step from adjacency to "one partition" is **an assumption, not a
-measurement**, and it is stated here rather than buried because everything downstream stands on it:
+place in the key space. That matters because a transaction confined to a single partition is
+*immediate*: the partition settles it alone, with no coordinator round. The rest of this chapter
+turns on that word, and [the section that defines it](#immediate-and-distributed-transactions) gives
+it in full if it is not already familiar.
+
+The step from "adjacent keys" to "one partition" is **an assumption, not a measurement**. It is
+stated here in the open because everything downstream stands on it:
 
 > There are many shards, and one shard's data is small against the size at which the table splits
 > itself. The whole touched key range therefore lives in one partition.
 
-The schema gives that assumption its scale rather than proving it. The example store creates the
-table pre-split eight ways over the shard-id space, with auto-partitioning by size enabled at four
-gigabytes and auto-partitioning by load enabled beside it — so four gigabytes is the point past which
-a split is certain rather than the only thing that causes one, and a hot partition can be split well
-below it. A deployment's shards divide across those partitions, and each partition holds many whole
-shards.
+The schema does not prove that assumption, but it does say what scale it holds at. The example store
+creates the table pre-split eight ways over the shard-id space, so a deployment's shards divide
+across those eight partitions and each partition holds many whole shards. Two auto-partitioning
+settings can then split further: by size, at four gigabytes, and by load. Four gigabytes is therefore
+the point past which a split is certain, not the only thing that causes one — a hot partition can be
+split well below it.
 
-Nothing in the query enforces this. A shard whose range grows across a split boundary — or a split
-that lands mid-range — leaves exactly the same code paying for coordination, silently.
-[Chapter 04](04-contracts.md#what-the-contract-does-not-say-what-an-append-costs) says the same thing
-about the log, where the same property is stated as invariant I9 and is likewise unguarded from
-inside this library. Below the layer, in the store's own table, the property is nobody's here at all.
+Nothing in the query enforces the assumption. If one shard's rows grow across a split boundary, or a
+split lands in the middle of one shard's range, the same code silently starts paying for
+coordination: the query text does not change, the write still succeeds, and it now costs a
+coordinator round. The log has the same hole one level up.
+[Chapter 04](04-contracts.md#what-the-contract-does-not-say-what-an-append-costs) states it there as
+invariant I9, and nothing inside this library can check it either. Below the layer, in the store's
+own table, the property is not even this repository's to state: it belongs to whoever operates the
+store.
 
 ## The write is one query, not a transaction of many statements
 
-The naive expectation is that a transition touching state, deferred work and a current row must be
-several statements in a multi-round-trip transaction, and that the saving is in collapsing them. That
-expectation is wrong, and the shape of the real write is why.
+A transition touches state rows, deferred work and a current row, so the natural expectation is that
+it must be several statements across several round trips, and that a layer's saving is in collapsing
+them. It is several statements, but they travel in one request. There is no round trip left to
+collapse, and any saving has to come from somewhere else.
 
 The store builds **one query text and sends it once**, with begin, statements and commit riding in
 the same request. The text has three parts, in this order:
 
 1. **the assertions, as named expressions.** A transition registers up to three kinds: that the
-   shard's `range_id` is still the caller's; that the current row is absent, or names this run, or
-   does not name that one, or is a completed run at a given `last_write_version`; and that the run's
-   row is absent, or is at a given `db_record_version`. Each kind emits two named expressions — one
-   reading the rows under the asserted keys, one turning each read into a `(present, correct, …)`
-   row.
+   shard's `range_id` is still the caller's; that the current row is absent, or names a given run, or
+   names anything but a given run, or is a completed run at a given `last_write_version`; and that
+   the run's row is absent, or is at a given `db_record_version`. Each kind emits two named
+   expressions — one reading the rows under the asserted keys, one turning each read into a
+   `(present, correct, …)` row.
 2. **one flag derived from all of them.** A single number saying how many assertions did not hold,
    counted over the union of every kind's rows.
 3. **the mutating statements, every one of them gated.** Each upsert and delete the transition
    carries begins with a test that the number is zero.
 
 That is where **"all or nothing" comes from: not a rollback, but statements that did not run.** A
-transition whose condition failed still *commits* — it simply wrote nothing, and readback statements
-in the same query hand back every assertion the transition carried, each row tagged with the index of
-the assertion it belongs to. A rejected write is a witness rather than a failure, and the store
-reports the first failing assertion by walking the assertions in registration order once every kind's
-readback is in.
+transition whose condition failed still *commits*; it simply wrote nothing. Readback statements in
+the same query hand back every assertion the transition carried, each row tagged with the index of
+the assertion it belongs to. So a rejected write arrives carrying the evidence for its own rejection:
+once every kind's readback is in, the store walks the assertions in registration order and reports
+the first one that did not hold.
 
-Three things follow that the layer above depends on, and every one of them is a design decision a
+Three consequences follow. The layer above depends on all three, and each is a design decision a
 different store might have made differently:
 
 * **registration order decides which failure is reported**, which is why the drain registers the
   epoch check first and absence assertions last
   ([chapter 05](05-write-path.md#2-the-drain-itself));
 * **an assertion that held must still be walked**, because a transaction carrying more than one
-  workflow will have some that hold and some that do not — the obligation stated at length in
-  [chapter 05](05-write-path.md#2-the-drain-itself), and the one this store originally got wrong;
-* **a refused drain and a drain that never ran leave byte-identical state**, which is why the only
-  witness to whether an ambiguous drain committed is the watermark it would have moved
-  ([chapter 05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read)). Against a store
-  that *aborts* on a failed assertion the recovery rule is unchanged and merely easier.
+  workflow will have some assertions that hold and some that do not.
+  [Chapter 05](05-write-path.md#2-the-drain-itself) states that obligation at length; it is also the
+  one the example store originally got wrong;
+* **a drain the store rejected and a drain that never ran leave byte-identical state.** Nothing in
+  the rows distinguishes them, so the only witness to whether an ambiguous drain committed is the
+  watermark it would have moved
+  ([chapter 05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read)). A store that
+  *aborts* on a failed assertion, instead of committing a no-op, leaves the same state behind, so the
+  recovery rule is the same for such a store.
 
 The text is also a function of *which* assertion kinds and statement families a transition uses,
 never of how many rows it asserts about or writes. Assertions travel as list parameters per kind, so
 a transaction asserting one row and one asserting two hundred emit identical text, and the server
-compiles it once. That property is not an accident of the incumbent — it is the property the layer's
-own drain has to keep when it puts many workflows into one such query, which is why
-[chapter 11](11-verification.md#the-guards) names a guard over the drain's statement as one a
-deployment should rebuild rather than a comment about it.
+compiles it once. That is not an accident of the incumbent. It is the property the layer's own drain
+has to keep when it folds many workflows into one such query, and a statement whose text grew with
+the batch would compile slowly enough on a real store to time one out.
+[Chapter 11](11-verification.md#the-guards) therefore describes a drain query-shape guard for a
+deployment to build against its own applier, since nothing in this tree can watch that for a store it
+has never seen.
 
 ## Event history rides separately, and first
 
@@ -164,12 +176,12 @@ A batch of events is one row. So:
 * a transition that starts a new history branch pays an extra tree row, and so an extra transaction,
   on top of that.
 
-The layer keeps that stage where it was, and changes its shape.
+The layer keeps that stage where it was and changes its shape.
 `wrapper.ExecutionStore.appendEvents` walks the mutation's `EventSlots()` and puts each batch down
-through the base store's `AppendHistoryNodes` — one call per batch, in order rather than in parallel
-— before the mutation is handed to the cycle, because a mutation acked with its events unwritten
-would point at history nodes nobody wrote. What that costs the design is the last section but one of
-this chapter.
+through the base store's `AppendHistoryNodes` — one call per batch, in order rather than in parallel.
+It does so before the mutation is handed to the cycle, because a mutation acked with its events
+unwritten would point at history nodes nobody wrote. What that costs the design is
+[the ceiling on the win](#therefore-fewer-writes-and-the-ceiling-on-the-win), below.
 
 ```mermaid
 graph TD
@@ -185,30 +197,36 @@ graph TD
 ## Completed ranges are deleted by two different predicates
 
 Deferred work is not deleted row by row. A queue completes a range, and the store turns that range
-into one delete — but **the predicate differs by category type**, and one of the two does not mention
-row numbers at all:
+into one delete. But **the predicate differs by category type**, and one of the two never mentions
+task ids at all:
 
 * an **immediate** category ranges on `task_id`, with the visibility timestamp null;
 * a **scheduled** category ranges on the visibility timestamp — a half-open interval of *fire times*
   — and the keys' task ids do not appear in the query.
 
 So a scheduled range delete names an interval of time and removes whatever fell inside it. A caller
-that meant something narrower than a whole fire-time interval has no way to say so, and the
-persistence interface does not offer one. This is Temporal's shape rather than one store's: the
-request carries a fire-time interval because that is what a scheduled queue's checkpoint *is*.
+that meant something narrower than a whole fire-time interval cannot say so in that request:
+`RangeCompleteHistoryTasks` names a category and the interval's two endpoints, and for a scheduled
+category the store reads only their fire times. This is Temporal's shape rather than one store's —
+the request carries a fire-time interval because that is what a scheduled queue's checkpoint *is*.
+The interface does have a single-key delete, `CompleteHistoryTask`, but no queue checkpoints with
+it: its one caller is the admin handler's `RemoveTask`, and the layer refuses it
+([chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) says with what).
 
-While writes and deletions happen in the caller's own order, the difference is invisible: the rows
-that existed when the delete ran are the rows the caller had already written. It stops being
-invisible the moment something holds a write back past a delete — which is exactly what a window
-does, and is why the layer resolves ranges against the window instead of modelling a per-category ack
-level. That consequence is invariant I7
+As long as writes and deletes reach the store in the caller's own order, that breadth costs nothing.
+The rows inside the interval when the delete runs are exactly the rows the caller had already
+written, so naming a time interval and naming those rows come to the same thing. They stop being the
+same thing the moment something holds a write back past a delete — which is exactly what a window
+does. That is why the layer resolves ranges against the window rather than modelling a per-category
+ack level, and that rule is invariant I7
 ([chapter 02](02-concepts-and-invariants.md#i7-at-more-length) states it,
 [chapter 07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write) owns its read side);
 this chapter only records where the shape came from.
 
 ## Immediate and distributed transactions
 
-The two costs such a transaction can have are not two amounts of data work. They are:
+In a distributed SQL database of this kind, a transaction falls into one of two cost classes, and
+what separates them is not how much data it touches:
 
 * **immediate** — every key the transaction touches lives in one partition, so that partition
   executes it alone, with nobody to agree with;
@@ -232,11 +250,11 @@ graph TD
 ```
 
 **The cost of coordination is the wait and the extra round, not extra work with the data.** The same
-statements over the same rows cost more because they were planned, and a system that has quietly
-crossed from one class to the other keeps working and keeps returning success. That invisibility is
-the whole reason invariant I9 exists as a claim about the log, and the reason it can only be checked
-from outside, by reading the storage engine's own counters — nothing above the seam can see the
-difference.
+statements over the same rows cost more purely because they were planned. A system that has quietly
+crossed from immediate to distributed keeps working and keeps returning success; the writes just take
+longer. That is why invariant I9 exists as a claim about the log rather than as a check, and why the
+only way to test it is from outside, by reading the storage engine's own transaction counters.
+Nothing above the seam can tell the two classes apart.
 
 ## The invariant of the incumbent system
 
@@ -245,66 +263,76 @@ Stated plainly, and carrying the assumption above:
 > **One state transition is one conditional immediate transaction over adjacent keys of one table,
 > plus the history write before it.**
 
-This claim has no number. It is a property of the system the layer sits in front of, not of the
-layer, and [chapter 02](02-concepts-and-invariants.md#the-invariants-without-a-number) is where that
-distinction is drawn: I1–I11 name what the layer's own code and suites enforce, and nothing here is
-enforceable by them.
+That claim is not one of the numbered invariants, and it could not be. I1–I11 name what the layer's
+own code and suites enforce; this is a property of the system the layer sits in front of, which
+neither can reach.
+[Chapter 02](02-concepts-and-invariants.md#the-invariants-without-a-number) draws the same
+distinction from the other side.
 
 ## What follows: a log on the same database buys no latency
 
 The consequence is not about the layer's construction. It is about the log underneath it.
 
 An append to a durable log **built on the same database** costs about what the write it replaces
-costs: the same class of call, to the same cluster, over adjacent keys of one table — the same
-sentence, twice. Such a log therefore **cannot acknowledge faster than the store**, and buys nothing
-in latency. The research prototype's first backend was exactly that log, and it is why
+costs: one conditional immediate transaction, to the same cluster, over adjacent keys of one table.
+That is word for word the description of the store write it is supposed to be cheaper than. Such a
+log therefore **cannot acknowledge faster than the store**, and buys nothing in latency. The research
+prototype's first backend was exactly that log, and it is why
 [chapter 01](01-overview.md#what-one-write-costs-with-and-without-the-layer) states outright that
 latency is not a goal.
 
-The reasoning is a property of *that* log, not of logs. A log whose acknowledgement costs a single
-network hop to the nearest quorum would buy latency, and putting one under the layer would change
-what a caller waits for without changing anything above it. That is precisely why `wal.Log` is a
-contract and why the one implementation shipped here is a log in memory rather than a candidate: the
-seam exists so the class of backend can change without an invariant moving, and choosing the backend
-is the deployment's decision rather than this library's.
+That reasoning is about *that* log, not about logs in general. A log whose acknowledgement costs a
+single network hop to the nearest quorum would buy latency, and putting one under the layer would
+change what a caller waits for while changing nothing above it. This is why `wal.Log` is a contract:
+the seam exists so that the class of backend can change without any invariant moving. It is also why
+the only implementation shipped here, `wal/memwal`, is a log in process memory. It is a real backend
+— it passes the same conformance suite any other would — but it dies with the process, so it is not
+a candidate for a deployment to run. Which backend to run is a deployment's decision, not this
+library's.
 [Chapter 04](04-contracts.md#what-the-contract-does-not-say-what-an-append-costs) is where that
 argument is made in the contract's own terms.
 
 ## Therefore: fewer writes, and the ceiling on the win
 
-The other win does not depend on the log's nature at all: **fewer writes to the cold store**.
+The win the layer does get does not depend on the log's nature at all: **fewer writes to the cold
+store**.
 
 One workflow's run row is rewritten once per transition, and the task rows written beside it are
 often deleted by a queue shortly after they appear, sometimes almost at once. Neither of those is a
 cost of *one* write — each is a cost of the *number* of writes, and neither has anything to do with
 how fast the log acknowledges. That is what the rest of the layer is about.
 
-**Event history is the ceiling on it.** History rows never enter the log and were never amplified in
+**Event history is the ceiling on that win.** History rows never enter the log and were never amplified in
 the first place: they are append-only, one row per batch, written before the mutation that refers to
 them. So a workflow with hundreds of transitions still pays hundreds of history writes by the old
-path however wide the window is, and the fraction of a deployment's write volume that is event
-history is a fraction the layer cannot address. A window tuned against total write volume is being
-tuned against a number part of which it cannot move.
+path however wide the window is. Whatever fraction of a deployment's write volume is event history is
+a fraction the layer cannot address at all. So if you tune the window against total write volume, you
+are tuning against a number that includes writes no window can remove; tune against the mutable-state
+half instead.
 
 ## What this picture does not give
 
-**No latency headroom on a log built from the same database.** The formulation "the log will
-acknowledge sooner" is about a log of a different nature; on that configuration it is false.
+**No latency headroom on a log built from the same database.** "The log will acknowledge sooner" is
+true only of a log that is cheaper to append to than the store is to commit to. On a log sharing the
+store's database it is false.
 
 **No measurement.** This chapter says what a write is *made of*. It does not say how many rows one
-costs, or by what factor the layer makes them fewer. **That measurement does not exist** — every
+costs, or by what factor the layer makes them fewer. **That measurement does not exist.** Every
 number above is a schema constant or a count of statements, and
 [chapter 15](15-the-limits-of-the-evidence.md#write-amplification-against-the-incumbent-has-never-been-measured)
-is where it is listed among the ones deliberately not made.
+lists write amplification among the measurements deliberately not made.
 
 ## Where this lives in the code
 
-Nothing in this chapter is code in this repository, which is the point of the chapter: it describes
-the thing waltz sits in front of. Three files here are where the description touches the layer.
+Almost nothing in this chapter is code in this repository, and that is the point: it describes the
+thing waltz sits in front of. Three files here are where the description touches the layer.
 
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — `appendEvents`, which
   keeps the history stage exactly where it was when the layer is present.
-* [`../../wal/wal.go`](../../wal/wal.go) — the contract that exists so the log's class can
-  change, and the guarantees it does *not* make about cost.
-* [`../../apply/failure.go`](../../apply/failure.go) — the five outcome classes, which are the shape
-  of "a refused drain and a drain that never ran leave identical state" as a caller has to handle it.
+* [`../../wal/wal.go`](../../wal/wal.go) — the contract that exists so the log's class can change.
+  Read it for what it does not say: no method's documentation mentions what an append costs.
+* [`../../apply/failure.go`](../../apply/failure.go) — the five outcome classes a caller branches on
+  (`ClassCommitted`, `ClassRefused`, `ClassShardLost`, `ClassInvariantViolated`,
+  `ClassUnknownOutcome`). `ClassUnknownOutcome` is what "a rejected drain and a drain that never ran
+  leave identical state" turns into once a caller has to handle it: there is nothing in the rows to
+  read, so the caller reads the watermark.

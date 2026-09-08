@@ -80,15 +80,18 @@ book. A confirmed write now exists in the log and the window, but not in the col
 * the amount of confirmed-but-unsettled work must be bounded, because acknowledgement has turned it
   into a promise the system may not discard.
 
-That last quantity has a name used throughout the book: the **tail** is the stretch of log entries
-that are acknowledged and not yet settled in the cold store. The window is therefore more than a
-batch buffer — it is the in-memory, folded front of the tail. Starting a drain clears that window,
-but the corresponding entries remain charged to the tail until the drain's outcome is known;
-[chapter 02](02-concepts-and-invariants.md#three-positions-not-two) defines both positions
-precisely. Repeated writes to one workflow collapse into one merged
-request, and a task creation can cancel against a later range deletion before either reaches the
-cold store. When a mutation, byte or age trigger fires, one drain puts the folded batch, epoch check
-and applied-seqno watermark into a single transaction.
+The confirmed-but-unsettled work in that last bullet has a name the book uses throughout: the
+**tail** is the stretch of log entries that are acknowledged and not yet settled in the cold store.
+The window is the in-memory, folded front of the tail, not merely a buffer of pending writes.
+Starting a drain clears the window, but the entries it held stay charged to the tail until the
+drain's outcome is known. [Chapter 02](02-concepts-and-invariants.md#three-positions-not-two)
+defines the three seqno positions this needs — `appliedSeqno`, `resolved` and `commitSeqno` — and
+shows why the tail is the interval `(resolved, commitSeqno]` and not `(appliedSeqno, commitSeqno]`.
+
+Folding is what makes settling the tail cheaper than the writes it replaced. Repeated writes to one
+workflow collapse into one merged request, and a task creation can cancel against a later range
+deletion before either reaches the cold store. When a mutation, byte or age trigger fires, one drain
+puts the folded batch, the epoch check and the new `appliedSeqno` into a single transaction.
 
 ## One write, and the interval it opens
 
@@ -102,16 +105,21 @@ and applied-seqno watermark into a single transaction.
    the window waits while its own call performs the resulting drain.
 6. A read during this interval combines the old cold row with the window. If the process disappears,
    the next owner reconstructs the same interval by replaying the log.
-7. Eventually, a size, age, read, replay or shutdown trigger starts a drain. One transaction writes
-   the folded requests and advances
-   `applied_seqno`. A later trim may remove the log entries that transaction covered.
+7. Eventually a drain starts — triggered by the mutation watermark, the byte watermark, the age
+   timer, a read, a replay, a window the accumulator cannot fold any further, or an explicit call
+   at shutdown. One transaction writes the folded requests and advances `appliedSeqno`. A later
+   trim may remove the log entries that transaction covered.
 
-The irreversible boundary is step 4. Before the append, an error still belongs to this caller and
-the operation can be refused without consuming a seqno. After the append, the record is durable, so
-it must do one of two things: enter the tail and fold, or stay available for recovery. Returning to
-the caller still waits until step 5. A later batch failure cannot take back the success earlier
-callers were already given, and cannot honestly be blamed on any one of them. [Chapter 05](05-write-path.md) follows that distinction through every
-failure class.
+Step 4 is the irreversible boundary. Before the append, an error still belongs to this caller: the
+write can be refused without consuming a seqno, and nothing is in the log. After the append,
+the record exists and cannot be withdrawn, so it will be settled by this process's next drain or,
+if this process dies, by whoever replays the log. The caller does not hear about it until step 5.
+
+That boundary is also why a drain failure under a window is nobody's answer. By the time the drain
+runs, every caller whose mutation is in it has already been told the write succeeded, so the failure
+cannot be returned to any of them and cannot be attributed to any one of them. (Sync mode is the one
+exception, and chapter 08 is where it is described.)
+[Chapter 05](05-write-path.md) follows that distinction through every failure class.
 
 ## The system map
 
@@ -153,25 +161,30 @@ graph TD
 
 How to read this. Nothing crosses the shard boundary: every arrow out of `wrapper.ExecutionStore`
 that is not a transit goes to *that shard's* cycle goroutine, which is the only thing that touches
-that shard's accumulator, log and drain. Three kinds of path reach the cold store and only two
-of them are drawn — the transits, which are the calls the layer has no shape for, and the applier,
-which is the layer's only door to the base store's own transactions. The third is the base store the
-layer uses for itself: an intercepted write puts its event slots down through it before the append,
-and a read the window cannot answer, or an assertion the window hands on, falls through to it as
-well. The arrows to `walmetrics.Emitter` are one-way: the emitter may not import anything it
-measures.
+that shard's accumulator, log and drain.
 
-Two of the boxes are seams rather than layer code. `wal.Log` is the log's contract and `memwal` is
-the one implementation in the tree; `cold.Applier` is the cold store's contract and `cold/memcold`
-is the one implementation of that. Both shipped backends run in this process and die with it, which
-is enough to boot a server over them and not enough to be anybody's storage: a deployment supplies
-both. Everything between the two seams is what waltz is.
+Three kinds of path reach the cold store, and the diagram draws two of them. **Transits** are the
+calls the layer has no record shape for; they go to the base store unchanged. **The applier** is the
+layer's only door to the base store's own transactions, one per drain. The third path is undrawn:
+the layer also uses the base store on its own account. An intercepted write puts its event slots
+down through it before the append, a read the window cannot answer falls through to it, and an
+assertion the window cannot settle by itself is checked against it.
 
-The diagram has five conceptual roles: `wrapper` decides which persistence calls enter the layer;
-`cycle` owns one shard's ordered decisions; `wal` makes them durable; `fold` keeps their readable,
-collapsed form; and the applier moves that form into the cold store. The remaining packages support
-or compose those roles. Their exact inventory belongs to [chapter 03](03-components.md); it is
-included below as a reference for readers moving from the diagram into the tree.
+The arrows to `walmetrics.Emitter` are one-way: the emitter may not import anything it measures.
+
+Two of the boxes are seams rather than layer code. `wal.Log` is the log's contract and `wal/memwal`
+is the one implementation in the tree; `cold.Applier` is the cold store's contract and
+`cold/memcold` is the one implementation of that. Both shipped backends run in this process and die
+with it. That is enough to boot a real Temporal server over them and exercise everything above them;
+it is not somewhere to keep data, so a deployment supplies both. Everything between the two seams is
+what waltz is.
+
+The layer has five roles, and the diagram is arranged around them: `wrapper` decides which
+persistence calls enter the layer; `cycle` owns one shard's ordered decisions; `wal` makes them
+durable; `fold` holds the collapsed form a read can be answered from; and the applier moves that
+form into the cold store. The remaining packages support or compose those roles. Their exact
+inventory belongs to [chapter 03](03-components.md); the table below is a reference for readers
+moving from the diagram into the tree.
 
 ### Reference: packages in the write path
 
@@ -179,12 +192,12 @@ included below as a reference for readers moving from the diagram into the tree.
 |---|---|
 | `wal/` | the log's contract: one fenced, gap-free, totally ordered sequence of entries per shard, with `Fence`, `Append`, `ReadFrom` and `Trim`, and nothing about Temporal in it |
 | `wal/memwal/` | the one shipped implementation of that contract, in process memory, so everything above the log can be tested without a cluster |
-| `wal/waltest/` | the conformance suite an implementation runs to find out whether it is one |
+| `wal/waltest/` | the conformance suite: a candidate `wal.Log` runs it against itself to find out whether it satisfies the contract |
 | `mutation/` | what one entry *is*: the protobuf record of one persistence call, plus the record kinds |
 | `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task pages |
-| `baserow/` | the cold store's two mutable-state reads as the write path needs them — one run's row, and the current-execution row with `last_write_version` beside it — shared because wrapper and cycle may not name each other's copy |
-| `cold/` | the cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes |
-| `cold/memcold/` | the one implementation of that contract here: Temporal's own SQL persistence over a database in this process, with the folded window's transaction added beside its 28 methods |
+| `baserow/` | the cold store's two mutable-state reads as the write path needs them — one run's row, and the current-execution row with `last_write_version` beside it. `wrapper`, `cycle` and `apply` all need the pair and none of them may import another's copy, so it lives here and imports nothing of the layer |
+| `cold/` | the cold store's contract: the `Applier` a drain lands on, the `Watermarker` that reads back the seqno the last drain committed, and the four things an implementation owes — one transaction per drain, the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
+| `cold/memcold/` | the one implementation of that contract here: Temporal's own SQL execution store, embedded whole, over an in-process SQLite database, with the folded window's transaction added beside its 28 inherited methods |
 | `apply/` | what a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries |
 | `cycle/` | one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the reads and replay — the layer's state machine |
 | `wrapper/` | the seam into a running server: a decorator over a base data store factory, whose `ExecutionStore` and `ShardStore` the history service talks to |
@@ -203,11 +216,11 @@ workflow cost N such transactions and N sets of rows.
 
 With the layer, that same call is:
 
-* one **append** — which a log implementation is expected to make one immediate write over adjacent
-  keys of its own storage. That expectation is invariant
-  [I9](02-concepts-and-invariants.md#the-invariants); it is what keeps an append cheaper than the
-  cold-store transaction it replaces, and nothing in this tree can check it for a backend it has
-  never seen;
+* one **append**, which a log implementation is expected to serve with one immediate write over
+  adjacent keys of its own storage — no indexes, no changefeeds, no reads of other tables. That
+  expectation is invariant [I9](02-concepts-and-invariants.md#the-invariants). It is what makes an
+  append cheaper than the cold-store transaction it replaces, and nothing in this tree can check it
+  for a backend it has never seen;
 * plus a **share** of one later apply transaction. At the shipped watermarks that transaction
   carries up to 256 mutations.
 
@@ -216,13 +229,13 @@ transaction with a log append and amortises only the later cold-store work. Whet
 depends entirely on the log being cheaper than the store, which is a property of the pair a
 deployment chooses and not of this library.
 
-Event history stands on both sides of that comparison, and outside the mechanism on both.
+Event history costs the same on both sides of that comparison, because the layer does not touch it.
 `wrapper.ExecutionStore.appendEvents` puts each of the mutation's event slots down through the base
-store's `AppendHistoryNodes` before the mutation is acked — the same stage the incumbent pays, in a
+store's `AppendHistoryNodes` before the mutation is acked — the same work the incumbent does, in a
 different shape, which [chapter 12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first)
-takes apart. What matters here is that history rows are append-only, were never amplified, and are
-therefore a share of a deployment's write volume the layer cannot address at all.
-That share is the ceiling on the whole construction
+takes apart. History rows are append-only and were never amplified, so there is nothing there for
+the layer to collapse. Whatever share of a deployment's write volume is event history is a share the
+layer cannot reduce, and it is therefore the ceiling on everything the layer can save
 ([chapter 15](15-the-limits-of-the-evidence.md#event-history-stays-outside-the-log)).
 
 Two consequences follow, and they are the project's actual goals:
@@ -234,10 +247,12 @@ Two consequences follow, and they are the project's actual goals:
   says what the instruments that come close do and do not establish.
 * **tasks can die in the window.** A range deletion folded into the window removes the tasks that
   window is already holding, so a task created and consumed inside one window is never written to
-  the cold store at all. How large that share is depends on the ratio of drains to queue checkpoints. The
-  layer reports both dropped and written rows so a deployment can measure the share for its own
-  workload. The guarantee that makes the saving safe is invariant
-  [I7](02-concepts-and-invariants.md#the-invariants); the percentage itself is workload-dependent.
+  the cold store at all. What fraction of tasks that is depends on the ratio of drains to queue
+  checkpoints, so the layer emits `wal_dropped_tasks` and `wal_written_tasks` per category and a
+  deployment measures the fraction for its own workload. Invariant
+  [I7](02-concepts-and-invariants.md#the-invariants) is what makes the saving safe: the layer
+  applies the range deletions it was given, in the order it was given them, and models no ack level
+  of its own.
 
 The saving is not free. The system now has two durable positions to reconcile, an in-memory view
 that reads must consult, a replay gate on a new owner, and a bounded tail of work whose callers have
@@ -253,8 +268,8 @@ commit to; that possibility is why `wal.Log` is a contract rather than a fixed c
 
 ## What "mode" names here
 
-Two settings decide how the layer behaves, and it is worth being clear from the start that they are
-**independent axes** rather than one dial with four positions:
+Two settings decide how the layer behaves. They are **independent axes**, not one dial with four
+positions:
 
 * **what the wrapper does** — passthrough or intercept, chosen by whether the node's config has a
   `wal` section (`wrapper.Options.Layer` nil or not). It decides whether writes go into the log at
@@ -265,10 +280,10 @@ Two settings decide how the layer behaves, and it is worth being clear from the 
 Intercept says nothing about the window, and the window means nothing without intercept.
 
 **Passthrough vs intercept.** The switch is exactly one field, `wrapper.Options.Layer`: nil is
-passthrough, non-nil is intercept. In passthrough every call goes through to the base store
-untouched and the wrapper makes no observations at all, metrics included; there is no cycle, so
-there is no window to size. In intercept the wrapper takes **eleven** of `ExecutionStore`'s 28
-methods into the layer, **refuses a twelfth**, and transits the rest:
+passthrough, non-nil is intercept. In passthrough every call goes to the base store untouched, and
+the wrapper observes nothing — not even a metric. There is no cycle, so there is no window to size.
+In intercept the wrapper takes **eleven** of `ExecutionStore`'s 28 methods into the layer,
+**refuses a twelfth**, and transits the rest:
 
 * **eight writes become log records** — `CreateWorkflowExecution`, `UpdateWorkflowExecution`,
   `ConflictResolveWorkflowExecution`, `SetWorkflowExecution`, `DeleteWorkflowExecution`,
@@ -284,19 +299,21 @@ methods into the layer, **refuses a twelfth**, and transits the rest:
 while shard writes and event history are not is the **task record** entry of
 [chapter 02](02-concepts-and-invariants.md#the-glossary-in-reading-order).
 
-Two things about the shipped windowed configuration are worth having early. **A caller's condition
-is judged before the append**, from the window itself plus a read of the pre-window rows — the ones
-the window has nothing to say about. The caller is told with the store's own error, and no caller's
-failed condition costs a shard: `wal_answered_condition_failures` stays at zero under a window,
-because nothing reaches a drain to be answered. Sync is the exception the series exists for:
-there the pre-window read is skipped, the ack is provisional, and a condition that fails inside the
-drain is answered to the one caller in its window and counted in that series.
+Two things about the shipped windowed configuration are worth knowing early. The first:
+**a caller's condition is judged before the append**, from the window itself plus a read of the
+pre-window rows — the rows the window has nothing to say about. A caller whose condition fails gets
+the store's own error, and a failed condition never halts the shard. That is why
+`wal_answered_condition_failures` stays at zero under a window: no condition
+reaches a drain to be answered there. Sync mode is the exception that series exists for. There the
+pre-window read is skipped, the ack is provisional, and a condition that fails inside the drain is
+reported to the one caller in that window and counted in the series.
 
-A drain can still meet a failed assertion — a condition the layer itself vouched for, failing
-inside the transaction. Under fencing the layer is the shard's only writer, so nothing legitimate
-can move a row the accumulator stood behind — this is the self-audit firing, not an operating
-condition. It halts the shard because every writer in the batch has already been acked and there is
-nobody left to tell; nothing is lost when it fires, the log keeps its entries and the trim stops.
+The second: **a drain can still meet a failed assertion** — a condition the layer itself vouched
+for, failing inside the transaction. Fencing makes the layer the shard's only writer, so nothing
+legitimate can have moved a row the accumulator stood behind. When this fires, it is the layer's
+self-audit catching a bug, not a condition an operator should plan around. It halts the shard,
+because every write in the batch was acked before the drain started and there is no caller left to
+tell. Nothing is lost when it fires: the log keeps its entries and the trim stops.
 [Path 6 of chapter 05](05-write-path.md#6-failed-drain--an-invariant-was-violated) is the whole
 story; halts and replay in general are
 [chapter 06](06-shard-lifecycle.md#5-halts-the-two-classes), and what an operator does about a halt
@@ -304,18 +321,16 @@ is [chapter 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes)
 
 ## What this is not
 
-* **Not a persistence implementation.** The layer stores nothing. The log is whatever satisfies
-  `wal.Log`, the cold store is whatever satisfies `cold.Applier` and `cold.Watermarker`, and the
-  drain hands the applier a folded batch rather than rows: the cold store's schema stays the base
+* **Not a persistence implementation.** The layer stores nothing itself. The log is whatever
+  satisfies `wal.Log`; the cold store is whatever satisfies `cold.Applier` and `cold.Watermarker`. A
+  drain hands the applier a folded batch rather than rows, so the cold store's schema stays the base
   implementation's and no package of the layer ever names a column. One implementation of each seam
-  ships beside the layer so that everything above them can be run without installing anything —
-  `wal/memwal` and `cold/memcold` — and neither is storage anyone should keep data in: both die with
-  the process.
-* **Not a cross-shard log.** The unit is one shard's log with one writer, and the writer is made
-  single by epoch fencing. There is no multi-writer shard and no cross-cluster story. The limit
-  belongs to the layer's interface and not to the store: nothing here offers an operation that
-  atomically changes two shards, whatever the store underneath is capable of — the layer simply
-  never asks for one.
+  ships beside the layer — `wal/memwal` and `cold/memcold` — so that everything above them can be
+  run without installing anything. Neither is somewhere to keep data: both die with the process.
+* **Not a cross-shard log.** The unit is one shard's log with one writer, made single by epoch
+  fencing. There is no multi-writer shard and no cross-cluster story. The limit is in the layer's
+  interface rather than in the store: the layer offers no operation that atomically changes two
+  shards, however capable the store underneath may be.
 * **Not a general-purpose queue.** The log carries `ExecutionStore` mutations and history-task
   calls only. Shard writes (`GetOrCreateShard`, `UpdateShard`, `AssertShardOwnership`) stay
   immediate, because rangeID is both the fencing token and the task-id allocator; event history
@@ -335,12 +350,13 @@ is [chapter 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes)
 
 ### The boundaries of what has been demonstrated
 
-Two boundaries belong with the design and not with the suites. **No performance claim is made**: the
-storage that ships here is two in-process backends that exist so the layer can be exercised, so
-there is no configuration whose latency or throughput would mean anything, and the numbers in these
-pages that came off a running cluster came off the research prototype this library was extracted
-from — they are named as such wherever they appear. And **the workload the design is aimed at is an
-assumption**, so every saving named above is conditional on it.
+Two boundaries belong with the design rather than with the suites. First, **no performance claim is
+made**. The two backends that ship here run in this process so that the layer can be exercised;
+there is no configuration whose latency or throughput would mean anything. Where these pages do
+carry numbers off a running cluster, those numbers came from the research prototype this library was
+extracted from, and they are named as such at every appearance. Second, **the workload the design is
+aimed at is an assumption** — many thousands of short workflows, each moving through hundreds of
+transitions — so every saving named above is conditional on it.
 
 [Chapter 15](15-the-limits-of-the-evidence.md) is the collected boundary — what each green target
 does and does not establish, which limits are measurements nobody has taken and which are the shape
@@ -350,8 +366,8 @@ above is [chapter 08](08-configuration.md).
 
 ## Where this lives in the code
 
-* [`../../baserow/baserow.go`](../../baserow/baserow.go) — the two cold-store reads the
-  wrapper and the cycle both need, and why neither may hold its own copy.
+* [`../../baserow/baserow.go`](../../baserow/baserow.go) — the two cold-store reads that
+  `wrapper`, `cycle` and `apply` all need, and why none of them may hold its own copy.
 * [`../../wal/wal.go`](../../wal/wal.go) — the log contract: `Fence`, `Append`,
   `ReadFrom`, `Trim`, and the guarantees stated on each.
 * [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — that contract in process memory,

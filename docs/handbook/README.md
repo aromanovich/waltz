@@ -18,7 +18,7 @@ cold store is behind: the caller has been told its write is durable, and the sto
 yet. The rest of the design follows from that gap. A read has to combine the store's rows with the
 acknowledged mutations that have not reached them. A new shard owner has to apply the tail its
 predecessor left behind, and the predecessor must never apply it as well. And the layer has to start
-refusing writes before the window it is holding in memory outgrows the node. This book explains how
+refusing writes before that unapplied tail outgrows what the node can hold. This book explains how
 each of those obligations follows from the early acknowledgement, and which contracts hold them when
 processes and storage fail.
 

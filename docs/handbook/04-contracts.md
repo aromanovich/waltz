@@ -262,11 +262,12 @@ Six things the table cannot hold:
   `context.Canceled` or `context.DeadlineExceeded`. A call that is both cancelled and malformed
   reports the argument.
 * **An append is one entry, and there is no batch.** None of the three sentinels can describe a
-  batch that landed only in part: each says the write is whole, one way or the other (the argument
-  is under "The five guarantees" above). Many backends could carry a batch atomically — one
-  transaction, one statement, one replicated command — and are not asked to, because some cannot: a
-  log whose unit of atomicity is the row leaves a prefix behind when a fence lands mid-batch. A
-  contract only most implementations can keep is not a contract.
+  batch that landed only in part: each says the write is whole, one way or the other (see **The
+  contract has no batch** above, under "What the contract does not say: what an append costs"). Many
+  backends could carry a batch atomically — one transaction, one statement, one replicated command —
+  and are not asked to, because some cannot: a log whose unit of atomicity is the row leaves a
+  prefix behind when a fence lands mid-batch. A contract only most implementations can keep is not a
+  contract.
 * **Payload ownership runs both ways.** In: the payloads stay the caller's — no backend retains or
   reads a slice after `Append` returns, whatever it returns, so an encoder's scratch buffer may be
   reused immediately. Out: an `Entry.Payload` is the reader's to keep, aliasing neither the log's own
