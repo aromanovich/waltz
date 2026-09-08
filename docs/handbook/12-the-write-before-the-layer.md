@@ -133,9 +133,9 @@ the first one that did not hold.
 Three consequences follow. The layer above depends on all three, and each is a design decision a
 different store might have made differently:
 
-* **registration order decides which failure is reported**, which is why the drain registers the
-  epoch check first and absence assertions last
-  ([chapter 05](05-write-path.md#2-the-drain-itself));
+* **statement order decides which failure is reported**, because the transaction stops at the first
+  assertion that fails, which is why the epoch check goes first and the range deletes go ahead of
+  the task inserts ([chapter 05](05-write-path.md#2-the-drain-itself));
 * **an assertion that held must still be walked**, because a transaction carrying more than one
   workflow will have some assertions that hold and some that do not.
   [Chapter 05](05-write-path.md#2-the-drain-itself) states that obligation at length; it is also the

@@ -139,11 +139,12 @@ Three mechanical consequences of `sync`, for anyone reading a sync-mode run's nu
 
 * the append still happens first and the ack is still the append's — `sync` changes when the caller
   is *answered*, not when the entry becomes durable;
-* the size watermarks are never evaluated. The drain is taken before the window's triggers are
+* the size triggers are never evaluated. The drain is taken before the window's triggers are
   consulted, so `trigger="mutations"` and `trigger="bytes"` are unreachable and every drain a
   *caller* triggers carries `trigger="sync"` ([chapter 10](10-metrics.md#3-the-reference-table)).
-  A sync node still emits `trigger="explicit"` on a graceful shutdown and `trigger="replay"` on
-  recovery, so an alert on "any non-sync drain here" fires on every restart;
+  The one other value a sync node can show is `trigger="replay"`, over the at-most-one in-flight
+  entry a killed node leaves behind. A graceful shutdown shows nothing: the window is already
+  empty, and an empty batch settles its entries and returns before the drain is counted;
 * no delegated base read is taken. `Cycle.check` returns as soon as the accumulator has been
   consulted, because the drain later in the same call asserts everything those reads would have.
   That is also why a sync-mode mutation is encoded with `mutation.EncodeProvisional`: the entry
@@ -334,7 +335,7 @@ that sum.
 
 Replay is what keeps that survivable. A recovering cycle reads the log in pages the size of the
 window — `wal.windowMutations` entries at a time — and cuts its transactions on the ordinary size
-watermarks, so one recovering shard's working set is a window rather than a tail, however long the
+triggers, so one recovering shard's working set is a window rather than a tail, however long the
 tail is. What remains is that several of those working sets stack in one process, on top of whatever
 live traffic the node is already carrying. That is why `wal.maxShards` is what a node may own *at
 once*, and why a budget computed for the steady state rather than for the concurrent-recovery case
@@ -431,6 +432,6 @@ built over: the log, the applier and the watermarker are Go values in `waltz.Bac
 * [`../../cycle/policy.go`](../../cycle/policy.go) — why the policy is a source read at
   each decision rather than a value, and the two constructors for it.
 * [`../../cycle/replay.go`](../../cycle/replay.go) — the page size a replay reads with
-  and the watermarks it cuts on: why a recovering shard's working set is a window and not a tail.
+  and the triggers it cuts on: why a recovering shard's working set is a window and not a tail.
 * [`../../waltz.go`](../../waltz.go) — `Compose`, which asserts the budget by way of
   `cycle.NewManager`, and `Backends`, which is everything this file does not configure.

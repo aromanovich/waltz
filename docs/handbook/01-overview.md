@@ -105,7 +105,7 @@ puts the folded batch, the epoch check and the new `appliedSeqno` into a single 
    the window waits while its own call performs the resulting drain.
 6. A read during this interval combines the old cold row with the window. If the process disappears,
    the next owner reconstructs the same interval by replaying the log.
-7. Eventually a drain starts — triggered by the mutation watermark, the byte watermark, the age
+7. Eventually a drain starts — fired by the mutation trigger, the byte trigger, the age
    timer, a read, a replay, a window the accumulator cannot fold any further, or an explicit call
    at shutdown. One transaction writes the folded requests and advances `appliedSeqno`. A later
    trim may remove the log entries that transaction covered.

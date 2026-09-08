@@ -329,9 +329,9 @@ Six rules the loop applies, entry by entry:
   owner concluded about it. That is why `resolved` may die with the process while the other two
   positions survive it: `commitSeqno` is readable from the log and `appliedSeqno` from the cold
   store.
-* **transactions are cut by the two size watermarks only** — `Mutations` and `Bytes`, the same pair
+* **transactions are cut by the two size triggers only** — `Mutations` and `Bytes`, the same pair
   a running cycle drains on, so a replayed transaction is the size of an ordinary one. The age
-  watermark is not consulted, since every entry here is already as old as the incident. Replay also
+  trigger is not consulted, since every entry here is already as old as the incident. Replay also
   has **no bound of its own**: invariant I10 bounds what a *running* cycle acks, and a tail that
   somehow exceeds it must still be replayed or the shard is unrecoverable.
 

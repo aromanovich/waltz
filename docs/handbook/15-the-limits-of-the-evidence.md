@@ -48,12 +48,12 @@ What is known is the **composition** of one write — one append, plus a share o
 transaction. That is a structural fact, derived from what the code does. What is not known is the
 **magnitude**. Two instruments come close and neither closes it:
 
-* `fold.Stats.CollapseRatio` is mutations in over dirty workflows out.
-  `TestAcceptanceFoldNoCluster` prints it beside the generator's own ratio. But read what that test
-  *asserts*: the fold ratio is above 1.5 with the reuse knob on; the generator's ratio is exactly
-  1.00 with the knob at zero; and the generator's ratio with the knob on is strictly above its value
-  with the knob at zero. Those three assertions say the ratio moves with the knob. None of them
-  measures a workload;
+* the **fold ratio** — `foldrun.Run.CollapseRatio`, mutations folded in over merged requests out —
+  is what `TestAcceptanceFoldNoCluster` prints, beside the generator's own stream ratio. But read
+  what that test *asserts*: the fold ratio is above 1.5 with the reuse knob on; the generator's ratio
+  is exactly 1.00 with the knob at zero; and the generator's ratio with the knob on is strictly above
+  its value with the knob at zero. Those three assertions say the ratio moves with the knob. None of
+  them measures a workload;
 * the two I7 counters, `wal_dropped_tasks` and `wal_written_tasks`, would give a deployment the share
   of task rows a drain did not write **for its own traffic**.
   [Chapter 07](07-read-path.md#why-the-metric-is-two-counters-and-not-a-ratio) already says the share
@@ -72,12 +72,13 @@ measured result has taken a derivation for an experiment.
 
 ## The shipped window has never been run against a store that has to plan
 
-The drain's query used to be built by text concatenation, so its *structure* — not just its values —
-grew with every row in the batch, and no compilation of it was ever cached. A window of 32 was
-enough to put the drain into a compilation timeout. A timeout arrives ambiguous: the drain neither
-committed nor provably did not, so the layer halted the shard rather than retry.
+On the research prototype this library was extracted from, the drain's query was built by text
+concatenation, so its *structure* — not just its values — grew with every row in the batch, and no
+compilation of it was ever cached. A window of 32 was enough to put that prototype's drain into a
+compilation timeout. A timeout arrives ambiguous: the drain neither committed nor provably did not,
+so the layer halted the shard rather than retry.
 [Chapter 13](13-designs-that-were-rejected.md#a-folded-window-as-a-concatenation-of-the-stores-own-queries)
-has that failure in full.
+has why that shape was refused.
 
 The shape that replaced it buys **constancy**: the query's shape is a function of which assertion
 kinds and which delete families a batch carries, and not of how many rows it touches. That
@@ -223,9 +224,9 @@ row correct: a committed drain need not write task rows whose range a queue had 
 past. **No judge outside the layer can assert that rule.** Not because the deletion is invisible —
 the range deletion is `mutation.KindRangeCompleteTasks`, a log entry like any other, folded into the
 window and restored by replay, so an outside observer sees it. What no observer sees is the
-**drop**: a row the drain did not write exists nowhere. A reader of the log and
-the cold store therefore finds the range record, finds no row, and cannot separate a correct drop
-from a loss without reproducing the fold — which is exactly the thing such a judge may not import.
+**drop**: a row the drain did not write exists nowhere. A reader of the log and the cold store
+therefore finds the range record, finds no row, and cannot separate a correct drop from a loss
+without reproducing the fold — which is exactly the thing such a judge may not import.
 
 What holds the rule is therefore the mechanism's own tests: `fold/tasks_test.go`,
 `fold/histtasks_test.go` and `cycle/tasks_test.go`, where the pagination, the ordering, the dedup and
@@ -335,8 +336,11 @@ that was chosen.
   it models, and the paragraph headed "what can make it a lie".
 * [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one log here: a map of shards
   under one mutex, and why its next seqno is state rather than derived from the rows around it.
-* [`../../fold/fold.go`](../../fold/fold.go) — `Stats.CollapseRatio`, printed by every acceptance run
-  and asserted only as a property of the generator's knob.
+* [`../../internal/verify/foldrun/foldrun.go`](../../internal/verify/foldrun/foldrun.go) —
+  `Run.CollapseRatio`, the fold ratio every acceptance run prints and asserts only as a property of
+  the generator's knob.
+* [`../../fold/fold.go`](../../fold/fold.go) — `Stats.CollapseRatio`, the layer's own counters, which
+  the cycle reports as `wal_drained_mutations` and `wal_drained_workflows`.
 * [`../../walmetrics/walmetrics.go`](../../walmetrics/walmetrics.go) — `wal_dropped_tasks` and
   `wal_written_tasks`, both tagged by task category, the two counters a deployment measures its own
   saving with.

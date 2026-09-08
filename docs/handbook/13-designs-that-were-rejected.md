@@ -171,7 +171,7 @@ atomic: the fence has to land before the rangeID the fence is derived from. `wra
 consequently **observes** `UpdateShard` rather than intercepting it — it fences the log at the new
 epoch, then lets the base store commit the row — and the cost of the non-atomicity is paid at replay
 time.
-[Chapter 06](06-shard-lifecycle.md#2-use-the-ownership-token-temporal-already-has) owns the order.
+[Chapter 06](06-shard-lifecycle.md#1-first-exclude-the-failed-owner) owns the order.
 
 ---
 
@@ -231,11 +231,11 @@ set of assertions** — `fold.WorkflowRecord.Current` and `fold.Emitted.RunAsser
 applier substitutes for the conditions the store's own request shapes would have derived. The query's
 shape then depends on which kinds of assertion and which delete families the batch contains, never on
 how many mutations it folded. That property belongs to whichever applier a deployment runs rather
-than to anything in this repository, which is why
-[chapter 11](11-verification.md#the-guards) names a drain query-shape guard as one of the two a
-deployment has to rebuild for itself: drive a real drain at a window of 64 and assert that its
-largest transaction stays a constant number of statements. A constant is the honest form of the
-claim that the shape does not grow. [Chapter 05](05-write-path.md#2-the-drain-itself) owns the drain.
+than to anything in this repository, which is why [chapter 11](11-verification.md#the-guards) names
+a drain query-shape guard as one of the two a deployment has to rebuild for itself: drive a real
+drain at a window of 64 and assert that its largest transaction stays a constant number of
+statements. A constant is the honest form of the claim that the shape does not grow.
+[Chapter 05](05-write-path.md#2-the-drain-itself) owns the drain.
 
 The numbers behind all of this come from the research prototype's store, whose conditional query was
 assembled per row: roughly **+3 statements and +1.1 KB of query text per mutation**. Read them as an

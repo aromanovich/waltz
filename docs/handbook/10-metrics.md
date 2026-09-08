@@ -1,6 +1,6 @@
 # Every series the layer emits
 
-Metrics are useful only when the question is precise, and “is the WAL healthy?” is not one question.
+Metrics are useful only when the question is precise, and "is the WAL healthy?" is not one question.
 A node can be fencing an old owner correctly and collapsing writes efficiently while its apply path
 falls behind the cold store. The same node may never have been handed the server's metrics handler
 at all, in which case it reports nothing whatever it is doing. No single number separates those
@@ -83,7 +83,7 @@ failure is silent in both directions.
 Three instrument shapes here look like odd choices until you know what each was chosen against. A
 gauge per node with no shard tag reports whichever shard moved last, and adding the tag makes every
 shard permanent cardinality. A ratio divided before it is emitted cannot tell an empty denominator
-from a perfect result. A timer named “age” invites the reader to take it for operation latency. The
+from a perfect result. A timer named "age" invites the reader to take it for operation latency. The
 three subsections below are the shapes that avoid those three failures: histograms, counter pairs,
 and one timer whose unit comes from the handler.
 
@@ -111,11 +111,11 @@ shard has no task traffic. `wal_trims{outcome}` and the replay pair (`wal_replay
 `wal_replay_dropped_entries`) are two counters for the same reason.
 
 **(c) Nothing here is a latency.** No series in this chapter times a write, a drain or an apply
-transaction. The one `Timer` in the list is `wal_window_age`, and it records an *age* rather than the
-duration of any piece of work: how long the window's oldest mutation had been waiting when the window
-drained. That is the same quantity the `wal.windowAge` watermark fires on. If you want write latency,
-use the server's own persistence latency series — it is measured around the store call the layer sits
-inside.
+transaction. The one `Timer` in the list is `wal_window_age`, and it records an *age* rather than
+the duration of any piece of work: how long the window's oldest mutation had been waiting when the
+window drained. That is the same quantity the age trigger (`wal.windowAge`) fires on. If you want
+write latency, use the server's own persistence latency series — it is measured around the store
+call the layer sits inside.
 
 ---
 
@@ -139,7 +139,7 @@ theirs from their definitions — `wal_tail_entries` and `wal_unapplied_entries`
 | `wal_overlaid_reads` | counter | reads | `operation` = `GetCurrentExecution` or `GetWorkflowExecution` | `ExecutionStore.GetCurrentExecution` / `GetWorkflowExecution` | Reads **routed** through the overlay — not reads the window could answer. A counter that only fired on a hit would read zero on a healthy idle cluster and zero on a layer wired up wrong. |
 | `wal_merged_task_pages` | counter | pages | none | `ExecutionStore.GetHistoryTasks` | `GetHistoryTasks` pages **routed** at the layer's merge, for the same reason as `wal_overlaid_reads`. The name says merged and the counter does not; renaming it would break every expression over it, so the description carries the distinction instead. |
 | `wal_merged_task_collisions` | counter | keys | none | `Cycle.readTasks` (`cycle/tasks.go`), on the shard's own goroutine | Task keys a merged page found in **both** the window and the cold store. The sources are disjoint by construction, so any non-zero value means something is wrong. Recorded only when the count is above zero. |
-| `wal_drains` | counter | drains | `trigger` = `mutations`, `bytes`, `age`, `refusal`, `sync`, `replay`, `explicit`, `read` — eight values, of which `sync` appears only under [`wal.sync: true`](08-configuration.md#2-table-1--the-wal-sections-keys) | `Cycle.drain`, after the apply transaction commits | Committed drains, by what tripped them — transactions, not passes of the cycle. A drain that halted never reaches this, and neither does one whose batch folded to nothing: an empty batch settles its entries and returns before this is recorded. `sync` is a cause of its own rather than a flavour of `explicit`, because it is the only one whose outcome is reported back to a caller: one write, one drain, one answer. Under `sync` the size watermarks are never reached — the sync arm returns before `window.Trips` is evaluated — so `mutations` and `bytes` cannot appear there. |
+| `wal_drains` | counter | drains | `trigger` = `mutations`, `bytes`, `age`, `refusal`, `sync`, `replay`, `explicit`, `read` — eight values, of which `sync` appears only under [`wal.sync: true`](08-configuration.md#2-table-1--the-wal-sections-keys) | `Cycle.drain`, after the apply transaction commits | Committed drains, by what tripped them — transactions, not passes of the cycle. A drain that halted never reaches this, and neither does one whose batch folded to nothing: an empty batch settles its entries and returns before this is recorded. `sync` is a cause of its own rather than a flavour of `explicit`, because it is the only one whose outcome is reported back to a caller: one write, one drain, one answer. Under `sync` the size triggers are never reached — the sync arm returns before `window.Trips` is evaluated — so `mutations` and `bytes` cannot appear there. |
 | `wal_drained_mutations` | counter | mutations | none | same call as `wal_drains` | Mutations carried into a committed drain — the collapse ratio's numerator. Untagged: it cannot be split by trigger. |
 | `wal_drained_workflows` | counter | workflows | none | same call as `wal_drains` | Workflows written by a committed drain — the collapse ratio's denominator. |
 | `wal_window_age` | **timer** | see §4 | none | same call as `wal_drains` | Age of the oldest mutation in the window at the moment it drained. |
@@ -179,7 +179,7 @@ Two readings that catch people out, both deliberate:
   handler the tests use. Neither applies the otel handler's millisecond truncation, so consult
   each handler's own unit before comparing values.
 
-Read the histogram against the age watermark (`wal.windowAge`, see
+Read the histogram against the age trigger (`wal.windowAge`, see
 [08-configuration.md](08-configuration.md#3-table-2--the-nine-dynamic-config-settings)) in whatever
 unit your own handler emits, and treat a floor of zeroes on a fast, busy shard as the truncation
 rather than as a bug. This is the one series whose numbers are not comparable across two deployments
@@ -256,7 +256,7 @@ None of these are emitted; each is why the pair it is built from is emitted as t
 are over whatever window your dashboard uses.
 
 Every expression below keeps its denominator in view, for the reason in §2(b): ten dropped tasks out
-of ten and zero out of zero can both be described as “nothing was written”, and only the counter pair
+of ten and zero out of zero can both be described as "nothing was written", and only the counter pair
 separates them.
 
 * **Collapse ratio** — how much work the window is saving:
@@ -297,7 +297,7 @@ your own traffic.
 | `wal_backpressure_refusals{limit="unresolved"}` non-zero and sustained | page | The applier cannot read what its last drain did, so nothing may be applied over it. No size knob clears this. | [runbook (a)](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain) |
 | `rate(wal_backpressure_refusals{limit=~"entries\|bytes"})` above your normal floor, sustained | high | I10's per-shard bound is refusing writes: the tail reached its limit because the applier is behind. Refused writes provably wrote nothing. | [runbook (a)](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain) — fix the cold store |
 | high quantile of `wal_unapplied_entries` climbing and not returning | high | The cold store is falling behind; the runway before backpressure is what is left of the tail bound. | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
-| high quantile of `wal_window_age` well above `wal.windowAge` | medium | Drains are not keeping up with the age watermark that should be firing them. Check the unit first (§4). | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
+| high quantile of `wal_window_age` well above `wal.windowAge` | medium | Drains are not keeping up with the age trigger that should be firing them. Check the unit first (§4). | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
 | `rate(wal_trims{outcome="failed"})` a sustained fraction of `started` | medium | The log is not being compacted. Halts nothing, degrades write latency over hours as the log grows. | [runbook (d)](09-operations.md#d-trims-are-failing) |
 | I7 drop share for one category stepping up and staying up | medium | More task work is being deleted under the window than before. That is a saving rather than a fault: a task row inserted and range-completed inside one window never reaches the cold store at all. Usually the window got bigger; occasionally the queues began completing ranges more often. | [runbook (e)](09-operations.md#e-task-drops-are-climbing) |
 | collapse ratio falling towards 1 | low / informational | The window has stopped saving work; drains cost what the writes would have. Not a fault, but it removes the layer's reason to be there. | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |

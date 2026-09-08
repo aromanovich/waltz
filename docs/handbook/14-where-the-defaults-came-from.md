@@ -56,13 +56,13 @@ None of that makes the defaults wrong for such a deployment. They are points cho
 deployment does not sit on, and an operator whose workload is that shape is entitled to re-derive
 them rather than inherit them.
 
-## The drain watermarks: 256 mutations and 256 KiB
+## The drain triggers: 256 mutations and 256 KiB
 
 `cycle.Defaults()` ships `Mutations: 256` and `Bytes: 256 << 10`. The field comment beside them in
 `cycle/cycle.go` calls the pair the measured collapse knee, and adds that "changing either means
 re-measuring".
 
-**The mutation watermark is the one default here with a real curve behind it.** The measurement
+**The mutation trigger is the one default here with a real curve behind it.** The measurement
 swept the window and read the collapse off it: 128 mutations buys about 89% of the achievable
 collapse, 256 buys 99.6%, and above that the curve is flat while the worst-case tail keeps growing.
 256 is therefore not a preference — it is the last point on the curve that pays for itself.
@@ -73,31 +73,30 @@ If you want the curve, you will have to write the measurement yourself. It is al
 workload — the collapse a window buys is a function of how often a deployment re-touches a workflow
 inside one window — so 256 is a defensible start value and not a number to inherit without looking.
 
-Two facts about the shipped watermark that are easy to mis-read:
+Two facts about the shipped trigger that are easy to mis-read:
 
-* **the byte watermark is the mutation watermark restated, not a second measurement.** 256 KiB is
+* **the byte trigger is the mutation trigger restated, not a second measurement.** 256 KiB is
   256 mutations at about a kilobyte each, and the kilobyte is rounded up: the generated corpus
   averages 653 encoded bytes a mutation, so 256 of them come to about 163 KiB. On a stream of that
   shape the mutation trigger is always the one that fires. The byte trigger earns its place on the
   other shape — 256 mutations carrying large payloads, which would otherwise become one outsized
   transaction;
-* **the watermark is not the effective window, and under load it is not even the trigger.** A window
-  holding a shape `fold` cannot express is force-drained on the spot (`fold.ErrRefused`), and that
-  happens often enough to set the pace by itself. In `TestAcceptanceFoldNoCluster`, at a configured
-  window of 1024 and a hot set of 32 workflows, about one mutation in a hundred is refused and drains
-  average roughly 90 mutations, under a tenth of the window the test asked for. The same shape held
-  at cluster distance on the research prototype: at a window of 256 every drain was a refusal drain,
-  and the size watermark never fired inside a test at all.
+* **the size trigger is not the effective window, and under load it is not even what fires.** A
+  window holding a shape `fold` cannot express is force-drained on the spot (`fold.ErrRefused`), and
+  that happens often enough to set the pace by itself. In `TestAcceptanceFoldNoCluster`, at a
+  configured window of 1024 and a hot set of 32 workflows, about one mutation in a hundred is
+  refused and drains average roughly 90 mutations, under a tenth of the window the test asked for.
+  The same shape held at cluster distance on the research prototype: at a window of 256 every drain
+  was a refusal drain, and the size trigger never fired inside a test at all.
 
-That refusal cadence is what matters when you tune: **raising the mutation watermark above it changes
-nothing**, because the window is already being cut short by a mechanism the watermark does not
-control.
+That refusal cadence is what matters when you tune: **raising the mutation trigger above it changes
+nothing**, because the window is already being cut short by a mechanism the trigger does not control.
 
-## The age watermark: five seconds
+## The age trigger: five seconds
 
 `Age: 5 * time.Second`. The field comment is explicit about the number's standing: "a
 recovery-budget choice, not a measured one". The collapse curve does not constrain it, because under
-load the refusals and the size watermarks drain first. What the age governs is the **idle** tail, and
+load the refusals and the size triggers drain first. What the age governs is the **idle** tail, and
 therefore what a successor would have to replay after a hard restart of a shard nobody was writing
 to.
 
@@ -117,7 +116,7 @@ Two things the number does *are* recorded, and they bound how far it may sensibl
 * **a run that samples the layer's counters has to wait it out.** A suite's last writes land in its
   final seconds, so a sample taken the moment the workflow finishes sees a full window and no drain
   at all. The end-to-end run does exactly that wait: `waitForDrain` in `internal/verify/e2e` polls
-  the layer's totals until a drain appears, and gives the five-second watermark up to `drainWait`,
+  the layer's totals until a drain appears, and gives the five-second trigger up to `drainWait`,
   60 seconds, to fire.
 
 ## The trim cadence: 16 drains or 60 seconds
@@ -150,16 +149,16 @@ own: 2 GiB over 256 shards is 8 MiB. That is the whole derivation, and it means 
 raised by itself — the product is asserted at start-up.
 
 There is a second reading of the same number, and it is a sanity check rather than the origin:
-against the 256 KiB watermark, 8 MiB is **32 windows**, so the applier can fall thirty-two windows
+against the 256 KiB trigger, 8 MiB is **32 windows**, so the applier can fall thirty-two windows
 behind before the shard starts refusing writes. By then you are looking at a cold-store incident and
 not a burst.
 
 **`hardMaxEntries` is chosen.** 8192 follows from no record size, no replay time and no measurement
-in the tree. The only structure available is the same arithmetic against the watermarks, and it
-holds in both units — 8192 = 32 × 256 mutations, and 8 MiB = 32 × 256 KiB — so each half of the
-bound is exactly thirty-two windows of its own watermark. **That is a fact about the shipped defaults
-and not a documented intent**, and it stops holding the moment somebody moves a watermark without
-moving a bound.
+in the tree. The only structure available is the same arithmetic against the triggers, and it holds
+in both units — 8192 = 32 × 256 mutations, and 8 MiB = 32 × 256 KiB — so each half of the bound is
+exactly thirty-two windows of its own trigger. **That is a fact about the shipped defaults and not a
+documented intent**, and it stops holding the moment somebody moves a trigger without moving a
+bound.
 
 ### Why the bound counts entries as well as bytes
 
@@ -169,11 +168,10 @@ into a byte budget with no ceiling, and bytes alone bound no replay". Both halve
 load-bearing, and they bound two different resources.
 
 * **Bytes bound memory.** The tail lives in the heap of the process running the history service, so
-  what it costs is bytes. The server's own limits admit a 2 MB event blob
-  (`limit.blobSize.error`) and 8 MB of mutable state per execution
-  (`limit.mutableStateSize.error`), and a shard writing mutations near those sizes fills 8 MiB in a
-  handful of entries — four, at 2 MB apiece — where the entries bound would happily have let it hold
-  8192. An entries-only bound would never notice.
+  what it costs is bytes. The server's own limits admit a 2 MB event blob (`limit.blobSize.error`)
+  and 8 MB of mutable state per execution (`limit.mutableStateSize.error`), and a shard writing
+  mutations near those sizes fills 8 MiB in a handful of entries — four, at 2 MB apiece — where the
+  entries bound would happily have let it hold 8192. An entries-only bound would never notice.
 * **Entries bound recovery time.** A successor inherits every acknowledged, unapplied entry of every
   shard it picks up, and must decode it, fold it and carry it into the cold store. That work is *per
   entry*, so the time to bring a shard back is proportional to the number of entries in its tail and
@@ -333,7 +331,7 @@ anything this layer reports.
 | `wal.windowAge` | 5s | a recovery budget nothing records | chosen |
 | `wal.trimEvery` | 16 | a start value; only its floor is argued | chosen |
 | `wal.trimAfter` | 1m0s | a start value | chosen |
-| `wal.hardMaxEntries` | 8192 | nothing; it is 32 windows of the mutation watermark after the fact | chosen |
+| `wal.hardMaxEntries` | 8192 | nothing; it is 32 windows of the mutation trigger after the fact | chosen |
 | `wal.hardMaxBytes` | 8388608 | `tailBudgetBytes ÷ maxShards` | derived, arithmetic |
 | `wal.maxShards` | 256 | 128 in steady state, doubled for a failover; the 128 is not recorded | derived from an assumption |
 | `wal.tailBudgetBytes` | 2147483648 | nothing | chosen |
@@ -357,7 +355,7 @@ resists, and only the first two announce themselves:
 * `hardMaxEntries` and `hardMaxBytes` are two units of **one** bound, which is why both are read once
   at start-up: a node honouring one of them from a different edit than the other is a bound nobody
   wrote;
-* moving a drain watermark silently re-scales the two arithmetics that stand on it — the 32 windows
+* moving a drain trigger silently re-scales the two arithmetics that stand on it — the 32 windows
   of tail and the 4096 entries of surviving log — because neither is enforced anywhere. Nothing goes
   red; the two ratios simply stop being what this chapter says they are.
 
@@ -366,15 +364,15 @@ chapter like this one to record that there is none.
 
 ## Where this lives in the code
 
-* [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Config` and `Defaults()`: every
-  number above, each with whatever justification the tree has, plus `CheckBudget` and the rule that
-  the budget counts encoded bytes.
-* [`../../settings.go`](../../settings.go) — the same nine numbers as
-  dynamic-config settings, taking their defaults from `cycle.Defaults()` by reference, with the
-  live/start-up split stated per setting.
+* [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Config` and `Defaults()`: every number above,
+  each with whatever justification the tree has, plus `CheckBudget` and the rule that the budget
+  counts encoded bytes.
+* [`../../settings.go`](../../settings.go) — the same nine numbers as dynamic-config settings,
+  taking their defaults from `cycle.Defaults()` by reference, with the live/start-up split stated
+  per setting.
 * [`../../cycle/trim/trim.go`](../../cycle/trim/trim.go) — the cadence's two triggers, whichever
   trips first, and why the trim runs beside the loop rather than in it.
 * [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)
   — the effective window: the refusal rate, the average drain, and the hot-set knob behind them.
 * [`../../internal/verify/e2e/e2e_test.go`](../../internal/verify/e2e/e2e_test.go) — `waitForDrain`
-  and `drainWait`: what a run over a real server has to allow the age watermark.
+  and `drainWait`: what a run over a real server has to allow the age trigger.

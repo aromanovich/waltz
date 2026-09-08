@@ -261,7 +261,7 @@ flowchart TD
   W --> B["256 KiB reached: trigger=bytes"]
   W --> RF["fold.ErrRefused, the window cannot express it: trigger=refusal"]
   T["the age timer ticks"] --> A["window older than Age: trigger=age"]
-  RP["a new owner replays a tail"] --> R["the size watermark trips, or the tail runs out: trigger=replay"]
+  RP["a new owner replays a tail"] --> R["a size trigger trips, or the tail runs out: trigger=replay"]
   X["Close or drainNow"] --> E["shutdown, or a test: trigger=explicit"]
   RD["a read, with drain_on_read on"] --> D["the window is emptied first: trigger=read"]
   S["every write, with sync on"] --> Y["one write, one drain: trigger=sync"]
@@ -277,7 +277,7 @@ on, which nothing that ships turns on ([chapter 08](08-configuration.md)).
 
 **`sync` is the eighth, and it is the same cycle rather than a path around it.** With `sync: true`
 the window holds one mutation and its drain runs inside the write, so every drain a caller triggers
-on such a node carries `trigger="sync"`. The size watermarks are never consulted there and the age
+on such a node carries `trigger="sync"`. The size triggers are never consulted there and the age
 tick always finds an empty window, so a dashboard panelled by `trigger` shows nothing on the
 `mutations`, `bytes` and `age` series; the one other value it can see is `replay`, over the
 at-most-one in-flight entry a killed node leaves behind. Everything else is the same code — the
@@ -531,8 +531,8 @@ drain as one query cannot roll back that way: there the assertions are named exp
 query rather than preconditions the database aborts on, counting the asserted rows that did not hold
 and gating every write statement on that count being zero. A failed assertion then selects nothing
 anywhere, the transaction **commits** having written nothing, and the error the client returns is
-built from a readback in the same query. Either way, a drain that was refused and a drain that never
-ran leave byte-identical state — so the ambiguity of an ambiguous code comes down to one bit:
+built from a readback in the same query. Either way, a drain the store rejected and a drain that
+never ran leave byte-identical state — so the ambiguity of an ambiguous code comes down to one bit:
 whether the commit landed.
 
 **The rule, and the wrong rule beside it.** The watermark is the only witness, because it rides the

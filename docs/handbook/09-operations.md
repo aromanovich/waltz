@@ -40,8 +40,8 @@ requires a migration, that migration belongs to the log's own deployment.
    of the datastore `persistence.defaultStore` names, and writing the section at all is what turns
    intercept mode on. An **absent** section is passthrough; an unknown key inside it is a refusal to
    start, not a fallback to passthrough. Every *number* is a dynamic-config setting under `wal.*`
-   instead of a key here. Where the section goes
-   in the config tree, what each key costs when mistyped, and the ready-made configurations are
+   instead of a key here. Where the section goes in the config tree, what each key costs when
+   mistyped, and the ready-made configurations are
    [08-configuration.md](08-configuration.md#1-where-the-section-goes).
 
 2. **Make the log ready before any node starts.** Whatever that means for the log being deployed —
@@ -145,8 +145,8 @@ ownership rules are [06-shard-lifecycle.md](06-shard-lifecycle.md).
 
 **What the next owner replays**: it reads the cold store's `appliedSeqno` watermark, then every log
 entry above it, a page of `wal.windowMutations` entries at a time. Those entries are folded into a
-fresh accumulator and cut into transactions by the same size watermarks a live window uses, and the
-replay ends in a drain — so the window is empty before the first caller is served. The age watermark
+fresh accumulator and cut into transactions by the same size triggers a live window uses, and the
+replay ends in a drain — so the window is empty before the first caller is served. The age trigger
 is not consulted, because every entry here is already as old as the incident. What triggers the
 replay is the first read or write to reach the shard, and it runs on the cycle's own goroutine, so a
 request that arrives mid-replay waits behind it rather than being refused.
@@ -284,16 +284,18 @@ import ban in [03-components.md](03-components.md) exist to allow.
   treat it as a correctness incident.
 * **There is no path back.** No tool, no supported edit and no documented procedure returns a
   `halted-invariant` shard to service. `Cycle.State` is terminal: for as long as that cycle exists
-  it refuses every write, and every routed read whose answer its tail is still holding. Once the
-  tail is empty, mutable-state reads fall through to the cold store again. Nothing re-acquires the
-  shard on its own, because the halt is deliberately not an ownership loss. The halt is not durable,
-  though. Its state is in memory, so a process restart — or any acquire at a strictly greater
-  epoch — installs a fresh cycle, which reads the watermark and replays the same tail. Whether the
-  shard writes again then depends on what diverged: an ambiguous apply outcome need not recur on the
-  replay, while a genuine disagreement between what the layer folded and what the store holds is met
-  again by the replaying cycle and halts again. The log survives either way, which is why capturing
-  it comes first: that capture is what you decide on, and deciding whether to restart at all is the
-  whole of what the layer offers here.
+  it refuses every write. A cycle that halted this way with an empty tail still passes both
+  mutable-state and task reads through to the cold store; one that halted holding a tail refuses
+  every routed read, and it will never drain that tail — a halted cycle does not drain, so only a
+  fresh cycle at a higher epoch clears it. Nothing re-acquires the shard on its own, because the
+  halt is deliberately not an ownership loss. The halt is not durable, though. Its state is in
+  memory, so a process restart — or any acquire at a strictly greater epoch — installs a fresh
+  cycle, which reads the watermark and replays the same tail. Whether the shard writes again then
+  depends on what diverged: an ambiguous apply outcome need not recur on the replay, while a
+  genuine disagreement between what the layer folded and what the store holds is met again by the
+  replaying cycle and halts again. The log survives either way, which is why capturing it comes
+  first: that capture is what you decide on, and deciding whether to restart at all is the whole
+  of what the layer offers here.
 
 ### (c) The cold store is falling behind
 
@@ -354,9 +356,9 @@ import ban in [03-components.md](03-components.md) exist to allow.
   in this order:
   1. the server's own `history.*ProcessorUpdateAckInterval`, **raised**: the queue checkpoints less
      often, so more drains fall between two of them. The cost lands on how fresh those checkpoints
-     are and not on the layer's collapse ratio, which is why
-     [chapter 07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write) sends you to
-     this knob before the window;
+     are and not on the layer's collapse ratio, so it is the cheaper of the two. The ratio and its
+     shipped anchor are
+     [chapter 07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write);
   2. only then the window — `wal.windowMutations` / `wal.windowBytes` / `wal.windowAge`, all read at
      the decision — **shortened**, so fewer tasks sit in a window long enough for their range to be
      completed under them. This one is paid for in the collapse ratio, which is the layer's reason to

@@ -331,8 +331,8 @@ value the server is handed:
   if the "passthrough" arm quietly still had a layer in it. Beside it, no shard's watermark may be
   in the database, because nothing drained.
 
-Two things about the run itself are worth knowing. The drains it counts are the **age** watermark's:
-one workflow is nowhere near 256 mutations or 256 KiB, so the five-second age is the only watermark
+Two things about the run itself are worth knowing. The drains it counts are the **age** trigger's:
+one workflow is nowhere near 256 mutations or 256 KiB, so the five-second age is the only trigger
 that can fire, and staging `Age = time.Hour` makes the run red with a non-zero acked count and a
 zero applied count — which is what says the drains were the policy's and not an artefact of
 shutdown. And the intercept arm deliberately leaves one claim out: it does not state `Ranges`, the
