@@ -123,6 +123,21 @@ var (
 // [context.DeadlineExceeded], whatever the backend wraps it in. Arguments the
 // contract does not admit outrank the context: a call that is both cancelled
 // and malformed reports the argument.
+//
+// Those arguments are refused with an ordinary error, and refusing changes
+// nothing: a zero epoch ([ErrZeroEpoch]), an append below [FirstSeqno] or with
+// a nil payload, a read whose limit is not positive. A backend that interprets
+// one instead — answering a limit of zero with no entries and no error — hands
+// its caller a loop that never ends or an ack for an entry the log does not
+// hold, and both look like the log working. The single out-of-range argument
+// that is clamped rather than refused is a read from below [FirstSeqno], which
+// is where a caller reading the whole log starts.
+//
+// None of it has to be re-derived per backend. [CheckFence], [CheckAppend],
+// [CheckRead] and [CheckTrim] hold the argument rules, and [FenceRefusal],
+// [AppendRefusal] and [RefuseAtNext] turn what a backend found into the error
+// this contract names, in the precedence it names it in. wal/memwal is the
+// worked example.
 type Log interface {
 	// Fence claims the shard's log for epoch, atomically cutting off every
 	// append of a lower epoch, so a zombie ex-owner cannot slip an append past

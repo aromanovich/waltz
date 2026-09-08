@@ -23,12 +23,16 @@ import (
 	p "go.temporal.io/server/common/persistence"
 )
 
-// Store is the pair of reads as Temporal's own store spells them. The
-// current-row read is the one that carries last_write_version
-// through the version-carrying store extension. The store asserts on that
-// column and [p.InternalGetCurrentExecutionResponse] has nowhere to hold it, so a layer
-// deciding the same condition through the plain read could confirm it and never
-// refuse it.
+// Store is the pair of reads as Temporal's own store spells them, and the cold
+// store underneath satisfies it or intercept mode does not start: the layer
+// converts what the factory handed it, and answers [ErrNoVersionedRead] when
+// the conversion fails.
+//
+// The current-row read is the one that carries last_write_version, and it is
+// the store extension rather than the plain read because Temporal's own
+// [p.InternalGetCurrentExecutionResponse] has nowhere to hold that column. A
+// layer deciding the same condition through the plain read could confirm the
+// assertion and never refuse it.
 type Store interface {
 	GetWorkflowExecution(
 		context.Context, *p.GetWorkflowExecutionRequest,

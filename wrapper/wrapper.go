@@ -27,9 +27,11 @@ import (
 	"github.com/aromanovich/waltz/walmetrics"
 )
 
-// ShardObserver is told that a shard changed hands; the epoch is the new
-// rangeID (invariant I11). Nothing reports the other direction: closing a shard
-// makes no persistence call.
+// ShardObserver is told that a shard's rangeID moved, and the epoch is the new
+// one (invariant I11). Usually that is a new owner, but not always: the server
+// renews a shard's rangeID whenever it exhausts its ID range, so the owner that
+// already holds the shard arrives here again at a higher epoch. Nothing reports
+// the other direction: closing a shard makes no persistence call.
 type ShardObserver interface {
 	// ShardAcquired runs before the base store commits the bump, and an error
 	// from it fails the acquire without the base store being called, so a failed

@@ -29,10 +29,14 @@
 //     them, and the fifth is the one a store gets wrong by rounding an ambiguous
 //     code down to a failure. That is a batch applied twice.
 //
-// Intercept mode asks for one read besides: the current-execution row with its
-// last_write_version, which is [baserow.Store] and is asserted on rather than
-// returned to a caller. A store that cannot answer it can still be written to;
-// it just cannot settle the assertions the fold hands on.
+// Intercept mode asks for two reads besides, both of them pre-window rows it
+// asserts on rather than answers a caller with: a run's mutable state, and a
+// workflow's current-execution row with its last_write_version beside it. That
+// pair is [baserow.Store], and the version is why it is a contract of this
+// layer at all — Temporal's own response type has nowhere to carry that column.
+// A store that cannot answer the versioned read is refused while the server is
+// still starting rather than run in a reduced mode: there is no honest way to
+// serve intercept over it.
 //
 // [apply]: ../apply
 // [baserow.Store]: ../baserow
@@ -69,7 +73,7 @@ type Applier interface {
 
 // Watermarker is the recovery half of the same seam: the only read the layer
 // makes through this contract, though not its only read of the store — intercept
-// mode also asserts on baserow.Store's current-execution row.
+// mode asserts on the two pre-window rows this package's doc names.
 type Watermarker interface {
 	// Watermark reads back the seqno of the last [Applier.Apply] that committed
 	// for this shard — the value that transaction wrote inside itself, never a
