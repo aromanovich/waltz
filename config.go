@@ -69,8 +69,8 @@ var knobs = []knob{
 		func(c *cycle.Config) *bool { return &c.DrainOnRead }),
 }
 
-// Policy is [cycle.Defaults] with each [knobs] row the section set overlaid; an
-// empty section is exactly [cycle.Defaults].
+// StaticConfig is [cycle.Defaults] with each [knobs] row the section set
+// overlaid; an empty section is exactly [cycle.Defaults].
 //
 // It is only the static half of what a node runs — [NewPolicy] is the whole —
 // so every field [settings] carries is at its default here. Assert a section

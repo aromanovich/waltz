@@ -241,7 +241,7 @@ func (m *Mirror) store(entries, bytes, unapplied int, stalled wal.Seqno) {
 // applier is stuck must refuse its writers rather than park them behind it.
 func (m *Mirror) Size() (entries, bytes int64) { return m.entries.Load(), m.bytes.Load() }
 
-// Stalled is [Tail.Stalled]'s seqno for that same reader, and without the cause:
+// StalledAt is [Tail.Stalled]'s seqno for that same reader, and without the cause:
 // a refusal before the queue says the shard cannot take the write, where the
 // attribution belongs to the halt the loop may still reach.
 func (m *Mirror) StalledAt() (wal.Seqno, bool) {

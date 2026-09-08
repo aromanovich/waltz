@@ -266,8 +266,8 @@ func (l *Layer) RetireShard(shard wal.ShardID) bool {
 	return true
 }
 
-// Drain stops the layer: every shard that still holds a window is drained into
-// the cold store, and the log is released.
+// Shutdown stops the layer: every shard that still holds a window is drained
+// into the cold store, and the log is released.
 //
 // It must run after the server has stopped: the drain writes to the cold store
 // the mutations of writers the server is shutting down. budget bounds the whole
