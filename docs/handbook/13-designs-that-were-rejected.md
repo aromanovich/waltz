@@ -164,7 +164,7 @@ The reason usually given is the secondary one. `rangeID` is also the task-id all
 out ids from the block that `rangeID` names, and the history service's `RangeSizeBits` is 20, so each
 value is worth 2^20 = 1,048,576 ids. That is why the counter rises without any change of owner, and
 why task-id uniqueness costs nothing extra. It is true, but it answers a weaker question than the one
-somebody asks on seeing three shard calls stay immediate.
+somebody asks on seeing three shard calls go straight to the store.
 
 The same circularity is why an acquire is necessarily two writes to two places, and so cannot be
 made atomic: the fence has to land before the rangeID the fence is derived from.

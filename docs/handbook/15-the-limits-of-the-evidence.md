@@ -20,7 +20,7 @@ at all.
 
 **The first kind is constants and test bounds.** They follow from the code as it stands, so a reader
 re-derives them by opening the file rather than by trusting a terminal window somebody pasted into a
-ticket. The shipped watermarks — 256 mutations, 256 KiB, 5 s, a trim every 16 drains or 60 s — are
+ticket. The shipped triggers — 256 mutations, 256 KiB, 5 s, a trim every 16 drains or 60 s — are
 of this kind, as are the per-shard bounds of 8192 entries and 8 MiB and the node budget of 256
 shards and 2 GiB. All of them are `cycle.Defaults()`.
 
@@ -346,7 +346,7 @@ that was chosen.
   saving with.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the method
   partition: which calls become log records, and which stay on the incumbent path.
-* [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Defaults()`, the shipped watermarks
+* [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Defaults()`, the shipped triggers
   and bounds every first-kind number above is drawn from.
 * [`../../patches/README.md`](../../patches/README.md) — the evidence a composition can produce that
   this repository cannot, and the fifteen lines that make it reachable.

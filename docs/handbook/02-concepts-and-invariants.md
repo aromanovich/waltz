@@ -16,8 +16,9 @@ appliedSeqno <= resolved <= commitSeqno < next seqno
 `commitSeqno` is the highest entry the log has acknowledged. `appliedSeqno` is the highest entry
 whose effects a cold-store transaction contains. Between them, `resolved` marks the highest entry
 whose fate is known. Usually `resolved` and `appliedSeqno` move together. They separate when a
-window folds to no database work: its entries are finished, but there was no transaction in which
-to advance the persistent watermark.
+window folds to no database work — an `AddHistoryTasks` carrying no rows is the common shape — so
+its entries are finished, but there was no transaction in which to advance the persistent
+watermark.
 
 This third position prevents two tempting mistakes. Measuring the tail as
 `commitSeqno - appliedSeqno` charges already-settled entries against the memory bound. Advancing
@@ -62,14 +63,14 @@ misread of everything after it.
 | **history** | a workflow's event history | the history *service*, or a history *task* | "event history" and "history service" are written out in full |
 | **replay** | re-running workflow code over its event history | what a new owner does with an inherited tail | the Temporal sense is never used, only contrasted |
 | **watermark** | a queue's deletion watermark | unqualified, appliedSeqno | the drain's size thresholds are `window.Watermarks` in code and its age threshold is `cycle.Config.Age`; all three are **triggers** everywhere else, which is also what the metric tag calls them |
-| **node** | a history node, meaning a process | the composition a process builds, which is `waltz.Layer`; and `history_node`, a row of the event tree | the process itself is called the server; event-tree rows are never called nodes in prose |
+| **node** | a history node, meaning a process | a history process, as everywhere in Temporal; and separately `waltz.Layer`, the composition such a process builds, which is what "the node's budget" and "the node's config" are about | the composition is called the composition where the difference matters; `history_node` rows of the event tree are never called nodes in prose |
 | **range** | the shard's rangeID | a task deletion range, or a task read range | `rangeID` is always one word |
 | **immediate** | nothing in particular | two different things, and they never appear in one sentence: an *immediate transaction* is one a store settles without a distributed coordinator, while an *immediate category* is a task category keyed on task id rather than on a fire time | the noun after the word is always written |
 | **state** | a workflow's mutable state | `cycle.State`, one of `running`, `halted-lost`, `halted-invariant` | the three values are written in full, never "halted" or "lost"; the workflow's is always "mutable state" |
 
-**Watermark** is the one that will bite you in these pages rather than in principle: this chapter
-uses it for the applied position within a few lines of the drain's triggers, and the code calls the
-triggers `window.Watermarks`.
+**Watermark** is the pair most easily crossed. In this chapter the word alone always means
+appliedSeqno; the drain's size thresholds appear a few lines away and are called triggers
+throughout, even though the code spells them `window.Watermarks`.
 
 ## The glossary, in reading order
 
@@ -298,11 +299,21 @@ precondition check — both suggest something the store would repeat, and this i
 **Watermark.** Unqualified, it means appliedSeqno: the position a drain moves. The apply cycle's
 age and size **triggers** are a different thing and are always called triggers.
 
-**Cut point.** The highest seqno a partial drain may acknowledge: the entry before the first one it
-did not apply, which after a condition failure is one below the lowest entry answering for any
-diverged row. `apply.InvariantViolationError.CutSeqno` is the spelling, and a zero there means
-nothing may be acknowledged at all. Applying past a cut point, and acknowledging up to a cut point
-set above what was applied, are the same bug.
+**Cut point.** The highest seqno a partial *re*-drain would be entitled to acknowledge after a
+condition failure: one below the lowest entry answering for any diverged row. Nothing re-drains
+partially today, so the field is forensic — it is what an operator, or a future partial re-drain,
+could stand on. `apply.InvariantViolationError.CutSeqno` is the spelling, and a zero there means
+nothing may be acknowledged at all. Applying anything above a cut point would leave entries applied
+above any watermark the drain could set.
+
+**Provisional entry.** An entry whose condition had **not** been verified when it became durable,
+because the drain carrying it is what answers its caller: every write of sync mode. Its promise is
+"this will be applied, or its caller will be told it was not", so a condition failure on it at
+replay is a **drop** rather than a halt, which is what the same failure on any other entry is. The
+writer marks it at the append — `mutation.EncodeProvisional` rather than `mutation.Encode`, and
+replay reads the bit back — because the two classes cannot be told apart afterwards.
+*Not to be confused with:* unconfirmed, speculative — both describe an entry that is not acked, and
+this one is.
 
 **Replay.** What a new owner does with the tail it inherits: read `(appliedSeqno, commitSeqno]` from
 the retained log, fold it into a fresh accumulator, drain. Three things about where it sits:
@@ -348,8 +359,10 @@ Three things about how the refusal is raised:
 *Not to be confused with:* throttling, rate limit — both name a pace, and this is a bound on memory.
 
 **Overlay.** The read interface of the fold accumulator: a read is the base row from the cold store
-plus what the window holds for that workflow, gated at commitSeqno. `fold.RunShape` is the whole of
-what a reader branches on — absent, snapshot, delta, tombstone.
+plus what the window holds for that workflow, gated at commitSeqno. `fold.RunShape` — absent,
+snapshot, delta, tombstone — is what a run read branches on, and `fold.CurrentShape` — unheld,
+written, gone, guarded — is what a current-execution read branches on. Together they are the whole
+of it.
 
 **Merge-on-read.** One page of a task read answered from the window and the cold store at once:
 ascending, deduplicated, inside the requested range, and no longer than the caller's batch size. The
@@ -368,9 +381,13 @@ the layer names a column, and none may name a store. `cold/memcold` is the one i
 those two interfaces here: Temporal's own SQL persistence, embedded whole, over a SQLite database
 that lives in this process and dies with it. Everything above the seam is exercised against it, and
 it is a real store rather than a stub — Temporal's own persistence suites judge it exactly as they
-judge a plugin. A deployment supplies its own, and what it owes is the four obligations in
-[chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for).
-*Not to be confused with:* "main storage", "base" — both overloaded.
+judge a plugin. A deployment supplies its own, and what it owes is four things, each stated on
+`cold.Applier` and `cold.Watermarker`: one drain is one transaction, the watermark commits inside
+it, the epoch is asserted first, and the outcome comes back in `apply`'s five classes. What each
+demands of the cycle is [chapter 04](04-contracts.md#apply--what-a-drains-outcome-demands), and why
+the watermark has to ride that transaction is [the recovery
+rule](04-contracts.md#the-recovery-rule-the-watermark-exists-for) there. *Not to be confused with:*
+"main storage", "base" — both overloaded.
 
 **WAL backend.** An implementation of the log contract: order, fencing, cumulative ack,
 gap-freedom, readback. `wal/memwal` is the one this library ships — the same contract in process
@@ -412,6 +429,9 @@ Terms from elsewhere in the handbook, stated once so they are not re-derived:
 
 * **passthrough / intercept** is what the wrapper does —
   [chapter 01](01-overview.md#what-mode-names-here) owns it;
+* **sync / windowed** is what window the cycle keeps — the same section of
+  [chapter 01](01-overview.md#what-mode-names-here) owns it, and
+  [chapter 08](08-configuration.md) has the key;
 * the **checker** and the **witness** are what judges the layer rather than parts of it —
   [chapter 11](11-verification.md#the-words-for-what-judges-the-layer) owns their vocabulary.
 
@@ -460,8 +480,8 @@ That is the spine rather than the whole vocabulary. What is deliberately not on 
 
 ## The log picture
 
-One shard's log, left to right, with the two watermarks and the third position the tail is actually
-measured from.
+One shard's log, left to right, with the two durable positions — the log's `commitSeqno` and the
+cold store's `appliedSeqno` — and the third, in-memory one the tail is actually measured from.
 
 ```mermaid
 graph LR
@@ -736,8 +756,10 @@ Two shapes are worse than a repeated word, and they are the ones to look for.
   question on `tailstate.Mirror` — the copy of those counters that goroutines other than the loop
   read — answers with a seqno. So the mirror's method is `StalledAt`: a position says so in its name.
 * **One question, two answers that disagree.** `CurrentView.Held` and `workflowAcc.assertsCurrent`
-  are both "does the window hold this row", and they part company on a guarded current row,
-  correctly — one is a read question and the other a partition question. Neither name said which.
+  are both "does the window hold this row", and they part company on a *guarded* current row — one
+  the window has only `DeleteCurrentWorkflowExecution` guards over, with no write above them
+  (`fold.CurrentGuarded`) — correctly: one is a read question and the other a partition question.
+  Neither name said which.
 
 A pair like that passes every review, because each half is right.
 
@@ -769,8 +791,8 @@ of the two shapes above, which are the ones that cost something.
   [`../../fold/check.go`](../../fold/check.go) — the accumulator, and the condition
   authority's recorded/discarded partition.
 * [`../../fold/overlay.go`](../../fold/overlay.go) and
-  [`../../fold/taskpage.go`](../../fold/taskpage.go) — the overlay's four run shapes and
-  the merge-on-read pagination rule.
+  [`../../fold/taskpage.go`](../../fold/taskpage.go) — the overlay's four run shapes, its four
+  current-execution shapes, and the merge-on-read pagination rule.
 * [`../../fold/merge.go`](../../fold/merge.go) — I8's mechanics: the per-key
   upsert-versus-delete resolution, and the task concatenation that survives every barrier.
 * [`../../fold/histtasks.go`](../../fold/histtasks.go) — I7: ranges, what they drop, and

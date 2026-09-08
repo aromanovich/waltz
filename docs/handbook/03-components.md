@@ -196,6 +196,7 @@ graph LR
   WR -.->|"x"| STORE
   N -.->|"x"| STORE
   F -.->|"x"| A
+  WR -.->|"x"| C
   MET -.->|"x"| C
   MET -.->|"x"| F
 ```
@@ -204,7 +205,8 @@ How to read this. Every arrow, solid or dashed, points from the importer to the 
 import. The solid ones are the legal imports: `wal` imports nothing else in this tree, so every chain
 ends there, and the root package starts them. The dashed `x` arrows are the bans that matter most:
 
-* **`wal` and its implementations may not import the Temporal server.** An entry's payload is opaque
+* **`wal` and its implementations may not import the Temporal server** — the arrow shows the
+  narrower half of it, that they may not import a persistence implementation. An entry's payload is opaque
   bytes and `wal.Log`'s five methods name no Temporal type, so somebody writing a log over a new
   backend has one thing to satisfy — `waltest.RunContractSuite` — and never has to learn what a
   history shard is.

@@ -369,8 +369,10 @@ fails.
 
 Two errors are the caller's to handle. `Decode` returns `ErrUnknownCategory` when an entry names a
 task category this process does not have; fail the replay rather than skip the group, which would
-drop that group's tasks silently. `Encode` returns `ErrCassandraBlob` when a CHASM node carries a
-Cassandra-encoded blob the mirror has no home for.
+drop that group's tasks silently. `Encode` returns `ErrCassandraBlob` when a CHASM node — a component of the server's newer
+state-machine framework, which persists its own blobs alongside the mutable state — carries a
+Cassandra-encoded blob that the record has no field for. What the record is a mirror of, and why
+that matters, is the next section.
 
 The registry is a parameter rather than a package default because it is the one input that is not a
 function of the bytes: the same payload decodes on one node and fails on another. `Encode`, by
@@ -393,8 +395,10 @@ over every mirrored request struct and fails on a field with no recorded decisio
 of *carried*, *derived* or *dropped*, with a reason required for the last two. Which structs it
 walks is decided by `kinds.go` rather than by a hand-kept list, and
 `TestEveryKindsRequestStructIsWalked` holds it to that. A Temporal bump that adds a field is
-*expected* to fail this test; that failure is the mechanism, and updating the fingerprint is never
-the fix.
+*expected* to fail this test; that failure is the mechanism. The guard holds two things and a bump
+usually trips both: the per-field decisions, and a `fingerprint` — one hex digest per request struct,
+recorded in `mutation/fieldset_test.go` — that catches a struct changing shape without a field being
+named. Recording the new digest is never the fix on its own; the field it moved needs a decision.
 
 ## `fold` — the exported surface
 
@@ -691,7 +695,9 @@ One `Diverged` names one row, with four parts:
 ### The recovery rule the watermark exists for
 
 `cold.Watermarker` is one method — `Watermark(ctx, shard) (wal.Seqno, bool, error)` — and it is the
-only read this layer makes of the cold store outside a drain. The rule it exists for is: **after an
+only read this layer makes through the `cold` seam. It is not the layer's only read of the cold
+store — the cycle drives `baserow.Rows.Run`, `baserow.Rows.Current` and `fold.BasePage` against it
+too — but those go through the base store the wrapper decorates. The rule it exists for is: **after an
 unknown outcome, read `appliedSeqno` before anything else, whatever the drain appeared to do.**
 
 The watermark rides the drain's own transaction, so it moved if and only if the batch committed, and
@@ -706,6 +712,12 @@ did not; `ok` false means no drain ever committed for the shard. The caller owns
 (I5): the seqno asked about must name one drain and no other. And "it did not commit" is **not** an
 instruction to re-apply — the window is already drained, so a batch rebuilt from it would stand on
 mutated state.
+
+What happens to the acknowledged writes in that batch, then, is the question this rule leaves open,
+and the answer is that they are still in the log. A shard that reads its watermark below the drain
+it was asking about halts on the invariant side, which keeps the entries and stops the trim, so the
+next owner replays them — [chapter 05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read)
+follows that path and [chapter 06](06-shard-lifecycle.md) has the halt.
 
 One obligation on the composition rather than on either interface: **the `Applier` and the
 `Watermarker` must be the same cold store.** A writer moving one watermark while a watermarker reads
@@ -829,7 +841,7 @@ archival is configured. A nil `Logger` becomes a noop logger and a nil `Metrics`
 * `cold.Applier` — `Apply(ctx, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error`.
   `memcold.Store` satisfies it, and so does `internal/verify/coldtest.Cold`.
 * `cold.Watermarker` — `Watermark(ctx, shard wal.ShardID) (wal.Seqno, bool, error)`. The recovery
-  half of the same seam, and the only read this package makes of the cold store.
+  half of the same seam, and the only read this package makes through the `cold` seam.
 
 ### The package's own errors
 

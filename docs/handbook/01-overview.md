@@ -115,11 +115,13 @@ write can be refused without consuming a seqno, and nothing is in the log. After
 the record exists and cannot be withdrawn, so it will be settled by this process's next drain or,
 if this process dies, by whoever replays the log. The caller does not hear about it until step 5.
 
-That boundary is also why a drain failure under a window is nobody's answer. By the time the drain
-runs, every caller whose mutation is in it has already been told the write succeeded, so the failure
-cannot be returned to any of them and cannot be attributed to any one of them. (Sync mode is the one
-exception, and chapter 08 is where it is described.) [Chapter 05](05-write-path.md) follows that
-distinction through every failure class.
+That boundary is also what makes a drain failure hard to attribute. A drain runs on some caller's
+call — the one whose write tripped a trigger, at step 5 — and that caller does get the error back.
+But the other 255 mutations in the batch belong to callers who were acked long ago and have gone, so
+one caller is handed a failure for work that is mostly not its own, and its own mutation is durable
+in the log whatever the answer says. The failure is real, it reaches somebody, and it identifies
+nobody. (Sync mode is the one exception, and chapter 08 is where it is described.) [Chapter
+05](05-write-path.md) follows that distinction through every failure class.
 
 ## The system map
 
@@ -221,13 +223,15 @@ With the layer, that same call is:
   expectation is invariant [I9](02-concepts-and-invariants.md#the-invariants). It is what makes an
   append cheaper than the cold-store transaction it replaces, and nothing in this tree can check it
   for a backend it has never seen;
-* plus a **share** of one later apply transaction. At the shipped watermarks that transaction
+* plus a **share** of one later apply transaction. At the shipped triggers that transaction
   carries up to 256 mutations.
 
 The layer therefore still performs one durability write per call: it replaces each cold-store
-transaction with a log append and amortises only the later cold-store work. Whether that is a win
-depends entirely on the log being cheaper than the store, which is a property of the pair a
-deployment chooses and not of this library.
+transaction with a log append and amortises only the later cold-store work. What that buys does not
+depend on the append being cheaper than the transaction it replaced: N transitions become N appends
+plus one cold-store transaction per 256 of them, whatever an append costs. Whether each *call* also
+gets faster is a different question, and one this layer does not promise — see the note on latency
+below.
 
 Event history costs the same on both sides of that comparison, because the layer does not touch it.
 `wrapper.ExecutionStore.appendEvents` puts each of the mutation's event slots down through the base
@@ -279,6 +283,12 @@ positions:
 
 Intercept says nothing about the window, and the window means nothing without intercept.
 
+Only one of those four positions is a deployment: intercept, windowed. `sync` sets the window to one
+mutation, so nothing collapses and a write costs an append *plus* an apply transaction — more than
+the store alone. It exists to make a single write attributable while you are measuring, and
+[chapter 08](08-configuration.md#2-table-1--the-wal-sections-keys) says so at length. The rest of
+this book describes the windowed path and names sync only where it changes an answer.
+
 **Passthrough vs intercept.** The switch is exactly one field, `wrapper.Options.Layer`: nil is
 passthrough, non-nil is intercept. In passthrough every call goes to the base store untouched, and
 the wrapper observes nothing — not even a metric. There is no cycle, so there is no window to size.
@@ -294,10 +304,14 @@ In intercept the wrapper takes **eleven** of `ExecutionStore`'s 28 methods into 
   because the log's deletion record is a range per category and has no shape for a single key;
 * **the other sixteen transit**, exactly as they do in passthrough.
 
-[Chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) has the method table;
-[chapter 07](07-read-path.md) has the three reads; and why the two task calls are records
-while shard writes and event history are not is the **task record** entry of
-[chapter 02](02-concepts-and-invariants.md#the-glossary-in-reading-order).
+[Chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) has the method table; [chapter
+07](07-read-path.md) has the three reads; and what makes the two task calls records at all — they
+name no run and assert nothing — is the **task record** entry of [chapter
+02](02-concepts-and-invariants.md#the-glossary-in-reading-order). Why the two exclusions above are
+excluded is argued where each belongs: [chapter
+13](13-designs-that-were-rejected.md#the-shards-own-writes-deferred-into-the-log) for the shard's
+own writes, and [chapter
+12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first) for event history.
 
 Two things about the shipped windowed configuration are worth knowing early. The first:
 **a caller's condition is judged before the append**, from the window itself plus a read of the
@@ -332,9 +346,10 @@ operator does about a halt is [chapter
   interface rather than in the store: the layer offers no operation that atomically changes two
   shards, however capable the store underneath may be.
 * **Not a general-purpose queue.** The log carries `ExecutionStore` mutations and history-task
-  calls only. Shard writes (`GetOrCreateShard`, `UpdateShard`, `AssertShardOwnership`) stay
-  immediate, because rangeID is both the fencing token and the task-id allocator; event history
-  stays immediate too, and matching, visibility and cluster metadata never enter the layer at all.
+  calls only. Shard writes (`GetOrCreateShard`, `UpdateShard`, `AssertShardOwnership`) go straight
+  to the store, because rangeID is both the fencing token and the task-id allocator; event history
+  goes straight through too, and matching, visibility and cluster metadata never enter the layer at
+  all.
 * **Not a sidecar.** The layer is a library inside a custom `temporal-server` main, reached through
   the standard data store factory extension point. Process death is therefore an ordinary
   history-node failure.
@@ -343,7 +358,7 @@ operator does about a halt is [chapter
   settles it, the truth about a shard is the accumulated window in one process's memory. A direct
   query against the store's tables, a backup, a dump or a second service reading those rows sees the
   shard as of the last committed drain — behind by up to a whole window (256 mutations, 256 KiB or
-  5 s at the shipped watermarks), and by the whole tail while an applier is stalled. Nothing marks
+  5 s at the shipped triggers), and by the whole tail while an applier is stalled. Nothing marks
   those rows as stale; they answer confidently. A consumer that must not miss acknowledged work goes
   through the layer's own read path, which is
   [chapter 07](07-read-path.md#1-route-only-reads-whose-answer-can-be-split).
@@ -379,7 +394,7 @@ above is [chapter 08](08-configuration.md).
 * [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — the one window onto
   shard ownership, and how an acquire is told from a heartbeat.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — the state machine and `cycle.Defaults()`'s
-  shipped watermarks.
+  shipped triggers.
 * [`../../cold/cold.go`](../../cold/cold.go) — `Applier` and `Watermarker`, which are the whole of
   what the layer asks of a cold store, and [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go)
   is the one that ships.
