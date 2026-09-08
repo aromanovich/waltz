@@ -434,17 +434,20 @@ sequenceDiagram
   AP-->>CY: ShardOwnershipLostError — apply.ClassShardLost
   Note over CY: halt, state = halted-lost — the window is dropped, nothing is trimmed
   Note over CY: wal_halts{state="halted-lost"} + 1
-  CY-->>CY: every later write and the two mutable-state reads are refused
+  CY-->>CY: every later write is refused, and the two mutable-state reads while the tail is non-empty
   NX->>CS: Fence the log at the new epoch, read the watermark
   NX->>NX: replay every entry above appliedSeqno, then drain
 ```
 
 This is fencing working, not an incident. The halted cycle **keeps its log entries** and trims
-nothing: those entries are exactly what the next owner replays. A caller still on the line — the
-write whose drain this was — gets `*p.ShardOwnershipLostError`. `storeError` is the function that
-turns a cycle's answer into the store's own error type, and halted-lost is the one cycle state it
-translates, so the shard re-acquires. What the next owner does with the inherited tail is
-[chapter 06](06-shard-lifecycle.md).
+nothing: those entries are exactly what the next owner replays. They are also why the two reads
+refuse here — a non-empty tail means the layer knows the cold store is incomplete and cannot say by
+what. A halted-lost cycle whose tail *is* empty passes a mutable-state read through to that store
+instead ([chapter 07](07-read-path.md#2-routing-a-read-and-drainonread)). A caller still on the
+line — the write whose drain this was — gets `*p.ShardOwnershipLostError`. `storeError` is the
+function that turns a cycle's answer into the store's own error type, and halted-lost is the one
+cycle state it translates, so the shard re-acquires. What the next owner does with the inherited
+tail is [chapter 06](06-shard-lifecycle.md).
 
 ## 6. Failed drain — an invariant was violated
 

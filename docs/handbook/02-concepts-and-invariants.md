@@ -2,11 +2,10 @@
 
 ## Three positions, not two
 
-Suppose a caller has received success, but the corresponding mutable-state row in the cold store
-has not yet changed.
-The write is neither pending nor complete in the ordinary database sense. It is durable in the log,
-visible through the layer, and waiting to be folded into the cold store. Most of this design follows
-from taking that interval seriously.
+Suppose a caller has received success, but the corresponding mutable-state row in the cold store has
+not yet changed. The write is neither pending nor complete in the ordinary database sense. It is
+durable in the log, visible through the layer, and waiting to be folded into the cold store. Most of
+this design follows from taking that interval seriously.
 
 One shard therefore has three significant positions:
 
@@ -28,10 +27,10 @@ is still open.
 
 The same entries also have an in-memory shape, called a **window**, but the window is not the tail.
 The tail is a range of log positions. The window is a slice of that range, folded into one summary
-per dirty workflow; a partial drain may take only a prefix. A drain empties the window when it starts
-and releases the corresponding tail only after the outcome is known. If the outcome cannot be read,
-the window is empty and the tail is still charged, which is exactly what the process can say: those
-entries were acknowledged, and nobody here knows whether they were applied.
+per dirty workflow. A drain empties the window when it starts and releases the corresponding tail
+only after the outcome is known. If the outcome cannot be read, the window is empty and the tail is
+still charged, which is exactly what the process can say: those entries were acknowledged, and
+nobody here knows whether they were applied.
 
 Those three positions and the window are the whole geometry, and the rest of this chapter is the
 vocabulary and the rules that hang off them. It defines every term the handbook uses in a narrow
@@ -186,12 +185,11 @@ means for the tasks on either side of it is [I7 below](#i7-at-more-length).
 *Not to be confused with:* an ack level, which is a standing per-category cursor a queue keeps above
 the store. A deletion range is one caller's request, and it dies with the drain that carries it.
 
-**Window.** The slice of the tail that one apply batch folds. In the general case it is the whole
-tail; a partial drain takes a prefix. Fold's rule is stated over a window: for each run, the
-assertion that reaches the drain is the one carried by the *first* mutation of that run in the
-window, and the data is everything folded after it (**condition authority**, below).
-`cycle/window.Window` counts what has been folded since the last drain, and its bytes are not the
-tail's.
+**Window.** The slice of the tail that one apply batch folds; in the general case it is the whole
+tail. Fold's rule is stated over a window: for each run, the assertion that reaches the drain is the
+one carried by the *first* mutation of that run in the window, and the data is everything folded
+after it (**condition authority**, below). `cycle/window.Window` counts what has been folded since
+the last drain, and its bytes are not the tail's.
 
 **Fold, and the accumulator.** Fold is the compaction of a window: merging one workflow's mutations
 into one summary update. `fold.Accumulator` is the value that holds it. The rules are mechanical
@@ -421,14 +419,13 @@ Terms from elsewhere in the handbook, stated once so they are not re-derived:
 ### How the terms relate to each other
 
 The entries above build one object. A **shard** is the unit: one **cycle** goroutine, one log, one
-accumulator, and nothing crossing to another shard.
-The log carries **mutations**, one per entry, each at a **seqno**, and is acked to **commitSeqno**.
-What is acked and not yet settled is the **tail**; the prefix of it one drain will take is the
-**window**; **fold** compacts that window into the **accumulator**, and how far it compacts is the
-**collapse ratio**. The accumulator is then two things at once — what answers reads, through the
-**overlay** and **merge-on-read**, and what a **drain** hands to **apply** as one transaction. That
-transaction moves **appliedSeqno**, the unqualified **watermark**, and **trim** deletes the log at or
-below it.
+accumulator, and nothing crossing to another shard. The log carries **mutations**, one per entry,
+each at a **seqno**, and is acked to **commitSeqno**. What is acked and not yet settled is the
+**tail**; the prefix of it one drain will take is the **window**; **fold** compacts that window into
+the **accumulator**, and how far it compacts is the **collapse ratio**. The accumulator is then two
+things at once — what answers reads, through the **overlay** and **merge-on-read**, and what a
+**drain** hands to **apply** as one transaction. That transaction moves **appliedSeqno**, the
+unqualified **watermark**, and **trim** deletes the log at or below it.
 
 ```mermaid
 graph TD

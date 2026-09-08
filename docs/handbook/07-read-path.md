@@ -536,19 +536,19 @@ checkpoint**. The exact share is a workload measurement, not a constant of the i
 `wal_dropped_tasks` and `wal_written_tasks` to calculate it for the deployment. The shipped cadence
 gives the anchor to read it against: `history.timerProcessorUpdateAckInterval` and its transfer,
 visibility, outbound and archival siblings default to 30 s in the vendored server, against the
-layer's 5 s age watermark (`cycle.Defaults().Age`) — **six drains per queue checkpoint**. The two
+layer's 5 s age trigger (`cycle.Defaults().Age`) — **six drains per queue checkpoint**. The two
 ends of that ratio have different owners: the 30 s is the server's, the 5 s is this layer's. The
 server's is the larger of the two, so the size of the drop is set mostly by a knob this layer does
 not hold. Two readings follow:
 
 * a rising share usually means the window is living longer relative to the queues' checkpoints —
   which is the mechanism working, not a fault. Under load it goes the other way: the mutation and
-  byte watermarks fire far more often than the age watermark, so the window is shorter and less is
+  byte triggers fire far more often than the age trigger, so the window is shorter and less is
   dropped.
 * **fewer drains per checkpoint means a bigger share**, and the two ends of the ratio reach that
   from opposite directions, so which knob is cheap depends on which way you are going. To make the
   drop **worth more**, shorten the server's `history.*ProcessorUpdateAckInterval` rather than
-  lengthening this layer's age watermark: a longer window buys the same thing and pays for it in
+  lengthening this layer's age trigger: a longer window buys the same thing and pays for it in
   memory and in replay time. To make the share **smaller**, it is this layer's window that shortens
   — and that is paid in the collapse the layer exists for, which is why the runbook reaches for it
   last.

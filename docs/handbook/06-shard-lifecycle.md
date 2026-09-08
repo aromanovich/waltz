@@ -28,7 +28,7 @@ is [chapter 09](09-operations.md).
 
 For one Temporal **shard**, an **epoch** (`wal.Epoch`) says who may append and a **cycle**
 (`cycle.Cycle`) is that owner's in-process lifetime. The node's registry (`cycle.Manager`) installs
-a cycle when it observes a new epoch. That cycle reads the persistent `applied_seqno` watermark and
+a cycle when it observes a new epoch. That cycle reads the persistent `appliedSeqno` watermark and
 then the retained log above it. Because the in-memory `resolved` position died with the old process,
 the read may include settled no-op entries as well as work that still needs applying. [Chapter
 02](02-concepts-and-invariants.md) owns the full vocabulary; here these pieces form one recovery
@@ -108,7 +108,7 @@ sequenceDiagram
     BS-->>SC: committed
 ```
 
-How to read this: every arrow above the base store happens *first*. If `Fence` fails, the last two
+How to read this. Every arrow above the base store happens *first*. If `Fence` fails, the last two
 arrows never happen, so the database still says the previous owner holds range `N` while this node
 holds no cycle for the shard.
 
@@ -128,7 +128,7 @@ sequenceDiagram
     WS-->>SC: the acquire fails, the rangeID does not move
 ```
 
-How to read this: the heartbeat (top) never reaches the layer, so a shard that is merely alive costs
+How to read this. The heartbeat (top) never reaches the layer, so a shard that is merely alive costs
 the layer nothing; the refusal (bottom) happens in `Manager.ShardAcquired`, before the log is
 touched.
 
@@ -274,7 +274,7 @@ read or write alike.
 sequenceDiagram
     participant REQ as first read or write
     participant CY as the new owner's Cycle goroutine
-    participant WM as cold.Watermarker (applied_seqno)
+    participant WM as cold.Watermarker (appliedSeqno)
     participant LOG as wal.Log
     participant CS as cold store
     REQ->>CY: queued on the loop
@@ -288,7 +288,7 @@ sequenceDiagram
     CY->>REQ: now served
 ```
 
-How to read this: the request is not refused, and there is no "replaying" flag for anyone to check.
+How to read this. The request is not refused, and there is no "replaying" flag for anyone to check.
 It is simply parked on the loop behind the replay, on its own context. That placement **is** the
 readiness gate. It also means a *read* triggers replay exactly as a write does, which is a
 correctness requirement rather than an optimisation. A read answered from a cold store the log is
@@ -329,12 +329,11 @@ Six rules the loop applies, entry by entry:
   owner concluded about it. That is why `resolved` may die with the process while the other two
   positions survive it: `commitSeqno` is readable from the log and `appliedSeqno` from the cold
   store.
-* **transactions are cut by the two size watermarks only** — `Mutations` and `Bytes`, the same pair a
-  running cycle drains on, so a replayed transaction is the size of an ordinary one. The age
+* **transactions are cut by the two size watermarks only** — `Mutations` and `Bytes`, the same pair
+  a running cycle drains on, so a replayed transaction is the size of an ordinary one. The age
   watermark is not consulted, since every entry here is already as old as the incident. Replay also
-  has **no bound of its own**:
-  invariant I10 bounds what a *running* cycle acks, and a tail that somehow exceeds it must still be
-  replayed or the shard is unrecoverable.
+  has **no bound of its own**: invariant I10 bounds what a *running* cycle acks, and a tail that
+  somehow exceeds it must still be replayed or the shard is unrecoverable.
 
 ### What replay does not need
 
@@ -350,7 +349,7 @@ Six rules the loop applies, entry by entry:
   is missing: it advances once per committed transaction, and a transaction carries a whole folded
   batch, so there is no arithmetic from a version back to a seqno. A batch that committed but was
   never heard from reads exactly like a batch that never happened. Only the commit itself can record
-  the position — which is what `applied_seqno` is, and why it is written inside the drain's own
+  the position — which is what `appliedSeqno` is, and why it is written inside the drain's own
   transaction.
 
 ### An abandoned attempt gives back what it took
@@ -471,7 +470,7 @@ sequenceDiagram
     L->>L: Log.Close — whatever the backend held around the log
 ```
 
-How to read this: the registry is emptied in one step, so a second `Close` finds nothing to drain.
+How to read this. The registry is emptied in one step, so a second `Close` finds nothing to drain.
 One ordering constraint is the caller's rather than the layer's, and it sits outside this diagram on
 both sides — the cold store the applier writes through must still be open when `Shutdown` runs. The
 server closes its own data store factory on the way down, so a layer whose applier rides that factory

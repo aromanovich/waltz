@@ -26,7 +26,7 @@ This chapter is the reference for the interfaces themselves. For the mechanism b
 [chapter 03](03-components.md) for who stands where, [chapter 05](05-write-path.md) for a write end
 to end, [chapter 06](06-shard-lifecycle.md) for ownership and replay, and
 [chapter 07](07-read-path.md) for the overlay and the task merge. The invariants cited by number
-below — I1, I2, I4, I5, I7, I10 and I11 — are stated in
+below — I1, I2, I4, I5, I7, I9, I10 and I11 — are stated in
 [chapter 02](02-concepts-and-invariants.md), and the metrics that watch them are in
 [chapter 10](10-metrics.md).
 
@@ -802,7 +802,7 @@ condition failure at the drain is returned to its caller instead of halting the 
 The knobs pair up. `Mutations` and `Bytes` are the two size triggers, whichever trips first.
 `TrimEvery` and `TrimAfter` are the trim cadence, whichever trips first. `HardMaxEntries` and
 `HardMaxBytes` are invariant I10's bound on one shard's tail — what has been acked and not yet
-applied — and neither unit works alone: one workflow near the server's 8 MB mutable-state limit
+settled — and neither unit works alone: one workflow near the server's 8 MB mutable-state limit
 turns an entries-only bound into a byte budget with no ceiling, and bytes alone bound no replay.
 
 `CheckBudget() error` asserts the node's arithmetic: `HardMaxBytes × MaxShards` must fit
@@ -857,7 +857,7 @@ to start. Its surface:
 | `Use(h metrics.Handler)` | the wrapper's `MetricsSink`. First call wins; a nil handler is ignored |
 | `Shard(shard) *Cycle` | internal callers that have already resolved a shard; nil when this node has not acquired it |
 | `Totals() Totals` | a witness |
-| `Close(ctx)` | shutdown — drains and stops every cycle. The one moment a tail is drained without a trigger asking for it |
+| `Close(ctx)` | shutdown — drains and stops every cycle. The one moment a tail is drained without a size or age trigger asking for it; the drain is tagged `trigger="explicit"` |
 
 `cycle.BaseTasks` is a type **alias** for the task-read closure, deliberately: the two packages that
 must agree on the signature may not import each other, so `wrapper.ShardReader` spells the function
