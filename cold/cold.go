@@ -23,7 +23,11 @@
 //     not.
 //  3. The epoch is asserted first, and the store refuses the whole batch if it
 //     has moved. Fencing is what makes the layer a shard's single writer, and an
-//     applier that writes under a stale epoch has two.
+//     applier that writes under a stale epoch has two. Nothing else in the
+//     transaction stands behind this one for every batch: the run rows carry a
+//     version that a second owner would have moved, but a window of task work
+//     asserts nothing at all, so a range completion drained under an epoch that
+//     is gone deletes rows the shard's real owner acked.
 //  4. The outcome comes back in [apply]'s five classes. Committed, refused,
 //     shard lost, invariant violated, unknown outcome: the cycle branches on
 //     them, and the fifth is the one a store gets wrong by rounding an ambiguous

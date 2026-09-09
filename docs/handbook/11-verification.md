@@ -363,6 +363,62 @@ claims about the layer's arithmetic across an owner change rather than durabilit
 store. And neither crash falls inside an append — an entry that may or may not be durable is
 `wal/waltest`'s subject, above.
 
+### Two owners at once, and each fence on its own
+
+Every run above changes hands through one `cycle.Manager`, where `ShardAcquired` installs the fresh
+cycle and retires the previous one — which stops its goroutine. So the predecessor never acts again,
+and neither of the two fences that exist to stop it is asked anything. A node that lost its lease is
+not told: its cycle stays alive with a window in it, its timers keep running, and it finds out by
+acting. Two nodes are two `cycle.Manager`s over one log and one store, and
+`acceptance_twonode_test.go` already builds that pair — for one question, whether a drain's witness is
+owner-scoped, with an applier that parks the drain and answers without passing the batch down.
+`acceptance_handover_test.go` is where a fenced owner's batch reaches the database, in the three cases
+that shape has.
+
+The two fences each stop one of the two things such a node can still do, which is why either looks
+redundant from where the other stands. The log's stops the appends, and it is in place before the range
+id moves ([the order `UpdateShard`
+imposes](06-shard-lifecycle.md#what-managershardacquired-does-with-the-epoch-it-is-handed)), so a write
+by the old owner is refused while the database still names him owner. The cold store's epoch CAS stops
+the drains, which need neither an append nor a caller: a shutdown drain and the age timer both fire out
+of a full window on their own.
+
+`TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` is the first of them. The successor fences
+the log and takes the range id; the predecessor, holding a tail, writes. The write is refused, the
+cycle is in `StateHaltedLost`, the watermark has not moved and the log has not grown by the entry it
+refused — the append is where this stopped, so the drain's own fence was never reached. Then the
+successor replays exactly the entries between the watermark and the last ack. What the run pins is the
+*translation*: staging a fenced append that raises no halt leaves the caller holding the log's own
+error, which the history service's write path does not recognise and answers with a background
+re-acquire rather than its own. The doomed write is drawn from a stream of its own, because a mutation
+this run's generator handed out and the log refused would leave that generator's model of the run a
+version ahead of the database for every later mutation of it.
+
+`TestTheShutdownDrainOfALostShardCommitsNothing` is the composition: 2,000 mutations, a handover in the
+real order, 500 more through the successor — which replays the predecessor's window and writes past it
+— and only then does the predecessor shut down and drain the window it has been holding all along. The
+watermark must not move, no row may go back to the version that window names, and the stream must
+finish into a database identical to the one an uninterrupted owner leaves. It does not say which fence
+spoke, and cannot: a stale window carrying run rows is refused twice over, once by the epoch and once
+by every `db_record_version` in it, the successor having applied those same entries already. Deleting
+the epoch check leaves this run green, which is why it is not the evidence about that check.
+
+`TestAStaleRangeCompletionCannotTakeTheSuccessorsTasks` is. It is the epoch CAS over the one window
+nothing else in the transaction has grounds to refuse, and the reason such a window exists is worth
+stating on its own: **a window's task work asserts nothing.** A range completion is a category and two
+keys; there is no version in it that could have moved. So the predecessor acks one range completion and
+nobody drains it, the shard changes hands, and the successor replays that completion and then writes
+three tasks inside the range it covered and commits them. Then the predecessor shuts down. With the
+epoch check deleted its drain commits and those three rows are gone, and the run says so by name —
+`[120, 150, 180]` against nothing. It is the only place here where a defect in fencing surfaces as
+acknowledged data destroyed rather than as a shard halting.
+
+The same drain also carries a watermark below the successor's, and that half is quieter. It loses no
+row: an owner reading a witness that points under rows the database holds either re-applies entries
+whose assertions have moved on, or meets the gap a trim left below it. Both end in a halt. What it
+costs is a shard nobody can recover without a person, which is the failure mode the strict equality in
+`Watermarker`'s contract is written against.
+
 ---
 
 ## A server, in this process
@@ -605,7 +661,7 @@ drive; they assert nothing. **Judgements** say yes or no.
 
 | package | what it says |
 |---|---|
-| `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, and end up the same whether the stream crossed one owner or six |
+| `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, end up the same whether the stream crossed one owner or six, and lose no row to an owner that kept draining after it had been fenced |
 | `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
 | `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
 | `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the seven cases over the one method those suites do not know about |
@@ -716,7 +772,9 @@ suites above and are stated where they are:
   [`acceptance_seams_test.go`](../../internal/verify/acceptance/acceptance_seams_test.go) is the same shape
   over both real seams, with the ledger that says what the database must hold;
   [`acceptance_recovery_test.go`](../../internal/verify/acceptance/acceptance_recovery_test.go) drives
-  that stream twice and holds the recovered database against the uninterrupted one.
+  that stream twice and holds the recovered database against the uninterrupted one, and
+  [`acceptance_handover_test.go`](../../internal/verify/acceptance/acceptance_handover_test.go) is the
+  two registries a failover really has, with each fence taken on its own.
 * [`../../cold/memcold/conformance_test.go`](../../cold/memcold/conformance_test.go) — Temporal's
   four suites over the shipped store, and why a suite of ours is not beside them;
   [`apply_test.go`](../../cold/memcold/apply_test.go) is the one method they do not reach, and
