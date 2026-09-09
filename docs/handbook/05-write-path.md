@@ -225,12 +225,12 @@ The quieter rules of the drain:
 * **a drain that folds to nothing still settles what it acked**, and moves no watermark. No
   transaction ran, so a watermark moved with it would let the trim delete entries the cold store
   never received, stranding a recovering owner;
-* **an upsert and a delete of one key never both reach the transaction.** A store's query orders
-  every delete before every upsert, so a key the stream upserted and *then* deleted would be deleted
-  first and re-inserted after: it survives, silently, in a transaction that reports success. The
-  pair is resolved in the accumulator instead, where the stream order is still known: the later
-  operation wins and the key leaves the other set (`fold.mergeItems`, over the seven collections a
-  run holds). One level up, a window that wrote the workflow's current row and then removed it emits
+* **an upsert and a delete of one key never both reach the transaction.** A store's query orders a
+  collection's upserts ahead of its deletes, so a key the stream deleted and *then* upserted would be
+  written first and deleted after: the write disappears, silently, in a transaction that reports
+  success. The pair is resolved in the accumulator instead, where the stream order is still known:
+  the later operation wins and the key leaves the other set (`fold.mergeItems`, over the seven
+  collections a run holds). One level up, a window that wrote the workflow's current row and then removed it emits
   **only** the removal (`fold.WorkflowRecord.CurrentRemoved`), and the drain then deletes whatever
   current row it finds rather than the run the request named — that request's guard asks about the
   pre-window row, which is not the row the window left;
