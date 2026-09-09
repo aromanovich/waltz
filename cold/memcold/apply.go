@@ -43,10 +43,11 @@ var _ cold.Applier = (*Store)(nil)
 //     that arrived after a range is one fold deliberately kept, and a delete
 //     running after that insert would take it away — a timer that never fires
 //     rather than a row left behind.
-//  3. the merged requests, in the batch's own tail-seqno order, each preceded
-//     by the assertions fold registered for it: the head-of-window
-//     db_record_version on every run row it touches and, once per workflow, the
-//     current-execution row's.
+//  3. the merged requests, in the batch's own tail-seqno order. Each opens with
+//     the current-execution row where the workflow's record rides it — fold's
+//     head-of-window assertion and then the window's own write, once per
+//     workflow — then the head-of-window db_record_version on every run row the
+//     request touches, then its rows.
 //  4. the shard-level task rows, and the watermark.
 //
 // A client owes the same four things and gets none of them from an
@@ -103,9 +104,10 @@ func (s *Store) Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, b
 // what they answer is [apply.ClassRefused] — an input to fix, with no outcome to
 // recover. Everything a batch is internally consistent about is
 // [fold.Accumulator.Drain]'s postcondition and is not re-derived here; what is
-// left is this call's own pairing, and the two fan-outs whose default arm would
-// otherwise commit a transaction that wrote nothing for the request it could
-// not read.
+// left is this call's own pairing, and the two fan-outs whose unrecognised arm
+// would otherwise commit: an unhandled request kind writes nothing for the
+// request, and a current-row assertion kind fold's own switch has no arm for is
+// confirmed rather than checked.
 func refusals(shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 	if epoch == 0 {
 		return apply.Refuse(errors.New("memcold: epoch 0 is not an epoch to write under"))

@@ -165,7 +165,7 @@ func (c *Cycle) replayEntry(ctx context.Context, s *state, e wal.Entry) error {
 // assertion was verified before its ack cannot legitimately fail, and one that
 // does still halts.
 func (c *Cycle) dropProvisional(s *state, seqno wal.Seqno, held *window.Taken, cause error) error {
-	// The entry was never written, so the watermark may not move over it.
+	// No transaction wrote its rows, so the watermark may not move over it.
 	s.tail.Settle(seqno, held, tailstate.KeepWatermark)
 	s.counted().Dropped++
 	c.deps.Logger.Info("apply cycle: a replayed provisional entry did not apply, and was not meant to",

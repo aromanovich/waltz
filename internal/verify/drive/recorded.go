@@ -39,9 +39,10 @@ type Recorder struct {
 	Epoch wal.Epoch
 
 	// Timeout bounds one call and is released per call rather than at the end
-	// of the run. Zero means the caller's context is the whole of the bound —
-	// which for a driver holding no deadline of its own is no bound at all, so
-	// the third outcome class then only arrives by a kill.
+	// of the run. Zero or less means the caller's context is the whole of the
+	// bound — which for a driver holding no deadline of its own is no bound at
+	// all, so the third outcome class then arrives only from a kill or from an
+	// error checker.Classify has never seen.
 	Timeout time.Duration
 }
 

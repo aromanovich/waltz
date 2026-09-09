@@ -2,8 +2,8 @@ package wrapper
 
 // The interception table against the kinds it is indexed by. What each row
 // *means* is the metrics and intercept suites' business; this is the one
-// direction those cannot state — a kind with no row at all, which raises no
-// counter and tags its metric with the empty string.
+// direction those cannot state — a kind with no row at all, which turns every
+// write of that kind into a refusal.
 
 import (
 	"testing"

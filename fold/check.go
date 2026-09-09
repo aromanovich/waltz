@@ -124,8 +124,9 @@ func (a *Accumulator) Check(m mutation.Mutation) (Delegated, error) {
 	return del, err
 }
 
-// check is [Accumulator.Check] with the counters beside its answer, which only
-// this authority's own corpus measurement reads.
+// check is [Accumulator.Check] with the counters beside its answer: the
+// condition corpus measures them, and the derivation test requires that an empty
+// window record every assertion and evaluate none.
 func (a *Accumulator) check(m mutation.Mutation) (Delegated, coverage, error) {
 	v := a.decide(m)
 	return v.delegated, v.coverage, v.err
@@ -254,10 +255,12 @@ func (a *Accumulator) decideRun(v *verdict, w *workflowAcc, namespaceID, workflo
 // decideCurrent evaluates one current-execution-row assertion, or delegates it.
 // A row the window does not hold is a head, which is [workflowAcc.assertsCurrent].
 //
-// Unlike a run, a discarded current-row assertion is not always determined: a
-// bypass-current write records the head assertion and writes no row, and behind
-// a delete-current the row is neither the window's write nor the pre-window row.
-// Both are refused.
+// Unlike a run, a current-row assertion is not always determined, and three
+// paths refuse rather than answer: a delete-current with no assertion above it
+// tainted the row, so an assertion behind it is refused ahead of the delegation
+// rather than recorded as a head the window never stood on; a bypass-current
+// write records the head assertion and writes no row; and behind a surviving
+// guard the row is neither the window's write nor the pre-window one.
 func (a *Accumulator) decideCurrent(v *verdict, w *workflowAcc, namespaceID, workflowID string, want CurrentAssertion) {
 	if !w.assertsCurrent() {
 		if w != nil && w.cur.tainted {
@@ -293,11 +296,11 @@ func (a *Accumulator) decideCurrent(v *verdict, w *workflowAcc, namespaceID, wor
 // --- the predicates -------------------------------------------------------
 //
 // One assertion against one row, wherever the row came from: the window's own
-// write, the pre-window row read before the append, or the row apply reads back
-// after a failure. The three callers differ in how they find the row and in
-// nothing else, and each answers with the value below — the store's own error,
-// message included, since that is what an operator reading a halted shard's logs
-// compares against the store's.
+// write, the pre-window row read before the append, the rows the drain's own
+// transaction locks, or the row apply reads back after a failure. The four
+// callers differ in how they find the row and in nothing else, and each answers
+// with the value below — the store's own error, message included, since that is
+// what an operator reading a halted shard's logs compares against the store's.
 
 // against evaluates the run-row assertion. exists is whether the row is there
 // and version is its db_record_version, meaningless when it is not.
@@ -432,8 +435,8 @@ func (want CurrentAssertion) VerifyRow(base *p.InternalGetCurrentExecutionRespon
 // The three run-row failures, in the words a Cassandra-shaped store raises them
 // with. The message is part of the answer: an operator reading a halted shard's
 // logs compares it against the store's own, so the two must not diverge. A
-// store whose wording differs is one this text does not match — only the first
-// of the three is upstream's verbatim (see NOTICE).
+// store whose wording differs is one this text does not match — only the version
+// mismatch is upstream's verbatim (see NOTICE).
 
 func runMustNotExist(workflowID string) error {
 	return &p.WorkflowConditionFailedError{Msg: fmt.Sprintf("Workflow %s must not exist", workflowID)}
@@ -451,10 +454,11 @@ func runVersionMismatch(workflowID string, want, actual int64) error {
 	}
 }
 
-// currentConflict is the plugin's own getCurrentWorkflowConflictError, built
-// from the window instead of from a row read back. The payload is exact:
-// [CurrentWrite.StateBlob] is the blob the plugin would have deserialised,
-// RequestIDs included.
+// currentConflict is the plugin's own extractCurrentWorkflowConflictError, built
+// from the window instead of from a row read back. Two fields fall short of the
+// store's: StartTime is never carried at all, and RequestIDs are empty when the
+// window's last current-row writer was a conflict-resolve, whose rendering holds
+// none ([currentWriteOfConflictResolve]).
 func currentConflict(msg string, cw *CurrentWrite) error {
 	st, err := serialization.WorkflowExecutionStateFromBlob(cw.StateBlob)
 	if err != nil {

@@ -2,8 +2,9 @@ package cycle
 
 // The predicates this package's outcomes turn on, each a function of the
 // values it decides over and of nothing else, so decide_test.go can enumerate
-// them without a cycle. Each has a method beside its call site that supplies
-// the values.
+// them without a cycle. Four have a method beside the call site that supplies
+// the values; [noCycleRoute], [supersededRoute] and [storeError] are called
+// from [Manager] directly, where their values already are.
 //
 // The first family is one rule in five moments — what becomes of a read the
 // layer cannot answer out of both its sources ([readRoute]); then I10's
@@ -27,8 +28,8 @@ import (
 type reader int
 
 const (
-	// mutableStateRead has legitimate callers that do not own the shard, for
-	// which a stale answer is what ADR 0003 already costs.
+	// mutableStateRead has legitimate callers that do not own the shard, so a
+	// stale answer is the cost this reader is the one allowed to pay.
 	mutableStateRead reader = iota
 	// taskRead has exactly one caller — the owning shard's queue processors —
 	// and no such thing as a harmlessly incomplete page: the reader completes

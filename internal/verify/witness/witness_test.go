@@ -7,12 +7,13 @@ package witness
 // claim is that the witness says so — by name, so that a red run tells its
 // reader which half of the layer went missing rather than that something did.
 //
-// The shapes are the acceptance's: the mutable-state suite and the task suite,
-// each under both layer windows, plus the two suites that write nothing and
-// the control that has no layer at all. A live run's shape — Totals alone, no
-// store, no emissions — is [Universal] and the claims an absent instrument
-// leaves standing; driving one takes a running server, which is not in this
-// repository.
+// The shapes are the ones a run over the layer takes: the mutable-state suite
+// and the task suite, each under both layer windows, plus the two suites that
+// write nothing and the control that has no layer at all — constructed here
+// rather than captured, since nothing in this package runs a suite. A live
+// run's shape — Totals alone, no store, no emissions — is [Universal] and the
+// claims an absent instrument leaves standing; verify/e2e drives that shape
+// over a server it boots in-process, and is the witness's only caller.
 
 import (
 	"slices"
@@ -336,9 +337,12 @@ func TestKindClaimsFailByName(t *testing.T) {
 }
 
 // TestDescribeReportsTheInstrumentsItWasGiven: the line is what a run leaves
-// behind for a person to read, so a counter cannot go missing from it silently,
-// the zero kinds stay off it, and the optional instruments appear exactly when
-// they were sampled.
+// behind for a person to read, so the counters pinned below cannot go missing
+// from it silently, the zero kinds stay off it, and the optional instruments
+// appear exactly when they were sampled. The rest of the line is unheld:
+// epochs, the six task counters, refusals, replayed, halted and two of the
+// store's labels could each be dropped from Describe's format string and this
+// stays green.
 func TestDescribeReportsTheInstrumentsItWasGiven(t *testing.T) {
 	_, o := windowedRun()
 	o.Emitted[seriesDrains] = []Emission{

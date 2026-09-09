@@ -20,7 +20,7 @@
 // way `mutgen` runs the same four over its stream: an invalid fixture is a bug
 // in the test rather than a case a caller handles, so it panics with what
 // the validator said. That is the whole depth of this package — a caller learns
-// six constructors and gets the store's own admission rules for free, where
+// eight constructors and gets the store's own admission rules for free, where
 // before each package restated a subset of them in a struct literal and none
 // checked any.
 //
@@ -43,8 +43,8 @@
 //     none.
 //   - ConflictResolve. The one shape whose only fixtures are fold's.
 //     Adding it here with no caller would be a guess at what a caller wants; it
-//     belongs here the day a validating caller needs one. [Builder.Set] is here
-//     because `apply` has one.
+//     belongs here the day a validating caller needs one. [Builder.Set] is the
+//     one exception, and a thin one: its only caller is this package's own test.
 package mutbuild
 
 import (
@@ -140,9 +140,10 @@ func (b Builder) Update(ns, wf, run string, version int64, opts ...MutationOpt) 
 	return mutation.Mutation{Update: req}
 }
 
-// Set is the snapshot-bearing write that asserts nothing about the row it
-// replaces: the shape a window's head cannot delegate, and the one whose
-// current-row write comes from what fold recorded rather than from the request.
+// Set is the snapshot-bearing write that asserts nothing about the current row —
+// a set repairs one run's state and claims nothing about which run is current.
+// The run itself it does assert, at the given version − 1, which is the row a
+// fixture has to have staged.
 func (b Builder) Set(ns, wf, run string, version int64, opts ...SnapshotOpt) mutation.Mutation {
 	snap := b.snapshot(ns, wf, run, version, opts)
 	// The store's own rule for a set is the update pair, which is what mutgen

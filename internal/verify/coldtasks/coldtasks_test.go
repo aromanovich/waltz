@@ -83,9 +83,9 @@ func immediateReq(from, to int64, batch int) *p.GetHistoryTasksRequest {
 // silently takes away: the token orders (fireTime, taskID) together, so a timer
 // with a lower id than the page token's is still returned when it fires later.
 //
-// Read it as the model's half of the plugin's own
-// TestScheduledTaskPagingKeepsALowerIDFiringLater. If both halves ever disagree
-// the model is what is wrong, since only one of them is the store.
+// Read it against the plugin's own scheduled-paging test, wherever the
+// deployment keeps it. If the two disagree the model is what is wrong, since
+// only one of them is the store.
 func TestAScheduledPageKeepsALowerIDFiringLater(t *testing.T) {
 	c := New()
 	c.Hold(tasks.CategoryTimer, at(60, 200), at(3600, 100))
@@ -177,8 +177,8 @@ func TestAnImmediateTokenIsWithheldAtTheEndOfTheRange(t *testing.T) {
 }
 
 // TestTheStoreCountsWhatItWasAsked: Calls, Returned and Asked are what a test
-// about round trips reads, so they count pages rather than rows and record the
-// batch size each page was asked for.
+// about round trips reads — Calls and Asked count pages, Asked recording the
+// batch size each was asked for, and Returned counts rows.
 func TestTheStoreCountsWhatItWasAsked(t *testing.T) {
 	c := New()
 	c.Hold(tasks.CategoryTransfer, immediate(1), immediate(2), immediate(3))

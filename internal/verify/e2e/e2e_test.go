@@ -2,9 +2,10 @@ package e2e
 
 // One run, two compositions. The workflow, the worker, the server and the
 // database are identical in both; what differs is the one value handed to
-// temporal.WithCustomDataStoreFactory — the store bare, or the store with the
-// layer in front of it. So a difference between the two arms is the layer's,
-// and there is nowhere else for it to have come from.
+// temporal.WithCustomDataStoreFactory — the wrapper with nothing in its
+// options, or the wrapper carrying this run's layer. So a difference between
+// the two arms is the layer's, and there is nowhere else for it to have come
+// from.
 //
 // The green workflow is the weaker half of what this file says. A server whose
 // layer fell out of the path completes the same workflow just as fast, which is
@@ -39,8 +40,10 @@ import (
 	"github.com/aromanovich/waltz/wrapper"
 )
 
-// budget bounds the whole of one arm — boot, namespace, workflow, drain and
-// shutdown — so a server that comes up and never serves fails rather than hangs.
+// budget bounds one arm up to its last assertion — boot, namespace, workflow
+// and the wait for a drain — so a server that comes up and never serves fails
+// rather than hangs. The shutdown is outside it: [Cluster.Stop] takes no
+// context and [waltz.Layer.Shutdown] detaches from this one.
 const budget = 3 * time.Minute
 
 // drainWait is what the run gives the age watermark once the workflow is over.

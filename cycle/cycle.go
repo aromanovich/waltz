@@ -1,8 +1,8 @@
 // Package cycle is the layer's state machine: one goroutine per (shard, epoch)
-// owns the accumulator, the drain, the apply transaction, the trim and the
-// three reads, so that "who is touching this shard" has one answer.
+// owns the accumulator, the drain, the apply transaction, the trim cadence and
+// the three reads, so that "who is touching this shard" has one answer.
 //
-// It names no cold store (apply owns that boundary); the store is reached only
+// It names no cold store (the seam is [cold]'s); the store is reached only
 // through [cold.Applier], [cold.Watermarker] and the closures a caller passes
 // in. The states exist because ownership loss is discovered rather than
 // announced: a
@@ -42,8 +42,8 @@ type State int
 const (
 	// StateRunning: the shard is this cycle's to write.
 	StateRunning State = iota
-	// StateHaltedLost: the shard was fenced away (I4). The tail is dropped,
-	// nothing is trimmed, and the next owner continues the log.
+	// StateHaltedLost: the shard was fenced away (I4). The window is dropped,
+	// nothing is trimmed, and the next owner replays the tail.
 	StateHaltedLost
 	// StateHaltedInvariant: an assertion failed in a window whose failure could
 	// not be pinned on one caller, so there is no retry and no failover.
@@ -69,7 +69,8 @@ var ErrHalted = errors.New("cycle: the shard is halted")
 
 // ErrTailNotEmpty reports an append refused because the log already holds the
 // seqno the cycle meant to write. A cycle replays past the whole tail before it
-// appends, so this means a second writer at this cycle's own epoch. It halts.
+// appends, so either a second writer holds this cycle's epoch, or one of this
+// cycle's own appends failed ambiguously and was durable after all. It halts.
 var ErrTailNotEmpty = errors.New("cycle: the log holds an entry at a seqno this cycle replayed past")
 
 // ErrBudget refuses a policy whose hard_max × shards per node does not fit the
@@ -158,9 +159,10 @@ func Defaults() Config {
 // the loop re-arms its timer from this field, so a zero fires the tick
 // immediately and then again, forever, at a whole CPU per shard held.
 //
-// It runs at every answer a [Policy] gives and not only at the one it is built
-// from, since [Live]'s getters reach four of these fields and a dynamic-config
-// key set to zero is otherwise that spin, on a running node, with no restart.
+// [Fixed] runs it once, at construction. [Live] runs it again at every answer,
+// because one of its five getters reaches a field filled here — the age — and a
+// dynamic-config key set to zero is otherwise that spin, on a running node, with
+// no restart.
 func (c *Config) fill() {
 	if c.timeSource == nil {
 		c.timeSource = clock.NewRealTimeSource()
@@ -282,8 +284,8 @@ type Cycle struct {
 	stop *channel.ShutdownOnceImpl
 	done chan struct{}
 
-	// last mirrors the loop's state so [Cycle.State] can answer after the
-	// goroutine is gone: a stopped cycle reports the state it stopped in.
+	// mirroredState mirrors the loop's state so [Cycle.State] can answer after
+	// the goroutine is gone: a stopped cycle reports the state it stopped in.
 	mirroredState atomic.Int32
 
 	// finished is what the loop counted, written by it on its way out and read
@@ -470,7 +472,7 @@ type state struct {
 	cause error
 
 	acc     *fold.Accumulator
-	started bool // the seqno floor has been read
+	started bool // the floor has been read and the tail replayed
 
 	next wal.Seqno // the seqno the next append takes
 
@@ -1019,10 +1021,10 @@ func (c *Cycle) countTasks(s *state, work fold.TaskWork) {
 	}
 }
 
-// answer returns a condition failure to the caller instead of halting, which is
-// legal only where the window held one mutation and that caller is still
-// waiting for this call: a drained window mixes many writers, so a condition
-// that did not hold cannot be pinned on one of them.
+// answerWriter returns a condition failure to the caller instead of halting,
+// which is legal only where the window held one mutation and that caller is
+// still waiting for this call: a drained window mixes many writers, so a
+// condition that did not hold cannot be pinned on one of them.
 //
 // The entry stays in the log, because an append is not undoable and gap-freedom
 // is what the seqno means, but it is settled: see the resolved field of

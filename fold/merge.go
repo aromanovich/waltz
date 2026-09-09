@@ -8,14 +8,15 @@ import (
 // mergeItems folds one mutation's upsert/delete pair for a single collection
 // into the accumulator's, resolving upsert-vs-delete per key: the later
 // operation wins and the key leaves the other set. Emitted unresolved, the
-// store's query ordering puts every delete before every upsert, so a key
-// deleted after being upserted would silently survive.
+// store issues every upsert before every delete, so a key re-upserted after
+// being deleted would be written and then deleted again — an acked write gone.
 func mergeItems[K comparable, V any](
 	ups map[K]V, dels map[K]struct{},
 	srcUps map[K]V, srcDels map[K]struct{},
 ) (map[K]V, map[K]struct{}) {
-	// Within one source mutation deletes precede upserts, as they do in the
-	// store for a single request's statements.
+	// A key one source mutation both upserts and deletes ends up upserted here
+	// and deleted in the store, which orders the two statements the other way
+	// round.
 	for k := range srcDels {
 		if dels == nil {
 			dels = make(map[K]struct{})
@@ -48,9 +49,10 @@ func applyDelta[K comparable, V any](state map[K]V, ups map[K]V, dels map[K]stru
 	return state
 }
 
-// mergeTasks concatenates task groups in arrival order. Tasks are queue
-// entries rather than workflow state: they never collapse, and they survive
-// every snapshot or tombstone barrier (I7).
+// mergeTasks concatenates task groups in arrival order. Tasks are queue entries
+// rather than workflow state: no snapshot or tombstone barrier collapses them
+// (I8). A range delete still does, out of these slots as out of every other
+// home.
 func mergeTasks(dst, src map[tasks.Category][]p.InternalHistoryTask) map[tasks.Category][]p.InternalHistoryTask {
 	for category, list := range src {
 		if dst == nil {

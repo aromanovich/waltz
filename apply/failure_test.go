@@ -2,8 +2,9 @@ package apply
 
 // The failure classes without a cold store: what Classify says about each way
 // an Apply can end, and what the attribution readback reports when the store
-// rejects a version assertion. The cause is handed to [Attribute] the way an
-// applier hands over what its failing transaction returned.
+// rejects an assertion — a run row's version or the current row. The cause is
+// handed to [Attribute] the way an applier hands over what its failing
+// transaction returned.
 
 import (
 	"context"
@@ -146,9 +147,11 @@ func TestAttributeNamesAMustNotExistViolation(t *testing.T) {
 }
 
 // TestAnIncompleteReadbackAcknowledgesNothing: a cut derived from the prefix
-// the readback managed to scan would let a partial re-drain apply entries of
-// the workflows nobody looked at, above any watermark the failed drain could
-// set. An incomplete scan may only say "nothing".
+// the readback managed to scan would trust the rows nobody read. Any of them
+// can answer for an entry below the lowest divergence that was seen, so that
+// cut can sit too high, and a partial re-drain would then acknowledge an entry
+// standing on a row that had diverged. An incomplete scan may only say
+// "nothing".
 func TestAnIncompleteReadbackAcknowledgesNothing(t *testing.T) {
 	ns := uuid.NewString()
 	wfA, runA := uuid.NewString(), uuid.NewString()

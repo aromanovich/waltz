@@ -202,7 +202,7 @@ func currentCases() []currentCase {
 	completedOther := &rowContent{run: runY, state: enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED, version: 11}
 
 	// "must exist" is the plugin's answer to any assertion but must-not-exist on
-	// a row that is not there (rows/assertions.go:286).
+	// a row that is not there (its current-row assertion's extractError).
 	return []currentCase{
 		{"must not exist, and there is no row", mkCreate(runY), nil, ""},
 		{"must not exist, and a row is in the way", mkCreate(runY), running, "must not exist"},
@@ -348,8 +348,9 @@ func TestWhatTheWindowDoesNotHoldIsDelegated(t *testing.T) {
 	require.Equal(t, runX, del.Runs[0].RunID)
 	require.Equal(t, wfID, del.Runs[0].WorkflowID)
 
-	// A continue-as-new names two runs. The plugin registers no assertion for
-	// the new one, but fold records must-not-exist and apply asserts it.
+	// A continue-as-new names two runs, so an empty window delegates two: the
+	// mutated run's version and the new run's absence, which the store asserts
+	// too.
 	cont := mkUpdate(runX, 4)
 	contNew := snapshot(runY, 1)
 	cont.Update.NewWorkflowSnapshot = &contNew

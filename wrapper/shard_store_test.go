@@ -80,8 +80,9 @@ func TestShardHeartbeatIsNotAnAcquire(t *testing.T) {
 	base.EXPECT().UpdateShard(gomock.Any(), heartbeat).Return(nil).Times(1)
 	require.NoError(t, store.UpdateShard(ctx, heartbeat))
 
-	// The other two ShardStore calls a live shard makes, neither of which
-	// carries an epoch: the first load, and the controller's linger probe.
+	// The other two ShardStore calls a live shard makes, neither of them an
+	// acquire: the first load, whose request has no rangeID field at all, and
+	// the controller's linger probe, which sends the one it already holds.
 	getOrCreate := &p.InternalGetOrCreateShardRequest{ShardID: 7}
 	base.EXPECT().GetOrCreateShard(gomock.Any(), getOrCreate).Return(nil, nil).Times(1)
 	_, err := store.GetOrCreateShard(ctx, getOrCreate)

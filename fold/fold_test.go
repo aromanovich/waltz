@@ -2,8 +2,10 @@ package fold_test
 
 // Unit tests for the fold rules, one rule at a time; nothing here compares a
 // folded store against one the same stream was applied to mutation by
-// mutation. Requests are built by hand: fold treats blobs opaquely, so a
-// two-byte blob exercises the same rule a real one would.
+// mutation. Requests are built by hand: every blob but the current row's
+// execution state is opaque to fold, so a two-byte blob exercises the same rule
+// a real one would. That one is read back, which is what overlay_test.go's
+// withRealState builds.
 
 import (
 	"fmt"
@@ -46,8 +48,7 @@ func taskNames(m map[tasks.Category][]p.InternalHistoryTask) []string {
 
 // mkUpdate builds an update of one run at one version, with the scalar fields
 // a fold moves stamped so data-from-tail is observable. ExecutionState must be
-// set: fold dereferences it, and a fixture without one records no current-row
-// write.
+// set: the fold dereferences it, so a fixture without one panics.
 func mkUpdate(run string, version int64, opts ...func(*p.InternalWorkflowMutation)) mutation.Mutation {
 	req := &p.InternalUpdateWorkflowExecutionRequest{
 		ShardID: int32(shard),
@@ -440,9 +441,12 @@ func TestTombstone(t *testing.T) {
 	require.Equal(t, 3, stats.MutationsIn, "the failed add does not count; the idempotent delete does")
 }
 
-// TestCreateBehindTombstone: the one mutation that may follow a tombstone. Both
-// requests emit in window order, and the Create keeps the head-of-window run
-// assertion, because at apply time the pre-window row is still there.
+// TestCreateBehindTombstone: the only mutation that gives a tombstoned run row
+// state again. A second delete of that run is an idempotent no-op, and neither
+// the current row nor the task kinds are checked against a run's tombstone at
+// all. Both requests emit in window order, and the Create keeps the
+// head-of-window run assertion, because at apply time the pre-window row is
+// still there.
 func TestCreateBehindTombstone(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,

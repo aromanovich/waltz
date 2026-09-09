@@ -559,8 +559,10 @@ func testTwoWritersContendForOneShard(f *fixture) {
 }
 
 // claimant is one contender of [testTwoWritersContendForOneShard]. It records
-// failures instead of asserting them, because a failed assertion in its own
-// goroutine would stop the wrong test.
+// failures instead of asserting them, because require in a goroutine other than
+// the test's stops that goroutine and nothing else: the run goes on with one
+// claimant, whom nobody is left to fence, and can end up failing for never
+// having contended rather than for the violation.
 type claimant struct {
 	f      *fixture
 	shard  wal.ShardID

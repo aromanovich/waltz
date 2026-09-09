@@ -141,9 +141,10 @@ func TestAThinStreamNamesWhatItLacks(t *testing.T) {
 	require.Contains(t, missing, "a tombstone")
 }
 
-// TestAShapeNobodyAskedForIsNotMissing: a suite that turns the task rates off —
-// three of them do, because a task record is neither a create nor an update —
-// must not be told its stream lacks history tasks.
+// TestAShapeNobodyAskedForIsNotMissing: a caller that turns the task rates off
+// — as one whose claims are stated run by run must, because a task record is
+// neither a create nor an update — must not be told its stream lacks history
+// tasks.
 func TestAShapeNobodyAskedForIsNotMissing(t *testing.T) {
 	quiet := config(12)
 	quiet.TaskDensity, quiet.AddTasksRate, quiet.RangeCompleteRate = 0, 0, 0
@@ -349,8 +350,8 @@ func TestBufferedEventsComeInBatchesAndAreCleared(t *testing.T) {
 }
 
 // TestTasksCoverAllFourCategories: upstream's own generator maps every category
-// to an empty slice (`tests/util.go`), so tasks in all four categories are this
-// package's job.
+// to an empty slice (`common/persistence/tests/util.go`), so tasks in all four
+// categories are this package's job.
 func TestTasksCoverAllFourCategories(t *testing.T) {
 	_, report := take(t, config(7), 300)
 	require.NotZero(t, report.Tasks)
@@ -430,9 +431,10 @@ func TestDeletesNameKeysThatWereThere(t *testing.T) {
 // runKey identifies one run's key set while walking a stream.
 type runKey struct{ ns, wf, run string }
 
-// recordSnapshotKeys folds a create's or set's key set into the same map, so a
-// delete of a key that arrived in a snapshot is not reported as a delete of a
-// key that was never there.
+// recordSnapshotKeys folds every whole-run key set into the same map — a
+// create's, a set's, a conflict-resolve's reset run and a continue-as-new's new
+// run — so a delete of a key that arrived in a snapshot is not reported as a
+// delete of a key that was never there.
 func recordSnapshotKeys(upserted map[runKey]map[string]bool, m mutation.Mutation) {
 	var snapshots []*p.InternalWorkflowSnapshot
 	switch m.Kind() {
@@ -534,8 +536,8 @@ func TestRecreationOverAClosedRun(t *testing.T) {
 
 // TestVersionChainIsTheOneTheStoreAsserts: a mutable-state store asserts
 // DBRecordVersion-1 on the run's row, so a chain that skips or repeats a version
-// is a stream path A rejects — and a corpus that only fold ever reads would not
-// notice.
+// is a stream the sequential path rejects — and a corpus that only fold ever
+// reads would not notice.
 func TestVersionChainIsTheOneTheStoreAsserts(t *testing.T) {
 	stream, _ := take(t, config(12), 500)
 

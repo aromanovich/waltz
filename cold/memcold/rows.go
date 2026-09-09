@@ -500,7 +500,9 @@ func executionRow(
 }
 
 // insertBufferedEvents adds each batch as a row of its own: batches never
-// merge, and the table's own id is what orders them for a reader.
+// merge. The id column upstream's read sorts on is never written — the v3
+// SQLite schema declares it BIGINT AUTO_INCREMENT, which SQLite takes for a type
+// name and leaves NULL — so what orders the rows for a reader is the scan.
 func insertBufferedEvents(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	ns primitives.UUID, workflowID string, run primitives.UUID, batches ...*commonpb.DataBlob,

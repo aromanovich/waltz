@@ -12,7 +12,8 @@
 // through.
 //
 // It reaches for the persistence interface, for [mutation.Kind] and for the
-// generator, and for nothing else of the layer: what a call *means* is the
+// generator, and, in [Recorder], for `wal`'s two id types beside the checker's
+// record — and for nothing else of the layer: what a call *means* is the
 // checker's business. The dependency on verify/mutgen only points this way — a
 // generator that could reach the thing driving it would be tuned to it.
 package drive

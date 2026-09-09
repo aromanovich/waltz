@@ -36,11 +36,13 @@ func requireMirrored(t *testing.T, c *Cycle, after string) {
 			"decides whether a retired cycle's read may be answered from the cold store", after)
 }
 
-// TestTheMirrorFollowsEveryTailMove drives every operation that moves the tail
-// and asserts the mirror moved with it: the floor a watermark puts under it, an
-// append, and all three settles — the committed drain (which also moves the
-// watermark), sync mode's answered condition failure, and replay's dropped
-// provisional entry.
+// TestTheMirrorFollowsEveryTailMove drives the tail moves a write path makes and
+// asserts the mirror moved with each: the floor a watermark puts under it, an
+// append, and three of the four settles — the committed drain (which also moves
+// the watermark), sync mode's answered condition failure, and replay's dropped
+// provisional entry. The fourth, a window that acked and folded to nothing, is
+// the test below; a stall and its resolve move the tail too, and no test here
+// reads the mirror they publish.
 func TestTheMirrorFollowsEveryTailMove(t *testing.T) {
 	ctx := context.Background()
 

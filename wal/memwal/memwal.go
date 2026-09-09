@@ -187,8 +187,8 @@ func (b *Backend) Trim(ctx context.Context, shard wal.ShardID, upTo wal.Seqno) e
 }
 
 // logFor returns the shard's log, creating an empty unowned one if the shard is
-// new. Only the writing paths use it: a read of a shard that was never fenced
-// answers "nothing" rather than bringing one into being.
+// new — an append that is then refused leaves one behind. A read or a trim of a
+// shard nobody fenced answers "nothing" rather than bringing one into being.
 //
 // Callers hold b.mu.
 func (b *Backend) logFor(shard wal.ShardID) *shardLog {

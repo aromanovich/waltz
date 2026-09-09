@@ -141,7 +141,7 @@ func (m Mutation) RangeID() int64 {
 }
 
 // Part names which slot of a request carries one run's row state. A part is a
-// fact about the request's shape: a conflict-resolve has three, the two
+// fact about the request's shape: a conflict-resolve has up to three, the two
 // history-task kinds and the two tombstones none.
 type Part int
 
@@ -311,7 +311,9 @@ func encode(m Mutation, provisional bool) ([]byte, error) {
 	return proto.MarshalOptions{Deterministic: true}.Marshal(payload)
 }
 
-// Decode is the inverse of [Encode]. The registry must be the server's own
+// Decode is [Encode]'s inverse over what the payload carries: neither the
+// rangeID nor the new-events slices are in it, so a decoded mutation reports a
+// zero rangeID and carries no events. The registry must be the server's own
 // task-category registry: it is the one input that is not a function of the
 // bytes, so the same payload decodes on one node and fails on another.
 func Decode(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation, error) {

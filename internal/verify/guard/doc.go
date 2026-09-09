@@ -9,8 +9,10 @@
 // What a guard may not be is a lint rule: the dependency rules between packages
 // and this tree's own shape are prose (.claude/rules/no-lint-in-tests.md), not
 // assertions here.
-// Every guard is green on a broken layer and red on a reverted decision, which
-// is the opposite of a unit test and the reason they are collected here.
+// The wiring half is green on a broken layer and red only on a reverted
+// decision; the backpressure cases drive a real cycle, so they go red on
+// either — read a failure there as the layer's until the composition is ruled
+// out.
 //
 // A probe is the easy confusion, and none is shipped here: a guard fails when
 // somebody reverts something, a probe answers a number.

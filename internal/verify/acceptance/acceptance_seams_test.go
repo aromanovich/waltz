@@ -412,8 +412,11 @@ func newLedger(store *memcold.Store) *ledger {
 }
 
 // Apply drains into the database and records what landed. It runs on the
-// cycle's own goroutine and is read once that goroutine is done with the shard,
-// which is what leaves the record unlocked.
+// cycle's own goroutine and nothing here locks, so a read of the record is
+// ordered against the writes the reader's own drives provoked and against
+// nothing else: the epoch case takes [ledger.snapshot] while the cycle still
+// holds the shard, and an age tick drains with no writer asking, so that read
+// can be in the maps while this is writing them.
 func (l *ledger) Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 	err := l.inner.Apply(ctx, shard, epoch, batch)
 	if err != nil {

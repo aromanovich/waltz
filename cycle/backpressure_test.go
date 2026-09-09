@@ -161,8 +161,10 @@ func requireRefusal(t *testing.T, err error) {
 // The bound, in both units.
 // ---------------------------------------------------------------------------
 
-// TestRefusalsBeginAtTheEntryBound: the unit I10 is written in — commitSeqno −
-// appliedSeqno — with the boundary asserted on both sides of itself.
+// TestRefusalsBeginAtTheEntryBound: the unit I10 is written in — acked entries
+// whose fate is not yet settled, which with nothing settled apart from the
+// watermark is commitSeqno − appliedSeqno — with the boundary asserted on both
+// sides of itself.
 func TestRefusalsBeginAtTheEntryBound(t *testing.T) {
 	e := newTailEnv(t, func(c *Config) { c.HardMaxEntries = 8 })
 	ns, wf, run := ids()
@@ -304,7 +306,7 @@ func TestAnUnresolvedDrainStaysInTheTail(t *testing.T) {
 // Degradation, not loss.
 // ---------------------------------------------------------------------------
 
-// TestATrippedTailLosesNothing: release the applier and the refusals stop, and
+// TestATrippedTailLosesNothing: drain the window and the refusals stop, and
 // what a replay reads back is exactly the set that was acked — every accepted
 // mutation, in order, and none of the refused ones.
 func TestATrippedTailLosesNothing(t *testing.T) {
@@ -321,8 +323,8 @@ func TestATrippedTailLosesNothing(t *testing.T) {
 		requireRefusal(t, e.add(mkUpdate(ns, wf, run, i)))
 	}
 
-	// Releasing the applier ends the degradation: the window commits, the
-	// watermark moves, and the tail the bound was counting is gone.
+	// The drain ends the degradation: the window commits, the watermark moves,
+	// and the tail the bound was counting is gone.
 	require.NoError(t, e.c.drainNow(context.Background()))
 	require.Equal(t, []wal.Seqno{4}, e.apply.committed())
 	s := e.c.Stats()

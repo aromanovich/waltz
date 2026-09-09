@@ -2,7 +2,7 @@ package cycle
 
 // The boundary the ExecutionStore wrapper writes through: one method, and the
 // translation of what a cycle answers into what the history service's write
-// path understands. It is here because the wrapper may not import the plugin.
+// path understands. It is here because the wrapper may not import cycle.
 //
 // Nothing here wraps: ContextImpl.handleWriteErrorLocked type-switches on
 // concrete types with no errors.As, so an unrecognised value becomes an unknown

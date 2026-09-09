@@ -9,8 +9,9 @@ import "time"
 // Every call must answer a complete [Config], clock, age and the four bounds
 // included, because nothing downstream defaults anything. Filling is unexported,
 // so use [Fixed] or [Live]: a source written by hand outside this package hands
-// a cycle a nil clock, four zero bounds and a zero age, which is a shard that
-// refuses its first write on a goroutine spinning at a whole CPU.
+// a cycle a nil clock, four zero bounds and a zero age. The nil clock panics
+// [New] inside the acquire; past that one, a zero hard max refuses every write
+// and a zero age re-arms the loop's timer at a whole CPU per shard.
 type Policy func() Config
 
 // Moving is the half of the policy a decision re-reads: the drain watermarks and

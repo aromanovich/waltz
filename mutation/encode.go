@@ -208,8 +208,11 @@ func encodeChasmNodes(m map[string]p.InternalChasmNode) ([]*ChasmNodeEntry, erro
 	return out, nil
 }
 
-// encodeTasks writes the groups in category-id order and preserves the caller's
-// slice order inside a group, which is already key order.
+// encodeTasks writes the groups in category-id order and keeps the caller's
+// slice order inside a group, which is generation order and not necessarily key
+// order — a scheduled category's fire times need not ascend with it. Only the
+// categories are sorted, because only their order came out of a map, and
+// pinning that is all determinism needs.
 func encodeTasks(groups map[tasks.Category][]p.InternalHistoryTask) []*TaskGroup {
 	if len(groups) == 0 {
 		return nil

@@ -78,7 +78,8 @@ var (
 		metrics.WithDescription("Apply cycles that stopped, by class."))
 
 	// Trims is the log's compaction, by outcome. A failed trim is retried at the
-	// next cadence and halts nothing, so this is the only place it is visible.
+	// next cadence and halts nothing, so the pair is all a scrape sees of it; the
+	// cause is in the trim's own warning.
 	Trims = metrics.NewCounterDef("wal_trims",
 		metrics.WithDescription("Log trims, by outcome."))
 
@@ -108,7 +109,8 @@ var (
 	// the provisional entries among them it dropped. A node where the second
 	// moves at all changed hands with a write in flight.
 	ReplayedEntries = metrics.NewCounterDef("wal_replayed_entries",
-		metrics.WithDescription("Entries a new owner read out of the tail a previous owner left, and applied."))
+		metrics.WithDescription("Entries a new owner read out of the tail a previous owner left and folded; "+
+			"the ones it did not apply are wal_replay_dropped_entries, a subset of this count."))
 	ReplayDroppedEntries = metrics.NewCounterDef("wal_replay_dropped_entries",
 		metrics.WithDescription("Replayed entries dropped because their ack was provisional and their condition did not hold."))
 
@@ -318,8 +320,8 @@ func (e *Emitter) Replayed(entries, dropped int) {
 // AnsweredConditionFailure records an answered drain: sync mode's window of one.
 func (e *Emitter) AnsweredConditionFailure() { e.load().conditions.Record(1) }
 
-// BackpressureRefusal records I10 refusing a write, tagged with the unit that
-// ran out.
+// BackpressureRefusal records I10 refusing a write, tagged with what refused
+// it: one of the two size bounds, or the unresolved drain that is neither.
 func (e *Emitter) BackpressureRefusal(limit string) {
 	e.load().refusals.Record(1, metrics.StringTag(TagLimit, limit))
 }

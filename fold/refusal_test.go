@@ -32,9 +32,9 @@ var errDrainFailed = errors.New("the drain's transaction did not commit")
 // refuse again, and a second refusal is a violation rather than a case to keep
 // draining at.
 //
-// A refusal turning on something a drain does not reset (the seqno floor and the
-// task deletion bounds both survive one) would be a loop in every consumer
-// instead of a failure here.
+// A refusal turning on something a drain does not reset — the seqno floor is all
+// there is, the pending task ranges riding the batch instead — would be a loop
+// in every consumer instead of a failure here.
 func TestAnEmptyWindowRefusesNothing(t *testing.T) {
 	cfg := mutgen.Default()
 	cfg.Seed = refusalCorpusSeed

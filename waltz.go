@@ -271,10 +271,11 @@ func (l *Layer) RetireShard(shard wal.ShardID) bool {
 // into the cold store, and the log is released.
 //
 // It must run after the server has stopped: the drain writes to the cold store
-// the mutations of writers the server is shutting down. budget bounds the whole
-// of it — one transaction per shard, in sequence — and a drain the budget cuts
-// short leaves a tail, not lost data (invariant I2: it is in the log, acked),
-// which the next owner's replay picks up.
+// the mutations of writers the server is shutting down. budget bounds the apply
+// transactions — one per shard, in sequence — and not a trim already in flight,
+// which is waited out on the minute of its own detached context; a drain the
+// budget cuts short leaves a tail, not lost data (invariant I2: it is in the
+// log, acked), which the next owner's replay picks up.
 //
 // The budget is put on a context detached from the caller's cancellation,
 // and that detach is why this is a door rather than an idiom every caller
@@ -289,9 +290,9 @@ func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) {
 
 // close is [Layer.Shutdown] once the context is the layer's own.
 //
-// The log is closed after the drain and not before: a drain appends, and a
-// backend whose close ends the ownership its appends rest on would refuse the
-// writes this budget exists to let through.
+// The log is closed after the drain and not before: a drain still trims through
+// it, and a backend whose close ends the ownership that trim rests on would fail
+// it and leave the log unshortened.
 func (l *Layer) close(ctx context.Context) {
 	l.manager.Close(ctx)
 	l.log.Close()

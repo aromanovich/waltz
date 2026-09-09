@@ -26,8 +26,8 @@ import (
 // somewhere the watermark does not read back is a shard that replays what it
 // already applied.
 //
-// It satisfies cold.Applier and cold.Watermarker by shape. Naming them would
-// make this package know the cycle, which it has no reason to.
+// It satisfies cold.Applier and cold.Watermarker — and so cold.Store — by
+// shape, which is the whole of what it stands in for.
 type Cold struct {
 	mu      sync.Mutex
 	refusal error
@@ -62,8 +62,9 @@ func (c *Cold) Apply(_ context.Context, shard wal.ShardID, _ wal.Epoch, batch fo
 }
 
 // Watermark is what this store's own drains moved, so a shard nothing drained
-// reads as absent rather than as zero — the two are different answers, and a
-// replay reading the second would start above entries it has to fold.
+// reads as absent rather than as zero — the two answers the seam distinguishes,
+// and the ones a real store may not collapse even though the cycle floors both
+// at [wal.FirstSeqno] − 1.
 func (c *Cold) Watermark(_ context.Context, shard wal.ShardID) (wal.Seqno, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

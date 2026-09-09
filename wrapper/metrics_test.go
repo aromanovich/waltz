@@ -119,7 +119,7 @@ func TestTheStoresGetTheHandlerToo(t *testing.T) {
 
 // TestOptionsWithNoEmitterStillServe pins [Options.Metrics]'s nil: the store
 // works and counts, and its series go nowhere — there being no way back to the
-// layer's emitter from here. Every Options value built by hand in this package
+// layer's emitter from here. Every Options value built by hand outside this file
 // is that case.
 func TestOptionsWithNoEmitterStillServe(t *testing.T) {
 	ctrl := gomock.NewController(t)

@@ -1,6 +1,6 @@
 package guard
 
-// The two lines that say the cycle and the wrapper were built for each other.
+// The five lines that say the cycle and the wrapper were built for each other.
 //
 // wrapper.ShardObserver has exactly one method because exactly one persistence
 // call reports a shard changing hands, and the cycle implements it: an acquire
@@ -14,12 +14,12 @@ package guard
 // back into what the history service type-switches on.
 //
 // ShardLayer is the observer as well, so the line above it is the first of
-// ShardLayer's three claims rather than a wiring claim of its own: the option
+// ShardLayer's four claims rather than a wiring claim of its own: the option
 // holds one value, so a layer that answered writes and reads while nobody had
 // told it about the acquire is a state the type does not have. The halves stay
 // named separately below because each is a claim of its own — a `cycle.Manager`
 // that lost any one of them fails here by the name of the half it lost, rather
-// than at the composed interface where three claims read as one.
+// than at the composed interface where four claims read as one.
 //
 // wrapper.MetricsSink is the third, and it is the only one that carries
 // something *into* the layer: the server's metrics handler exists only once it

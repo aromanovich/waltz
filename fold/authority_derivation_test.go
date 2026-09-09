@@ -26,10 +26,11 @@ package fold
 // What is not compared, and stays elsewhere:
 //
 //   - ordering. Delegated.Runs is a slice in the store's registration order and
-//     that order is load-bearing (Check's own doc comment), while
-//     Assertions.Runs is a map — so this comparison is set-valued and the two
-//     paths genuinely register a conflict-resolve's runs in different orders.
-//     TestWhatTheWindowDoesNotHoldIsDelegated is where order is claimed;
+//     that order is load-bearing ([Delegated.Settle]'s doc comment), while
+//     [Emitted.RunAssertions] is a map keyed by run id — so this comparison is
+//     set-valued and the two paths genuinely register a conflict-resolve's runs
+//     in different orders. TestWhatTheWindowDoesNotHoldIsDelegated is where
+//     order is claimed;
 //   - field aliasing. Where a faithful request holds one value in two fields, a
 //     swap between them is invisible here: assertConflictResolve reads the
 //     current run from ExecutionState.RunId while the run assertion beside it

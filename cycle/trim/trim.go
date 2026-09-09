@@ -10,9 +10,9 @@
 // cycle's rule is the compiler's.
 //
 // Trimming is part of the latency budget rather than hygiene: a backend's
-// reads get dearer as its log gets longer ([wal.Log.Trim]), so this is on the
-// drain's budget and not a background chore. A failed trim is logged and
-// retried at the next cadence, and halts nothing.
+// reads get dearer as its log gets longer ([wal.Log.Trim]), so a drain is what
+// fires one, rather than a sweeper on a clock of its own. A failed trim is
+// logged and retried at the next cadence, and halts nothing.
 package trim
 
 import (
@@ -43,9 +43,11 @@ type Cadence struct {
 
 // Trimmer keeps one shard's log short.
 //
-// [Trimmer.Drained] and [Trimmer.Counters] are the cycle's loop and no other
-// goroutine, which is what lets the cadence be plain fields; [Trimmer.Wait] is
-// called from whoever retires the cycle, once the loop is gone.
+// [Trimmer.Drained] is the cycle's loop and no other goroutine, which is what
+// lets the cadence be plain fields. [Trimmer.Counters] is the loop's too, plus
+// one read by whoever retires the cycle — taken after that caller's
+// [Trimmer.Wait] and once the loop is gone, which is what makes reading the
+// plain fired field there safe.
 type Trimmer struct {
 	shard  wal.ShardID
 	log    wal.Log

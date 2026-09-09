@@ -282,7 +282,7 @@ func TestAddAcksBeforeItFolds(t *testing.T) {
 	s := e.c.Stats()
 	require.Equal(t, StateRunning, s.State)
 	require.Equal(t, 1, s.Mutations)
-	require.NotZero(t, s.Bytes, "the tail is counted in bytes as well as entries (I10's two units)")
+	require.NotZero(t, s.Bytes, "the window is counted in bytes as well as mutations (the size watermark's two units)")
 	require.EqualValues(t, 1, s.CommitSeqno)
 	require.Zero(t, s.AppliedSeqno)
 }
@@ -341,7 +341,7 @@ func TestSizeWatermarksDrain(t *testing.T) {
 		e := newEnv(t, func(c *Config) { c.Mutations = 1 << 20; c.Bytes = 1 })
 		ns, wf, run := ids()
 		require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
-		require.Len(t, e.apply.drains, 1, "one encoded mutation is already past a 1-byte tail budget")
+		require.Len(t, e.apply.drains, 1, "one encoded mutation is already past a 1-byte size watermark")
 	})
 }
 

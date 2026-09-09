@@ -13,10 +13,10 @@ import (
 // default by reference rather than by copying a number out of it.
 var measured = cycle.Defaults()
 
-// The whole policy as settings of the server's dynamic config, under the same
-// `wal.` name the section has. Five are read at the decision that consults
-// them; the other four are read once, when the policy is built ([atStart]), and
-// their descriptions say so.
+// The policy's dynamic half as settings of the server's dynamic config, under
+// the same `wal.` name the section has. Five are read at the decision that
+// consults them; the other four are read once, when the policy is built
+// ([atStart]), and their descriptions say so.
 //
 // Exported so a process configuring the layer from flags or an environment
 // variable can build a [dynamicconfig.StaticClient] over these keys rather than
@@ -91,8 +91,8 @@ type setting struct {
 	// generic "invalid keys" error — see [movedKey].
 	was string
 	// live says whether a running node re-reads this one. Documentation only —
-	// what bind writes into is what decides — and the configuration reference an
-	// operator gets is generated from it.
+	// what bind writes into is what decides — and the handbook's configuration
+	// table is kept in step with it by hand.
 	live bool
 	// bind installs the setting into the policy being built. A live one puts
 	// its getter in the moving half; a start-only one writes its value into the

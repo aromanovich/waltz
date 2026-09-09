@@ -1,7 +1,7 @@
 package cycle
 
 // Merge-on-read from the cycle's side: the rules the merge has no freedom
-// about, the three cases a generated stream cannot produce, and what a shard
+// about, the cases a generated stream cannot produce, and what a shard
 // this node does not own or no longer runs answers. The merge itself is
 // [fold.Accumulator.TaskPage], tested in fold; what is here drives the
 // whole route — loop, halt rule, counters and merge — since that is what a
@@ -198,7 +198,7 @@ func TestALookAheadSeesATailOnlyTimer(t *testing.T) {
 		"the gate must be set from the tail-only timer, not from the cold store's later one")
 
 	// Without the merge the same look-ahead finds nothing and the gate goes to
-	// lookAheadMaxTime — nine minutes past the fire time.
+	// lookAheadMaxTime — four minutes past the fire time.
 	bare, err := cold.Read(context.Background(), req)
 	require.NoError(t, err)
 	require.Empty(t, bare.Tasks, "the cold store alone has nothing to fire in this window")
@@ -227,7 +227,7 @@ func TestATaskReadOnAShardThisNodeDoesNotOwnIsRefused(t *testing.T) {
 // the tail decide. An empty tail speaks for this cycle's completeness, which is
 // the wrong question: halted-lost means another owner, whose acks are in
 // neither this tail nor the cold store. The halted-invariant half with an empty
-// tail is not buildable through a drain and lives in replay_test.go.
+// tail is not buildable through a drain and lives in read_halt_test.go.
 func TestAHaltedShardAnswersATaskReadByTheHaltAndThenTheTail(t *testing.T) {
 	minKey, maxKey := immediateRange()
 

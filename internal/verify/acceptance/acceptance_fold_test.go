@@ -80,11 +80,12 @@ func driveNoCluster(t *testing.T, cfg mutgen.Config, n int) noClusterRun {
 	return run
 }
 
-// TestAcceptanceFoldNoCluster is the full-volume run, at Default()'s knobs —
-// WorkflowReuse 0.80, KeyReuse 0.50, both stated in the log because the ratio
-// is a function of them and reads as a constant without them. A
-// second run at WorkflowReuse 0 follows for exactly that reason: it must report
-// ratio 1.00, and if it ever collapses, either the knob or the report is lying.
+// TestAcceptanceFoldNoCluster is the volume run, [defaultAcceptanceMutations]
+// mutations unless [envAcceptanceMutations] says otherwise, at Default()'s
+// knobs — WorkflowReuse 0.80, KeyReuse 0.50, both stated in the log because the
+// ratio is a function of them and reads as a constant without them. A second
+// run at WorkflowReuse 0 follows for exactly that reason: it must report ratio
+// 1.00, and if it ever collapses, either the knob or the report is lying.
 func TestAcceptanceFoldNoCluster(t *testing.T) {
 	n := defaultAcceptanceMutations
 	if s := os.Getenv(envAcceptanceMutations); s != "" {

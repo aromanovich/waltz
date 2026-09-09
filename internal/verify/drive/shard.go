@@ -8,8 +8,8 @@ import (
 	"go.temporal.io/server/common/persistence/serialization"
 )
 
-// The taker returns the rangeID a write against the shard must carry: every
-// write path asserts it, so a mutation applied without one is rejected for the
+// The taker returns the rangeID the five stamped requests must carry: those
+// write paths assert it, so a mutation applied without one is rejected for the
 // one reason that says nothing about what was being driven.
 
 // TakeShardBumpingRangeID takes the shard the way a history node does: the first

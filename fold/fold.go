@@ -66,8 +66,8 @@ const (
 	CurrentEquals
 	// CurrentNotEquals: the current row does not name RunID (bypass writes).
 	CurrentNotEquals
-	// CurrentEqualsWithVersion: the current row names RunID at
-	// LastWriteVersion (a Create over a previous run).
+	// CurrentEqualsWithVersion: the current row names RunID at LastWriteVersion
+	// and is COMPLETED (a Create over a finished run).
 	CurrentEqualsWithVersion
 )
 
@@ -110,11 +110,14 @@ type BufferedBatch struct {
 type Emitted struct {
 	NamespaceID string
 	WorkflowID  string
-	// HeadSeqno and TailSeqno are the seqnos of the first and last mutations
-	// folded into this request. Drain returns requests in TailSeqno order and
-	// apply must keep that order: a merged request's writes are its folded tail
-	// state, so a sequentially interleaved request must land before that tail
-	// rather than before its earliest constituent.
+	// HeadSeqno is the seqno of the mutation that opened this request and
+	// TailSeqno the last folded into it. A snapshot arriving over a pending
+	// update opens a new request at its own seqno and carries the superseded
+	// update's tasks and head assertion into it, so a mutation below HeadSeqno
+	// can still be part of what is here. Drain returns requests in TailSeqno
+	// order and apply must keep that order: a merged request's writes are its
+	// folded tail state, so a sequentially interleaved request must land before
+	// that tail rather than before its earliest constituent.
 	HeadSeqno wal.Seqno
 	TailSeqno wal.Seqno
 	// Request holds exactly one of the six request kinds a window can emit.
@@ -222,7 +225,7 @@ type Accumulator struct {
 	// The history-task half of the window (histtasks.go). It sits beside the
 	// workflows rather than inside them because the store's task rows are keyed
 	// by (shard, category, key) and name no run: addedTasks are the rows an
-	// AddHistoryTasks put in, in arrival order and unsorted, and tasks are the
+	// AddHistoryTasks put in, in arrival order and unsorted, and ranges holds the
 	// undrained range deletes by category id.
 	addedTasks   map[tasks.Category][]p.InternalHistoryTask
 	ranges       map[int32]*rangeAcc
@@ -305,8 +308,8 @@ func (w *workflowAcc) recordCurrent(want asserted, cw *CurrentWrite) {
 
 // recordCurrentWrite records the window's last current-row write and drops any
 // delete-current already in the window, the write replacing the row wholesale.
-// Keeping both would hand apply an upsert and a delete of one row, and the
-// plugin runs every delete first.
+// Keeping both would hand apply an upsert and a delete of one row, leaving which
+// of the two wins to the plugin's statement order rather than to the window.
 func (w *workflowAcc) recordCurrentWrite(cw *CurrentWrite) {
 	w.cur.recordWrite(cw)
 	w.pending = slices.DeleteFunc(w.pending, func(pr *pendingReq) bool { return pr.m.DeleteCurrent != nil })
@@ -444,8 +447,8 @@ func (b Batch) Len() int { return len(b.requests) }
 func (b Batch) Watermark() wal.Seqno { return b.watermark }
 
 // Stats describe the window that was drained, not the batch: an empty batch can
-// still carry a mutation count, from a window whose task mutations were all
-// dropped.
+// still carry a mutation count, from the one window that folds an entry and
+// drains nothing — an AddHistoryTasks that carried no rows.
 func (b Batch) Stats() Stats { return b.stats }
 
 // Settles is the position this drain's window acked entries up to, and whether

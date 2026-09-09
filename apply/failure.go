@@ -95,12 +95,13 @@ func isInvariantViolation(err error) bool {
 	return errors.As(err, &wf) || errors.As(err, &cur) || errors.As(err, &cond)
 }
 
-// ErrRefused matches, via errors.Is, every error an Apply raises before
-// anything is sent to the cold store. A refused drain wrote nothing and needs
-// no recovery, unlike everything after Execute.
+// ErrRefused matches, via errors.Is, what [Refuse] wrapped: an error an Apply
+// raised before anything was sent to the cold store. A refused drain wrote
+// nothing and needs no recovery, unlike one whose transaction had already
+// opened.
 var ErrRefused = errors.New("apply: refused before anything reached the cold store")
 
-// refusedError marks a pre-Execute error as refused, keeping its message.
+// refusedError marks an error as refused, keeping its message.
 type refusedError struct{ err error }
 
 func (e *refusedError) Error() string { return e.err.Error() }
@@ -182,9 +183,10 @@ func (e *InvariantViolationError) Error() string {
 func (e *InvariantViolationError) Unwrap() error { return e.Cause }
 
 // Attribute reads back every row the drain asserted and names the ones that
-// diverged; reads only. It must stay after Execute: a base row read before the
-// epoch is held can see a previous owner's in-flight transaction land
-// underneath it, and the divergence it would then report is not a bug.
+// diverged; reads only. It must run after the transaction that asserted the
+// epoch: a base row read before the epoch is held can see a previous owner's
+// in-flight transaction land underneath it, and the divergence it would then
+// report is not a bug.
 func Attribute(
 	ctx context.Context, rows *baserow.Rows, cause error, shard wal.ShardID, batch fold.Batch,
 ) *InvariantViolationError {

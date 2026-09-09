@@ -69,9 +69,10 @@ func (s *ShardStore) UpdateShard(ctx context.Context, request *p.InternalUpdateS
 	return s.base.UpdateShard(ctx, request)
 }
 
-// AssertShardOwnership transits. It is a real one-assertion transaction on this
-// backend, so it does probe the epoch, but dynamic config can switch off the
-// shard controller loop that drives it: nothing may be keyed on it.
+// AssertShardOwnership transits. Whether it probes the epoch at all is the base
+// plugin's business — Temporal's own SQL and Cassandra stores both answer nil —
+// and dynamic config can switch off the shard controller loop that drives it:
+// nothing may be keyed on it.
 func (s *ShardStore) AssertShardOwnership(
 	ctx context.Context, request *p.AssertShardOwnershipRequest,
 ) error {

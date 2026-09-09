@@ -2,8 +2,9 @@
 //
 // It is the second adapter at the seam [baserow.Store] names, and the reason it
 // exists is the reason [github.com/aromanovich/waltz/internal/verify/coldtest] does:
-// the first adapter needs the patched plugin, so every package that has to
-// stand a write path up wrote a pair of maps and an absence rule of its own.
+// the first adapter is a real store over a real database, so every package that
+// has to stand a write path up wrote a pair of maps and an absence rule of its
+// own.
 //
 // Absence is what makes that costly rather than untidy. A row that is not there
 // arrives as a NotFound and [baserow.Rows] turns it into a nil row, which is
@@ -11,10 +12,10 @@
 // own way leaves the suite green and the rule unjudged. Here it is answered
 // once.
 //
-// Unlike coldtest this package names the seam it stands at. coldtest may not
-// name [github.com/aromanovich/waltz/cycle], the seam being that
-// package's; this one is an adapter at a seam whose whole purpose is to be
-// reachable from the three packages that read through it.
+// Unlike coldtest this package names the seam it stands at. coldtest satisfies
+// [cold.Applier] and [cold.Watermarker] by shape and imports nothing of cold;
+// this one is an adapter at a seam whose whole purpose is to be reachable from
+// the three packages that read through it.
 package basetest
 
 import (
@@ -47,7 +48,7 @@ type Store struct {
 	reads    Reads
 }
 
-// row is a current-execution row as the patched store answers it: the run, its
+// row is a current-execution row as the cold store answers it: the run, its
 // state, and the last_write_version column beside it.
 type row struct {
 	runID            string

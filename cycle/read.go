@@ -129,10 +129,10 @@ func (c *Cycle) stoppedRead(who reader, halt error) (readRoute, error) {
 // not count again. A read holding no view passes nil.
 //
 // The order is not an arrangement. The rule consulted before the gate sees a
-// running cycle with a stall the replay is about to clear, says nothing, and
-// lets the read merge a window that replay has since reset; a count after it
-// loses the reads it passes through; a drain before the count shows the counters
-// a window the read never saw.
+// running cycle — the fence only the replay can find is not on the state yet —
+// says nothing, and lets the read merge a window that replay has since reset; a
+// count after it loses the reads it passes through; a drain before the count
+// shows the counters a window the read never saw.
 func (c *Cycle) prelude(ctx context.Context, s *state, who reader, takeView func(*state) bool) (bool, error) {
 	// A read needs the window, so it triggers replay: a read on an inherited
 	// tail would otherwise be answered from a cold store the log is ahead of.

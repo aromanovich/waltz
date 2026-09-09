@@ -40,7 +40,8 @@ func (a *Accumulator) AddOrDrain(seqno wal.Seqno, m mutation.Mutation, drain fun
 }
 
 // CheckOrDrain is [Accumulator.Check] with the same recovery, which works for
-// the same reason: an empty window determines every assertion.
+// the same reason: an empty window discards nothing, so every assertion heads it
+// and none can be refused.
 func (a *Accumulator) CheckOrDrain(m mutation.Mutation, drain func() error) (Delegated, Refusal, error) {
 	del, r, _, err := a.checkOrDrain(m, drain)
 	return del, r, err
@@ -56,9 +57,9 @@ func (a *Accumulator) checkOrDrain(m mutation.Mutation, drain func() error) (Del
 		del, cov, cerr = a.check(m)
 		return cerr
 	}, drain)
-	// The retry's coverage and not the refused attempt's: a refusal is an
-	// assertion this window could not determine, and after the drain it is one
-	// an empty window determines outright. Counting both would report the same
+	// The retry's coverage and not the refused attempt's: the refused assertion
+	// is one this window could not determine, and after the drain it heads an
+	// empty window and is recorded. Counting both would report the same
 	// assertion set twice and call the second reading a wider one.
 	return del, r, cov, err
 }

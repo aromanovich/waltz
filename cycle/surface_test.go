@@ -12,9 +12,10 @@ import (
 // doors is every exported method on a *Cycle and what it is for. The bar is
 // I11's — Manager.Shard hands the handle to whoever asks, so nothing on it may
 // be a way to write around Manager.Write — and not "somebody outside calls it":
-// Epoch, Stats and Retire are what internal/verify/ drives a cycle by, State, Shard and
-// Close are reached only from inside this package today, and all six either read
-// or stop.
+// State and Retire are what internal/verify/ drives a cycle by, Stats and Retire
+// what waltz.Layer.ShardStats and RetireShard answer off, and Shard, Epoch and
+// Close are reached only from inside this package today. All six either read or
+// stop.
 var doors = map[string]string{
 	"Shard":  "what the cycle owns; a handle out of Manager.Shard names itself by this and Epoch",
 	"Epoch":  "the same, and the number that says a shard has changed hands",

@@ -201,8 +201,9 @@ func TestTheRangesDoNotOutliveTheDrainThatAppliesThem(t *testing.T) {
 
 // TestAScheduledRangeIsFireTimeOnly: an immediate category is ranged on task_id
 // and a scheduled one on task_visibility_ts, whose task ids the DELETE never
-// looks at. Hiding a narrower set than the delete removes answers a read with a
-// row that is already gone; a wider one keeps a row nothing will ever delete.
+// looks at. A sweep narrower than the delete keeps a row the drain then writes
+// under a delete the caller asked for; a wider one drops a task the DELETE
+// leaves alone, and a dropped task is neither written nor deleted.
 func TestAScheduledRangeIsFireTimeOnly(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,

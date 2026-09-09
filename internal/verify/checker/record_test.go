@@ -117,10 +117,10 @@ func TestASecondRunOnOneRecordNeedsAnIncarnationOfItsOwn(t *testing.T) {
 	require.EqualValues(t, 2, lines[1].Incarnation)
 }
 
-// TestAPartialTrailingLineIsDropped: the record is appended and fsynced per
-// line, so a kill can at worst leave the last one short — and a reader that
-// treated that as a broken file could not read the record of a killed node,
-// which is the case the record exists for.
+// TestAPartialTrailingLineIsDropped: the earlier lines survive a short last
+// one. [ReadRecord] skips any line it cannot parse and not only a trailing one,
+// so a line damaged mid-file goes missing with no error and the call it
+// recorded reads as one that was never made.
 func TestAPartialTrailingLineIsDropped(t *testing.T) {
 	rec, path := newRecordAt(t, "n1", 1)
 	id, err := rec.Call(1, 2, stream(t, 1)[0])

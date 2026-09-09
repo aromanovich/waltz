@@ -39,8 +39,10 @@ type Totals struct {
 	// included, in the same type a cycle counts into so this seam loses nothing.
 	Counters
 
-	// Acked, Applied and TailEntries come from the cycles held now: positions in
-	// a log that outlives the cycle, so they stay outside [Counters]'s merge.
+	// Acked and Applied are positions in a log that outlives the cycle, and
+	// TailEntries a count of what the tail holds right now, so all three come
+	// from the cycles held now and stay outside [Counters]'s merge: a retired
+	// cycle's tail is its successor's to replay and count again.
 	Acked, Applied wal.Seqno
 	TailEntries    int
 
@@ -109,7 +111,8 @@ func (m *Manager) Use(h metrics.Handler) { m.deps.Metrics.Use(h) }
 // it. Fence first, and let the rangeID land only if the fence held: the log's
 // epoch may never lag the database's. An acquire at an epoch a cycle already
 // holds is idempotent, since fencing is; one at a lower epoch is refused with
-// wal.ErrFenced, unwrapped so the shard controller sees the store's own error.
+// wal.ErrFenced wrapped in a message naming both epochs. Only the log's own
+// Fence error goes back untouched.
 func (m *Manager) ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wal.Epoch) error {
 	current := m.held.get(shard)
 

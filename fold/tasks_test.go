@@ -144,12 +144,12 @@ func written(b fold.Batch, category tasks.Category) []p.InternalHistoryTask {
 }
 
 // TestTheWindowShowsExactlyTheTasksItWillWrite: what a reader is shown is
-// neither more nor less than what the drain will put in the cold store. I7 says
-// a task is durable in the tail or in the store; one the window holds but does
-// not show is one the reader acks past, and one it shows but never writes is a
-// task executed twice. Each side reaches its homes by its own route — the read
-// through the accumulator, the write through the batch — so the equality is what
-// says the two routes name the same set.
+// neither more nor less than what the drain will put in the cold store. One the
+// window holds but does not show is one the reader acks past; one it shows but
+// never writes is an acked task that reaches no store at all. Each side reaches
+// its homes by its own route — the read through the accumulator, the write
+// through the batch — so the equality is what says the two routes name the same
+// set.
 func TestTheWindowShowsExactlyTheTasksItWillWrite(t *testing.T) {
 	for _, category := range []tasks.Category{tasks.CategoryTransfer, tasks.CategoryTimer} {
 		t.Run(category.Name(), func(t *testing.T) {
@@ -241,10 +241,10 @@ func TestTheTaskViewIsReadOnlyOnTheAccumulator(t *testing.T) {
 	})
 
 	t.Run("and so is the page the merge built", func(t *testing.T) {
-		// [Accumulator.TaskPage] hands out a merged page, which may be the
-		// window's own slice when the window overflows the batch and the cut is a
-		// prefix of it. The base is empty here so that the whole page comes from
-		// the window, which is the case that could alias.
+		// [Accumulator.TaskPage] merges over the copy [Accumulator.Tasks] hands
+		// it, so the page comes back as storage of its own whichever branch built
+		// it. The base is empty here, so every row of the page came out of the
+		// window.
 		a := build()
 		empty := func(int, []byte) ([]p.InternalHistoryTask, []byte, error) { return nil, nil, nil }
 		resp, _, err := a.TaskPage(taskReq(tasks.CategoryTransfer,

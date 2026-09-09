@@ -3,11 +3,12 @@
 // cold store's watermark is — is counted here and nowhere else.
 //
 // The two halves span two goroutines. [Tail] is loop-owned, like the rest of
-// the cycle's state; [Mirror] is the same two numbers for goroutines that are
-// not the loop: the bound a write is refused on before it queues, and the read
-// a cycle whose loop is gone still has to answer. Every mutator lives on [Tail]
-// and ends in publish, so moving the tail is publishing it, metric included. It
-// is a package so that writing a counter outside a mutator does not compile.
+// the cycle's state; [Mirror] is those counts and the stall's seqno for
+// goroutines that are not the loop: the bound a write is refused on before it
+// queues, and the read a cycle whose loop is gone still has to answer. Every
+// mutator lives on [Tail] and ends in publish, so moving the tail is publishing
+// it, metric included. It is a package so that writing a counter outside a
+// mutator does not compile.
 //
 // It counts seqnos and may not name wal.Log or wal.Entry: the log those seqnos
 // index is what a counter grows reach into first.

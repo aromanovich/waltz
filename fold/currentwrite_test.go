@@ -2,9 +2,9 @@ package fold_test
 
 // The current-row write rule. The current-execution row's content is a
 // last-writer effect, rendered in that request's own form, while the merged
-// request's kind is the head of the window. Emitted.CurrentWrite therefore
-// carries what the sequential path would have left; these tests pin who the
-// last writer is and in which form each kind writes.
+// request's kind is the head of the window. WorkflowRecord.CurrentWrite
+// therefore carries what the sequential path would have left; these tests pin
+// who the last writer is and in which form each kind writes.
 
 import (
 	"slices"
@@ -23,8 +23,8 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// stateOf builds the execution state a real request carries. A mutation
-// without one records no current-row write.
+// stateOf builds the execution state a real request carries. A request that
+// writes the current row and carries none panics in the fold.
 func stateOf(run string, state enumsspb.WorkflowExecutionState) *persistencespb.WorkflowExecutionState {
 	return &persistencespb.WorkflowExecutionState{
 		RunId:           run,
@@ -202,10 +202,11 @@ func TestCurrentWriteTracksTheLastWriter(t *testing.T) {
 	})
 
 	// The overlay and the drain answer the same question about the current row
-	// — what did this window do to it — and derives it once for all four
-	// fields that can express combinations the four shapes cannot. They read one
-	// derivation now, so this is what says they agree: the shape the overlay
-	// renders and the record apply asserts, from the same window, in one table.
+	// — what did this window do to it — off one derivation, while the record
+	// states it as two fields that can express what no shape can: a write and a
+	// removal together. So this is the table that says they agree: the shape the
+	// overlay renders and the record apply asserts, from one window, in one
+	// place.
 	t.Run("the overlay and the drain agree about the row", func(t *testing.T) {
 		st := stateOf(runX, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING)
 		write := func() mutation.Mutation {

@@ -87,7 +87,8 @@ func NewExecutionStore(base p.ExecutionStore, opts Options) (*ExecutionStore, er
 // the way in, so a write the tail refused is in it, and all are zero in
 // passthrough mode.
 type Counts struct {
-	// Intercepted is the mutable-state writes that took the WAL path.
+	// Intercepted is the mutable-state writes and the two tombstones that took
+	// the WAL path.
 	Intercepted int64
 	// TasksWritten is AddHistoryTasks and TasksCompleted is
 	// RangeCompleteHistoryTasks.

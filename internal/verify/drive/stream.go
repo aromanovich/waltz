@@ -27,9 +27,10 @@ type Delivery struct {
 
 // Stream is a generated mutation stream with the codec in front of it: the verb
 // for driving one at anything that folds or writes what a log carried. Every
-// mutation is encoded and decoded before a consumer sees it, because what fold
-// and the store are handed in production came back out of the log rather than
-// out of the generator.
+// mutation is encoded and decoded before a consumer sees it, because what a
+// replay hands fold and the store came back out of the log rather than out of
+// the generator — the hot path folds the caller's own request, so the codec's
+// losses show only on the value a replay rebuilds.
 //
 // That round trip is the whole of it and there is no way past it, which is what
 // keeps a caller out: a driver modelling the *client* of a store wants the

@@ -237,9 +237,10 @@ func TestTheAuthoritysCoverageIsAFunctionOfTheWindow(t *testing.T) {
 // condition, so every mutation is sent twice — the stale writer in its simplest
 // form, and the only way to exercise the answer at all.
 //
-// The misses are the two tombstone kinds, which carry no assertion: a delete of
-// an absent row and a delete-current naming the wrong run are legal no-ops
-// sequentially, and this layer may not be stricter than the store it replaces.
+// The misses are the four kinds that carry no assertion: both deletes — a delete
+// of an absent row and a delete-current naming the wrong run are legal no-ops
+// sequentially, and this layer may not be stricter than the store it replaces —
+// and both task records, which name no row to assert on.
 func TestAStaleWriteInTheStreamIsCaught(t *testing.T) {
 	cfg := corpusConfig()
 	n := corpusMutations / 10

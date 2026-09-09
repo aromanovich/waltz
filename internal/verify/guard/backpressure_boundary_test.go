@@ -96,9 +96,9 @@ func TestTheWrapperCarriesTheRefusalOut(t *testing.T) {
 // packages' own tests noticing.
 //
 // It goes through waltz.Compose and not a registry of its own. A log in memory
-// and a refusing writer are what waltz.Backends is a parameter for, and a file
-// that could not pass them would build a second registry — so the path under
-// test would be the production path everywhere except at its root.
+// and a refusing cold store are what waltz.Backends is a parameter for, and a
+// file that could not pass them would build a second registry — so the path
+// under test would be the production path everywhere except at its root.
 func TestTheRefusalSurvivesTheWholeInterceptPath(t *testing.T) {
 	ctx := context.Background()
 	const shard, epoch = wal.ShardID(3), wal.Epoch(7)
@@ -166,10 +166,11 @@ func TestTheRefusalSurvivesTheWholeInterceptPath(t *testing.T) {
 // it is skipped only in sync mode. NotFound is the honest answer here, because
 // none of these workflows exists.
 //
-// Every other method fails the test by name, which is strictly better than a
-// segfault: a fall-through says which call fell through. The two reads are
-// spelled out rather than left to the embedded interface for the reason above —
-// a promoted method value on a nil embedded interface panics where it is taken.
+// Only CreateWorkflowExecution fails the test by name. Everything else on
+// p.ExecutionStore stays promoted from the embedded nil and panics when it is
+// called, taking the test binary — every case scheduled after this file
+// included — with it, which is why the reads the intercepted path makes are
+// written out here rather than left to the embedding.
 type unreachableStore struct {
 	p.ExecutionStore
 	t *testing.T

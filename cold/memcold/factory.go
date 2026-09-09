@@ -52,9 +52,9 @@ type dataStoreFactory struct {
 
 var _ p.DataStoreFactory = (*dataStoreFactory)(nil)
 
-// Close does nothing. The database's lifetime is the func [New] returned, and a
-// server builds one of these per service: closing here would let the first
-// service to shut down take the database away from the rest.
+// Close does nothing. A server builds one of these per service and they all wrap
+// the one [Store], so closing here would force the sql.Factory underneath shut
+// while other services are still vending stores from it.
 func (f *dataStoreFactory) Close() {}
 
 func (f *dataStoreFactory) NewExecutionStore() (p.ExecutionStore, error) {

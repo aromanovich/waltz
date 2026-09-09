@@ -54,7 +54,8 @@ type ShardLayer interface {
 }
 
 // ShardWriter is the WAL layer's write path: one write, acked into the shard's
-// log and applied, with the outcome reported before the call returns.
+// log, and in sync mode applied — with the drain's outcome — before the call
+// returns.
 type ShardWriter interface {
 	// Write acks m into its shard's log and reports what the apply transaction
 	// did with it; the mutation names its own shard.
@@ -166,9 +167,8 @@ func NewAbstractDataStoreFactory(base client.AbstractDataStoreFactory, opts Opti
 }
 
 // NewFactory hands the server a decorated data store factory. Every argument
-// transits untouched (the plugin discards the resolver and hard-wires its own),
-// and this is where the server's metrics handler enters the layer, through
-// [MetricsSink] and only there: the stores this builds record into
+// transits untouched, and this is where the server's metrics handler enters the
+// layer, through [MetricsSink] and only there: the stores this builds record into
 // [Options.Metrics], which the layer already holds, so the handler taken by the
 // first service to build persistence is the one the whole layer reports to.
 func (f *AbstractDataStoreFactory) NewFactory(

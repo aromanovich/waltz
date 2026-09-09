@@ -74,8 +74,10 @@ func New(shard wal.ShardID, window int, on func(fold.Batch) error) *Driver {
 func (d *Driver) Run() Run { return d.run }
 
 // Add folds one mutation in, draining first if fold refuses it and again if the
-// window is full afterwards. An error is fold's own refusal surviving its
-// recovery, or the drain callback's — both mean the run cannot continue.
+// window is full afterwards. An error is fold's own — a refusal surviving its
+// recovery, a seqno that did not rise, a mutation of another shard or one
+// holding no single request — or the drain callback's; all of them mean the run
+// cannot continue.
 func (d *Driver) Add(seqno wal.Seqno, m mutation.Mutation) error {
 	refusal, err := d.acc.AddOrDrain(seqno, m, d.drain)
 	if err != nil {

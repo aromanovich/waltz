@@ -132,8 +132,8 @@ func assertConflictResolve(req *p.InternalConflictResolveWorkflowExecutionReques
 	}
 	if ns := req.NewWorkflowSnapshot; ns != nil {
 		// The plugin registers no assertion for this run, but fold records one
-		// and apply asserts it (registerRun): what the drain will assert is
-		// what has to hold.
+		// and apply asserts it ([Emitted.RunAssertions]): what the drain will
+		// assert is what has to hold.
 		a.runs = append(a.runs, assertedRun{ns.RunID, partNewSnapshot, RunAssertion{MustNotExist: true}})
 	}
 	return a
@@ -151,7 +151,10 @@ func assertSet(req *p.InternalSetWorkflowExecutionRequest) asserted {
 }
 
 // The current-row write each kind performs, rendered the way the store's own
-// path for that kind renders it ([CurrentWrite]). Set and the four kinds that
+// path for that kind renders it ([CurrentWrite]) — except
+// [currentWriteOfConflictResolve], where both plugins pass the snapshot's own
+// execution-state blob through and this renders a reduced one, so the row that
+// lands carries no request ids and no start time. Set and the four kinds that
 // assert nothing write nothing, so they have none.
 //
 // The execution state is dereferenced rather than checked: a request without one

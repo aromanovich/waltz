@@ -142,10 +142,11 @@ func TestTheBaseIsAskedForWhatTheWindowDoesNotFill(t *testing.T) {
 	require.Equal(t, []int64{1, 2, 3, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109}, taskIDs(pages))
 }
 
-// TestASharedFirstKeyStillAdvancesThePagination is the one place a collision can
-// reach the merge's arithmetic: a window that overflows the page on its own,
-// whose first task is also the base's first row. Cutting strictly below that key
-// would emit nothing, and an empty page with a token never ends.
+// TestASharedFirstKeyStillAdvancesThePagination: a window task and the base's
+// first row on one key. The base page's token bounds the window's reach to that
+// key, so the tie deduplicates to one row and the pagination still advances.
+// mergePage's own tie-break — the cut at the base's first key, where an empty
+// page with a token would never end — is reached by nothing in this package.
 func TestASharedFirstKeyStillAdvancesThePagination(t *testing.T) {
 	a := fold.New(shard)
 	cold := coldtasks.New()
