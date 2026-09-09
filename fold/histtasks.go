@@ -80,6 +80,15 @@ func cmpBound(category tasks.Category, a, b tasks.Key) int {
 // one: a range maximum a nanosecond above a task's fire time covers that task
 // here and nothing in the store, losing a row the sequential path keeps. A
 // constant because this package names no store.
+//
+// It is therefore a requirement on the store and not only a fact about it: **a
+// scheduled task's fire time must survive a round trip at microsecond
+// resolution or finer.** Coarser is the direction that loses, and it loses
+// twice over — a range maximum truncated here to a microsecond covers a task the
+// store's own DELETE would leave alone, so [Accumulator.sweepTasks] drops that
+// task out of the window before any drain writes it, and [hideDeleted] hides its
+// row from the merged read. The reader sees neither, completes the range, and
+// acks past a task that is still there.
 const storedResolution = time.Microsecond
 
 func stored(t time.Time) time.Time { return t.Truncate(storedResolution) }

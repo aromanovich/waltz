@@ -480,6 +480,12 @@ Three things about the drop are decisions rather than mechanics:
   leaves the row alone. Compare finer in the window and the sweep would drop the task anyway, which
   is a lost timer rather than a leaked row.
 
+  So it is a requirement on the store as much as a fact about it: **a scheduled task's fire time must
+  survive a round trip at microsecond resolution or finer.** A column that keeps less puts the
+  comparison here on the finer side of the store's, and the cost lands twice — the sweep drops the
+  task out of the window before any drain writes it, and the merged read hides its row. The reader
+  sees neither and completes the range over both.
+
   The sweep runs when the range folds in rather than when the drain runs, because the drain deletes
   **every range before it writes any task row** — the order that keeps a task written after a range
   from being taken away by it ([chapter 05](05-write-path.md#2-the-drain-itself)). So a task and a
