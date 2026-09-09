@@ -404,8 +404,8 @@ inherited tail and runs trim beside itself. Its three states are decisions rathe
 branches:
 
 * `StateRunning` — the shard is this cycle's to write, and it is the only state that accepts work;
-* `StateHaltedLost` — the shard was fenced away, which is fencing working. The tail is dropped,
-  nothing is trimmed, and the next owner continues the log;
+* `StateHaltedLost` — the shard was fenced away, which is fencing working. The window is dropped,
+  nothing is trimmed, and the entries it held stay in the log for the next owner to replay;
 * `StateHaltedInvariant` — an assertion failed in a window whose failure could not be pinned on one
   caller. A divergence this process owns: no retry and no failover.
 
@@ -661,13 +661,15 @@ known.
   snapshot-delta and the snapshot-replacing paths alike, and the last of those saves the prior task
   map across the replacement.
 * **Upsert and delete of one key are resolved inside the accumulator, per key, before anything is
-  emitted.** The store's transaction does not emit statements in the order they were registered: it
-  emits every delete family first and then every upsert. So a window that emitted an unresolved pair
-  for the same key would have them applied backwards, and the upsert would resurrect a key the caller
-  deleted last. `fold.mergeItems` applies the arriving mutation's deletes first and then its upserts,
-  so the later operation wins and the key leaves the other set entirely. This is a constraint on
-  anyone adding a keyed collection to the fold: merging one without the resolution compiles, passes
-  any test that compares merged requests, and shows up as a row that should be gone and is not.
+  emitted.** The store's transaction does not emit statements in the order they were registered: for
+  each collection it issues every upsert and then every delete. So a window that emitted an
+  unresolved pair for the same key would have them applied in that order whatever the caller meant,
+  and a key re-upserted after being deleted would be written and then deleted again — an
+  acknowledged write gone. `fold.mergeItems` takes the arriving mutation's deletes and then its
+  upserts, so across mutations the later operation wins and the key leaves the other set entirely.
+  This is a constraint on anyone adding a keyed collection to the fold: merging one without the
+  resolution compiles, passes any test that compares merged requests, and shows up as a row that
+  should be there and is not.
 * **Buffered events do not merge**, which is a fourth barrier rule beside I8's three. Each arriving
   mutation's `NewBufferedEvents` blob is stripped out of the merged request and appended to a
   per-run list in arrival order, so the merged request's own slot is always nil, and at drain time
