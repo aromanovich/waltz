@@ -425,11 +425,20 @@ func (s *Store) createExecution(
 	}
 	result, err := tx.InsertIntoExecutions(ctx, row)
 	if err != nil {
-		if s.db.IsDupEntryError(err) {
-			return &p.WorkflowConditionFailedError{
-				Msg: fmt.Sprintf("Workflow execution already running. WorkflowId: %v", workflowID),
-			}
-		}
+		// Not translated into a condition failure, which is what upstream's own
+		// create does with a duplicate-key error. A drain asserts every run row
+		// it touches under this transaction's lock a statement earlier
+		// (assertRuns), so a run that is already there is answered there, named
+		// — TestACreateOfARunThatExistsFailsAtItsAssertion holds that — and
+		// fencing leaves nobody to have put it in between. So an insert that
+		// fails here is infrastructure, and its transaction may yet commit.
+		//
+		// The plugin cannot tell the difference anyway: sqlite's
+		// IsDupEntryError masks the error code against the constraint codes
+		// with a bitwise AND rather than comparing it, and 3603 &
+		// SQLITE_FULL, SQLITE_IOERR, SQLITE_CORRUPT, SQLITE_NOMEM,
+		// SQLITE_INTERRUPT and SQLITE_BUSY are all non-zero. Every one of those
+		// has an unknown outcome, and [cold.Applier] says not to round one down.
 		return serviceerror.NewUnavailablef("inserting the executions row of run %s: %v", state.RunId, err)
 	}
 	return exactlyOneRow(result, "insert", workflowID, state.RunId)

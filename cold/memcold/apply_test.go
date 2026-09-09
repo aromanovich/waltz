@@ -363,3 +363,32 @@ func immediateTask(id int64, name string) p.InternalHistoryTask {
 func blob(name string) *commonpb.DataBlob {
 	return &commonpb.DataBlob{Data: []byte(name), EncodingType: enumspb.ENCODING_TYPE_PROTO3}
 }
+
+// TestACreateOfARunThatExistsFailsAtItsAssertion pins which statement answers a
+// duplicate, and it is the reason [Store.Apply] does not translate a failed
+// insert into a condition failure of its own.
+//
+// The drain asserts every run row it touches under the transaction's lock, one
+// statement before it writes any of them, so a create whose run is already there
+// is answered there — with the row named. An insert reached past that assertion
+// and failed anyway is not a duplicate at all: fencing makes this layer the
+// shard's only writer, so nothing legitimate put the row in between. Reading it
+// as one would hand a definite answer to what the driver reports for a disk that
+// is full or an I/O error that interrupted the write, whose transaction may yet
+// commit.
+func TestACreateOfARunThatExistsFailsAtItsAssertion(t *testing.T) {
+	h := newDrains(t)
+	wf, run := uuid.NewString(), uuid.NewString()
+
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, run))))
+
+	err := h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, run)))
+	require.Error(t, err)
+	require.Equal(t, apply.ClassInvariantViolated, apply.Classify(err),
+		"a run that is already there is a divergence and not an ambiguity")
+
+	violation, ok := err.(*apply.InvariantViolationError) //nolint:errorlint // the attribution is the assertion
+	require.True(t, ok, "got %T", err)
+	require.NotEmpty(t, violation.Diverged, "the assertion names the row it found")
+	require.Equal(t, run, violation.Diverged[0].RunID)
+}

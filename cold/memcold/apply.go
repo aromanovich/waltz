@@ -84,7 +84,17 @@ func (s *Store) Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, b
 	}
 
 	if err := s.drain(ctx, tx, shard, epoch, batch); err != nil {
-		_ = tx.Rollback()
+		if rerr := tx.Rollback(); rerr != nil {
+			// A transaction that will not roll back has an outcome nobody here
+			// can state: the statements this drain had already issued may yet
+			// land. Reporting the assertion that failed would be a definite
+			// answer to an open question, and the one rule [cold.Applier] has
+			// about ambiguity is not to round it down — the cycle reads the
+			// watermark on this and would have given up on the batch instead.
+			return serviceerror.NewUnavailablef(
+				"memcold: the drain of shard %d failed (%v) and its transaction would not roll back: %v",
+				shard, err, rerr)
+		}
 		// The readback runs after the rollback and not before it: the database
 		// is served by one connection, and a read taken while the drain's
 		// transaction still holds it would wait for a transaction waiting for
