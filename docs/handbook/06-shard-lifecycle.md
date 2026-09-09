@@ -70,7 +70,9 @@ Comparing those two fields is the whole of the distinction, and
 
 ```go
 if s.layer != nil && request.RangeID != request.PreviousRangeID {
-        if err := s.layer.ShardAcquired(ctx, wal.ShardID(request.ShardID), wal.Epoch(request.RangeID)); err != nil {
+        if err := s.layer.ShardAcquired(
+                ctx, wal.ShardID(request.ShardID), wal.Epoch(request.RangeID),
+        ); err != nil {
                 return err
         }
 }
