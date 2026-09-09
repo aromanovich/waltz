@@ -99,8 +99,12 @@ type Watermarker interface {
 	// differently:
 	//
 	//   - (seqno, true, nil) — every entry up to and including seqno is in this
-	//     store. A new owner replays from seqno+1; a drain whose outcome was
-	//     unknown committed if seqno is at or above the one it carried.
+	//     store. A new owner replays from seqno+1. A drain whose outcome was
+	//     unknown committed if seqno is *exactly* the one it carried, which is
+	//     what makes [Applier.Apply]'s "commits batch.Watermark()" load-bearing
+	//     rather than incidental: the value identifies the drain. A seqno above
+	//     it names a drain that is not the one asking, and the cycle reads that
+	//     as an owner it does not know about.
 	//   - (_, false, nil) — no drain has ever committed for this shard. The
 	//     seqno is ignored, and a new owner replays the log from the bottom.
 	//   - (_, _, err) — the answer could not be read. This is not "false", and

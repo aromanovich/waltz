@@ -319,8 +319,9 @@ const (
 	// over them and the drain is counted and emitted.
 	settlesForward settlement = iota
 	// asksTheWatermark: the outcome is unreadable and the watermark is the only
-	// witness. One at or above the drain's seqno means it committed after all,
-	// and the drain settles forward; anything else halts.
+	// witness. One exactly at the drain's seqno means it committed after all,
+	// and the drain settles forward; below it means it did not and above it
+	// belongs to another owner, and both halt — on different sides.
 	asksTheWatermark
 	// answersItsWriter: sync mode's window of one, whose writer is still inside
 	// the call that appended it ([Cycle.answerWriter]).

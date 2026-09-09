@@ -136,6 +136,27 @@ func TestAWatermarkBelowAnUnresolvedDrainHalts(t *testing.T) {
 	require.ErrorIs(t, err, errUnreachable)
 }
 
+// TestAWatermarkAboveAnUnresolvedDrainHaltsLost is the third answer, and it is
+// not a stronger form of the first. Nothing of this cycle's can commit over an
+// unresolved drain — [Cycle.resolveStalled] runs before every drain and hands
+// back its error — so a watermark that has moved *past* this one was moved by
+// another owner's. Reading it as "mine committed" would settle this drain
+// forward on somebody else's transaction, move applied to a seqno this shard's
+// drains never wrote, and let the trim follow it.
+//
+// Halting lost rather than invariant is the truthful side: the shard really is
+// somebody else's, and the caller re-acquires rather than paging anybody.
+func TestAWatermarkAboveAnUnresolvedDrainHaltsLost(t *testing.T) {
+	e := unresolvedEnv(t, wmAnswer{seqno: 9, found: true})
+
+	require.Error(t, e.c.drainNow(context.Background()))
+	require.Equal(t, StateHaltedLost, e.c.State(),
+		"a watermark past this drain's seqno is another owner's, not proof of this one")
+	require.EqualValues(t, 0, e.c.Stats().AppliedSeqno,
+		"and applied must not follow it: the trim goes there, and this shard committed nothing")
+	require.Len(t, e.entries(t), 2, "the entries stay in the log for whoever owns the shard")
+}
+
 // TestAnEntryWhoseRecoveryDrainFailedIsStillFolded: the fold refuses, the drain
 // that would make room for the mutation fails, and the entry is left acked and
 // durable and in no window at all. Nothing would ever carry it — a later drain

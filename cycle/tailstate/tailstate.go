@@ -190,10 +190,13 @@ func (t *Tail) Stalled() (Unresolved, bool) {
 	return Unresolved{Seqno: t.stalled, Cause: t.stalledBy}, t.stalled != 0
 }
 
-// Resolve ends a stall, and only a watermark at or above the stalled seqno
-// entitles a caller to it: the drain committed after all, so its entries are
-// settled, its bytes are no longer held, and its seqno is in the cold store and
-// therefore where a trim may go.
+// Resolve ends a stall, and only a watermark at exactly the stalled seqno
+// entitles a caller to it ([cycle.Cycle.resolve] is where that is decided): the
+// drain committed after all, so its entries are settled, its bytes are no longer
+// held, and its seqno is in the cold store and therefore where a trim may go.
+// One above it is another owner's and ends the stall in a halt instead, which is
+// why this may not be reached on it — applied would move to a seqno this shard's
+// own drains never committed, and the trim goes to applied.
 func (t *Tail) Resolve() {
 	if t.stalled == 0 {
 		return
