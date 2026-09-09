@@ -211,7 +211,11 @@ type seams struct {
 	acked int
 }
 
-func newSeams(t *testing.T, seed int64) *seams {
+func newSeams(t *testing.T, seed int64) *seams { return newSeamsWith(t, seed, seamsPolicy()) }
+
+// newSeamsWith is [newSeams] at a policy of the caller's, for the one case that
+// varies it: a window is what decides whether anything is folded at all.
+func newSeamsWith(t *testing.T, seed int64, policy cycle.Config) *seams {
 	t.Helper()
 	ctx := context.Background()
 
@@ -245,7 +249,7 @@ func newSeams(t *testing.T, seed int64) *seams {
 		Writer:    s.stage,
 		Recoverer: s.stage,
 		Registry:  tasks.NewDefaultTaskCategoryRegistry(),
-	}, cycle.Fixed(seamsPolicy()))
+	}, cycle.Fixed(policy))
 	require.NoError(t, err)
 	t.Cleanup(func() { s.mgr.Close(ctx) })
 

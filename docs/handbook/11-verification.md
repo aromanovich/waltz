@@ -312,6 +312,30 @@ written is absent from it. The applied position is still the last committed drai
 holds every seqno up to the last one acked. Nothing acknowledged was lost, and nothing unapplied was
 invented.
 
+### The fold against not folding
+
+Everything above holds the folded path against a record of what its own drains carried, which agrees
+with the fold by construction, or against another folded path. Neither states the claim the layer
+actually makes, which is that **folding is transparent**: the database a window of 256 leaves is the
+database Temporal's own write path would have left, one mutation at a time.
+
+`TestFoldingChangesNothingButTheNumberOfTransactions` states it. One seed is driven twice into two
+real databases, once at the shipped window and once at `Mutations: 1` — a window that holds one
+request when the drain takes it, so no two mutations of a run ever meet and nothing is ever merged.
+Then every run row is read back and diffed whole, blobs included, over the union of both ledgers'
+keys, and so is every workflow's current row. The two arms must differ in transactions and in nothing
+else: 6,000 mutations commit 77 transactions folded and 6,000 sequential, and leave 519 identical run
+rows and 32 identical current rows.
+
+Staging the merge's upsert-after-delete resolution — dropping the line that takes a re-upserted key
+back out of the delete set, so the store writes the row and then deletes it again — reddens this run
+on a named row. It reddens the recovery run too, since two different window cuttings also disagree
+about it; what it does *not* redden is `TestBothSeamsRealNoServer`, whose ledger recorded what the
+drain carried and therefore agrees with the database about the wrong answer. That is the difference
+this run is for. Its blind spot is the mirror image: a defect both arms share — the codec, the
+encoding of a request, an assertion neither arm makes — cancels, and belongs to the codec guards and
+the condition authority instead.
+
 ### Recovery: the same stream, a different set of windows
 
 Every run above ends in a shutdown drain, which applies the last window out of memory. So none of
@@ -668,7 +692,7 @@ drive; they assert nothing. **Judgements** say yes or no.
 
 | package | what it says |
 |---|---|
-| `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, end up the same whether the stream crossed one owner or six, and lose no row to an owner that kept draining after it had been fenced |
+| `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, end up the same whether the stream crossed one owner or six, lose no row to an owner that kept draining after it had been fenced, and are the rows one mutation per transaction would have left |
 | `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
 | `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
 | `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the seven cases over the one method those suites do not know about |
@@ -781,7 +805,9 @@ suites above and are stated where they are:
   [`acceptance_recovery_test.go`](../../internal/verify/acceptance/acceptance_recovery_test.go) drives
   that stream twice and holds the recovered database against the uninterrupted one, and
   [`acceptance_handover_test.go`](../../internal/verify/acceptance/acceptance_handover_test.go) is the
-  two registries a failover really has, with each fence taken on its own.
+  two registries a failover really has, with each fence taken on its own, and
+  [`acceptance_oracle_test.go`](../../internal/verify/acceptance/acceptance_oracle_test.go) is the same
+  stream folded and unfolded into two databases that must agree.
 * [`../../cold/memcold/conformance_test.go`](../../cold/memcold/conformance_test.go) — Temporal's
   four suites over the shipped store, and why a suite of ours is not beside them;
   [`apply_test.go`](../../cold/memcold/apply_test.go) is the one method they do not reach, and
