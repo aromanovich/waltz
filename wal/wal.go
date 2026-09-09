@@ -17,7 +17,12 @@
 //  5. Readback: [Log.ReadFrom] returns every entry a completed append acked and
 //     no trim has removed, in seqno order. [Log.Trim] moves the log's lower end
 //     and nothing else, so what it leaves stays readable from that new lower
-//     end, and the shard's ownership and its next seqno survive it.
+//     end, and the shard's ownership and its next seqno survive it. A trim is
+//     the *only* removal this excuses: a retention window, a TTL on the table
+//     or a compaction that drops old records each break it, and each breaks it
+//     silently — wal/waltest runs in milliseconds and cannot express time, so a
+//     backend that expires entries passes every case and loses the first tail
+//     that outlives its policy.
 //
 // A WAL entry's payload is opaque bytes here: no Temporal types in this package
 // or in its implementations.

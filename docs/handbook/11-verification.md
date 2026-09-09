@@ -101,6 +101,15 @@ That is the single most important thing for a deployment to know about the suite
 against its own log: a green contract suite says the log's *logic* is right and says nothing about
 whether the fence reaches another machine. Whoever supplies the log owes that test to themselves.
 
+**The second blind spot is time, and it is the one a managed backend walks into.** Guarantee 5 says
+`ReadFrom` returns every entry a completed append acked *and no trim has removed*, so a trim is the
+only removal the contract excuses: a retention policy, a TTL on the table, a compaction that drops
+old records are each a violation of it. The suite cannot see any of them. Every case runs to
+completion in milliseconds, so a log that deletes entries after an hour passes all eighteen and
+loses an acked entry the first time a shard's tail outlives the policy. A backend on storage that
+expires anything owes itself the test the suite has no way to write, and owes it against the
+configuration it will actually run.
+
 ---
 
 ## The cold store's suites are Temporal's
