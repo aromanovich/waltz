@@ -298,6 +298,13 @@ the drive loop instead, reading the log's lower end first and the watermark seco
 only rises, so a drain committing between the two reads can only make the comparison stricter than
 the moment it is about.
 
+A sample can find the log holding nothing at all, and that is the same claim at its boundary rather
+than an exception to it: the legal trim reaches one past the last entry once the drain has caught up,
+which at a window of one mutation it does between writes. So an empty log is judged against the
+watermark instead — allowed exactly when the cold store holds every seqno acked, and a loss when it
+does not. Read as loss unconditionally, it was a sample that failed on the machine where the drain
+won the race and passed on the one where the writer did.
+
 `TestAShardThatLosesItsEpochMidRun` is invariant [I2](02-concepts-and-invariants.md#the-invariants)
 with both seams real. After 2,000 mutations another owner takes the shard in the database: the range
 id moves, which is all an acquire is from underneath. The log is left unfenced on purpose — fencing

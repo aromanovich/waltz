@@ -313,24 +313,63 @@ func (s *seams) drive(t *testing.T, n int) error {
 // order deliberately — the log's lower end first, the watermark second —
 // because the watermark only rises, so a drain committing between them can only
 // make the comparison stricter than the moment it is about.
+//
+// An empty log is that same claim at its boundary and not an exception to it. The
+// legal trim reaches applied+1, which is one past the last entry once the drain
+// has caught up — so a log holding nothing is allowed exactly when the cold store
+// holds everything acked, and a log that empties while the watermark is behind is
+// the loss this samples for. At a window of one mutation the drain does catch up
+// between writes, which is why the case is reached at all.
 func (s *seams) trimStaysBehind(t *testing.T) {
 	t.Helper()
-	first := s.logFirst(t)
+	first, held := s.logFirst(t)
 	applied, _, err := s.store.Watermark(s.ctx, seamsShard)
 	require.NoError(t, err)
+	if !held {
+		require.EqualValues(t, s.acked, applied,
+			"the log holds nothing while the cold store is at %d of the %d acked, so the entries between are in neither",
+			applied, s.acked)
+		return
+	}
 	require.LessOrEqual(t, first, applied+1,
 		"the log was trimmed to %d, past the %d the cold store holds", first, applied)
 }
 
-// logFirst is the seqno of the lowest entry the log still holds. The read asks
-// from [wal.FirstSeqno], so what comes back is where the trim left the log's
-// lower end.
-func (s *seams) logFirst(t *testing.T) wal.Seqno {
+// logFirst is the seqno of the lowest entry the log still holds, and whether it
+// holds one at all. The read asks from [wal.FirstSeqno], so what comes back is
+// where the trim left the log's lower end.
+func (s *seams) logFirst(t *testing.T) (wal.Seqno, bool) {
 	t.Helper()
 	entries, err := s.log.ReadFrom(s.ctx, seamsShard, wal.FirstSeqno, 1)
 	require.NoError(t, err)
-	require.NotEmpty(t, entries, "the log is empty, and the mutation just acked into it is gone")
-	return entries[0].Seqno
+	if len(entries) == 0 {
+		return 0, false
+	}
+	return entries[0].Seqno, true
+}
+
+// TestASampleOverAnEmptyLogIsTheBoundaryAndNotALoss stages the state
+// [seams.trimStaysBehind] read as a lost entry for four commits: the drain has
+// caught up and the trim has legally reached one past the last seqno. It was
+// reachable only by losing a race — at a window of one mutation, on a machine
+// where the drain wins — so it was red on CI and green here, four times.
+//
+// Staged through the log directly rather than by driving a stream, since what is
+// judged is the sample and not the trim: the guard the drives run behind
+// ([trimGuard]) would refuse the same call.
+func TestASampleOverAnEmptyLogIsTheBoundaryAndNotALoss(t *testing.T) {
+	s := newSeams(t, 20260909)
+	require.NoError(t, s.drive(t, seamsSample*4))
+	s.mgr.Close(s.ctx)
+
+	applied, _, err := s.store.Watermark(s.ctx, seamsShard)
+	require.NoError(t, err)
+	require.EqualValues(t, s.acked, applied, "the shutdown drain left the cold store behind the log")
+	require.NoError(t, s.log.Trim(s.ctx, seamsShard, applied))
+
+	first, held := s.logFirst(t)
+	require.False(t, held, "the log still holds %d, so this is not the state the sample got wrong", first)
+	s.trimStaysBehind(t)
 }
 
 // holds asserts the database against a ledger: every run row at the version the
