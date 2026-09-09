@@ -157,8 +157,12 @@ refused or to fail ambiguously.
 Two limits survive that, and the second is the sharpest in this chapter.
 
 **The database dies with the process.** It has no file, no fsync and no second reader. So it can say
-what a batch does to a schema and it cannot say anything about durability, recovery, or a store that
-is still there after a kill.
+what a batch does to a schema, and nothing about durability or a store that is still there after a
+kill. The layer's own half of recovery is not in that gap: an owner superseded without a drain, its
+tail replayed by the successor and the resulting database held against an uninterrupted run of the
+same stream, is staged over this store ([chapter
+11](11-verification.md#recovery-the-same-stream-a-different-set-of-windows)). What is missing there
+is the kill, not the replay.
 
 **Nothing here says a folded batch leaves the cold store in the state mutation-by-mutation writing
 would have left it.** The batches execute, so a merged request the schema rejects is caught. What is
@@ -169,6 +173,12 @@ supplies one of the two stores; it cannot supply the argument, because a rule ag
 re-implementation is not evidence ([chapter
 13](13-designs-that-were-rejected.md#a-unit-test-per-fold-rule) is why). The oracle stays a
 deployment's to build, over the store it actually cares about.
+
+The recovery run is not that oracle and does not narrow this limit, though it is the same shape one
+axis over: it drives one stream twice with the *windows* cut differently, not with the fold taken out
+of one arm. So it settles that the folding does not depend on where a window ends — which is the
+property a crash tests, since a crash cuts one — and leaves untouched the question of whether folding
+at all agrees with not folding.
 
 Three places where the folded path knowingly answers differently from upstream's sequential path are
 known and deliberate, and each is written down beside the code it is about:

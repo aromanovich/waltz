@@ -312,6 +312,41 @@ written is absent from it. The applied position is still the last committed drai
 holds every seqno up to the last one acked. Nothing acknowledged was lost, and nothing unapplied was
 invented.
 
+### Recovery: the same stream, a different set of windows
+
+Every run above ends in a shutdown drain, which applies the last window out of memory. So none of
+them ever takes an entry back out of the log, and the run just described stops one step short of the
+claim the first rule is about: it proves the entries a refused drain carried are still in the log,
+not that anybody can turn them back into rows.
+
+`TestARecoveredShardHoldsWhatAnUninterruptedOneDoes` is that step. One seed is driven twice. The
+control run puts all 6,000 mutations through a single cycle. The second puts the same stream through
+six of them: five times, after a thousand mutations, the shard's range id moves and the cycle is
+superseded without draining — which is the whole of what this layer can observe of a process that
+died, the window going with it and the log keeping everything it acked. The successor finds those
+entries at replay or nowhere.
+
+The two databases are then compared to each other rather than to a model, and that is what makes the
+comparison total. The ledger knows what the drains carried, so a mutation no drain ever carried is
+invisible to it; the uninterrupted run's own rows are the only expectation that has an entry for
+something the second run dropped. Every run row is read back through the store and diffed whole,
+blobs included, over the union of both ledgers' keys, and so is every workflow's current row. The
+watermark must stand at the stream's length, `Replayed` must be non-zero — without it the crashes
+cost the run nothing and it judges nothing — and `Dropped` must be zero, since no entry of an async
+stream is provisional and a drop would be a mutation silently forgotten.
+
+What it establishes beyond "recovery works" is that **the fold is boundary-independent**: the two
+runs cut the same stream into different windows, so a merge rule that depended on where a window
+ended would leave two different databases. Staging one — the mutation merge keeping the head's
+`NextEventID` rather than the delta's — makes the run red on one named run row with the two values
+beside each other. Staging a successor whose replay starts one entry above the watermark makes it red
+at the crash boundary instead, on the assertion the next drain fails.
+
+**What it does not prove.** Nothing is killed: both backends live in the test's own process, so this
+is a claim about the layer's arithmetic across an owner change and not a durability claim about
+either store. And the crash is quiescent — it falls between two writes, never inside an append or a
+drain whose outcome is unknown.
+
 ---
 
 ## A server, in this process
@@ -360,8 +395,10 @@ shards is not load, and no timing this suite produces is a performance claim.
 
 The last level of evidence — *nothing acked was lost and nothing applied was invented, while nodes
 were being killed* — has no instrument in this repository. Killing a process is only a test if what
-the process owned is still there afterwards, and both backends here die with it. What is here is
-one half of such a run's input: `internal/verify/checker` is the record a driver writes of the calls it
+the process owned is still there afterwards, and both backends here die with it. The arithmetic such
+a run would exercise is judged without the killing — a superseded owner's tail replayed, and the
+result held against an uninterrupted run of the same stream, in the recovery acceptance above. What
+is here besides is one half of a killing run's input: `internal/verify/checker` is the record a driver writes of the calls it
 made, and it judges nothing. Nothing here reads a record back and says whether the run it describes
 was correct.
 
@@ -552,7 +589,7 @@ drive; they assert nothing. **Judgements** say yes or no.
 
 | package | what it says |
 |---|---|
-| `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said and hold nothing a drain that lost the shard carried |
+| `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, and end up the same whether the stream crossed one owner or six |
 | `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
 | `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
 | `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the seven cases over the one method those suites do not know about |
@@ -661,7 +698,9 @@ suites above and are stated where they are:
 * [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)
   — the stream, the window, the assertions and the knob control at the other end of the dial;
   [`acceptance_seams_test.go`](../../internal/verify/acceptance/acceptance_seams_test.go) is the same shape
-  over both real seams, with the ledger that says what the database must hold.
+  over both real seams, with the ledger that says what the database must hold;
+  [`acceptance_recovery_test.go`](../../internal/verify/acceptance/acceptance_recovery_test.go) drives
+  that stream twice and holds the recovered database against the uninterrupted one.
 * [`../../cold/memcold/conformance_test.go`](../../cold/memcold/conformance_test.go) — Temporal's
   four suites over the shipped store, and why a suite of ours is not beside them;
   [`apply_test.go`](../../cold/memcold/apply_test.go) is the one method they do not reach, and
