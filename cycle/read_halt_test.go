@@ -21,6 +21,8 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/internal/verify/coldtasks"
+	"github.com/aromanovich/waltz/internal/verify/mutbuild"
+	"github.com/aromanovich/waltz/mutation"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/memwal"
 	"github.com/aromanovich/waltz/wal/waltest"
@@ -152,10 +154,17 @@ func TestACycleFencedAwayHoldingATailRefusesAllThree(t *testing.T) {
 
 // TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree is why
 // [Cycle.readHalted] looks at halted-lost specifically rather than at "is it
-// halted". An entry this build cannot decode leaves the shard ours: no other
-// owner is acking into the log, so there is no foreign tail for a page to be
-// short of and the tail rule alone applies. Converting this to
+// halted": the tail rule alone applies here, and converting this to
 // ShardOwnershipLost would hand the divergence on as an ordinary failover.
+//
+// The tail is what makes that rule safe, and an entry this build cannot decode
+// is charged to it by [Cycle.strand] before the halt. Without that charge the
+// tail reads empty — the entry never reached [Cycle.accept] — and an empty tail
+// is exactly what [tailRoute] passes through, so all three reads would be
+// answered from a cold store that does not hold this entry. For the task read
+// that is loss rather than staleness: the queue completes the range it asked
+// for and acks past keys the entry carries, and no owner running this build can
+// ever decode it to write them.
 func TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree(t *testing.T) {
 	ctx := context.Background()
 	log := memwal.New()
@@ -169,11 +178,11 @@ func TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree(t *testing
 
 	got := askAllThree(t, c, cold)
 	require.Equal(t, StateHaltedInvariant, c.State())
-	require.NoError(t, got.exec)
-	require.NoError(t, got.current)
-	require.NoError(t, got.tasks,
-		"the shard is still this node's, so the page is short of nothing")
-	require.NotZero(t, cold.Calls, "and the cold store really was asked")
+	require.ErrorIs(t, got.exec, ErrHalted)
+	require.ErrorIs(t, got.current, ErrHalted)
+	require.ErrorIs(t, got.tasks, ErrHalted)
+	require.Zero(t, cold.Calls,
+		"an entry acked and undecodable is an incomplete cold store, so nothing may be served from it")
 }
 
 // TestAReplayThatFailedWithoutHaltingIsStillAnError bounds
@@ -199,4 +208,41 @@ func TestAReplayThatFailedWithoutHaltingIsStillAnError(t *testing.T) {
 	require.NotErrorIs(t, got.exec, ErrHalted)
 	// The next request replays from the watermark and the cycle comes up.
 	require.NoError(t, askAllThree(t, c, coldtasks.New()).exec)
+}
+
+// TestAnUndecodableEntryLeavesNoQueueAbleToAckPastIt is the same rule staged the
+// way a deployment meets it, and with an entry that carries real work: the node
+// that wrote seqno 1 had archival configured and this one does not, so the entry
+// decodes to ErrUnknownCategory here. It also carries a transfer task, which
+// this node's transfer queue does read.
+//
+// Before [Cycle.strand] existed the tail read empty and this page came back
+// served, empty and short task 42 — the queue would have completed its range and
+// acked past a key nothing will ever write.
+func TestAnUndecodableEntryLeavesNoQueueAbleToAckPastIt(t *testing.T) {
+	ctx := context.Background()
+	log := memwal.New()
+	require.NoError(t, log.Fence(ctx, testShard, 7))
+
+	ns, wf, run := ids()
+	payload, err := mutation.Encode(build.Update(ns, wf, run, 2,
+		mutbuild.WithTaskMap(map[tasks.Category][]p.InternalHistoryTask{
+			tasks.CategoryTransfer: {immediate(42)},
+			tasks.CategoryArchival: {immediate(43)},
+		})))
+	require.NoError(t, err)
+	require.NoError(t, log.Append(ctx, testShard, 7, wal.FirstSeqno, payload))
+
+	// zombie's Deps.Registry is the default one: no archival.
+	c := zombie(t, log, 7)
+	cold := coldtasks.New()
+
+	minKey, maxKey := immediateRange()
+	_, readErr := c.getHistoryTasks(ctx, taskReq(tasks.CategoryTransfer, minKey, maxKey, 100), cold.Read)
+
+	require.Equal(t, StateHaltedInvariant, c.State())
+	require.ErrorIs(t, readErr, ErrHalted, "the page would have been short the acked transfer task")
+	require.ErrorContains(t, readErr, "unknown task category",
+		"and the cause names what this build could not read")
+	require.Zero(t, cold.Calls)
 }

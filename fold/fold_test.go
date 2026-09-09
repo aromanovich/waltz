@@ -104,6 +104,11 @@ func withClearBuffered() func(*p.InternalWorkflowMutation) {
 	return func(m *p.InternalWorkflowMutation) { m.ClearBufferedEvents = true }
 }
 
+// snapshot is the external tests' fixture. authority_derivation_test.go, in the
+// internal package beside this one, has a snapshot of its own under the same
+// name and with different fields — it carries a LastWriteVersion and no
+// NextEventID, because what it feeds is the assertion derivation rather than the
+// fold. A case moved between the two files changes meaning without changing.
 func snapshot(run string, version int64) p.InternalWorkflowSnapshot {
 	return p.InternalWorkflowSnapshot{
 		NamespaceID:        nsID,

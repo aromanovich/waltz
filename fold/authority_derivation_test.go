@@ -70,6 +70,11 @@ const (
 // snapshot and workflowMutation carry an execution state on every part: fold
 // and check both dereference it rather than checking it, so a part without one
 // is a fixture the store would have refused.
+//
+// fold_test.go, the external package beside this one, has its own snapshot under
+// the same name and with different fields — a NextEventID and no
+// LastWriteVersion. A case moved between the two files changes meaning without
+// changing.
 
 func snapshot(run string, version int64) p.InternalWorkflowSnapshot {
 	return p.InternalWorkflowSnapshot{

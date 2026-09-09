@@ -297,7 +297,7 @@ correctness requirement rather than an optimisation. A read answered from a cold
 ahead of would be stale with nothing to say so, and a task page short a key is worse than stale:
 its one caller completes the range it read and acks past whatever was missing.
 
-Six rules the loop applies, entry by entry:
+Seven rules the loop applies, entry by entry:
 
 * **an entry above this cycle's epoch means this cycle is the zombie.** A successful fence cuts off
   every lower epoch, so an entry the log holds at a *higher* epoch was written by an owner that
@@ -313,6 +313,14 @@ Six rules the loop applies, entry by entry:
   decodes but names a different shard halts the same way. This is why `cycle.Deps.Registry` is
   required and `NewManager` refuses a nil one with `cycle.ErrNoRegistry`: a node that decoded with no
   registry would recover nothing, silently, until its first failover.
+* **an entry those two rules stop on is charged to the tail first** (`Cycle.strand`). All three halts
+  above happen before `Cycle.accept`, so nothing else would put the entry there, and a tail left
+  empty is read exactly one way: [§5](#5-halts-the-two-classes)'s rule passes both readers through to
+  the cold store on it. That store does not hold this entry, and for the task read a page short of
+  its rows is [not staleness but loss](07-read-path.md#why-a-read-served-anywhere-else-is-not-merely-stale)
+  — the queue completes the range it asked for and acks past keys no owner running this build can
+  decode to write. What the tail then *counts* is not a number to read: the entries above the one it
+  stopped on were never looked at. Non-empty is the whole of what it is for.
 * **the ack is the answer — with one exception the writer records.** Normally every assertion is
   verified before the entry becomes durable, so a condition failure at apply time is a genuine
   divergence and halts the shard. Sync mode is the exception: there the drain answers the caller

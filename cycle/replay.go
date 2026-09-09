@@ -113,7 +113,7 @@ func (c *Cycle) replayEntry(ctx context.Context, s *state, e wal.Entry) error {
 		// Guarantee 4 says seqnos are gap-free. If they are not, the log is not
 		// what this layer's invariants are written against.
 		err := fmt.Errorf("the log skips from seqno %d to %d", s.next, e.Seqno)
-		c.halt(s, StateHaltedInvariant, err)
+		c.strand(s, e, err)
 		return c.halted(s)
 	}
 
@@ -122,11 +122,11 @@ func (c *Cycle) replayEntry(ctx context.Context, s *state, e wal.Entry) error {
 		// A newer codec, or a task category this node has no registration for.
 		// Both are fatal to the replay on purpose, and the entry is acked, so
 		// there is nothing to do but stop.
-		c.halt(s, StateHaltedInvariant, fmt.Errorf("cycle: decoding seqno %d: %w", e.Seqno, err))
+		c.strand(s, e, fmt.Errorf("cycle: decoding seqno %d: %w", e.Seqno, err))
 		return c.halted(s)
 	}
 	if got, want := m.ShardID(), int32(c.shard); got != want {
-		c.halt(s, StateHaltedInvariant,
+		c.strand(s, e,
 			fmt.Errorf("cycle: seqno %d belongs to shard %d, this cycle owns shard %d", e.Seqno, got, want))
 		return c.halted(s)
 	}
@@ -155,6 +155,28 @@ func (c *Cycle) replayEntry(ctx context.Context, s *state, e wal.Entry) error {
 		return c.drain(ctx, s, drainReplay)
 	}
 	return nil
+}
+
+// strand halts the invariant side over an entry the replay could not take, and
+// charges that entry to the tail on the way — which is the whole of the
+// difference between this and a bare [Cycle.halt].
+//
+// The three callers all halt *before* [Cycle.accept], so nothing else would put
+// the entry in the tail, and the entry is acked and in no cold store. A tail
+// left empty here is read one way only: [tailRoute] takes it as "everything this
+// shard acked is in the cold store" and passes both readers through. For a task
+// read that is the loss the merge exists to prevent — the queue is handed a page
+// that is short exactly these rows, completes the range it asked for, and acks
+// past keys no owner will ever write, since the entry that carries them cannot
+// be decoded by this build at all.
+//
+// What the tail then reports is not a count anybody should read: whatever sits
+// above the entry was never looked at, and a seqno gap moves the commit over
+// the hole it names. Non-empty is the whole of what is needed — it is the only
+// thing [tailRoute] asks, and a halted cycle's bound is read by nobody.
+func (c *Cycle) strand(s *state, e wal.Entry, cause error) {
+	s.tail.Ack(e.Seqno, len(e.Payload))
+	c.halt(s, StateHaltedInvariant, cause)
 }
 
 // dropProvisional settles a replayed provisional entry whose condition failed:
