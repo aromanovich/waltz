@@ -31,9 +31,10 @@ const (
 	RunAbsent RunShape = iota
 	// RunSnapshot: the window holds whole state for the run (a Create, a Set, a
 	// conflict-resolve's reset, the new run of a continue-as-new, or a Create
-	// behind a tombstone). The base must not be merged in: every snapshot write
-	// in the plugin carries a DeleteStateItems for the run, so the cold store's
-	// leftovers are rows the drain is about to delete.
+	// behind a tombstone). The base must not be merged in: a snapshot either
+	// clears the run's collection tables first (the plugin's reset path) or
+	// asserts the run absent, so the cold store's leftovers are rows the drain
+	// is about to delete or rows of a run that is not this one.
 	RunSnapshot
 	// RunDelta: the window holds a delta for the run (an Update, or a
 	// conflict-resolve's current mutation). The answer is base ⊕ delta.

@@ -212,8 +212,9 @@ optimisation. `RunAbsent` and `RunDelta` are statements *about* the base; `RunSn
 shape added to the enum would have to answer the same question the same way.
 
 The reason a snapshot must not be merged with the base is that no snapshot-shaped write leaves the
-run's earlier rows behind. A Set and a conflict-resolve's reset carry the persistence plugin's own
-`DeleteStateItems` for the run alongside the new state; a Create — plain, as the new run behind a
+run's earlier rows behind. A Set and a conflict-resolve's reset go through the plugin's reset path,
+which clears each of the run's collection tables — `deleteActivityInfoMap` and its six siblings —
+before writing the snapshot's own rows; a Create — plain, as the new run behind a
 continue-as-new, or behind a tombstone — either asserts the run's absence or rides in the same
 transaction as the delete that removed it. Either way, once the drain commits, the run's state is
 that snapshot and nothing else. Merging the cold store's leftovers into a `RunSnapshot` answer would
@@ -479,9 +480,10 @@ Three things about the drop are decisions rather than mechanics:
   leaves the row alone. Compare finer in the window and the sweep would drop the task anyway, which
   is a lost timer rather than a leaked row.
 
-  The sweep runs when the range folds in rather than when the drain runs, because a store's batch
-  ordinarily gathers **every delete before every upsert** inside one transaction. A task and a range
-  that reached the same drain would come out with the row written, whatever the window meant by
+  The sweep runs when the range folds in rather than when the drain runs, because the drain deletes
+  **every range before it writes any task row** — the order that keeps a task written after a range
+  from being taken away by it ([chapter 05](05-write-path.md#2-the-drain-itself)). So a task and a
+  range that reached the same drain would come out with the row written, whatever the window meant by
   folding the range over it. The fold is the only place where the caller's order still survives.
 * **a task arriving after a range is kept.** The log's order is the caller's, so such a task is one
   the caller wrote after the delete, and the sequential path writes it. Pending ranges therefore die

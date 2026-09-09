@@ -83,8 +83,9 @@ func TestTheOverlayShapeTable(t *testing.T) {
 		a := fold.New(shard)
 		add(t, a, mkCreate(runX, snapActivity(2, "window-activity-2")))
 
-		// Every snapshot write in the plugin carries a DeleteStateItems for the
-		// run, so merging the base in would answer with rows on their way out.
+		// The plugin's snapshot path clears the run's collection tables before
+		// writing its own, so merging the base in would answer with rows on
+		// their way out.
 		resp, found, shape := render(a, runX, baseRow(9))
 		require.Equal(t, fold.RunSnapshot, shape)
 		require.True(t, found)
