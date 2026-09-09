@@ -91,6 +91,40 @@ behind and nothing in the log that says so.
 A drain the budget cuts short is **not** data loss: the entries are in the log, acked, and the next
 owner replays them. It costs that owner a read loop and a transaction before it serves anything.
 
+That holds while there *is* a next owner, so `Shutdown` names what it could not empty rather than
+returning nothing. Its error is a `*waltz.UndrainedError` and nothing else, carrying one
+`cycle.Residue` per shard — the shard, its epoch, how many acked entries the tail still held, and what
+that shard's drain answered, which is what tells a halted cycle from a budget that ran out. Nil means
+every tail emptied. Log it: it is the only moment those entries are nameable, and the next section is
+the one procedure that needs the answer.
+
+### Taking the layer out
+
+Turning the layer *off* is not the turn-on checklist run backwards, and it has one ordering
+constraint that loses acknowledged writes if it is broken.
+
+Removing the `wal` section puts the node in passthrough. Passthrough composes no log, so it cannot see
+that a log exists, cannot know a shard's tail was non-empty, and replays nothing. Writes go straight
+to the cold store and succeed — they assert against rows the cold store does actually hold — so every
+entry that was acked above the last committed watermark is stranded, and **nothing anywhere reports
+it**. That is the one silent way this layer loses an acknowledged write, and no code in it can close
+the hole: the check would have to be made by a mode that does not know what to check.
+
+So the order is:
+
+1. stop the writers — `Server.Stop`, on every node running the history service;
+2. call `Layer.Shutdown` and **read what it returns**;
+3. if it returned a `*UndrainedError`, the shards it names still hold acked entries. Do not remove the
+   section. Bring the node back in intercept mode and let it drain — a shard whose cold store is
+   reachable empties on the next shutdown, and one whose cycle halted needs the halt cleared first
+   ([runbook (b)](#b-a-shard-halted--and-which-of-the-two-classes));
+4. only once every node's `Shutdown` has answered nil, remove the section and restart.
+
+A node killed rather than stopped skips steps 2 and 3 entirely, which is why a decommission starts
+with a graceful stop and not with the config change. The distinction is in the code as well:
+`Layer.RetireShard` stops a cycle without draining, and it is named apart from `Shutdown` for exactly
+this reason — a drain writes, and a kill does not.
+
 One process composes one layer, whatever services it runs. The server calls `NewFactory` once per
 service, and each call decorates that service's own data store factory with the same
 already-composed `waltz.Layer`, so every service's stores talk to one registry of cycles. A shard's

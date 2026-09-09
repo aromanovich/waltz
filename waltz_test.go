@@ -4,6 +4,7 @@ package waltz
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 
 	"github.com/aromanovich/waltz/baserow"
 	"github.com/aromanovich/waltz/cycle"
+	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/internal/verify/coldtest"
 	"github.com/aromanovich/waltz/mutation"
 	"github.com/aromanovich/waltz/wal"
@@ -83,7 +85,7 @@ func TestTheCompositionIsReachableWithoutAColdStore(t *testing.T) {
 	const shard, epoch = wal.ShardID(3), wal.Epoch(7)
 
 	layer, _ := composed(t, cycle.Defaults())
-	t.Cleanup(func() { layer.Shutdown(ctx, time.Minute) })
+	t.Cleanup(func() { require.NoError(t, layer.Shutdown(ctx, time.Minute)) })
 
 	// Through Options, because that is the face the binary hands the factory:
 	// the registry is the acquire's observer and the write path at once.
@@ -119,7 +121,7 @@ func TestShutdownReleasesTheLog(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Zero(t, logs.closes, "a composed layer has not released anything yet")
-	layer.Shutdown(context.Background(), time.Minute)
+	require.NoError(t, layer.Shutdown(context.Background(), time.Minute))
 	require.Equal(t, 1, logs.closes, "the shutdown released the log")
 }
 
@@ -140,7 +142,7 @@ func TestTheShutdownDrainOutlivesTheContextThatAsksForIt(t *testing.T) {
 	require.Zero(t, cold.Drains(), "a windowed write of one mutation reaches no watermark")
 
 	cancel()
-	layer.Shutdown(ctx, time.Minute)
+	require.NoError(t, layer.Shutdown(ctx, time.Minute))
 
 	require.Equal(t, 1, cold.Drains(),
 		"the window the shutdown found went to the cold store, cancelled context and all")
@@ -166,7 +168,7 @@ func TestOneCompositionEmitsToOneHandler(t *testing.T) {
 	cfg.Sync = true
 
 	layer, _ := composed(t, cfg)
-	t.Cleanup(func() { layer.Shutdown(ctx, time.Minute) })
+	t.Cleanup(func() { require.NoError(t, layer.Shutdown(ctx, time.Minute)) })
 
 	factory := layer.AbstractFactory(baseFactory{base: coldStores{}})
 
@@ -265,4 +267,50 @@ func (emptyStore) GetCurrentExecutionWithLastWriteVersion(
 	context.Context, *p.GetCurrentExecutionRequest,
 ) (*p.InternalGetCurrentExecutionResponse, int64, error) {
 	return nil, 0, &serviceerror.NotFound{Message: "no current row"}
+}
+
+// TestAShutdownThatLeavesATailSaysWhichShardsHoldIt is the report no other
+// moment can give. The entries are in the log and a successor's replay is what
+// they are for, so a node restarting into the same configuration needs nothing
+// from this answer — but a node coming back without the `wal` section composes
+// no log, cannot see that they exist, and will not replay them. A shutdown that
+// answered nil is the only evidence that taking the layer out is safe.
+func TestAShutdownThatLeavesATailSaysWhichShardsHoldIt(t *testing.T) {
+	ctx := context.Background()
+	const shard, epoch = wal.ShardID(5), wal.Epoch(2)
+
+	layer, err := Compose(
+		Backends{Log: memwal.New(), Cold: refusingCold{Cold: coldtest.New()}},
+		cycle.Fixed(cycle.Defaults()),
+		DefaultTaskCategories(),
+		log.NewNoopLogger(), nil)
+	require.NoError(t, err)
+
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, epoch))
+	require.NoError(t, layer.Options().Layer.Write(ctx,
+		mutation.Mutation{Create: aCreate(shard)}, epoch, baserow.New(emptyStore{})),
+		"the write was not acked, so there is no tail for the shutdown to fail to empty")
+
+	err = layer.Shutdown(ctx, time.Minute)
+	require.Error(t, err, "the shutdown applied nothing and reported a clean stop")
+
+	var undrained *UndrainedError
+	require.ErrorAs(t, err, &undrained)
+	require.Len(t, undrained.Shards, 1)
+	left := undrained.Shards[0]
+	require.Equal(t, shard, left.Shard)
+	require.Equal(t, epoch, left.Epoch, "a residue that cannot name its epoch names no log position")
+	require.Equal(t, 1, left.Entries)
+	require.Error(t, left.Cause, "the drain's own answer is what tells a halt from a budget that ran out")
+	require.ErrorContains(t, err, "will not replay them")
+}
+
+// refusingCold is a cold store whose drain never commits and whose watermark
+// says no drain ever has, which is what a store that is down looks like from
+// inside a shutdown: the window is gone, the entries stay acked, and the tail
+// outlives the process.
+type refusingCold struct{ *coldtest.Cold }
+
+func (refusingCold) Apply(context.Context, wal.ShardID, wal.Epoch, fold.Batch) error {
+	return errors.New("refusingCold: this drain does not commit")
 }

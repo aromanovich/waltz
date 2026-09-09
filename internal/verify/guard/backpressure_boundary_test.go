@@ -114,7 +114,10 @@ func TestTheRefusalSurvivesTheWholeInterceptPath(t *testing.T) {
 		waltz.DefaultTaskCategories(),
 		nil, nil)
 	require.NoError(t, err)
-	t.Cleanup(func() { layer.Shutdown(ctx, time.Minute) })
+	// The residue is this case's subject rather than its accident: the cold store
+	// never drains and the bound is one entry, so the shutdown is meant to find a
+	// tail it cannot empty.
+	t.Cleanup(func() { _ = layer.Shutdown(ctx, time.Minute) })
 
 	// One options value builds both stores, as the factory does in production:
 	// the registry is the acquire's observer and the write path at once, and

@@ -153,13 +153,57 @@ func (m *Manager) ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wa
 // acquired it. The ExecutionStore wrapper asks per write.
 func (m *Manager) Shard(shard wal.ShardID) *Cycle { return m.held.get(shard) }
 
-// Close drains and stops every cycle. Shutdown is the one moment a tail is
-// drained without a watermark asking for it.
-func (m *Manager) Close(ctx context.Context) {
+// Residue is one shard a shutdown could not empty: its cycle stopped while the
+// tail still held acked entries no drain applied. Nothing here has lost them —
+// they are in the log, which is what a successor's replay reads — so a residue
+// is not a failed shutdown.
+//
+// It is reported because a shutdown is the one stop with no successor implied.
+// Whether one follows is the operator's to know and nobody else's, and a node
+// coming back up in passthrough composes no log, so this is the last moment
+// these entries are nameable at all.
+type Residue struct {
+	Shard wal.ShardID
+	Epoch wal.Epoch
+	// Entries is the tail as its last publish left it: acked, unsettled, and the
+	// next owner of this shard to apply.
+	Entries int
+	// Cause is what the shutdown drain answered — nil where it committed and
+	// what is left is a halt's tail or a stall's.
+	Cause error
+}
+
+// Close drains and stops every cycle, and answers with every shard whose tail it
+// could not empty. Shutdown is the one moment a tail is drained without a
+// watermark asking for it.
+func (m *Manager) Close(ctx context.Context) []Residue {
+	var left []Residue
 	for _, c := range m.held.takeAll() {
-		if err := c.Close(ctx); err != nil {
+		err := c.Close(ctx)
+		if err != nil {
 			m.deps.Logger.Warn("apply cycle: the shutdown drain did not commit",
 				tag.ShardID(int32(c.Shard())), tag.Error(err))
 		}
+		residue, held := c.residue(err)
+		if !held {
+			continue
+		}
+		m.deps.Logger.Warn("apply cycle: stopped holding acked entries no drain applied",
+			tag.ShardID(int32(c.Shard())), tag.NewInt64("epoch", int64(c.Epoch())),
+			tag.NewInt64("entries", int64(residue.Entries)))
+		left = append(left, residue)
 	}
+	return left
+}
+
+// residue is what a cycle held when its loop stopped, read off the mirror
+// because there is no loop left to ask. cause is what its shutdown drain
+// answered, carried so that a halt's tail and a budget that ran out are
+// distinguishable by whoever reads the list.
+func (c *Cycle) residue(cause error) (Residue, bool) {
+	entries, _ := c.mirror.Size()
+	if entries == 0 {
+		return Residue{}, false
+	}
+	return Residue{Shard: c.shard, Epoch: c.epoch, Entries: int(entries), Cause: cause}, true
 }

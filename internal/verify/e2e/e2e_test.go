@@ -215,7 +215,10 @@ func (a *arm) stop(ctx context.Context, t *testing.T) {
 	t.Helper()
 	a.client.Close()
 	require.NoError(t, a.cluster.Stop())
-	a.layer.Shutdown(ctx, 30*time.Second)
+	// A clean stop must leave no tail: every writer is gone, so nothing races the
+	// drain, and an entry unapplied after it is one nothing in this arm will ever
+	// replay.
+	require.NoError(t, a.layer.Shutdown(ctx, 30*time.Second))
 }
 
 // watermarks is what the cold store holds for every shard of the cluster: the

@@ -74,7 +74,12 @@ func Example() {
 		// After the server has stopped: the shutdown drain still needs a store
 		// to write to. `defer release()` above runs after this one, which is the
 		// order that leaves the drain a database.
-		layer.Shutdown(context.Background(), 30*time.Second)
+		// A main that finds entries here logs them before it exits: they are in
+		// the log for the next owner, and nothing replays them if this node comes
+		// back without the wal section.
+		if err := layer.Shutdown(context.Background(), 30*time.Second); err != nil {
+			panic(err)
+		}
 	}()
 
 	// Start returns once the services are up, so a main that did not wait here

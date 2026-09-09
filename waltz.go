@@ -33,6 +33,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/server/common/config"
@@ -282,10 +283,47 @@ func (l *Layer) RetireShard(shard wal.ShardID) bool {
 // writes. A shutdown drain runs where a context has just been cancelled — that
 // is what "shutdown" means — and one inheriting that cancellation returns at
 // once, leaving a tail behind and nothing in the log that says so.
-func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) {
+// The error is an [*UndrainedError] and nothing else: every tail emptied, or
+// these did not.
+func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) error {
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancel()
-	l.close(drainCtx)
+	return l.close(drainCtx)
+}
+
+// UndrainedError is what [Layer.Shutdown] answers when a tail outlived it: the
+// shards still holding acked entries no drain applied, and how many each holds.
+//
+// It reports neither a lost write nor a failed shutdown. Those entries are in
+// the log and a successor's replay is what they are there for, so a node
+// restarting into the same configuration needs nothing from this value. One
+// caller does: whoever is taking the layer *out*. Removing the `wal` section
+// strands exactly these entries and says nothing, because passthrough composes
+// no log and so cannot see that they exist — which makes a shutdown that
+// answered nil the only evidence that removing it is safe.
+type UndrainedError struct {
+	// Shards is every shard whose tail outlived the shutdown.
+	Shards []cycle.Residue
+}
+
+func (e *UndrainedError) Error() string {
+	entries := 0
+	for _, r := range e.Shards {
+		entries += r.Entries
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "waltz: the shutdown left %d acked entries unapplied across %d shard(s):",
+		entries, len(e.Shards))
+	for _, r := range e.Shards {
+		fmt.Fprintf(&b, " shard %d at epoch %d holds %d", r.Shard, r.Epoch, r.Entries)
+		if r.Cause != nil {
+			fmt.Fprintf(&b, " (%v)", r.Cause)
+		}
+		b.WriteByte(';')
+	}
+	b.WriteString(" they are in the log for the next owner to replay, and a node that comes back " +
+		"without the wal section will not replay them")
+	return b.String()
 }
 
 // close is [Layer.Shutdown] once the context is the layer's own.
@@ -293,7 +331,11 @@ func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) {
 // The log is closed after the drain and not before: a drain still trims through
 // it, and a backend whose close ends the ownership that trim rests on would fail
 // it and leave the log unshortened.
-func (l *Layer) close(ctx context.Context) {
-	l.manager.Close(ctx)
+func (l *Layer) close(ctx context.Context) error {
+	left := l.manager.Close(ctx)
 	l.log.Close()
+	if len(left) == 0 {
+		return nil
+	}
+	return &UndrainedError{Shards: left}
 }
