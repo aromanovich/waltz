@@ -342,10 +342,26 @@ ended would leave two different databases. Staging one — the mutation merge ke
 beside each other. Staging a successor whose replay starts one entry above the watermark makes it red
 at the crash boundary instead, on the assertion the next drain fails.
 
-**What it does not prove.** Nothing is killed: both backends live in the test's own process, so this
-is a claim about the layer's arithmetic across an owner change and not a durability claim about
-either store. And the crash is quiescent — it falls between two writes, never inside an append or a
-drain whose outcome is unknown.
+`TestACrashOnTopOfADrainNobodyCouldReadRecoversEitherWay` is the crash that run leaves out. There it
+falls between two writes, so every entry in the log is one whose fate the predecessor knew; here the
+last drain has no readable outcome, which is the one state in which the entries above the watermark
+may already be rows. One drain's applier reports an error nothing can classify, the watermark read
+that would have resolved it fails once — a read that answers resolves the ambiguity on the spot and
+leaves nothing for a crash to land on — and then the owner is superseded with the stall standing.
+
+The successor is told none of it. It reads the watermark, floors there and replays what is above, so
+the same code has to skip entries a transaction it cannot see already applied and apply the ones it
+did not. Both halves are run, and one number separates them: the entries replayed must be exactly the
+acked seqnos above the watermark the successor found — 204 where the transaction never ran, 1 where it
+had committed, out of the same window — and both databases must match the uninterrupted run. Staging
+a `resolve` that reads a failed watermark read as a commit makes the uncommitted half red on a
+`db_record_version` mismatch inside the database, which is what this run adds to the stall's own unit
+tests: those state the tail's arithmetic, and this states the consequence.
+
+**What neither proves.** Nothing is killed: both backends live in the test's own process, so both are
+claims about the layer's arithmetic across an owner change rather than durability claims about either
+store. And neither crash falls inside an append — an entry that may or may not be durable is
+`wal/waltest`'s subject, above.
 
 ---
 

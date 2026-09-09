@@ -21,6 +21,8 @@ package acceptance
 // dropped.
 
 import (
+	"context"
+	"errors"
 	"maps"
 	"slices"
 	"testing"
@@ -29,6 +31,11 @@ import (
 	"github.com/stretchr/testify/require"
 	p "go.temporal.io/server/common/persistence"
 	"google.golang.org/protobuf/testing/protocmp"
+
+	"github.com/aromanovich/waltz/cold"
+	"github.com/aromanovich/waltz/cycle"
+	"github.com/aromanovich/waltz/fold"
+	"github.com/aromanovich/waltz/wal"
 )
 
 // recoveryCrashes is how many times the shard changes hands mid-window. Several,
@@ -96,6 +103,139 @@ func TestARecoveredShardHoldsWhatAnUninterruptedOneDoes(t *testing.T) {
 	}
 	t.Logf("%d entries replayed across %d crashes, %d runs and %d current rows identical, watermark %d",
 		recovered.Replayed, recoveryCrashes, len(runs), len(current), seqno)
+}
+
+// TestACrashOnTopOfADrainNobodyCouldReadRecoversEitherWay is the crash the run
+// above leaves out. There it falls between two writes, so every entry in the log
+// is one whose fate the predecessor knew; here it falls on a shard whose last
+// drain has no readable outcome, which is the one state where the entries above
+// the watermark may already be rows.
+//
+// The successor is told nothing about any of it. It reads the watermark, floors
+// there and replays what is above — so the same code has to skip entries a
+// transaction it cannot see already applied, and apply the ones it did not, with
+// the same evidence in both cases.
+func TestACrashOnTopOfADrainNobodyCouldReadRecoversEitherWay(t *testing.T) {
+	// Whether the transaction ran before the applier lost the ability to say so.
+	// Committed, the successor must not apply those entries a second time; not
+	// committed, it must find them in the log and apply them.
+	for name, committed := range map[string]bool{
+		"the transaction had committed": true,
+		"the transaction never ran":     false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			const seed = 20260910
+
+			control := newSeams(t, seed)
+			require.NoError(t, control.drive(t, seamsMutations))
+			control.mgr.Close(control.ctx)
+			expected := control.ledger.snapshot()
+
+			crashed := newSeams(t, seed)
+			require.NoError(t, crashed.drive(t, seamsMutations/2))
+
+			// One drain's outcome goes unreadable, and the write carrying it is
+			// refused rather than acked: the layer cannot say what happened, so
+			// neither may its caller.
+			crashed.stage.arm(committed)
+			// The stage fires at the next drain, and the window is what decides
+			// when that is, so the writes go one at a time until one of them
+			// carries it.
+			var stalled error
+			for range seamsPolicy().Mutations + 1 {
+				if stalled = crashed.drive(t, 1); stalled != nil {
+					break
+				}
+			}
+			require.Error(t, stalled, "no write in a whole window's worth carried the staged drain")
+			require.Equal(t, cycle.StateRunning, crashed.mgr.Shard(seamsShard).State(),
+				"an unreadable drain halted the shard, where the tail is meant to stall and heal")
+
+			// And the owner dies before it can ask again, which is what leaves the
+			// question to a cycle that never saw the drain.
+			crashed.takeShard(t)
+
+			// What the successor inherits, read before it has drained anything:
+			// every entry above this watermark and no others. The two cases part
+			// here and nowhere else — the committed one leaves a watermark the
+			// predecessor never saw move, so the entries below it must not be
+			// applied again, while the other leaves the whole window to replay.
+			inherited, _, err := crashed.store.Watermark(crashed.ctx, seamsShard)
+			require.NoError(t, err)
+			acked := wal.Seqno(crashed.acked + 1) // the refused write appended too
+
+			require.NoError(t, crashed.drive(t, seamsMutations-crashed.acked-1))
+
+			recovered := crashed.mgr.Totals()
+			crashed.mgr.Close(crashed.ctx)
+			require.EqualValues(t, acked-inherited, recovered.Replayed,
+				"the successor replayed something other than the %d entries above the watermark %d it found",
+				acked-inherited, inherited)
+			require.Empty(t, recovered.Halted, "the successor halted on the tail it inherited")
+
+			seqno, ok, err := crashed.store.Watermark(crashed.ctx, seamsShard)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.EqualValues(t, seamsMutations, seqno,
+				"the watermark is short of the stream: entries were acked and never applied by anybody")
+
+			require.Empty(t, crashed.trims.violation())
+			for _, key := range union(expected.runs, crashed.ledger.runs, byRun) {
+				want, got := control.runRow(t, key), crashed.runRow(t, key)
+				if diff := cmp.Diff(want, got, protocmp.Transform()); diff != "" {
+					t.Fatalf("run %s of workflow %s is not what the uninterrupted stream left (-uninterrupted +recovered):\n%s",
+						key.runID, key.workflowID, diff)
+				}
+			}
+			for _, key := range union(expected.current, crashed.ledger.current, byWorkflow) {
+				require.Equal(t, control.currentRun(t, key), crashed.currentRun(t, key),
+					"workflow %s names a different run after recovery", key.workflowID)
+			}
+			t.Logf("%d entries replayed, watermark %d", recovered.Replayed, seqno)
+		})
+	}
+}
+
+// stagedDrain is the fault the other cases cannot stage: one drain whose outcome
+// nothing can read. Disarmed it is the cold seam unchanged, which is how every
+// case but the one above sees it.
+//
+// Both halves are needed. The applier's error is what the cycle classifies as an
+// unknown outcome, and the watermark read is what it then asks — a read that
+// answers resolves the ambiguity on the spot and leaves nothing for a crash to
+// land on, so exactly one read fails and the successor's floor is read normally.
+type stagedDrain struct {
+	cold.Applier
+	mark cold.Watermarker
+
+	armed   bool
+	commits bool
+	blind   bool
+}
+
+// arm stages the next drain. commits says whether its transaction runs first,
+// which is the whole of the difference between the two cases.
+func (s *stagedDrain) arm(commits bool) { s.armed, s.commits, s.blind = true, commits, true }
+
+func (s *stagedDrain) Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
+	if !s.armed {
+		return s.Applier.Apply(ctx, shard, epoch, batch)
+	}
+	s.armed = false
+	if s.commits {
+		if err := s.Applier.Apply(ctx, shard, epoch, batch); err != nil {
+			return err
+		}
+	}
+	return errors.New("staged: the drain's transaction has no readable outcome")
+}
+
+func (s *stagedDrain) Watermark(ctx context.Context, shard wal.ShardID) (wal.Seqno, bool, error) {
+	if s.blind {
+		s.blind = false
+		return 0, false, errors.New("staged: the watermark cannot be read")
+	}
+	return s.mark.Watermark(ctx, shard)
 }
 
 // runRow is the mutable state the database holds for one run, nil where it holds

@@ -197,7 +197,11 @@ type seams struct {
 	log   *memwal.Backend
 	// trims judges every Trim the run makes against the watermark the store
 	// committed, which is the one caller obligation wal.Log cannot check.
-	trims  *trimGuard
+	trims *trimGuard
+	// stage is the cold seam with one fault available on it, disarmed until a
+	// case asks ([stagedDrain]). Every case drains through it, so what the
+	// disarmed path costs is one interface hop.
+	stage  *stagedDrain
 	mgr    *cycle.Manager
 	rows   *baserow.Rows
 	stream *drive.Stream
@@ -235,10 +239,11 @@ func newSeams(t *testing.T, seed int64) *seams {
 	}
 
 	s.trims = &trimGuard{Log: s.log, mark: store}
+	s.stage = &stagedDrain{Applier: s.ledger, mark: store}
 	s.mgr, err = cycle.NewManager(cycle.Deps{
 		Log:       s.trims,
-		Writer:    s.ledger,
-		Recoverer: store,
+		Writer:    s.stage,
+		Recoverer: s.stage,
 		Registry:  tasks.NewDefaultTaskCategoryRegistry(),
 	}, cycle.Fixed(seamsPolicy()))
 	require.NoError(t, err)
