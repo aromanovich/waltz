@@ -120,6 +120,8 @@ func TestBothSeamsRealNoServer(t *testing.T) {
 	// acked, so what was trimmed came off the bottom rather than out of the
 	// middle.
 	require.NotZero(t, running.TrimsCommitted, "no trim reached the log while the run was going")
+	require.Empty(t, s.trims.violation())
+	require.NotZero(t, s.trims.trims.Load(), "the guard saw no trim, so it judged nothing")
 	first, last := s.logEnds(t)
 	require.Greater(t, first, wal.FirstSeqno, "nothing was trimmed: the log still holds the whole run")
 	require.EqualValues(t, seamsMutations, last, "the log's upper end is the last entry acked")
@@ -177,6 +179,7 @@ func TestAShardThatLosesItsEpochMidRun(t *testing.T) {
 	totals := s.mgr.Totals()
 	require.Equal(t, before.watermark, totals.Applied, "the halted cycle applied something after the loss")
 	require.Greater(t, totals.Acked, totals.Applied, "nothing was acked after the last committed drain")
+	require.Empty(t, s.trims.violation())
 	first, last := s.logEnds(t)
 	require.LessOrEqual(t, first, totals.Applied+1, "entries the cold store does not hold were trimmed away")
 	require.Equal(t, totals.Acked, last, "the log lost an entry it had acked")
@@ -189,9 +192,12 @@ func TestAShardThatLosesItsEpochMidRun(t *testing.T) {
 // seams is the layer with a real log under one side of it and a real database
 // under the other: what a server composes, minus the server.
 type seams struct {
-	ctx    context.Context
-	store  *memcold.Store
-	log    *memwal.Backend
+	ctx   context.Context
+	store *memcold.Store
+	log   *memwal.Backend
+	// trims judges every Trim the run makes against the watermark the store
+	// committed, which is the one caller obligation wal.Log cannot check.
+	trims  *trimGuard
 	mgr    *cycle.Manager
 	rows   *baserow.Rows
 	stream *drive.Stream
@@ -228,8 +234,9 @@ func newSeams(t *testing.T, seed int64) *seams {
 		ledger: newLedger(store),
 	}
 
+	s.trims = &trimGuard{Log: s.log, mark: store}
 	s.mgr, err = cycle.NewManager(cycle.Deps{
-		Log:       s.log,
+		Log:       s.trims,
 		Writer:    s.ledger,
 		Recoverer: store,
 		Registry:  tasks.NewDefaultTaskCategoryRegistry(),

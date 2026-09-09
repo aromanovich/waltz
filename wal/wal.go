@@ -207,6 +207,18 @@ type Log interface {
 	// it lazily for entries already folded into the cold store, because a small
 	// log is what keeps a backend's reads cheap.
 	//
+	// The one obligation here is the caller's, and it is the only place in this
+	// contract where a mistake destroys acknowledged data rather than refusing
+	// it: upTo may never exceed the seqno the cold store has committed. Above
+	// that seqno the log is the only copy, and a trim is the one operation in
+	// this package that does not refuse, does not halt and cannot be undone. No
+	// backend can check it — a log knows nothing about a cold store, and this
+	// method deliberately carries no epoch, so a trim from a superseded owner is
+	// as legal as any other and is safe only because that owner's upTo was
+	// committed before it was superseded. Whoever calls this owes the check to
+	// itself; in this repository it is cycle.Cycle's, which passes
+	// tailstate.Tail.Applied and moves that field only behind a committed drain.
+	//
 	// Trimming entries that are not there is not an error: Trim states where
 	// the log should start, and repeating it is harmless.
 	//
