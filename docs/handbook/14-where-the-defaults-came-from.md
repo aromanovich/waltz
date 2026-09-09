@@ -77,10 +77,10 @@ Two facts about the shipped trigger that are easy to mis-read:
 
 * **the byte trigger is the mutation trigger restated, not a second measurement.** 256 KiB is
   256 mutations at about a kilobyte each, and the kilobyte is rounded up: the generated corpus
-  averages 653 encoded bytes a mutation, so 256 of them come to about 163 KiB. On a stream of that
-  shape the mutation trigger is always the one that fires. The byte trigger earns its place on the
-  other shape — 256 mutations carrying large payloads, which would otherwise become one outsized
-  transaction;
+  averages 572 encoded bytes a mutation — the acceptance's own configuration, and re-measurable here
+  rather than inherited — so 256 of them come to about 143 KiB. On a stream of that shape the
+  mutation trigger is always the one that fires. The byte trigger earns its place on the other shape
+  — 256 mutations carrying large payloads, which would otherwise become one outsized transaction;
 * **the size trigger is not the effective window, and under load it is not even what fires.** A
   window holding a shape `fold` cannot express is force-drained on the spot (`fold.ErrRefused`), and
   that happens often enough to set the pace by itself. In `TestAcceptanceFoldNoCluster`, at a
@@ -179,10 +179,10 @@ load-bearing, and they bound two different resources.
   small mutations while staying under budget, and the price would be paid entirely by whoever picked
   the shard up.
 
-The corpus makes the gap between the two units concrete: its entries are tight, at a mean of 653
-bytes, while the server's own limits allow a single mutation thousands of times that: three thousand
-at the 2 MB blob, twelve thousand at 8 MB of mutable state. A bound stated in one unit is a bound
-that admits the other unit's worst case unchecked.
+The corpus makes the gap between the two units concrete: its entries are tight, at a mean of 572
+bytes, while the server's own limits allow a single mutation thousands of times that: some three and
+a half thousand at the 2 MB blob, fourteen thousand at 8 MB of mutable state. A bound stated in one
+unit is a bound that admits the other unit's worst case unchecked.
 
 Which unit tripped is on the refusal's `limit` tag, and the two tag values are different operator
 sentences. `bytes` says this node is close to holding more than it should, which
