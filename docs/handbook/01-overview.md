@@ -117,9 +117,10 @@ if this process dies, by whoever replays the log. The caller does not hear about
 
 That boundary is also what makes a drain failure hard to attribute. A drain runs on some caller's
 call — the one whose write tripped a trigger, at step 5 — and that caller does get the error back.
-But the other 255 mutations in the batch belong to callers who were acked long ago and have gone, so
-one caller is handed a failure for work that is mostly not its own, and its own mutation is durable
-in the log whatever the answer says. The failure is real, it reaches somebody, and it identifies
+But the rest of the batch — up to 255 more mutations at the shipped watermark, fewer when the byte
+trigger fires first — belongs to callers who were acked long ago and have gone, so one caller is
+handed a failure for work that is mostly not its own, and its own mutation is durable in the log
+whatever the answer says. The failure is real, it reaches somebody, and it identifies
 nobody. (Sync mode is the one exception, and chapter 08 is where it is described.) [Chapter
 05](05-write-path.md) follows that distinction through every failure class.
 
@@ -192,7 +193,7 @@ moving from the diagram into the tree.
 
 | Package | What it is |
 |---|---|
-| `wal/` | the log's contract: one fenced, gap-free, totally ordered sequence of entries per shard, with `Fence`, `Append`, `ReadFrom` and `Trim`, and nothing about Temporal in it |
+| `wal/` | the log's contract: one fenced, gap-free, totally ordered sequence of entries per shard, in five methods — `Fence`, `Append`, `ReadFrom`, `Trim` and `Close` — and nothing about Temporal in it |
 | `wal/memwal/` | the one shipped implementation of that contract, in process memory, so everything above the log can be tested without a cluster |
 | `wal/waltest/` | the conformance suite: a candidate `wal.Log` runs it against itself to find out whether it satisfies the contract |
 | `mutation/` | what one entry *is*: the protobuf record of one persistence call, plus the record kinds |
@@ -384,7 +385,7 @@ above is [chapter 08](08-configuration.md).
 * [`../../baserow/baserow.go`](../../baserow/baserow.go) — the two cold-store reads that
   `wrapper`, `cycle` and `apply` all need, and why none of them may hold its own copy.
 * [`../../wal/wal.go`](../../wal/wal.go) — the log contract: `Fence`, `Append`,
-  `ReadFrom`, `Trim`, and the guarantees stated on each.
+  `ReadFrom`, `Trim`, `Close`, and the guarantees stated on each.
 * [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — that contract in process memory,
   which is the only implementation this library ships.
 * [`../../fold/histtasks.go`](../../fold/histtasks.go) — I7 inside the window: the range
