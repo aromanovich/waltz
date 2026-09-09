@@ -204,13 +204,24 @@ func (d hideDeleted) keep(page []p.InternalHistoryTask) ([]p.InternalHistoryTask
 	if len(d.ranges) == 0 || len(page) == 0 {
 		return page, 0
 	}
-	// A fresh slice: the result may not alias the store's own answer.
-	out := make([]p.InternalHistoryTask, 0, len(page))
-	for _, t := range page {
-		if d.hides(t.Key) {
+	// The copy is made where it becomes necessary, which is the first hidden row:
+	// until then the store's own slice is the answer and returning it unmodified
+	// keeps the rule this is under — never write through the store's array. Most
+	// pages hide nothing, a range delete covering keys the queue has already read.
+	var out []p.InternalHistoryTask
+	for i, t := range page {
+		if !d.hides(t.Key) {
+			if out != nil {
+				out = append(out, t)
+			}
 			continue
 		}
-		out = append(out, t)
+		if out == nil {
+			out = append(make([]p.InternalHistoryTask, 0, len(page)-1), page[:i]...)
+		}
+	}
+	if out == nil {
+		return page, 0
 	}
 	return out, len(page) - len(out)
 }

@@ -376,7 +376,7 @@ func (c *Cycle) write(ctx context.Context, m mutation.Mutation, rows *baserow.Ro
 	if c.State() == StateRunning {
 		entries, bytes := c.mirror.Size()
 		stalled, _ := c.mirror.StalledAt()
-		if err := c.writeRefused(entries, bytes, stalled); err != nil {
+		if err := c.writeRefused(entries, bytes, stalled, c.policy()); err != nil {
 			return err
 		}
 	}
@@ -595,8 +595,11 @@ func (c *Cycle) stats(s *state) Stats {
 // writeRefused applies the pre-append refusals (the rule is in decide.go) and
 // emits the refusal's metric. It is the counting half, so that asking the rule
 // itself what it would answer counts nothing.
-func (c *Cycle) writeRefused(entries, bytes int64, stalled wal.Seqno) error {
-	refusal, limit := writeRefused(entries, bytes, stalled, c.shard, c.policy())
+//
+// cfg is the caller's own snapshot rather than a read of its own: the two call
+// sites are one write, and [Cycle.add] refuses and appends under one policy.
+func (c *Cycle) writeRefused(entries, bytes int64, stalled wal.Seqno, cfg Config) error {
+	refusal, limit := writeRefused(entries, bytes, stalled, c.shard, cfg)
 	if refusal == nil {
 		return nil
 	}
@@ -625,21 +628,23 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 	if err := c.start(ctx, s); err != nil {
 		return err
 	}
+	// One read of the policy for this whole write, taken above every decision
+	// that wants one: a second read could refuse under one pair of bounds and
+	// append under another, verify the delegated assertions under one mode and
+	// encode under the other, or encode a mutation as provisional and then not
+	// drain it.
+	cfg := c.policy()
+
 	// Before the append, so a refused operation provably wrote nothing. It
 	// consumes no seqno — the next accepted mutation lands where this one would.
 	entries, bytes := s.tail.Size()
 	unresolved, _ := s.tail.Stalled()
-	if err := c.writeRefused(entries, bytes, unresolved.Seqno); err != nil {
+	if err := c.writeRefused(entries, bytes, unresolved.Seqno, cfg); err != nil {
 		return err
 	}
 	// The condition authority, also before the append: the ack is the answer,
 	// so an assertion this layer means to answer must be evaluated while the
 	// caller is still on the line.
-	// One read of the policy for this whole write: a second read could verify
-	// the delegated assertions under one mode and encode under the other, or
-	// encode a mutation as provisional and then not drain it.
-	cfg := c.policy()
-
 	if err := c.check(ctx, s, m, rows, cfg.Sync); err != nil {
 		return err
 	}
@@ -1009,15 +1014,10 @@ func (c *Cycle) settlement(err error, cause drainCause, mutationsIn int) settlem
 // Called once the transaction has an outcome: a batch that did not commit wrote
 // no rows, so a drop counted for it would be a saving nobody made.
 func (c *Cycle) countTasks(s *state, work fold.TaskWork) {
-	for name, n := range work.Dropped {
-		c.deps.Metrics.Tasks(name, n, work.Written[name])
-		s.DroppedTasks += n
-	}
-	for name, n := range work.Written {
-		if _, counted := work.Dropped[name]; !counted {
-			c.deps.Metrics.Tasks(name, 0, n)
-		}
-		s.WrittenTasks += n
+	for name, n := range work.Categories() {
+		c.deps.Metrics.Tasks(name, n.Dropped, n.Written)
+		s.DroppedTasks += n.Dropped
+		s.WrittenTasks += n.Written
 	}
 }
 

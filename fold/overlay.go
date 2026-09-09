@@ -356,10 +356,5 @@ func setOf(ids []string) map[string]struct{} {
 // concatBlobs is the buffered-event order: the store's batches, then the
 // window's. A fresh slice, so neither source is appended to through the answer.
 func concatBlobs(held, window []*commonpb.DataBlob) []*commonpb.DataBlob {
-	if len(held) == 0 && len(window) == 0 {
-		return nil
-	}
-	out := make([]*commonpb.DataBlob, 0, len(held)+len(window))
-	out = append(out, held...)
-	return append(out, window...)
+	return slices.Concat(held, window)
 }

@@ -185,11 +185,6 @@ type WorkflowRecord struct {
 	// store's derived write with nothing in its place. A write and a delete of
 	// this row are never emitted together.
 	CurrentRemoved bool
-
-	// named is set by the drain as it marks first-namers, and is meaningful only
-	// during that pass: a record is built by the drain that emits it, so false
-	// here means "no request of this batch has named it yet".
-	named bool
 }
 
 // Stats are the accumulator's two counters. Fold reports the values and emits no
@@ -319,7 +314,16 @@ func (w *workflowAcc) recordCurrentWrite(cw *CurrentWrite) {
 // delete-current sits in the window with no assertion above it. The delete is a
 // guarded no-op and not an assertion, so an assertion recorded past it would be
 // a mid-window claim dressed as a head-of-window one.
-func currentTaintedRefusal(w *workflowAcc) error {
+//
+// Whether the mutation stands on that row at all is this rule's own question and
+// not each handler's. A handler that carried the test itself and then dropped it
+// would record exactly the claim above, and nothing would say so: the authority
+// refuses it before the append, so only a replayed stream — which reaches [Add]
+// with no [Accumulator.Check] in front of it — would ever meet the difference.
+func currentTaintedRefusal(w *workflowAcc, want asserted) error {
+	if want.current == nil {
+		return nil
+	}
 	if w != nil && !w.assertsCurrent() && w.cur.tainted {
 		return fmt.Errorf("%w: a current-row assertion behind a delete-current in the same window", ErrRefused)
 	}
@@ -490,7 +494,9 @@ func (b Batch) Each() iter.Seq[*Emitted] {
 func (a *Accumulator) Drain() Batch {
 	stats := a.Stats()
 
-	var out []Emitted
+	// One request per dirty workflow, plus the tombstone-and-recreate case, which
+	// appends past this.
+	out := make([]Emitted, 0, len(a.workflows))
 	for _, w := range a.workflows {
 		rec := &WorkflowRecord{
 			NamespaceID: w.key.namespaceID,
@@ -542,15 +548,15 @@ func (a *Accumulator) Drain() Batch {
 	slices.SortFunc(out, func(a, b Emitted) int { return cmp.Compare(a.TailSeqno, b.TailSeqno) })
 	// After the sort, so that "first request naming this record" is a position
 	// in the order apply drives rather than in the order the map ranged.
+	named := make(map[*WorkflowRecord]struct{}, len(a.workflows))
 	for i := range out {
 		rec := out[i].workflow
-		out[i].first = !rec.named
-		rec.named = true
+		_, seen := named[rec]
+		out[i].first = !seen
+		named[rec] = struct{}{}
 	}
 
-	written := a.countTasks()
 	work := a.drainTasks()
-	work.Written = written
 
 	// Above both halves: the folded requests, whose last tail seqno is the
 	// maximum because out is sorted, and the task work, whose seqnos are not in
@@ -651,10 +657,8 @@ func (a *Accumulator) addCreate(seqno wal.Seqno, req *p.InternalCreateWorkflowEx
 	if rs := w.heldRun(snap.RunID); rs != nil && !rs.tombstoned {
 		return fmt.Errorf("%w: create of run %s, which the window already holds live", ErrInvalidStream, snap.RunID)
 	}
-	if want.current != nil {
-		if err := currentTaintedRefusal(w); err != nil {
-			return err
-		}
+	if err := currentTaintedRefusal(w, want); err != nil {
+		return err
 	}
 
 	w = a.acc(snap.NamespaceID, snap.WorkflowID)
@@ -702,10 +706,8 @@ func (a *Accumulator) addUpdate(seqno wal.Seqno, req *p.InternalUpdateWorkflowEx
 		}
 	}
 
-	if want.current != nil {
-		if err := currentTaintedRefusal(w); err != nil {
-			return err
-		}
+	if err := currentTaintedRefusal(w, want); err != nil {
+		return err
 	}
 
 	cw, err := currentWriteOfUpdate(req)
@@ -761,6 +763,10 @@ func (a *Accumulator) addSet(seqno wal.Seqno, req *p.InternalSetWorkflowExecutio
 		if rs.part == partMutation && len(rs.owner.runs) > 1 {
 			return fmt.Errorf("%w: set of a run whose pending update also continued-as-new", ErrRefused)
 		}
+	}
+
+	if err := currentTaintedRefusal(w, want); err != nil {
+		return err
 	}
 
 	w = a.acc(snap.NamespaceID, snap.WorkflowID)
@@ -831,10 +837,8 @@ func (a *Accumulator) addConflictResolve(seqno wal.Seqno, req *p.InternalConflic
 		}
 	}
 
-	if want.current != nil {
-		if err := currentTaintedRefusal(w); err != nil {
-			return err
-		}
+	if err := currentTaintedRefusal(w, want); err != nil {
+		return err
 	}
 
 	cw, err := currentWriteOfConflictResolve(req)

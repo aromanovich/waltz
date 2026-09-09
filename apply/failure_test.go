@@ -274,9 +274,10 @@ func TestTheCurrentRowIsAttributedByTheAuthoritysOwnPredicate(t *testing.T) {
 			}
 			e := &fold.Emitted{NamespaceID: ns, WorkflowID: wf, HeadSeqno: 3, TailSeqno: 4}
 
-			d, diverged, err := currentDiverged(ctx, reader.Rows(), testShard, e, &tc.want,
+			d, err := currentDiverged(ctx, reader.Rows(), testShard, e, &tc.want,
 				wfSlice{head: e.HeadSeqno, tail: e.TailSeqno})
 			require.NoError(t, err)
+			diverged := d != nil
 			require.Equal(t, tc.diverged, diverged)
 
 			// The same row, put to the predicate directly: the readback decides

@@ -229,11 +229,13 @@ func Attribute(
 		// Read back once per workflow record, not once per request naming it —
 		// the same first-namer rule the assertions were registered under.
 		if cur := e.Workflow().Current; cur != nil && e.FirstOfWorkflow() {
-			if d, diverged, err := currentDiverged(ctx, rows, shard, e, cur, sliceOf[e.Workflow()]); err != nil {
+			d, err := currentDiverged(ctx, rows, shard, e, cur, sliceOf[e.Workflow()])
+			if err != nil {
 				out.ReadbackErr = fmt.Errorf("reading the current row of workflow %s back: %w", e.WorkflowID, err)
 				return out
-			} else if diverged {
-				out.Diverged = append(out.Diverged, d)
+			}
+			if d != nil {
+				out.Diverged = append(out.Diverged, *d)
 			}
 		}
 	}
@@ -275,21 +277,26 @@ func workflowSlices(batch fold.Batch) map[*fold.WorkflowRecord]wfSlice {
 // head-of-window assertion, through the same predicate that judged it before the
 // append. The read carries the row's last_write_version, so all four assertion
 // kinds are judged on everything the store asserts.
+//
+// Nil and no error is a row that held: the two answers a caller acts on are one
+// value each, where a divergence beside a bool beside an error is two
+// combinations that mean nothing and a caller that has to know which.
 func currentDiverged(
 	ctx context.Context, rows *baserow.Rows, shard wal.ShardID,
 	e *fold.Emitted, cur *fold.CurrentAssertion, slice wfSlice,
-) (Diverged, bool, error) {
+) (*Diverged, error) {
+	resp, version, err := rows.Current(ctx, int32(shard), e.NamespaceID, e.WorkflowID)
+	if err != nil {
+		return nil, err
+	}
+	if cur.VerifyRow(resp, version) == nil {
+		return nil, nil
+	}
+
 	d := Diverged{
 		NamespaceID: e.NamespaceID, WorkflowID: e.WorkflowID,
 		AssertedBase: -1, ActualBase: -1,
 		HeadSeqno: slice.head, TailSeqno: slice.tail,
-	}
-	resp, version, err := rows.Current(ctx, int32(shard), e.NamespaceID, e.WorkflowID)
-	if err != nil {
-		return d, false, err
-	}
-	if cur.VerifyRow(resp, version) == nil {
-		return d, false, nil
 	}
 
 	current, state := "", enumsspb.WORKFLOW_EXECUTION_STATE_UNSPECIFIED
@@ -318,5 +325,5 @@ func currentDiverged(
 		d.Detail = fmt.Sprintf("current-row assertion kind %d reaches no attribution, "+
 			"the cold store holds %q in state %s at %d", cur.Kind, current, state, version)
 	}
-	return d, true, nil
+	return &d, nil
 }

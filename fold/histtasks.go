@@ -54,6 +54,32 @@ type TaskWork struct {
 // [TaskWork] non-empty.
 func (w TaskWork) Empty() bool { return len(w.Insert) == 0 && len(w.Delete) == 0 }
 
+// TaskCounts is one category's two numbers.
+type TaskCounts struct{ Dropped, Written int }
+
+// Categories yields every category this work touched, once each, with both its
+// numbers. [TaskWork.Dropped] and [TaskWork.Written] are one table over one key
+// space rather than two answers, and joining them is this type's own business: a
+// consumer that ranged them apart reports a category in both twice, or one in
+// neither map not at all, and no green run shows either.
+func (w TaskWork) Categories() iter.Seq2[string, TaskCounts] {
+	return func(yield func(string, TaskCounts) bool) {
+		for name, dropped := range w.Dropped {
+			if !yield(name, TaskCounts{Dropped: dropped, Written: w.Written[name]}) {
+				return
+			}
+		}
+		for name, written := range w.Written {
+			if _, both := w.Dropped[name]; both {
+				continue
+			}
+			if !yield(name, TaskCounts{Written: written}) {
+				return
+			}
+		}
+	}
+}
+
 // Covers reports that this range removes the key under the store's own
 // predicate: an immediate category is ranged on task_id, a scheduled one on
 // task_visibility_ts with its task ids not looked at. The asymmetry is
@@ -81,9 +107,9 @@ func cmpBound(category tasks.Category, a, b tasks.Key) int {
 // here and nothing in the store, losing a row the sequential path keeps. A
 // constant because this package names no store.
 //
-// It is therefore a requirement on the store and not only a fact about it: **a
+// It is therefore a requirement on the store and not only a fact about it: a
 // scheduled task's fire time must survive a round trip at microsecond
-// resolution or finer.** Coarser is the direction that loses, and it loses
+// resolution or finer. Coarser is the direction that loses, and it loses
 // twice over — a range maximum truncated here to a microsecond covers a task the
 // store's own DELETE would leave alone, so [Accumulator.sweepTasks] drops that
 // task out of the window before any drain writes it, and [hideDeleted] hides its
@@ -235,6 +261,10 @@ func (a *Accumulator) drainTasks() TaskWork {
 		TailSeqno: a.taskTail,
 		Dropped:   a.tasksDropped,
 		Insert:    a.addedTasks,
+		// Counted here rather than by the caller, so that "over the window and
+		// therefore before this empties it" is the order of two statements in one
+		// function instead of an obligation on whoever calls them.
+		Written: a.countTasks(),
 	}
 
 	for _, t := range a.ranges {
@@ -294,9 +324,9 @@ func filterTaskMap(
 }
 
 // countTasks is the drain's Written half: every task row the transaction will
-// write, per category. Taken over the window and therefore before
-// [Accumulator.drainTasks] empties it — after that the rows an AddHistoryTasks
-// put in are the batch's, and the count would silently be short of them.
+// write, per category. It reads the window, so it is [Accumulator.drainTasks]'s
+// first act — after that the rows an AddHistoryTasks put in are the batch's, and
+// the count would silently be short of them.
 func (a *Accumulator) countTasks() map[string]int {
 	written := map[string]int{}
 	for home := range a.taskRows() {
