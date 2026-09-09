@@ -2,7 +2,7 @@
 
 The logic of a write-ahead log for the Temporal server's history shards. **You bring the storage —
 both ends of it**: the log, [`wal.Log`](wal/wal.go#L146), and the database,
-[`cold.Store`](cold/cold.go#L63). Five methods on the log and two on the database are the whole of
+[`cold.Store`](cold/cold.go#L67). Five methods on the log and two on the database are the whole of
 what waltz asks you to implement.
 
 Temporal's history service is write-heavy: one workflow moves through hundreds of state transitions,
@@ -16,7 +16,7 @@ transaction instead of a hundred — whatever an append costs.
 It writes to no disk, opens no connection and speaks no wire protocol; it contains no line of code
 that would. What it is, is everything between two interfaces you implement: the log an
 acknowledgement lands in ([`wal.Log`](wal/wal.go#L146)) and the database a fold lands on
-([`cold.Store`](cold/cold.go#L63)). Both are yours to write over whatever storage you run. What waltz owns is the part that is genuinely hard — the
+([`cold.Store`](cold/cold.go#L67)). Both are yours to write over whatever storage you run. What waltz owns is the part that is genuinely hard — the
 window, the fold, the fencing, the replay, the bound on unapplied work, and what each of them must
 do when a write, a process or a shard handover fails.
 
@@ -177,7 +177,7 @@ waltz sits between two things it does not own, and a deployment replaces both.
 | | the contract | shipped here | what judges your implementation |
 |---|---|---|---|
 | the log | [`wal.Log`](wal/wal.go#L146) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: eighteen cases, one call |
-| the database | [`cold.Store`](cold/cold.go#L63) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
+| the database | [`cold.Store`](cold/cold.go#L67) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
 
 `wal.Log` is an append-only, fenced, gap-free sequence of entries per shard — five methods, opaque
 payloads, no Temporal type anywhere in it. Running the suite against your backend is one call:

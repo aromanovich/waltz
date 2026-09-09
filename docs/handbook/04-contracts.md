@@ -488,6 +488,17 @@ zero-length one back means the base is exhausted. The base is called at most onc
 at all once its token says it is exhausted. Its error is returned unwrapped and never swallowed,
 because a page that quietly omitted the store's rows would lose them.
 
+Three things are required of the base, all three because the merge builds a page's reach out of what
+the base last returned rather than out of a cursor of its own. **Every row is inside the range asked
+for**: what comes back is filtered against the window's undrained deletes and by nothing else, and
+`queues/slice.go` panics on a key outside the range with no recover in the reader loop. **No later page
+holds a key at or below the last key of an earlier one**, that key being what bounds the window's half
+of the page and what the token carries — and `queues/iterator.go` skips what does not ascend without
+saying so, which is a task nobody asks for again. And **a page with no rows means the range is
+exhausted**: a token beside one is read here as the end, so the merge stops calling and returns a
+pagination that is over, leaving rows the store still held unread. Temporal's own SQL and Cassandra
+plugins satisfy all three, which is why no run here has had to.
+
 ## `wrapper` — the method tables
 
 The mode switch is exactly one field, `wrapper.Options.Layer`: nil is passthrough, non-nil is

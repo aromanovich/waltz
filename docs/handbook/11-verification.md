@@ -403,15 +403,22 @@ spoke, and cannot: a stale window carrying run rows is refused twice over, once 
 by every `db_record_version` in it, the successor having applied those same entries already. Deleting
 the epoch check leaves this run green, which is why it is not the evidence about that check.
 
-`TestAStaleRangeCompletionCannotTakeTheSuccessorsTasks` is. It is the epoch CAS over the one window
-nothing else in the transaction has grounds to refuse, and the reason such a window exists is worth
-stating on its own: **a window's task work asserts nothing.** A range completion is a category and two
-keys; there is no version in it that could have moved. So the predecessor acks one range completion and
-nobody drains it, the shard changes hands, and the successor replays that completion and then writes
-three tasks inside the range it covered and commits them. Then the predecessor shuts down. With the
-epoch check deleted its drain commits and those three rows are gone, and the run says so by name —
-`[120, 150, 180]` against nothing. It is the only place here where a defect in fencing surfaces as
-acknowledged data destroyed rather than as a shard halting.
+`TestAStaleRangeCompletionCannotTakeTheSuccessorsTasks` isolates it, and what it judges is the store
+rather than the layer — which is worth being exact about, because the isolation is easy to mistake for
+evidence of a kind this chapter does not have. The predecessor acks one range completion and nobody
+drains it, the shard changes hands, and the successor replays that completion and then writes three
+tasks inside the range it covered and commits them. Then the predecessor shuts down. Delete the epoch
+check in `cold/memcold` and its drain commits, and those three rows are gone by name — `[120, 150,
+180]` against nothing.
+
+The reason such a window exists at all is a fact about the record format and belongs here: **a window's
+task work asserts nothing.** A range completion is a category and two keys, with no version in it that
+a second owner could have moved, so for a batch of task work the epoch is the only refusal in the
+transaction. That is the third obligation in [`cold`](../../cold/cold.go)'s doc, and this run is a
+guard on the one store in this repository that carries it — not a claim about a deployment's, which
+[level 2](#the-levels-of-evidence) says nothing here can make. Its worth is that `cold/memcold` is
+underneath every other run in this package, so a defect in its fence would weaken all of them without
+reddening one.
 
 The same drain also carries a watermark below the successor's, and that half is quieter. It loses no
 row: an owner reading a witness that points under rows the database holds either re-applies entries

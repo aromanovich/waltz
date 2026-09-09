@@ -41,6 +41,26 @@ import (
 // the category and the shard stay the caller's. The token is the base's own
 // bytes, passed through unparsed, which keeps the merge backend-independent. A
 // zero-length returned token means the base is exhausted.
+//
+// Three things are required of it, all three because this merge builds a page's
+// reach out of what the base last returned rather than out of a cursor of its
+// own. Temporal's SQL and Cassandra plugins satisfy every one, so no run here has
+// had to; a store that pages differently breaks a queue rather than this package,
+// which is why they are written down.
+//
+//  1. Every row is inside the range the request names. What comes back is
+//     filtered against the window's undrained deletes and by nothing else, so a
+//     row outside the range reaches the reader — where queues/slice.go panics on
+//     one, with no recover in the loop.
+//  2. Rows ascend within a page, and no later page holds a key at or below the
+//     last key of an earlier one. That last key is what bounds the window's half
+//     of the page and what goes into the token, so a base row arriving under it
+//     breaks the ascent across the page boundary — and queues/iterator.go skips
+//     what does not ascend without saying so, which is a task nobody asks for
+//     again.
+//  3. No rows means the range is exhausted. A token beside an empty page is read
+//     here as the end of one: the merge stops calling the base and hands back a
+//     pagination that is over, so rows the store still held are never read.
 type BasePage func(batch int, token []byte) ([]p.InternalHistoryTask, []byte, error)
 
 // TaskPageStats is an instrument rather than a contract.
