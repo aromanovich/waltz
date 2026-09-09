@@ -129,8 +129,8 @@ classDiagram
   class Deployment {
     a deployment's own
   }
-  ColdStore ..|> Applier
-  ColdStore ..|> Watermarker
+  ColdStore --|> Applier
+  ColdStore --|> Watermarker
   Deployment ..|> ColdStore
   Rows ..> Store : reads through
   Cycle ..> Log : appends, reads, trims
@@ -567,8 +567,10 @@ rangeID behind.
 
 Two of the transits are worth naming. `GetOrCreateShard` looks like the acquire signal and is not
 one: it runs on first load only, and the admin `GetShard` API calls it with no shard context behind
-it. `AssertShardOwnership` does probe the epoch, but dynamic config can switch off the shard
-controller loop that drives it, so nothing may be keyed on it.
+it. `AssertShardOwnership` sounds like the probe and is not one either: whether it checks anything at all
+is the base plugin's business, and Temporal's own SQL and Cassandra shard stores both return `nil`
+without looking. Dynamic config can also switch off the shard controller loop that drives it. Nothing
+may be keyed on it.
 
 ### The wrapper's own interfaces
 
@@ -861,7 +863,7 @@ archival is configured. A nil `Logger` becomes a noop logger and a nil `Metrics`
 | Error | What it reports |
 |---|---|
 | `ErrHalted` | matches, via `errors.Is`, every refusal a halted cycle answers with; the class is in `Cycle.State()` and the cause travels wrapped, so a caller can still reach the `*apply.InvariantViolationError` |
-| `ErrTailNotEmpty` | an append refused because the log already holds the seqno the cycle meant to write — a cycle replays past the whole tail before it appends, so this means a second writer at this cycle's own epoch. It halts |
+| `ErrTailNotEmpty` | an append refused because the log already holds the seqno the cycle meant to write. A cycle replays past the whole tail before it appends, so it is one of two things: a second writer holding this cycle's own epoch, or one of this cycle's own appends that failed ambiguously and was durable after all. It halts |
 | `ErrBudget` | a policy whose `HardMaxBytes × MaxShards` does not fit `TailBudgetBytes` |
 | `ErrNoRegistry` | a nil `Deps.Registry` |
 | `ErrNoBaseRow` | the condition authority delegated an assertion to the cold store and the caller brought no `*baserow.Rows`. It is a refusal, not a skip: a refused write provably acked nothing, whereas a skip would ack an assertion nobody evaluated |
