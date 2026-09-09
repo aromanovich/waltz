@@ -736,6 +736,13 @@ func runKeys(namespaceID, runID string) (primitives.UUID, primitives.UUID, error
 // lockRun reads a run row's db_record_version under the transaction's lock, and
 // reports absence as a nil row rather than as an error, which is the shape
 // fold's assertion is stated over.
+//
+// Upstream's lockAndCheckExecution has a second arm this one does not: where a
+// request carries db_record_version 0 it is judged on next_event_id against the
+// request's condition instead. Fold derives every run assertion as
+// DBRecordVersion−1 and has no second form, so a request that would have taken
+// that arm asserts −1 here. Carrying the fallback would mean a second assertion
+// shape reaching fold, which decides the same condition before the ack.
 func lockRun(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	ns primitives.UUID, workflowID string, run primitives.UUID,

@@ -170,19 +170,18 @@ re-implementation is not evidence ([chapter
 13](13-designs-that-were-rejected.md#a-unit-test-per-fold-rule) is why). The oracle stays a
 deployment's to build, over the store it actually cares about.
 
-Four places where the folded path knowingly answers differently from upstream's sequential path are
+Three places where the folded path knowingly answers differently from upstream's sequential path are
 known and deliberate, and each is written down beside the code it is about:
 
 | the difference | recorded in |
 |---|---|
 | upstream's `dbRecordVersion == 0` fallback, which compares `next_event_id` against the request's condition, has no analogue: a run assertion here is always `DBRecordVersion − 1` | `cold/memcold/rows.go` |
-| a create's current-row assertion is compared against `current_executions.last_write_version`, where upstream's sequential path joins and compares `executions.last_write_version` | `cold/memcold/current.go` |
 | a conflict-resolve's current row carries a reduced execution state, because that is what fold hands the applier | `fold/assert.go` |
 | a row count other than one on an execution-row write is a condition failure here rather than upstream's `NotFound` | `cold/memcold/rows.go` |
 
-Three of the four follow from the layer having already acknowledged the write: what fold checked
+Two of the three follow from the layer having already acknowledged the write: what fold checked
 before the ack and what the drain asserts have to be the same question asked twice, so the fold's
-shape reaches the store. A deployment's applier meets the same four questions.
+shape reaches the store. A deployment's applier meets the same three questions.
 
 ## Event history stays outside the log
 
@@ -329,9 +328,9 @@ that was chosen.
 * [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go) — the store that is not a double,
   what the embedding covers and what it does not;
   [`apply.go`](../../cold/memcold/apply.go) is the drain's transaction statement by statement, and
-  [`rows.go`](../../cold/memcold/rows.go) and [`current.go`](../../cold/memcold/current.go) carry
-  three of the four places the folded path knowingly answers differently from upstream's sequential
-  path. The fourth is in [`../../fold/assert.go`](../../fold/assert.go).
+  [`rows.go`](../../cold/memcold/rows.go) carries two of the three places the folded path knowingly
+  answers differently from upstream's sequential path. The third is in
+  [`../../fold/assert.go`](../../fold/assert.go).
 * [`../../internal/verify/coldtasks/coldtasks.go`](../../internal/verify/coldtasks/coldtasks.go) — the two paginations
   it models, and the paragraph headed "what can make it a lie".
 * [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one log here: a map of shards
