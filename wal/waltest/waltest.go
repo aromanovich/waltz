@@ -507,9 +507,16 @@ func testTwoWritersContendForOneShard(f *fixture) {
 	for i := range claimants {
 		claimants[i] = claimant{f: f, shard: shard, epochs: &epochs}
 	}
+	// Both are released together. Without it the second claimant can be
+	// scheduled only after the first has spent its whole cap, and a run in which
+	// the two never overlapped fails below — correctly, and for a reason that is
+	// the machine's rather than the backend's. Seen once in a loaded run:
+	// "claimant 0 wrote 128 entries and was cut off 0 times in 32 attempts".
+	start := make(chan struct{})
 	for i := range claimants {
 		wg.Go(func() {
 			c := &claimants[i]
+			<-start
 			for range maxAttempts {
 				c.round(appendsPerRound)
 				// Report the first violation, not what a later round
@@ -525,6 +532,7 @@ func testTwoWritersContendForOneShard(f *fixture) {
 			}
 		})
 	}
+	close(start)
 	wg.Wait()
 
 	var acked []wal.Entry
