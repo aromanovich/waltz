@@ -1068,7 +1068,19 @@ func (c *Cycle) resolveStalled(ctx context.Context, s *state) error {
 }
 
 // resolve turns an unknown outcome into a known one. The watermark is the only
-// witness: at or above the drain's seqno means the batch committed after all.
+// witness, and it is read against the drain's own seqno exactly: a watermark is
+// a position and not a name, so equality is the whole of what identifies the
+// drain that moved it.
+//
+// Above that seqno is the case worth stating, because "at or above" is the
+// tempting rule and it is wrong. Nothing of this cycle's can commit over an
+// unresolved drain — [Cycle.resolveStalled] runs before every drain and returns
+// its error — so a watermark that has moved *past* this drain was moved by
+// another owner's. Reading it as "mine committed" tells a caller its write
+// succeeded on the strength of somebody else's transaction, and under sync mode
+// that caller is still on the line: its entry may have been the one the new
+// owner replayed, met a failing condition on, and dropped. Losing the shard is
+// the true answer and a recoverable one — the caller re-acquires and reads.
 func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause error) error {
 	mark, found, err := c.deps.Recoverer.Watermark(ctx, c.shard)
 	if err != nil {
@@ -1088,6 +1100,12 @@ func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause er
 		// outcome was unreadable.
 		c.halt(s, StateHaltedInvariant,
 			fmt.Errorf("the drain at seqno %d did not commit (watermark %d): %w", seqno, mark, cause))
+		return c.halted(s)
+	}
+	if mark > seqno {
+		c.halt(s, StateHaltedLost,
+			fmt.Errorf("the watermark is at %d, past this drain's own seqno %d, so another owner committed over it: %s: %w",
+				mark, seqno, FencedAway, cause))
 		return c.halted(s)
 	}
 	c.deps.Logger.Info("apply cycle: an ambiguous drain had committed",

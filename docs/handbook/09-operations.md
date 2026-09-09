@@ -233,9 +233,11 @@ conditions below; the keys are
   it is refused ahead of a full tail, since waiting will not clear it either.
 * **What to do for `unresolved`.** Restore reads of the cold store's `appliedSeqno` watermark — the
   seqno the drain's own transaction carried, read back through `cold.Watermarker`. The age tick
-  re-reads it without operator intervention: a watermark at or above the drain's seqno
+  re-reads it without operator intervention: a watermark exactly at the drain's seqno
   releases the stall and traffic resumes; a watermark below it proves the drain did not commit and
-  turns the shard into `halted-invariant`, at which point follow runbook (b). If the watermark
+  turns the shard into `halted-invariant`, at which point follow runbook (b); one past it proves
+  another owner has been draining this shard, and the cycle halts `halted-lost`, which is a failover
+  and not an incident. If the watermark
   remains unreadable, retain the log and the original drain error and escalate the storage failure.
 
 No refused call in this runbook wrote anything: all three refusals — `entries`, `bytes` and

@@ -718,11 +718,15 @@ failed", a refused drain and a drain that never ran leave byte-identical state, 
 to roll back. The single bit an ambiguous transport code leaves unknown is whether the commit
 landed, and the watermark is the only place that bit is recorded.
 
-Read the answer like this. At or above a drain's seqno means that drain committed; below means it
-did not; `ok` false means no drain ever committed for the shard. The caller owns seqno discipline
-(I5): the seqno asked about must name one drain and no other. And "it did not commit" is **not** an
-instruction to re-apply — the window is already drained, so a batch rebuilt from it would stand on
-mutated state.
+Read the answer like this, and note that it is **equality** rather than "at or above". Exactly the
+drain's own seqno means that drain committed, since an applier sets the watermark to the batch's own
+`Watermark()` and nothing else; below it, or `ok` false, means it did not. *Above* it is the third
+answer and not a stronger form of the first: nothing of this cycle's can commit over an unresolved
+drain, so a watermark that has moved past this one was moved by another owner's — the shard is gone,
+and reading it as "mine committed" hands a caller somebody else's transaction as its own. The caller
+owns seqno discipline (I5): the seqno asked about must name one drain and no other. And "it did not
+commit" is **not** an instruction to re-apply — the window is already drained, so a batch rebuilt
+from it would stand on mutated state.
 
 What happens to the acknowledged writes in that batch, then, is the question this rule leaves open,
 and the answer is that they are still in the log. A shard that reads its watermark below the drain

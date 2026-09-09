@@ -250,9 +250,10 @@ of the watermark itself fails, the cycle knows neither answer.
 
 Halting there would turn a blip into a lost shard. So instead the drain's seqno becomes a **floor on
 the tail** (`tailstate.Tail.Stall`): nothing settles or commits over it, and both writers and
-readers are refused until one readable watermark ends the stall. A watermark at or above the drain's
+readers are refused until one readable watermark ends the stall. A watermark exactly at the drain's
 seqno means it committed after all. A watermark below it — or none recorded at all — means it did
-not, and the shard halts on the invariant side. What the refusals look like, and why the age tick is
+not, and the shard halts on the invariant side. One *past* it was moved by an owner that is not this
+one, and the shard halts on the lost side instead. What the refusals look like, and why the age tick is
 the only thing that can heal a stall, is [chapter
 05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read). For this chapter the point is
 the placement: a stall is a property of the *tail*, not a fourth `State`, so a shard that recovers

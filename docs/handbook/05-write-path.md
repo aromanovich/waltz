@@ -512,9 +512,12 @@ sequenceDiagram
   CS-->>AP: an ambiguous code
   AP-->>CY: apply.ClassUnknownOutcome
   CY->>CS: Watermark(shard) — read the applied watermark, and nothing else
-  alt watermark at or above the batch's seqno
+  alt watermark exactly at the batch's seqno
     CS-->>CY: it committed after all
     Note over CY: appliedSeqno moves, the drain settles forward, log line "an ambiguous drain had committed"
+  else watermark past it
+    CS-->>CY: another owner drained over this one
+    Note over CY: halt, state = halted-lost — the shard is gone, and the caller re-acquires
   else watermark below it
     CS-->>CY: it did not commit
     Note over CY: halt, state = halted-invariant, carrying the ambiguous error as the record
