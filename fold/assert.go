@@ -166,17 +166,22 @@ func assertSet(req *p.InternalSetWorkflowExecutionRequest) asserted {
 // because the fold merges requests in place: what they read is the arriving
 // request's own state.
 
+// currentWriteOfSnapshot is the row a snapshot writes: the store passes the
+// snapshot's own state blob through, so both paths that carry one write the same
+// four fields off it.
+func currentWriteOfSnapshot(snap *p.InternalWorkflowSnapshot) *CurrentWrite {
+	return &CurrentWrite{
+		RunID:            snap.RunID,
+		StateBlob:        snap.ExecutionStateBlob,
+		LastWriteVersion: snap.LastWriteVersion,
+		State:            snap.ExecutionState.State,
+	}
+}
+
 func currentWriteOfCreate(req *p.InternalCreateWorkflowExecutionRequest) *CurrentWrite {
-	snap := &req.NewWorkflowSnapshot
 	switch req.Mode {
 	case p.CreateWorkflowModeBrandNew, p.CreateWorkflowModeUpdateCurrent:
-		// The store's create passes the snapshot's state blob through.
-		return &CurrentWrite{
-			RunID:            snap.RunID,
-			StateBlob:        snap.ExecutionStateBlob,
-			LastWriteVersion: snap.LastWriteVersion,
-			State:            snap.ExecutionState.State,
-		}
+		return currentWriteOfSnapshot(&req.NewWorkflowSnapshot)
 	}
 	return nil
 }
@@ -188,12 +193,7 @@ func currentWriteOfUpdate(req *p.InternalUpdateWorkflowExecutionRequest) (*Curre
 		return nil, nil
 	}
 	if ns := req.NewWorkflowSnapshot; ns != nil {
-		return &CurrentWrite{
-			RunID:            ns.RunID,
-			StateBlob:        ns.ExecutionStateBlob,
-			LastWriteVersion: ns.LastWriteVersion,
-			State:            ns.ExecutionState.State,
-		}, nil
+		return currentWriteOfSnapshot(ns), nil
 	}
 	mut := &req.UpdateWorkflowMutation
 	blob, err := serialization.WorkflowExecutionStateToBlob(mut.ExecutionState)

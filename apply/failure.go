@@ -265,9 +265,7 @@ func workflowSlices(batch fold.Batch) map[*fold.WorkflowRecord]wfSlice {
 		if !seen || e.HeadSeqno < s.head {
 			s.head = e.HeadSeqno
 		}
-		if e.TailSeqno > s.tail {
-			s.tail = e.TailSeqno
-		}
+		s.tail = max(s.tail, e.TailSeqno)
 		out[e.Workflow()] = s
 	}
 	return out

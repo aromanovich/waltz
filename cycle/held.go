@@ -1,6 +1,8 @@
 package cycle
 
 import (
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/aromanovich/waltz/wal"
@@ -80,10 +82,4 @@ func (h *held) totals() (Totals, []*Cycle) {
 }
 
 // list is the map's values. Callers hold the lock.
-func (h *held) list() []*Cycle {
-	all := make([]*Cycle, 0, len(h.shards))
-	for _, c := range h.shards {
-		all = append(all, c)
-	}
-	return all
-}
+func (h *held) list() []*Cycle { return slices.Collect(maps.Values(h.shards)) }

@@ -43,42 +43,21 @@ type TaskWork struct {
 	// be at or above it. No HeadSeqno beside it, unlike [Emitted]: task work
 	// asserts nothing, so a failed drain has no partial-apply cut to take.
 	TailSeqno wal.Seqno
-	// Dropped is how many task rows a range removed from this window and Written
-	// how many the drain writes, per category. Two counts rather than a share, so
-	// "everything was dropped" stays distinguishable from "there were no tasks".
-	Dropped map[string]int
-	Written map[string]int
+	// Counts is one row per category the window touched. One table and not two
+	// maps: the two numbers share a key space, and a consumer joining them itself
+	// reports a category present in one and absent from the other either twice or
+	// not at all, with no green run showing either.
+	Counts map[string]TaskCounts
 }
 
 // Empty reports work a drain need not carry. Counters alone do not make a
 // [TaskWork] non-empty.
 func (w TaskWork) Empty() bool { return len(w.Insert) == 0 && len(w.Delete) == 0 }
 
-// TaskCounts is one category's two numbers.
+// TaskCounts is one category's two numbers: how many task rows a range removed
+// from the window, and how many the drain writes. Two counts rather than a share,
+// so "everything was dropped" stays distinguishable from "there were no tasks".
 type TaskCounts struct{ Dropped, Written int }
-
-// Categories yields every category this work touched, once each, with both its
-// numbers. [TaskWork.Dropped] and [TaskWork.Written] are one table over one key
-// space rather than two answers, and joining them is this type's own business: a
-// consumer that ranged them apart reports a category in both twice, or one in
-// neither map not at all, and no green run shows either.
-func (w TaskWork) Categories() iter.Seq2[string, TaskCounts] {
-	return func(yield func(string, TaskCounts) bool) {
-		for name, dropped := range w.Dropped {
-			if !yield(name, TaskCounts{Dropped: dropped, Written: w.Written[name]}) {
-				return
-			}
-		}
-		for name, written := range w.Written {
-			if _, both := w.Dropped[name]; both {
-				continue
-			}
-			if !yield(name, TaskCounts{Written: written}) {
-				return
-			}
-		}
-	}
-}
 
 // Covers reports that this range removes the key under the store's own
 // predicate: an immediate category is ranged on task_id, a scheduled one on
@@ -259,12 +238,11 @@ func (a *Accumulator) markTaskSeqno(seqno wal.Seqno) { a.taskTail = seqno }
 func (a *Accumulator) drainTasks() TaskWork {
 	work := TaskWork{
 		TailSeqno: a.taskTail,
-		Dropped:   a.tasksDropped,
 		Insert:    a.addedTasks,
 		// Counted here rather than by the caller, so that "over the window and
 		// therefore before this empties it" is the order of two statements in one
 		// function instead of an obligation on whoever calls them.
-		Written: a.countTasks(),
+		Counts: a.taskCounts(),
 	}
 
 	for _, t := range a.ranges {
@@ -289,21 +267,8 @@ func filterTaskMap(
 	}
 	var out map[tasks.Category][]p.InternalHistoryTask
 	for category, list := range in {
-		var kept []p.InternalHistoryTask
-		dropped := 0
-		for i, task := range list {
-			if !covered(category, task.Key) {
-				if kept != nil {
-					kept = append(kept, task)
-				}
-				continue
-			}
-			dropped++
-			if kept == nil {
-				kept = append(make([]p.InternalHistoryTask, 0, len(list)-1), list[:i]...)
-			}
-		}
-		if kept == nil {
+		kept, dropped := keepUncovered(list, func(key tasks.Key) bool { return covered(category, key) })
+		if dropped == 0 {
 			continue
 		}
 		count(category.Name(), dropped)
@@ -323,19 +288,52 @@ func filterTaskMap(
 	return out
 }
 
-// countTasks is the drain's Written half: every task row the transaction will
-// write, per category. It reads the window, so it is [Accumulator.drainTasks]'s
-// first act — after that the rows an AddHistoryTasks put in are the batch's, and
-// the count would silently be short of them.
-func (a *Accumulator) countTasks() map[string]int {
-	written := map[string]int{}
-	for home := range a.taskRows() {
-		for category, list := range *home {
-			written[category.Name()] += len(list)
+// keepUncovered is list with the dropped rows removed, and how many went. The
+// copy is made where it becomes necessary, which is the first dropped row: until
+// then the caller's own slice is the answer, and handing it back unmodified keeps
+// the rule both callers are under — never write through a slice a reader holds.
+// Most calls drop nothing.
+func keepUncovered(
+	list []p.InternalHistoryTask, drop func(tasks.Key) bool,
+) ([]p.InternalHistoryTask, int) {
+	var kept []p.InternalHistoryTask
+	for i, task := range list {
+		if !drop(task.Key) {
+			if kept != nil {
+				kept = append(kept, task)
+			}
+			continue
+		}
+		if kept == nil {
+			kept = append(make([]p.InternalHistoryTask, 0, len(list)-1), list[:i]...)
 		}
 	}
-	if len(written) == 0 {
+	if kept == nil {
+		return list, 0
+	}
+	return kept, len(list) - len(kept)
+}
+
+// taskCounts is the drain's count table: every task row the transaction will
+// write, beside what a range already dropped. It reads the window, so it is
+// [Accumulator.drainTasks]'s first act — after that the rows an AddHistoryTasks
+// put in are the batch's, and the written count would silently be short of them.
+func (a *Accumulator) taskCounts() map[string]TaskCounts {
+	counts := map[string]TaskCounts{}
+	for home := range a.taskRows() {
+		for category, list := range *home {
+			c := counts[category.Name()]
+			c.Written += len(list)
+			counts[category.Name()] = c
+		}
+	}
+	for name, dropped := range a.tasksDropped {
+		c := counts[name]
+		c.Dropped = dropped
+		counts[name] = c
+	}
+	if len(counts) == 0 {
 		return nil
 	}
-	return written
+	return counts
 }

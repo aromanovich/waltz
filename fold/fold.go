@@ -324,7 +324,7 @@ func currentTaintedRefusal(w *workflowAcc, want asserted) error {
 	if want.current == nil {
 		return nil
 	}
-	if w != nil && !w.assertsCurrent() && w.cur.tainted {
+	if w.currentTainted() {
 		return fmt.Errorf("%w: a current-row assertion behind a delete-current in the same window", ErrRefused)
 	}
 	return nil
@@ -494,9 +494,14 @@ func (b Batch) Each() iter.Seq[*Emitted] {
 func (a *Accumulator) Drain() Batch {
 	stats := a.Stats()
 
-	// One request per dirty workflow, plus the tombstone-and-recreate case, which
-	// appends past this.
-	out := make([]Emitted, 0, len(a.workflows))
+	// The pending requests and not the workflows: one per dirty workflow is the
+	// ordinary case, and the tombstone-and-recreate one appends past it, so the
+	// workflow count is a lower bound that regrows a wide struct mid-drain.
+	pending := 0
+	for _, w := range a.workflows {
+		pending += len(w.pending)
+	}
+	out := make([]Emitted, 0, pending)
 	for _, w := range a.workflows {
 		rec := &WorkflowRecord{
 			NamespaceID: w.key.namespaceID,
@@ -567,9 +572,7 @@ func (a *Accumulator) Drain() Batch {
 	if len(out) > 0 {
 		watermark = out[len(out)-1].TailSeqno
 	}
-	if work.TailSeqno > watermark {
-		watermark = work.TailSeqno
-	}
+	watermark = max(watermark, work.TailSeqno)
 
 	a.workflows = make(map[wfKey]*workflowAcc)
 	a.mutationsIn = 0
@@ -606,6 +609,14 @@ func (w *workflowAcc) heldRun(run string) *runState {
 
 // assertsCurrent reports whether the window holds the current-execution row.
 func (w *workflowAcc) assertsCurrent() bool { return w != nil && w.cur.assertion != nil }
+
+// currentTainted reports the row a delete-current sits over with no assertion
+// above it. Beside [workflowAcc.assertsCurrent] for the same reason: both halves
+// of the authority refuse on this, and a half that spelled the test itself would
+// answer a claim the other one refuses.
+func (w *workflowAcc) currentTainted() bool {
+	return w != nil && !w.assertsCurrent() && w.cur.tainted
+}
 
 // adopt registers a new pending request as the owner of a run. An existing run
 // state keeps its head assertion, which is what makes a Create behind a

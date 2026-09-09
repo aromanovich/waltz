@@ -263,7 +263,7 @@ func (a *Accumulator) decideRun(v *verdict, w *workflowAcc, namespaceID, workflo
 // guard the row is neither the window's write nor the pre-window one.
 func (a *Accumulator) decideCurrent(v *verdict, w *workflowAcc, namespaceID, workflowID string, want CurrentAssertion) {
 	if !w.assertsCurrent() {
-		if w != nil && w.cur.tainted {
+		if w.currentTainted() {
 			v.undecided("the current-execution row behind a delete-current")
 			return
 		}

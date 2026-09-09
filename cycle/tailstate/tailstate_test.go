@@ -136,17 +136,14 @@ func TestAStalledTailIsOnTheMirrorToo(t *testing.T) {
 	entries, bytes := m.Size()
 	require.EqualValues(t, 1, entries)
 	require.EqualValues(t, 100, bytes)
-	seqno, stalled := m.StalledAt()
-	require.True(t, stalled)
-	require.EqualValues(t, wal.FirstSeqno, seqno)
+	require.EqualValues(t, wal.FirstSeqno, m.StalledAt())
 
 	// And a floor is the other way out of one: a successor reads the watermark
 	// itself and re-acks everything above it.
 	tl.Floor(wal.FirstSeqno - 1)
-	_, stalled = tl.Stalled()
+	_, stalled := tl.Stalled()
 	require.False(t, stalled)
-	_, stalled = m.StalledAt()
-	require.False(t, stalled)
+	require.Zero(t, m.StalledAt())
 	require.Zero(t, tl.Bytes())
 	require.True(t, m.Empty())
 }

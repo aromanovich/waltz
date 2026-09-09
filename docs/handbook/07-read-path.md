@@ -526,8 +526,8 @@ share. A share is computed from a denominator the drop itself moves, so it canno
 was dropped"** from **"there was nothing to drop"** — and those are the two states an operator most
 needs to tell apart.
 
-The same two numbers are on the drain itself as `fold.TaskWork.Dropped` and `fold.TaskWork.Written`,
-both keyed by category name, and in `cycle.Counters` as `DroppedTasks` and `WrittenTasks`.
+The same two numbers are on the drain itself in `fold.TaskWork.Counts`, one `fold.TaskCounts` per
+category name, and in `cycle.Counters` as `DroppedTasks` and `WrittenTasks`.
 `cycle.Counters.AckedRanges` sits beside them, counting range deletes folded. A zero there means no
 queue ever completed a range while the run was going, so nothing exercised the drop at all: the
 layer is untested rather than working.

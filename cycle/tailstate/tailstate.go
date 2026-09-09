@@ -248,10 +248,8 @@ func (m *Mirror) Size() (entries, bytes int64) { return m.entries.Load(), m.byte
 // StalledAt is [Tail.Stalled]'s seqno for that same reader, and without the cause:
 // a refusal before the queue says the shard cannot take the write, where the
 // attribution belongs to the halt the loop may still reach.
-func (m *Mirror) StalledAt() (wal.Seqno, bool) {
-	stalled := wal.Seqno(m.stalled.Load())
-	return stalled, stalled != 0
-}
+// Zero is "not stalled", as on [Tail.Stalled]'s own seqno.
+func (m *Mirror) StalledAt() wal.Seqno { return wal.Seqno(m.stalled.Load()) }
 
 // Empty is [Tail.Empty] for the reader with no loop left to ask. It can be
 // stale by the writes a successor cycle took, so only the two mutable-state

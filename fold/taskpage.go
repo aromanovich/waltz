@@ -29,6 +29,7 @@ package fold
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	p "go.temporal.io/server/common/persistence"
@@ -191,39 +192,16 @@ type hideDeleted struct {
 // hides reports that a row of the base's page is inside an undrained range,
 // under [TaskRange.Covers] and no other predicate.
 func (d hideDeleted) hides(key tasks.Key) bool {
-	for _, r := range d.ranges {
-		if r.Covers(key) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(d.ranges, func(r TaskRange) bool { return r.Covers(key) })
 }
 
-// keep is the base page with the hidden rows removed, and how many went.
+// keep is the base page with the hidden rows removed, and how many went. The
+// store's own slice comes back where nothing hides, under [keepUncovered]'s rule.
 func (d hideDeleted) keep(page []p.InternalHistoryTask) ([]p.InternalHistoryTask, int) {
-	if len(d.ranges) == 0 || len(page) == 0 {
+	if len(d.ranges) == 0 {
 		return page, 0
 	}
-	// The copy is made where it becomes necessary, which is the first hidden row:
-	// until then the store's own slice is the answer and returning it unmodified
-	// keeps the rule this is under — never write through the store's array. Most
-	// pages hide nothing, a range delete covering keys the queue has already read.
-	var out []p.InternalHistoryTask
-	for i, t := range page {
-		if !d.hides(t.Key) {
-			if out != nil {
-				out = append(out, t)
-			}
-			continue
-		}
-		if out == nil {
-			out = append(make([]p.InternalHistoryTask, 0, len(page)-1), page[:i]...)
-		}
-	}
-	if out == nil {
-		return page, 0
-	}
-	return out, len(page) - len(out)
+	return keepUncovered(page, d.hides)
 }
 
 // mergePage answers one page from the two sources. window is this category's

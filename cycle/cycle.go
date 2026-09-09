@@ -375,8 +375,7 @@ func (c *Cycle) Epoch() wal.Epoch   { return c.epoch }
 func (c *Cycle) write(ctx context.Context, m mutation.Mutation, rows *baserow.Rows) error {
 	if c.State() == StateRunning {
 		entries, bytes := c.mirror.Size()
-		stalled, _ := c.mirror.StalledAt()
-		if err := c.writeRefused(entries, bytes, stalled, c.policy()); err != nil {
+		if err := c.writeRefused(entries, bytes, c.mirror.StalledAt(), c.policy()); err != nil {
 			return err
 		}
 	}
@@ -1014,7 +1013,7 @@ func (c *Cycle) settlement(err error, cause drainCause, mutationsIn int) settlem
 // Called once the transaction has an outcome: a batch that did not commit wrote
 // no rows, so a drop counted for it would be a saving nobody made.
 func (c *Cycle) countTasks(s *state, work fold.TaskWork) {
-	for name, n := range work.Categories() {
+	for name, n := range work.Counts {
 		c.deps.Metrics.Tasks(name, n.Dropped, n.Written)
 		s.DroppedTasks += n.Dropped
 		s.WrittenTasks += n.Written

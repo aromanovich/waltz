@@ -96,8 +96,9 @@ func TestARangeTakesOutWhatTheWindowAlreadyHeld(t *testing.T) {
 		InclusiveMin: tasks.NewImmediateKey(0),
 		ExclusiveMax: tasks.NewImmediateKey(6),
 	}}, work.Delete)
-	require.Equal(t, map[string]int{tasks.CategoryTransfer.Name(): 3}, work.Dropped)
-	require.Equal(t, map[string]int{tasks.CategoryTransfer.Name(): 1}, work.Written)
+	require.Equal(t, map[string]fold.TaskCounts{
+		tasks.CategoryTransfer.Name(): {Dropped: 3, Written: 1},
+	}, work.Counts)
 }
 
 // TestATaskArrivingAfterARangeIsKept: the range has not been applied yet, and
@@ -117,7 +118,8 @@ func TestATaskArrivingAfterARangeIsKept(t *testing.T) {
 	out, work := reqs(batch), batch.Tasks()
 	require.Equal(t, []string{"late"}, names(work.Insert[tasks.CategoryTransfer]))
 	require.Equal(t, []string{"later"}, taskNames(out[0].Request.Update.UpdateWorkflowMutation.Tasks))
-	require.Empty(t, work.Dropped, "nothing was dropped: the range came first")
+	require.Zero(t, work.Counts[tasks.CategoryTransfer.Name()].Dropped,
+		"nothing was dropped: the range came first")
 	require.Len(t, work.Delete, 1, "and the range is still applied")
 }
 
@@ -263,8 +265,9 @@ func TestARangeReachesEveryHomeTheReadReaches(t *testing.T) {
 			batch := a.Drain()
 			require.Equal(t, []string{"kept"}, names(written(batch, tasks.CategoryTransfer)),
 				"a row the sweep missed is one the drain writes under a delete the caller asked for")
-			require.Equal(t, map[string]int{tasks.CategoryTransfer.Name(): 1}, batch.Tasks().Dropped)
-			require.Equal(t, map[string]int{tasks.CategoryTransfer.Name(): 1}, batch.Tasks().Written)
+			require.Equal(t, map[string]fold.TaskCounts{
+				tasks.CategoryTransfer.Name(): {Dropped: 1, Written: 1},
+			}, batch.Tasks().Counts)
 		})
 	}
 }
