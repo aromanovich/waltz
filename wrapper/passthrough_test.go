@@ -67,10 +67,11 @@ func TestEveryMethodTransits(t *testing.T) {
 				t.Run(method.Name, func(t *testing.T) {
 					ctrl := gomock.NewController(t)
 					base, wrapped := tc.build(t, ctrl)
+					layerStore := tc.decorated[method.Name]
 
 					args := callArgs(method.Type)
 					want := returnValues(t, ctrl, method.Name, method.Type)
-					if _, ok := tc.decorated[method.Name]; ok {
+					if layerStore != nil {
 						// A constructor that failed has no store to decorate;
 						// TestAFailedConstructorIsNotDecorated has that half.
 						want = succeeding(method.Type, want)
@@ -78,20 +79,29 @@ func TestEveryMethodTransits(t *testing.T) {
 					expectOnce(t, base, method.Name, args, want)
 
 					got := reflect.ValueOf(wrapped).MethodByName(method.Name).Call(args)
-					require.Len(t, got, len(want))
-					for j := range got {
-						if typ, ok := tc.decorated[method.Name]; ok && j == 0 {
-							require.Equal(t, typ, reflect.TypeOf(got[j].Interface()),
-								"%s must return this layer's store, not the base's", method.Name)
-							require.Same(t, want[j].Interface(), decorated(got[j].Interface()),
-								"%s must decorate the store the base factory built", method.Name)
-							continue
-						}
-						assertSame(t, want[j], got[j], method.Name)
-					}
+					assertResults(t, method.Name, layerStore, want, got)
 				})
 			}
 		})
+	}
+}
+
+// assertResults checks what the wrapper handed back against what the base
+// returned. layerStore is nil for a transit, where every result must be the
+// base's own value; for the two factory methods that decorate, it is the type
+// this layer's first result must have, over the base's store.
+func assertResults(t *testing.T, method string, layerStore reflect.Type, want, got []reflect.Value) {
+	t.Helper()
+	require.Len(t, got, len(want))
+	for i := range got {
+		if layerStore != nil && i == 0 {
+			require.Equal(t, layerStore, reflect.TypeOf(got[i].Interface()),
+				"%s must return this layer's store, not the base's", method)
+			require.Same(t, want[i].Interface(), decorated(got[i].Interface()),
+				"%s must decorate the store the base factory built", method)
+			continue
+		}
+		assertSame(t, want[i], got[i], method)
 	}
 }
 

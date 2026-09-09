@@ -49,6 +49,14 @@ var (
 	_ ShardLayer  = (*emittingLayer)(nil)
 )
 
+// factoryWith calls NewFactory the way the server does. Only the handler is this
+// file's subject; the other four arguments are the server's own and say nothing
+// about any test below.
+func factoryWith(f client.AbstractDataStoreFactory, handler metrics.Handler) p.DataStoreFactory {
+	return f.NewFactory(config.CustomDatastoreConfig{}, resolver.NewNoopResolver(), "test",
+		log.NewNoopLogger(), handler)
+}
+
 // fakeAbstractFactory stands in for the plugin's own abstract factory, so the
 // decorator is driven the way the server drives it.
 type fakeAbstractFactory struct{ base p.DataStoreFactory }
@@ -73,7 +81,7 @@ func TestTheMetricsHandlerReachesTheLayerThroughTheFactory(t *testing.T) {
 	factory := NewAbstractDataStoreFactory(fakeAbstractFactory{base: base}, Options{Layer: sink})
 
 	first, second := metricstest.NewCaptureHandler(), metricstest.NewCaptureHandler()
-	factory.NewFactory(config.CustomDatastoreConfig{}, resolver.NewNoopResolver(), "test", log.NewNoopLogger(), first)
+	factoryWith(factory, first)
 
 	require.Len(t, sink.got, 1, "the layer was never handed the server's metrics handler")
 	require.Same(t, first, sink.got[0])
@@ -82,7 +90,7 @@ func TestTheMetricsHandlerReachesTheLayerThroughTheFactory(t *testing.T) {
 	// in a development binary. The wrapper offers every handler; deduplicating
 	// to the first is the sink's job, so the tags do not depend on which
 	// service was constructed last.
-	factory.NewFactory(config.CustomDatastoreConfig{}, resolver.NewNoopResolver(), "test", log.NewNoopLogger(), second)
+	factoryWith(factory, second)
 	require.Len(t, sink.got, 2, "the wrapper stopped offering the handler; the *sink* is what deduplicates")
 
 	emit := walmetrics.New(nil)
@@ -106,7 +114,7 @@ func TestTheStoresGetTheHandlerToo(t *testing.T) {
 	emitter := walmetrics.New(nil)
 	factory := NewAbstractDataStoreFactory(fakeAbstractFactory{base: base},
 		Options{Layer: &emittingLayer{emit: emitter}, Metrics: emitter})
-	built := factory.NewFactory(config.CustomDatastoreConfig{}, resolver.NewNoopResolver(), "test", log.NewNoopLogger(), handler)
+	built := factoryWith(factory, handler)
 
 	store, err := built.NewExecutionStore()
 	require.NoError(t, err)

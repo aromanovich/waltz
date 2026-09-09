@@ -301,21 +301,7 @@ func TestTheMergedReadIsTheSortedUnion(t *testing.T) {
 						}
 					}
 
-					var got []p.InternalHistoryTask
-					for _, page := range pages {
-						require.LessOrEqual(t, len(page), batch, "%s: a page longer than BatchSize", category.Name())
-						got = append(got, page...)
-					}
-					for i, task := range got {
-						require.GreaterOrEqual(t, task.Key.CompareTo(minKey), 0,
-							"%s: a key below the requested range", category.Name())
-						require.Less(t, task.Key.CompareTo(maxKey), 0,
-							"%s: a key at or above the requested range", category.Name())
-						if i > 0 {
-							require.Positive(t, task.Key.CompareTo(got[i-1].Key),
-								"%s: keys must strictly ascend across pages", category.Name())
-						}
-					}
+					got := assertPagesWellFormed(t, category, batch, minKey, maxKey, pages)
 					require.Equal(t,
 						keysOf(r.sortedUnion(window, category, minKey, maxKey)), keysOf(got),
 						"%s: the merged read is not the sorted union of the two sources", category.Name())
@@ -339,6 +325,34 @@ func TestTheMergedReadIsTheSortedUnion(t *testing.T) {
 				r.cost.Comparisons, r.cost.Collisions, r.cost.FromWindow, r.surfaced)
 		})
 	}
+}
+
+// assertPagesWellFormed holds the three claims every pagination owes whatever it
+// found — no page longer than the caller's batch, no key outside the range asked
+// for, and keys strictly ascending across the page boundary as well as inside it
+// — and returns the pages concatenated, which is what the union is compared
+// against.
+func assertPagesWellFormed(
+	t *testing.T, category tasks.Category, batch int, minKey, maxKey tasks.Key,
+	pages [][]p.InternalHistoryTask,
+) []p.InternalHistoryTask {
+	t.Helper()
+	var got []p.InternalHistoryTask
+	for _, page := range pages {
+		require.LessOrEqual(t, len(page), batch, "%s: a page longer than BatchSize", category.Name())
+		got = append(got, page...)
+	}
+	for i, task := range got {
+		require.GreaterOrEqual(t, task.Key.CompareTo(minKey), 0,
+			"%s: a key below the requested range", category.Name())
+		require.Less(t, task.Key.CompareTo(maxKey), 0,
+			"%s: a key at or above the requested range", category.Name())
+		if i > 0 {
+			require.Positive(t, task.Key.CompareTo(got[i-1].Key),
+				"%s: keys must strictly ascend across pages", category.Name())
+		}
+	}
+	return got
 }
 
 // TestEveryImmediateKeyIsNormalised pins the upstream fact that lets one
