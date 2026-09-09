@@ -208,6 +208,13 @@ else. A partition between two layer nodes is therefore not a scenario that was l
 a scenario with **no channel to cut**. Whatever two owners would do to each other they do through
 fencing.
 
+That cuts the other way too, and it is worth saying because it reads as a limit and is not one:
+**two nodes are two `cycle.Manager`s over one log and one store**, and a second process adds an
+address space rather than a schedule. So a two-owner interleaving is stageable here and one is
+staged — a node parked inside its applier while another takes the shard, replays its entry and
+drains over it ([chapter 11](11-verification.md#what-is-not-claimed)). What a second process would
+add is a real transport that hangs, a real kill, and storage that survives either.
+
 What is unstaged, and could be staged by whoever has processes to kill, is everything on the other
 side of the two seams: a failure of the log, a failure of the cold store, a split of either's
 storage, a slow replica. Neither the harness that would stage those runs nor the judge that would

@@ -622,10 +622,16 @@ suites above and are stated where they are:
 
 * **the contract suite cannot see a fence that does not reach another process**
   ([above](#the-blind-spot-stated-where-the-instrument-is));
-* **no suite here hands a shard with a non-empty window to a new owner in a second process.** Replay
-  is exercised over an in-process log by `cycle`'s own tests; what is not exercised is a real
-  handover, and neither the harness that would stage one nor the judge that would read its record
-  back is in this repository;
+* **no suite here hands a shard to a new owner in a second *process*** — but two owners are staged,
+  and the distinction is narrower than it sounds. Nothing in this layer speaks to another node: every
+  interaction between two owners of a shard goes through the log and the epoch, so two
+  `cycle.Manager`s over one log and one store are two nodes, and a second address space would add an
+  address space and no schedule. `internal/verify/acceptance`'s `TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark`
+  is that harness: it parks one node inside its applier, lets the other take the shard, replay the
+  parked node's entry and drain over it, and then asks what the first node's caller is told. What a
+  second process would add is the part that is genuinely absent — a real transport hanging, a real
+  kill, and storage that outlives either — and the judge that would read such a run's record back is
+  still not here;
 * **nothing here judges the fold against the sequential path.** A folded batch now *executes*
   against a real Temporal schema, which is what `TestBothSeamsRealNoServer` added and which catches
   a merged request no store would take. What is still unjudged is the stronger claim — that a folded
