@@ -247,24 +247,20 @@ func encode(m Mutation, provisional bool) ([]byte, error) {
 	switch kind {
 	case KindCreate:
 		var r *CreateRequest
-		if r, err = encodeCreate(m.Create); err == nil {
-			payload.Request = &Payload_Create{Create: r}
-		}
+		r, err = encodeCreate(m.Create)
+		payload.Request = &Payload_Create{Create: r}
 	case KindUpdate:
 		var r *UpdateRequest
-		if r, err = encodeUpdate(m.Update); err == nil {
-			payload.Request = &Payload_Update{Update: r}
-		}
+		r, err = encodeUpdate(m.Update)
+		payload.Request = &Payload_Update{Update: r}
 	case KindConflictResolve:
 		var r *ConflictResolveRequest
-		if r, err = encodeConflictResolve(m.ConflictResolve); err == nil {
-			payload.Request = &Payload_ConflictResolve{ConflictResolve: r}
-		}
+		r, err = encodeConflictResolve(m.ConflictResolve)
+		payload.Request = &Payload_ConflictResolve{ConflictResolve: r}
 	case KindSet:
 		var r *SetRequest
-		if r, err = encodeSet(m.Set); err == nil {
-			payload.Request = &Payload_Set{Set: r}
-		}
+		r, err = encodeSet(m.Set)
+		payload.Request = &Payload_Set{Set: r}
 	case KindDelete:
 		payload.Request = &Payload_Delete{Delete: &DeleteRequest{
 			ShardId:     m.Delete.ShardID,

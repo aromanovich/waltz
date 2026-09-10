@@ -305,6 +305,25 @@ func TestAShutdownThatLeavesATailSaysWhichShardsHoldIt(t *testing.T) {
 	require.ErrorContains(t, err, "will not replay them")
 }
 
+// TestAShutdownWithoutABudgetIsRefused: zero is a deadline already past, so a
+// caller reading it the way most of Go does would drain nothing and be handed
+// every shard back as a residue — a report indistinguishable from a cold store
+// that is down.
+func TestAShutdownWithoutABudgetIsRefused(t *testing.T) {
+	ctx := context.Background()
+	layer, _ := composed(t, cycle.Defaults())
+	t.Cleanup(func() { require.NoError(t, layer.Shutdown(ctx, time.Minute)) })
+
+	for _, budget := range []time.Duration{0, -time.Second} {
+		err := layer.Shutdown(ctx, budget)
+		require.ErrorContains(t, err, "is not a budget")
+
+		var undrained *UndrainedError
+		require.NotErrorIs(t, err, undrained,
+			"a refused argument is not a shard holding a tail, and a caller type-switching must not read it as one")
+	}
+}
+
 // refusingCold is a cold store whose drain never commits and whose watermark
 // says no drain ever has, which is what a store that is down looks like from
 // inside a shutdown: the window is gone, the entries stay acked, and the tail

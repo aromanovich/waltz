@@ -283,9 +283,16 @@ func (l *Layer) RetireShard(shard wal.ShardID) bool {
 // writes. A shutdown drain runs where a context has just been cancelled — that
 // is what "shutdown" means — and one inheriting that cancellation returns at
 // once, leaving a tail behind and nothing in the log that says so.
-// The error is an [*UndrainedError] and nothing else: every tail emptied, or
-// these did not.
+// Given a budget, the error is an [*UndrainedError] and nothing else: every
+// tail emptied, or these did not. A budget that is not one is refused instead of
+// obeyed: [context.WithTimeout] reads zero as a deadline already past, where
+// much of Go reads it as no limit, so obeying it would drain nothing and report
+// every shard as holding a tail — the answer a caller passing zero meant least.
 func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) error {
+	if budget <= 0 {
+		return fmt.Errorf("waltz: a shutdown budget of %s is not a budget: pass the time the drains "+
+			"may take, since zero here is a deadline already past rather than no limit", budget)
+	}
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancel()
 	return l.close(drainCtx)
