@@ -172,7 +172,7 @@ func encodeBlobsInt(m map[int64]*commonpb.DataBlob) []*Int64BlobEntry {
 		return nil
 	}
 	out := make([]*Int64BlobEntry, 0, len(m))
-	for _, k := range slices.Sorted(maps.Keys(m)) {
+	for _, k := range orderedKeys(m) {
 		out = append(out, &Int64BlobEntry{Key: k, Blob: encodeBlob(m[k])})
 	}
 	return out
@@ -183,7 +183,7 @@ func encodeBlobsStr(m map[string]*commonpb.DataBlob) []*StringBlobEntry {
 		return nil
 	}
 	out := make([]*StringBlobEntry, 0, len(m))
-	for _, k := range slices.Sorted(maps.Keys(m)) {
+	for _, k := range orderedKeys(m) {
 		out = append(out, &StringBlobEntry{Key: k, Blob: encodeBlob(m[k])})
 	}
 	return out
@@ -194,7 +194,7 @@ func encodeChasmNodes(m map[string]p.InternalChasmNode) ([]*ChasmNodeEntry, erro
 		return nil, nil
 	}
 	out := make([]*ChasmNodeEntry, 0, len(m))
-	for _, k := range slices.Sorted(maps.Keys(m)) {
+	for _, k := range orderedKeys(m) {
 		node := m[k]
 		if node.CassandraBlob != nil {
 			return nil, ErrCassandraBlob
@@ -251,11 +251,20 @@ func encodeTaskKey(k tasks.Key) *TaskKey {
 	return out
 }
 
+// orderedKeys is [slices.Sorted] over a map's keys, presized. Not spelled
+// `slices.Sorted(maps.Keys(m))`: an [iter.Seq] carries no length, so that form
+// grows the slice up from nil while the map has known len(m) all along.
+func orderedKeys[K cmp.Ordered, V any](m map[K]V) []K {
+	keys := slices.AppendSeq(make([]K, 0, len(m)), maps.Keys(m))
+	slices.Sort(keys)
+	return keys
+}
+
 // sortedKeys is the encode half of the absent-vs-empty rule, inverse to
 // [setOf]: an empty set encodes as an absent field, not a present empty one.
 func sortedKeys[K cmp.Ordered](set map[K]struct{}) []K {
 	if len(set) == 0 {
 		return nil
 	}
-	return slices.Sorted(maps.Keys(set))
+	return orderedKeys(set)
 }

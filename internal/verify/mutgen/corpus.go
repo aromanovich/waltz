@@ -51,13 +51,3 @@ func Corpus(cfg Config, n int) (Stream, error) {
 	out.Report = g.Report()
 	return out, nil
 }
-
-// Kinds counts the stream by request kind. Eight is every intercepted method:
-// the six mutable-state writes and both halves of the history-task path.
-func (s Stream) Kinds() map[mutation.Kind]int {
-	kinds := make(map[mutation.Kind]int, 8)
-	for _, m := range s.Mutations {
-		kinds[m.Kind()]++
-	}
-	return kinds
-}

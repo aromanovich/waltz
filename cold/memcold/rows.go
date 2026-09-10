@@ -46,7 +46,7 @@ func applyMutation(
 		return err
 	}
 
-	if err := updateExecution(ctx, tx, shardID, m.NamespaceID, m.WorkflowID,
+	if err := updateExecution(ctx, tx, shardID, ns, run, m.WorkflowID,
 		m.ExecutionInfoBlob, m.ExecutionState, m.NextEventID, m.LastWriteVersion, m.DBRecordVersion,
 	); err != nil {
 		return err
@@ -93,7 +93,7 @@ func applySnapshotAsReset(
 		return err
 	}
 
-	if err := updateExecution(ctx, tx, shardID, s.NamespaceID, s.WorkflowID,
+	if err := updateExecution(ctx, tx, shardID, ns, run, s.WorkflowID,
 		s.ExecutionInfoBlob, s.ExecutionState, s.NextEventID, s.LastWriteVersion, s.DBRecordVersion,
 	); err != nil {
 		return err
@@ -111,10 +111,8 @@ func applySnapshotAsReset(
 }
 
 // applySnapshotAsNew writes a run that does not exist yet: the executions row
-// is an insert, and there is nothing to clear. A method for upstream's reason —
-// telling a duplicate key from a broken database is the plugin's answer, and
-// the two are different failure classes.
-func (s *Store) applySnapshotAsNew(
+// is an insert, and there is nothing to clear.
+func applySnapshotAsNew(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, snap *p.InternalWorkflowSnapshot,
 ) error {
 	ns, run, err := runKeys(snap.NamespaceID, snap.ExecutionState.RunId)
@@ -122,7 +120,7 @@ func (s *Store) applySnapshotAsNew(
 		return err
 	}
 
-	if err := s.createExecution(ctx, tx, shardID, snap.NamespaceID, snap.WorkflowID,
+	if err := createExecution(ctx, tx, shardID, ns, run, snap.WorkflowID,
 		snap.ExecutionInfoBlob, snap.ExecutionState, snap.NextEventID, snap.LastWriteVersion, snap.DBRecordVersion,
 	); err != nil {
 		return err
@@ -413,13 +411,13 @@ func writeKeyed[K comparable, V any, R any](
 // halts the shard, the second leaves the drain's outcome unknown, and rounding
 // one to the other is either a shard halted for a blip or a blip mistaken for a
 // broken invariant.
-func (s *Store) createExecution(
+func createExecution(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
-	namespaceID, workflowID string,
+	ns, run primitives.UUID, workflowID string,
 	info *commonpb.DataBlob, state *persistencespb.WorkflowExecutionState,
 	nextEventID, lastWriteVersion, dbRecordVersion int64,
 ) error {
-	row, err := executionRow(shardID, namespaceID, workflowID, info, state, nextEventID, lastWriteVersion, dbRecordVersion)
+	row, err := executionRow(shardID, ns, run, workflowID, info, state, nextEventID, lastWriteVersion, dbRecordVersion)
 	if err != nil {
 		return err
 	}
@@ -446,11 +444,11 @@ func (s *Store) createExecution(
 
 func updateExecution(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
-	namespaceID, workflowID string,
+	ns, run primitives.UUID, workflowID string,
 	info *commonpb.DataBlob, state *persistencespb.WorkflowExecutionState,
 	nextEventID, lastWriteVersion, dbRecordVersion int64,
 ) error {
-	row, err := executionRow(shardID, namespaceID, workflowID, info, state, nextEventID, lastWriteVersion, dbRecordVersion)
+	row, err := executionRow(shardID, ns, run, workflowID, info, state, nextEventID, lastWriteVersion, dbRecordVersion)
 	if err != nil {
 		return err
 	}
@@ -481,17 +479,13 @@ func exactlyOneRow(result sql.Result, what, workflowID, runID string) error {
 }
 
 func executionRow(
-	shardID int32, namespaceID, workflowID string,
+	shardID int32, ns, run primitives.UUID, workflowID string,
 	info *commonpb.DataBlob, state *persistencespb.WorkflowExecutionState,
 	nextEventID, lastWriteVersion, dbRecordVersion int64,
 ) (*sqlplugin.ExecutionsRow, error) {
 	stateBlob, err := serialization.WorkflowExecutionStateToBlob(state)
 	if err != nil {
 		return nil, serviceerror.NewUnavailablef("serialising the execution state of run %s: %v", state.RunId, err)
-	}
-	ns, run, err := runKeys(namespaceID, state.RunId)
-	if err != nil {
-		return nil, err
 	}
 	return &sqlplugin.ExecutionsRow{
 		ShardID:          shardID,
@@ -508,27 +502,22 @@ func executionRow(
 	}, nil
 }
 
-// insertBufferedEvents adds each batch as a row of its own: batches never
-// merge. The id column upstream's read sorts on is never written — the v3
-// SQLite schema declares it BIGINT AUTO_INCREMENT, which SQLite takes for a type
-// name and leaves NULL — so what orders the rows for a reader is the scan.
+// insertBufferedEvents adds the batch as a row of its own: batches never merge,
+// so a caller holding several calls once per batch. The id column upstream's
+// read sorts on is never written — the v3 SQLite schema declares it BIGINT
+// AUTO_INCREMENT, which SQLite takes for a type name and leaves NULL — so what
+// orders the rows for a reader is the scan.
 func insertBufferedEvents(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
-	ns primitives.UUID, workflowID string, run primitives.UUID, batches ...*commonpb.DataBlob,
+	ns primitives.UUID, workflowID string, run primitives.UUID, batch *commonpb.DataBlob,
 ) error {
-	rows := make([]sqlplugin.BufferedEventsRow, 0, len(batches))
-	for _, batch := range batches {
-		if batch == nil {
-			continue
-		}
-		rows = append(rows, sqlplugin.BufferedEventsRow{
-			ShardID: shardID, NamespaceID: ns, WorkflowID: workflowID, RunID: run,
-			Data: batch.Data, DataEncoding: batch.EncodingType.String(),
-		})
-	}
-	if len(rows) == 0 {
+	if batch == nil {
 		return nil
 	}
+	rows := []sqlplugin.BufferedEventsRow{{
+		ShardID: shardID, NamespaceID: ns, WorkflowID: workflowID, RunID: run,
+		Data: batch.Data, DataEncoding: batch.EncodingType.String(),
+	}}
 	if _, err := tx.InsertIntoBufferedEvents(ctx, rows); err != nil {
 		return serviceerror.NewUnavailablef("inserting buffered events for workflow %s: %v", workflowID, err)
 	}

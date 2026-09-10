@@ -234,7 +234,7 @@ func New(h metrics.Handler) *Emitter {
 // ignored, so the layer's numbers stay with the first service whose stores it
 // decorated. Safe to call while the layer is running.
 func (e *Emitter) Use(h metrics.Handler) {
-	if e == nil || h == nil || e.used.Swap(true) {
+	if h == nil || e.used.Swap(true) {
 		return
 	}
 	e.in.Store(resolve(h))

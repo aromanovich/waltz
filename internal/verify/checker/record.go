@@ -47,16 +47,13 @@ type Line struct {
 	Detail    string `json:"detail,omitempty"`
 }
 
-// The events a record holds. Only the first two carry claims; the rest are the
+// The events a record holds. Only the first two carry claims; the third is the
 // run's own narration, which a harness reads to know what happened and no
 // assertion stands on.
 const (
-	EventCall     = "call"
-	EventOutcome  = "outcome"
-	EventAcquired = "acquired"
-	EventFenced   = "fenced"
-	EventDrained  = "drained"
-	EventNote     = "note"
+	EventCall    = "call"
+	EventOutcome = "outcome"
+	EventFenced  = "fenced"
 )
 
 // Record is one node's memory of what it asked for, appended and fsynced per
@@ -140,9 +137,9 @@ func (r *Record) Outcome(call int64, outcome Outcome, detail string) error {
 	return err
 }
 
-// Note writes down something that happened to the node itself.
-func (r *Record) Note(event string, shard wal.ShardID, epoch wal.Epoch, detail string) error {
-	_, err := r.write(Line{Event: event, Shard: int32(shard), Epoch: int64(epoch), Detail: detail})
+// Fenced writes down that the node lost the shard.
+func (r *Record) Fenced(shard wal.ShardID, epoch wal.Epoch, detail string) error {
+	_, err := r.write(Line{Event: EventFenced, Shard: int32(shard), Epoch: int64(epoch), Detail: detail})
 	return err
 }
 

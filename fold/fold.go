@@ -243,7 +243,6 @@ type wfKey struct {
 }
 
 type workflowAcc struct {
-	key     wfKey
 	runs    map[string]*runState
 	cur     currentAcc
 	pending []*pendingReq
@@ -502,10 +501,10 @@ func (a *Accumulator) Drain() Batch {
 		pending += len(w.pending)
 	}
 	out := make([]Emitted, 0, pending)
-	for _, w := range a.workflows {
+	for key, w := range a.workflows {
 		rec := &WorkflowRecord{
-			NamespaceID: w.key.namespaceID,
-			WorkflowID:  w.key.workflowID,
+			NamespaceID: key.namespaceID,
+			WorkflowID:  key.workflowID,
 		}
 		if w.assertsCurrent() {
 			cur := *w.cur.assertion
@@ -525,8 +524,8 @@ func (a *Accumulator) Drain() Batch {
 
 		for _, pr := range w.pending {
 			e := Emitted{
-				NamespaceID:   w.key.namespaceID,
-				WorkflowID:    w.key.workflowID,
+				NamespaceID:   key.namespaceID,
+				WorkflowID:    key.workflowID,
 				HeadSeqno:     pr.headSeqno,
 				TailSeqno:     pr.tailSeqno,
 				Request:       pr.m,
@@ -589,7 +588,7 @@ func (a *Accumulator) acc(namespaceID, workflowID string) *workflowAcc {
 	key := wfKey{namespaceID, workflowID}
 	w := a.workflows[key]
 	if w == nil {
-		w = &workflowAcc{key: key, runs: make(map[string]*runState)}
+		w = &workflowAcc{runs: make(map[string]*runState)}
 		a.workflows[key] = w
 	}
 	return w
