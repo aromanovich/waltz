@@ -270,3 +270,21 @@ func TestWhatABaseThatBreaksTheRequirementsCosts(t *testing.T) {
 			"the pagination went on past the empty page, so this requirement is not one")
 	})
 }
+
+// TestATieAtTheCutIsEmittedOnce drives the one shape the tie-break at the cut
+// exists for, and which nothing else reaches: a base exhausted with rows, a
+// window that overflows the page on its own, and a window key equal to the base
+// page's first. A cut taken at that key rather than strictly below it emits the
+// window's copy and leaves the base's row unread, so the base hands the same key
+// back on a later page.
+func TestATieAtTheCutIsEmittedOnce(t *testing.T) {
+	a := fold.New(shard)
+	add(t, a, mkAddTasks(keyed(5, "window"), keyed(6, "window"), keyed(7, "window"), keyed(8, "window")))
+	base := &minimalBase{page: 1, rows: []p.InternalHistoryTask{keyed(5, "cold")}}
+
+	minKey, maxKey := immediateRange()
+	req := taskReq(tasks.CategoryTransfer, minKey, maxKey, 2)
+	got := assertPagesWellFormed(t, tasks.CategoryTransfer, 2, minKey, maxKey,
+		paginateOver(t, a, base, req))
+	require.Equal(t, []int64{5, 6, 7, 8}, taskIDs([][]p.InternalHistoryTask{got}))
+}

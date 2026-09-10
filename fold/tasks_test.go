@@ -108,8 +108,10 @@ func TestACategoryIsMatchedByItsID(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a, mkUpdate(runX, 2, withTasks(keyed(10, "transfer"))))
 
+	// Differing in a field the id does not cover: a twin built from all three of
+	// them is `==` to the original, so a match by value would pass this too.
 	twin := tasks.NewCategory(
-		tasks.CategoryTransfer.ID(), tasks.CategoryTransfer.Type(), tasks.CategoryTransfer.Name())
+		tasks.CategoryTransfer.ID(), tasks.CategoryTransfer.Type(), "transfer@another-registry")
 	require.Equal(t, []string{"transfer"}, names(a.Tasks(twin)))
 }
 
