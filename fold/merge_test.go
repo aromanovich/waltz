@@ -115,6 +115,17 @@ func TestEveryCollectionReachesBothFolds(t *testing.T) {
 // record it folds into and copying them would say nothing.
 var notFolded = map[string]bool{"NamespaceID": true, "WorkflowID": true, "RunID": true}
 
+// ownedElsewhere names the fields a delta has that a snapshot has no
+// counterpart for, so that the comparison below skips one by decision rather
+// than by falling off the end of the overlap. The collections are skipped by
+// their prefix instead, TestEveryCollectionReachesBothFolds being what holds
+// those; what is left is a field neither fold takes and nothing would say so,
+// which is an Update carrying it into a window that drops it.
+var ownedElsewhere = map[string]string{
+	"NewBufferedEvents":   "runState.foldBuffered strips the batch off the delta, since batches do not merge",
+	"ClearBufferedEvents": "runState.foldBuffered reads the flag and drops what accumulated before it",
+}
+
 // The tail the two lists share by name: whatever a snapshot and a delta both
 // have, both folds must take from src, or neither must. The comparison needs no
 // second list of the fields — the two types' own overlap is the list — and it
@@ -138,6 +149,14 @@ func TestBothFoldsTakeTheSameFieldsFromTheDelta(t *testing.T) {
 	for f := range mutationType.Fields() {
 		sf, ok := snapshotType.FieldByName(f.Name)
 		if !ok {
+			if strings.HasPrefix(f.Name, "Upsert") || strings.HasPrefix(f.Name, "Delete") {
+				continue
+			}
+			require.Containsf(t, ownedElsewhere, f.Name,
+				"%s is a field of a delta that a snapshot has no counterpart for, and it is neither "+
+					"an Upsert/Delete pair nor recorded here: so neither fold takes it, and an "+
+					"Update carrying it folds into a window that drops it. Fold it, or record what does",
+				f.Name)
 			continue
 		}
 		require.Equal(t, f.Type, sf.Type, "a delta's %s is %s and a snapshot's is %s: the two "+
@@ -172,6 +191,15 @@ func TestBothFoldsTakeTheSameFieldsFromTheDelta(t *testing.T) {
 	for name := range notFolded {
 		require.True(t, seen[name], "notFolded excuses %s, which is no longer a field both a "+
 			"delta and a snapshot have: an exception nothing reaches excuses nothing", name)
+	}
+	for name, why := range ownedElsewhere {
+		require.NotEmptyf(t, why, "ownedElsewhere excuses %s and says nothing about what owns it", name)
+		_, isField := mutationType.FieldByName(name)
+		require.Truef(t, isField, "ownedElsewhere excuses %s, which is no longer a field of a "+
+			"delta: an exception nothing reaches excuses nothing", name)
+		_, shared := snapshotType.FieldByName(name)
+		require.Falsef(t, shared, "ownedElsewhere excuses %s, which a snapshot now has too, so the "+
+			"comparison above reaches it: the excuse would hide a claim instead of recording one", name)
 	}
 }
 
