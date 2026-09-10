@@ -164,5 +164,4 @@ func TestASecondSettleOfOneWindowReleasesNothing(t *testing.T) {
 
 	tl.Settle(wal.FirstSeqno, held, KeepWatermark)
 	require.Equal(t, 40, tl.Bytes(), "the window was already released")
-	require.GreaterOrEqual(t, tl.Bytes(), 0, "and the tail never goes below zero")
 }

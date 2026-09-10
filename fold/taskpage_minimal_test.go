@@ -59,15 +59,12 @@ type minimalBase struct {
 	// been handed out, while rows remain. Zero is off.
 	emptyAfter int
 	handed     int
-
-	asked []int
 }
 
 // get is the callback the cycle builds. The token is this base's own bytes —
 // the merge may not parse them — so an index will do.
 func (b *minimalBase) get(req *p.GetHistoryTasksRequest) fold.BasePage {
 	return func(batch int, token []byte) ([]p.InternalHistoryTask, []byte, error) {
-		b.asked = append(b.asked, batch)
 		from := 0
 		if len(token) > 0 {
 			parsed, err := strconv.Atoi(string(token))
@@ -268,9 +265,8 @@ func TestWhatABaseThatBreaksTheRequirementsCosts(t *testing.T) {
 				got = append(got, task.Key.TaskID)
 			}
 		}
+		// Which is a queue completing a range over three rows it was never shown.
 		require.Equal(t, []int64{1, 2}, got,
 			"the pagination went on past the empty page, so this requirement is not one")
-		// Which is a queue completing a range over three rows it was never shown.
-		require.NotContains(t, got, int64(5))
 	})
 }

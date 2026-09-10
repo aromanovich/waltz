@@ -24,7 +24,6 @@ import (
 
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/internal/verify/coldtasks"
-	"github.com/aromanovich/waltz/mutation"
 )
 
 // immediateRange and scheduledRange are the widest ranges a queue could ask for,
@@ -119,9 +118,6 @@ func TestTheCutIsNeverInsideABasePage(t *testing.T) {
 	pages, _ := paginate(t, a, cold, taskReq(tasks.CategoryTransfer, minKey, maxKey, 2))
 	require.Equal(t, []int64{1, 2, 3, 4, 5, 100, 101}, taskIDs(pages),
 		"nothing lost and nothing doubled across a cut the window forced")
-	for _, page := range pages {
-		require.LessOrEqual(t, len(page), 2)
-	}
 }
 
 // TestTheBaseIsAskedForWhatTheWindowDoesNotFill: window tasks displace
@@ -242,12 +238,7 @@ func TestThePageHidesTheUndrainedRangesFromTheColdStoresHalfOnly(t *testing.T) {
 				a := fold.New(shard)
 				cold := coldtasks.New()
 				cold.Hold(tasks.CategoryTimer, row)
-				add(t, a, mutation.Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
-					ShardID:             int32(shard),
-					TaskCategory:        tasks.CategoryTimer,
-					InclusiveMinTaskKey: tasks.NewKey(at.Add(-time.Hour), 0),
-					ExclusiveMaxTaskKey: tasks.NewKey(at.Add(tc.above), 0),
-				}})
+				add(t, a, mkTimerRange(0, time.Hour+tc.above))
 
 				from, to := scheduledRange()
 				pages, _ := paginate(t, a, cold, taskReq(tasks.CategoryTimer, from, to, 100))

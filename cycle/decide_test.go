@@ -431,21 +431,11 @@ func TestTheSettlementOfEveryClass(t *testing.T) {
 	// it reads them through [attribute] — so the rows here are that rule's,
 	// mapped onto what the drain then does.
 	t.Run("ClassInvariantViolated", func(t *testing.T) {
-		for _, c := range causes {
-			for _, in := range windows {
-				want := haltsInvariant
-				switch attribute(c.cause, in) {
-				case answersItsCaller:
-					want = answersItsWriter
-				case dropsItsEntry:
-					want = dropsTheEntry
-				}
-				require.Equal(t, want, settlementOf(apply.ClassInvariantViolated, c.cause, in),
-					"%s at a window of %d", c.name, in)
-			}
-		}
-
-		// The three the loop above stands in for, spelled out.
+		// Three points and no loop over the nine causes: a loop here would have
+		// to build its expectation by calling [attribute], which is what this
+		// arm calls, so it would restate the implementation and move with it.
+		// The rule itself is held across every cause and window by [attribute]'s
+		// own matrix above, whose expectations are written out.
 		require.Equal(t, answersItsWriter, settlementOf(apply.ClassInvariantViolated, drainSync, 1),
 			"the one caller still inside its own write is told")
 		require.Equal(t, dropsTheEntry, settlementOf(apply.ClassInvariantViolated, drainReplayProvisional, 1),

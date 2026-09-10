@@ -50,8 +50,6 @@ type fakeApplier struct {
 	seqnos  []wal.Seqno
 	errs    []error // one per call, nil-padded
 	applied []wal.Seqno
-	// work is the shard-level history-task work each drain carried.
-	work []fold.TaskWork
 	// committed, when set, runs on an accepted drain before it answers.
 	committed func([]*fold.Emitted, fold.TaskWork)
 	// store, when set, is the cold store this applier commits into
@@ -64,7 +62,6 @@ func (a *fakeApplier) Apply(_ context.Context, _ wal.ShardID, _ wal.Epoch, batch
 	requests := slices.Collect(batch.Each())
 	a.drains = append(a.drains, requests)
 	a.seqnos = append(a.seqnos, batch.Watermark())
-	a.work = append(a.work, batch.Tasks())
 	if i < len(a.errs) && a.errs[i] != nil {
 		return a.errs[i]
 	}

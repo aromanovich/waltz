@@ -300,12 +300,7 @@ func TestAScheduledRangeComparesAtTheStoresResolution(t *testing.T) {
 		a := fold.New(shard)
 		add(t, a,
 			mkAddTasks(p.InternalHistoryTask{Key: tasks.NewKey(at, 4), Blob: blob("timer")}),
-			mutation.Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
-				ShardID:             int32(shard),
-				TaskCategory:        tasks.CategoryTimer,
-				InclusiveMinTaskKey: tasks.NewKey(at.Add(-time.Hour), 0),
-				ExclusiveMaxTaskKey: tasks.NewKey(at.Add(time.Nanosecond), 0),
-			}},
+			mkTimerRange(0, time.Hour+time.Nanosecond),
 		)
 
 		work := a.Drain().Tasks()
@@ -317,12 +312,7 @@ func TestAScheduledRangeComparesAtTheStoresResolution(t *testing.T) {
 		a := fold.New(shard)
 		add(t, a,
 			mkAddTasks(p.InternalHistoryTask{Key: tasks.NewKey(at, 4), Blob: blob("timer")}),
-			mutation.Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
-				ShardID:             int32(shard),
-				TaskCategory:        tasks.CategoryTimer,
-				InclusiveMinTaskKey: tasks.NewKey(at.Add(-time.Hour), 0),
-				ExclusiveMaxTaskKey: tasks.NewKey(at.Add(time.Microsecond), 0),
-			}},
+			mkTimerRange(0, time.Hour+time.Microsecond),
 		)
 
 		work := a.Drain().Tasks()
