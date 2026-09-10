@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
-	enumspb "go.temporal.io/api/enums/v1"
 	enumsspb "go.temporal.io/server/api/enums/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
@@ -304,12 +303,7 @@ func TestTheOverlayMergesSignalRequestedIDs(t *testing.T) {
 func withRealState(t *testing.T, run string) func(*p.InternalWorkflowSnapshot) {
 	return func(s *p.InternalWorkflowSnapshot) {
 		t.Helper()
-		st := &persistencespb.WorkflowExecutionState{
-			RunId:           run,
-			CreateRequestId: "request-" + run,
-			State:           enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING,
-			Status:          enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
-		}
+		st := realState(t, run, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING)
 		b, err := serialization.WorkflowExecutionStateToBlob(st)
 		require.NoError(t, err)
 		s.ExecutionState, s.ExecutionStateBlob = st, b
