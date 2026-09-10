@@ -78,9 +78,9 @@ func testGapIsRefused(f *fixture) {
 
 	second, third := wal.FirstSeqno+1, wal.FirstSeqno+2
 
-	f.expectError(wal.ErrGap, f.appendErr(shard, epoch, second, payloadFor(second)))
+	f.expectError(f.appendErr(shard, epoch, second, payloadFor(second)), wal.ErrGap)
 	f.append(shard, epoch, wal.FirstSeqno, payloadFor(wal.FirstSeqno))
-	f.expectError(wal.ErrGap, f.appendErr(shard, epoch, third, payloadFor(third)))
+	f.expectError(f.appendErr(shard, epoch, third, payloadFor(third)), wal.ErrGap)
 
 	f.expectLog(shard, entriesFrom(epoch, wal.FirstSeqno, 1))
 
@@ -100,12 +100,10 @@ func testDuplicateSeqnoIsAlreadyWritten(f *fixture) {
 	f.append(shard, epoch, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1))
 
 	other := []byte("a different payload for the same seqno")
-	f.expectError(wal.ErrAlreadyWritten,
-		f.appendErr(shard, epoch, wal.FirstSeqno, other))
+	f.expectError(f.appendErr(shard, epoch, wal.FirstSeqno, other), wal.ErrAlreadyWritten)
 	// Every taken seqno, not just the log's first: a backend answering off its
 	// lower end would pass the line above and let this one overwrite.
-	f.expectError(wal.ErrAlreadyWritten,
-		f.appendErr(shard, epoch, wal.FirstSeqno+1, other))
+	f.expectError(f.appendErr(shard, epoch, wal.FirstSeqno+1, other), wal.ErrAlreadyWritten)
 
 	f.expectLog(shard, entriesFrom(epoch, wal.FirstSeqno, 2))
 }
@@ -342,7 +340,7 @@ func testArgumentsTheContractRefuses(f *fixture) {
 func testAppendNeedsAFenceAtItsEpoch(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(8)
 
-	f.expectError(wal.ErrFenced, f.appendErr(shard, epoch, wal.FirstSeqno, payloadFor(wal.FirstSeqno)))
+	f.expectError(f.appendErr(shard, epoch, wal.FirstSeqno, payloadFor(wal.FirstSeqno)), wal.ErrFenced)
 	f.expectLog(shard, nil)
 
 	f.fence(shard, epoch)
@@ -350,8 +348,7 @@ func testAppendNeedsAFenceAtItsEpoch(f *fixture) {
 
 	// An epoch above the fence is refused as firmly as one below it: entries
 	// written without a fence are indistinguishable from a zombie's.
-	f.expectError(wal.ErrFenced,
-		f.appendErr(shard, epoch+1, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1)))
+	f.expectError(f.appendErr(shard, epoch+1, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1)), wal.ErrFenced)
 	f.expectLog(shard, entriesFrom(epoch, wal.FirstSeqno, 1))
 }
 
@@ -361,11 +358,11 @@ func testAppendNeedsAFenceAtItsEpoch(f *fixture) {
 func testZeroEpochIsRefused(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(4)
 
-	f.expectError(wal.ErrZeroEpoch, f.fenceErr(shard, 0))
+	f.expectError(f.fenceErr(shard, 0), wal.ErrZeroEpoch)
 
 	// On a claimed shard too: refused for being zero, not for losing a race.
 	f.fence(shard, epoch)
-	f.expectError(wal.ErrZeroEpoch, f.appendErr(shard, 0, wal.FirstSeqno, payloadFor(wal.FirstSeqno)))
+	f.expectError(f.appendErr(shard, 0, wal.FirstSeqno, payloadFor(wal.FirstSeqno)), wal.ErrZeroEpoch)
 	f.expectLog(shard, nil)
 }
 
@@ -381,7 +378,7 @@ func testFenceCutsOffLowerEpochs(f *fixture) {
 	f.fence(shard, owner)
 
 	second := wal.FirstSeqno + 1
-	f.expectError(wal.ErrFenced, f.appendErr(shard, zombie, second, payloadFor(second)))
+	f.expectError(f.appendErr(shard, zombie, second, payloadFor(second)), wal.ErrFenced)
 	f.expectLog(shard, entriesFrom(zombie, wal.FirstSeqno, 1))
 
 	// The new owner inherits the log rather than starting one: the seqno
@@ -394,7 +391,7 @@ func testFenceCutsOffLowerEpochs(f *fixture) {
 
 	// A taken seqno gets ErrFenced, not ErrAlreadyWritten: the latter is an ack,
 	// and would have the zombie take the entry that replaced it for its own.
-	f.expectError(wal.ErrFenced, f.appendErr(shard, zombie, second, payloadFor(second)))
+	f.expectError(f.appendErr(shard, zombie, second, payloadFor(second)), wal.ErrFenced)
 }
 
 // The other half of the ordering [wal.ErrFenced] wins: it outranks [wal.ErrGap]
@@ -411,7 +408,7 @@ func testFencedOutranksAMissingPredecessor(f *fixture) {
 
 	// An unfenced shard refuses as fenced whether or not the append fits.
 	overFirst := wal.FirstSeqno + 1
-	f.expectError(wal.ErrFenced, f.appendErr(shard, zombie, overFirst, payloadFor(overFirst)))
+	f.expectError(f.appendErr(shard, zombie, overFirst, payloadFor(overFirst)), wal.ErrFenced)
 
 	f.fence(shard, zombie)
 	f.append(shard, zombie, wal.FirstSeqno, payloadFor(wal.FirstSeqno))
@@ -419,8 +416,8 @@ func testFencedOutranksAMissingPredecessor(f *fixture) {
 
 	// Two above the tail, so the entry below it is one no writer has reached.
 	overHole := wal.FirstSeqno + 2
-	f.expectError(wal.ErrGap, f.appendErr(shard, owner, overHole, payloadFor(overHole)))
-	f.expectError(wal.ErrFenced, f.appendErr(shard, zombie, overHole, payloadFor(overHole)))
+	f.expectError(f.appendErr(shard, owner, overHole, payloadFor(overHole)), wal.ErrGap)
+	f.expectError(f.appendErr(shard, zombie, overHole, payloadFor(overHole)), wal.ErrFenced)
 
 	f.expectLog(shard, entriesFrom(zombie, wal.FirstSeqno, 1))
 }
@@ -447,11 +444,10 @@ func testFenceAtALowerEpochIsRefused(f *fixture) {
 	zombie, owner := wal.Epoch(4), wal.Epoch(9)
 
 	f.fence(shard, owner)
-	f.expectError(wal.ErrFenced, f.fenceErr(shard, zombie))
+	f.expectError(f.fenceErr(shard, zombie), wal.ErrFenced)
 
 	f.append(shard, owner, wal.FirstSeqno, payloadFor(wal.FirstSeqno))
-	f.expectError(wal.ErrFenced,
-		f.appendErr(shard, zombie, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1)))
+	f.expectError(f.appendErr(shard, zombie, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1)), wal.ErrFenced)
 	f.expectLog(shard, entriesFrom(owner, wal.FirstSeqno, 1))
 }
 
@@ -477,7 +473,7 @@ func testEpochGrowsWithoutChangingOwner(f *fixture) {
 
 	// The renewal is still a fence, so an append in flight across it fails
 	// rather than landing under the wrong epoch.
-	f.expectError(wal.ErrFenced, f.appendErr(shard, before, third+1, payloadFor(third+1)))
+	f.expectError(f.appendErr(shard, before, third+1, payloadFor(third+1)), wal.ErrFenced)
 }
 
 // The chaos test of invariant I4: two processes both believe they own one shard.
@@ -743,7 +739,7 @@ func (f *fixture) readLog(shard wal.ShardID) ([]wal.Entry, error) {
 
 // expectError checks that an operation failed the way the contract says it
 // fails. A backend may add context to the error but must keep it matchable.
-func (f *fixture) expectError(want, got error) {
+func (f *fixture) expectError(got, want error) {
 	f.t.Helper()
 	require.ErrorIs(f.t, got, want)
 }

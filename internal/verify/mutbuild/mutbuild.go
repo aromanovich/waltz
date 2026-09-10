@@ -194,12 +194,6 @@ func (b Builder) RangeComplete(category tasks.Category, inclusiveMin, exclusiveM
 	}}
 }
 
-// WithTaskRows puts a queue's rows on a mutable-state write, which is where most
-// of a window's tasks arrive.
-func WithTaskRows(category tasks.Category, list ...p.InternalHistoryTask) MutationOpt {
-	return WithTaskMap(map[tasks.Category][]p.InternalHistoryTask{category: list})
-}
-
 // WithTaskMap is the same across several categories at once, in the shape the
 // request carries them.
 func WithTaskMap(byCategory map[tasks.Category][]p.InternalHistoryTask) MutationOpt {

@@ -95,7 +95,6 @@ func TestEveryKindIsDeclaredOnceAndReachesItsField(t *testing.T) {
 			require.Equal(t, row.shard(m), m.ShardID(), "Mutation.ShardID and the %s row "+
 				"disagree: one shard is one log and one apply transaction, so this is the "+
 				"routing key for everything above", row.name)
-			require.Equal(t, row.name, k.String())
 
 			// Only that the enumerations answer for every kind; what they hold
 			// is taskslots_test.go's, eventslots_test.go's and

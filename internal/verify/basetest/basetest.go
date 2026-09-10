@@ -65,10 +65,6 @@ type Reads struct {
 	Current int
 }
 
-// Total is the two counts together, for a caller that cares only that a read
-// happened.
-func (r Reads) Total() int { return r.Run + r.Current }
-
 // New is a store holding no rows: every read is an absence.
 func New() *Store {
 	return &Store{

@@ -54,6 +54,6 @@ func (m *Manager) Write(
 func lost(shard wal.ShardID, why string) error {
 	return &p.ShardOwnershipLostError{
 		ShardID: int32(shard),
-		Msg:     fmt.Sprintf("shard %d is not this node's to write: %s", shard, why),
+		Msg:     fmt.Sprintf("shard %d is not this node's: %s", shard, why),
 	}
 }

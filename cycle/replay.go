@@ -63,7 +63,7 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 		// A payload's task groups name their category by id, so a cycle with no
 		// registry could not decode a tail even if it found one. See
 		// [Deps.Registry].
-		return fmt.Errorf("cycle: shard %d has no task category registry, so it cannot replay a tail", c.shard)
+		return fmt.Errorf("%w (shard %d)", ErrNoRegistry, c.shard)
 	}
 	// One read of the policy for the whole replay, for the reason [Cycle.add]
 	// takes one per write: a tail cut into transactions under bounds that moved
@@ -126,12 +126,12 @@ func (c *Cycle) replayEntry(
 		// A newer codec, or a task category this node has no registration for.
 		// Both are fatal to the replay on purpose, and the entry is acked, so
 		// there is nothing to do but stop.
-		c.strand(s, e, fmt.Errorf("cycle: decoding seqno %d: %w", e.Seqno, err))
+		c.strand(s, e, fmt.Errorf("decoding seqno %d: %w", e.Seqno, err))
 		return c.halted(s)
 	}
 	if got, want := m.ShardID(), int32(c.shard); got != want {
 		c.strand(s, e,
-			fmt.Errorf("cycle: seqno %d belongs to shard %d, this cycle owns shard %d", e.Seqno, got, want))
+			fmt.Errorf("seqno %d belongs to shard %d, this cycle owns shard %d", e.Seqno, got, want))
 		return c.halted(s)
 	}
 

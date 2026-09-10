@@ -601,12 +601,9 @@ func (g *Generator) pickTimerKey(r *runState) string {
 // every delete names a key the run actually holds, which is what makes the
 // delete resolve against an upsert rather than against nothing.
 func pickDeletable[K comparable](rng *rand.Rand, live, upserted []K) (K, bool) {
-	eligible := make([]K, 0, len(live))
-	for _, key := range live {
-		if !slices.Contains(upserted, key) {
-			eligible = append(eligible, key)
-		}
-	}
+	eligible := slices.DeleteFunc(slices.Clone(live), func(key K) bool {
+		return slices.Contains(upserted, key)
+	})
 	if len(eligible) == 0 {
 		var zero K
 		return zero, false

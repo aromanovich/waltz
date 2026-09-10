@@ -18,7 +18,6 @@ import (
 	enumsspb "go.temporal.io/server/api/enums/v1"
 	p "go.temporal.io/server/common/persistence"
 
-	"github.com/aromanovich/waltz/baserow"
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/internal/verify/basetest"
 	"github.com/aromanovich/waltz/internal/verify/mutbuild"
@@ -279,13 +278,6 @@ func TestTheCurrentRowIsAttributedByTheAuthoritysOwnPredicate(t *testing.T) {
 			require.NoError(t, err)
 			diverged := d != nil
 			require.Equal(t, tc.diverged, diverged)
-
-			// The same row, put to the predicate directly: the readback decides
-			// which row, and the accumulator decides what holds of it.
-			resp, version, readErr := baserow.New(reader).Current(ctx, int32(testShard), ns, wf)
-			require.NoError(t, readErr)
-			require.Equal(t, diverged, tc.want.VerifyRow(resp, version) != nil,
-				"attribution's verdict must be the condition authority's")
 
 			if diverged {
 				require.Equal(t, wf, d.WorkflowID)

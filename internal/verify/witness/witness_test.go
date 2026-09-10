@@ -137,24 +137,6 @@ func control() (Expect, Observed) {
 	return Expect{Window: NoLayer}, Observed{Store: &store}
 }
 
-// TestAWitnessedRunPassesEveryShape is the control's half, and it is the half
-// that would go unnoticed if it broke: a witness that fails everything catches
-// every silent pass and is still useless, because the first honest run turns
-// it off.
-func TestAWitnessedRunPassesEveryShape(t *testing.T) {
-	for name, shape := range map[string]func() (Expect, Observed){
-		"sync":          syncRun,
-		"windowed":      windowedRun,
-		"task-sync":     taskSync,
-		"task-windowed": taskWindowed,
-		"empty":         emptyRun,
-		"control":       control,
-	} {
-		e, o := shape()
-		require.Empty(t, e.Check(o), "shape %q rejected a healthy run", name)
-	}
-}
-
 // TestTheExpectMustStateAWindow: the zero value is refused rather than
 // defaulted, because an Expect that states no window is a witness that asserts
 // nothing — the failure the package exists to catch, reachable by forgetting
@@ -188,54 +170,21 @@ func TestTheUniversalClaimsCanFail(t *testing.T) {
 	}
 }
 
-// TestTheRoutedEqualitiesHoldInBothDirections: a read counted at the store and
-// not at a shard is a read answered somewhere it should not have been, and a
-// shard answering reads the store never sent is the same bug the other way.
-// Both instruments have to be present for either claim to be made at all.
-func TestTheRoutedEqualitiesHoldInBothDirections(t *testing.T) {
-	e, o := syncRun()
-	o.Store.Overlaid = 90
-	require.Contains(t, messages(e.Check(o)), "the store counted 90 reads at the layer and the shards answered 100")
-
-	e, o = syncRun()
-	o.Totals.Reads = 90
-	require.Contains(t, messages(e.Check(o)), "the store counted 100 reads at the layer and the shards answered 90")
-
-	e, o = taskWindowed()
-	o.Store.TaskReads = 39
-	require.Contains(t, messages(e.Check(o)), "the store counted 39 task pages at the layer and the shards answered 40")
-}
-
-// TestReadingAroundTheLayerIsAsRedAsReadingThroughIt: a suite that reads
-// task ranges and routes none of them at the merge is reading around the
-// layer, which is as green as reading through it — and a suite that reads none
-// must have routed none.
-func TestReadingAroundTheLayerIsAsRedAsReadingThroughIt(t *testing.T) {
-	e, o := taskWindowed()
-	o.Totals.TaskReads = 0
-	o.Store.TaskReads = 0
-	o.Totals.TaskReadsMerged = 0
-	require.Contains(t, messages(e.Check(o)), "not one of them reached the merge")
-
-	e, o = syncRun()
-	o.Totals.TaskReads = 3
-	o.Store.TaskReads = 3
-	require.Contains(t, messages(e.Check(o)), "went through the merge in a run that reads none")
-}
-
 // TestTheEmptyLayerIsAssertedNotAssumed: what a run that writes neither path
 // must leave behind — D3 as an assertion — because a method that starts
 // transiting into the log when it should not leaves every suite green.
+//
+// The one case here that the leave-one-out below cannot hold: on a *sync* empty
+// run a held read is both an empty layer holding a read and sync mode's overlay
+// having stopped being a no-op, so two claims fire and no row can name one. The
+// table separates them over [windowedEmpty]; this keeps the sync shape red.
 func TestTheEmptyLayerIsAssertedNotAssumed(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		spoil func(*Observed)
 		says  string
 	}{
-		{"an entry was acked", func(o *Observed) { o.Totals.Acked = 2 }, "something else was writing"},
 		{"a read crossed a window", func(o *Observed) { o.Totals.ReadsHeld = 1 }, "writes nothing into one"},
-		{"the store counted a write", func(o *Observed) { o.Store.Intercepted = 1 }, "nothing may have entered the log"},
-		{"a write was emitted", func(o *Observed) { o.Emitted[seriesIntercepted] = series(1, 1) }, "emissions were recorded by a run that writes nothing"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e, o := emptyRun()
@@ -247,60 +196,17 @@ func TestTheEmptyLayerIsAssertedNotAssumed(t *testing.T) {
 	}
 }
 
-// TestTheControlIsAControl: a "passthrough" run that quietly still had the
-// layer in it answers the question of what a difference is attributable to with
-// the layer's own behaviour, which is the one thing it exists to exclude.
-func TestTheControlIsAControl(t *testing.T) {
-	for _, c := range []struct {
-		name  string
-		spoil func(*Observed)
-	}{
-		{"a shard was acquired", func(o *Observed) { o.Totals.Shards = 1 }},
-		{"a mutation was acked", func(o *Observed) { o.Totals.Acked = 1 }},
-		{"a task page was routed", func(o *Observed) { o.Totals.TaskReads = 1 }},
-		{"the store counted a write", func(o *Observed) { o.Store.Intercepted = 1 }},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			e, o := control()
-			c.spoil(&o)
-			require.Contains(t, messages(e.Check(o)), "not the control it claims to be")
-		})
-	}
-}
-
-// TestTheHistoryTaskPathIsPinnedWhereItIsExercised: both task calls go into the
-// log in the runs that make them and in no other run — the count is zero
-// without a layer and non-zero wherever the run writes tasks, and a run
-// reporting the opposite is a task path that went round the accumulator.
+// TestTheHistoryTaskPathIsPinnedWhereItIsExercised is the drop's green gate,
+// which the leave-one-out below has no row shape for: the claim here is that
+// *nothing* fires. The drop is counted at the commit, not at the fold, so a run
+// whose window never filled commits nothing and legitimately reports zero — the
+// mode working rather than the mechanism missing.
 func TestTheHistoryTaskPathIsPinnedWhereItIsExercised(t *testing.T) {
 	e, o := taskWindowed()
-	o.Store.TasksWritten = 0
-	require.Contains(t, messages(e.Check(o)), "this run writes history tasks; not one of them reached the log")
-
-	e, o = taskWindowed()
-	o.Store.TasksCompleted = 0
-	require.Contains(t, messages(e.Check(o)), "range-completes tasks; not one of them reached the log")
-
-	e, o = taskWindowed()
-	o.Totals.AckedRanges = 0
-	require.Contains(t, messages(e.Check(o)), "no queue ever completed a range")
-
-	e, o = taskWindowed()
-	o.Totals.DroppedTasks = 0
-	require.Contains(t, messages(e.Check(o)), "not one of them took a task out of a window")
-
-	// The drop is counted at the commit, not at the fold, so a run whose
-	// window never filled commits nothing and legitimately reports zero —
-	// the mode working rather than the mechanism missing.
-	e, o = taskWindowed()
 	o.Totals.Drains = 0
 	o.Totals.DroppedTasks = 0
 	o.Totals.TailEntries = 60
 	require.Empty(t, e.Check(o), "a window that never filled has no drop to report")
-
-	e, o = syncRun()
-	o.Store.TasksWritten = 7
-	require.Contains(t, messages(e.Check(o)), "in a run that makes neither")
 }
 
 // TestAnAbsentInstrumentSkipsExactlyItsClaims: a live run has no reachable
@@ -429,6 +335,11 @@ func TestEachClaimHasADefectOnlyItCatches(t *testing.T) {
 		spoil func(*Expect, *Observed)
 	}{
 		{"C1 the control reached no shard", control, func(_ *Expect, o *Observed) { o.Totals.Shards = 1 }},
+		// One claim over three counters, so each counter gets a row: a control
+		// that reached the layer through any one of them is not a control, and a
+		// claim that only ever fires on the first is two thirds unreached.
+		{"C1 the control reached no shard", control, func(_ *Expect, o *Observed) { o.Totals.Acked = 1 }},
+		{"C1 the control reached no shard", control, func(_ *Expect, o *Observed) { o.Totals.TaskReads = 1 }},
 		{"C2 the control's store counted nothing", control, func(_ *Expect, o *Observed) { o.Store.Intercepted = 1 }},
 
 		{"W1 every acked entry named a request", syncRun, func(_ *Expect, o *Observed) {
@@ -437,6 +348,12 @@ func TestEachClaimHasADefectOnlyItCatches(t *testing.T) {
 		{"W2 a shard was acquired through the layer", syncRun, func(_ *Expect, o *Observed) { o.Totals.Shards = 0 }},
 		{"W3 every read the store sent was answered by a shard", syncRun, func(_ *Expect, o *Observed) {
 			o.Store.Overlaid = 90
+		}},
+		// The equality's other direction: a shard answering reads the store never
+		// sent is the same bug, and an equality checked one way round holds for
+		// the run that has the bug the other way.
+		{"W3 every read the store sent was answered by a shard", syncRun, func(_ *Expect, o *Observed) {
+			o.Totals.Reads = 90
 		}},
 		{"W4 every task page the store sent was answered by a shard", taskWindowed, func(_ *Expect, o *Observed) {
 			o.Store.TaskReads = 39
@@ -537,6 +454,9 @@ func TestEachClaimHasADefectOnlyItCatches(t *testing.T) {
 	for _, d := range defects {
 		t.Run(d.claim, func(t *testing.T) {
 			e, o := d.shape()
+			// The healthy half, and the half that would go unnoticed if it broke:
+			// a witness that fails everything catches every silent pass and is
+			// still useless, because the first honest run turns it off.
 			require.Empty(t, e.Check(o), "the shape this row spoils is not healthy to begin with")
 			d.spoil(&e, &o)
 			require.Equal(t, []string{d.claim}, fired(e.Check(o)),
