@@ -47,7 +47,6 @@ linters:
 
   settings:
     revive:
-      enable-all-rules: false
       rules:
         - name: blank-imports
         - name: context-as-argument
@@ -74,7 +73,6 @@ linters:
         - name: unnecessary-stmt
         - name: useless-break
         - name: waitgroup-by-value
-        - name: duplicated-imports
         - name: optimize-operands-order
 
     gocritic:
@@ -101,13 +99,6 @@ linters:
         # mutation.TaskSlot returns *map on purpose: a range delete writes
         # through the pointer, into the request's own map.
         - ptrToRefParam
-        # `return j, j.Quiesced(...)` — j is a pointer, so evaluation order
-        # cannot change what is returned.
-        - evalOrder
-
-    errcheck:
-      check-type-assertions: false
-      check-blank: false
 
     staticcheck:
       checks:
