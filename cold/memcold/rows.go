@@ -731,15 +731,35 @@ func rangeDeleteTasks(ctx context.Context, tx sqlplugin.Tx, shardID int32, r fol
 // runKeys parses the two uuids every row of a run is keyed by. A malformed one
 // is the caller's and not the database's.
 func runKeys(namespaceID, runID string) (primitives.UUID, primitives.UUID, error) {
-	ns, err := primitives.ParseUUID(namespaceID)
+	ns, err := parseNamespace(namespaceID)
 	if err != nil {
-		return nil, nil, serviceerror.NewInternalf("namespace id %q is not a uuid: %v", namespaceID, err)
+		return nil, nil, err
 	}
-	run, err := primitives.ParseUUID(runID)
+	run, err := parseRun(runID)
 	if err != nil {
-		return nil, nil, serviceerror.NewInternalf("run id %q is not a uuid: %v", runID, err)
+		return nil, nil, err
 	}
 	return ns, run, nil
+}
+
+// parseNamespace and parseRun are the halves of [runKeys], for the paths that
+// have one id in hand and not the other. Split rather than copied because the
+// sentence a malformed id is reported with is the same sentence wherever it is
+// found.
+func parseNamespace(namespaceID string) (primitives.UUID, error) {
+	ns, err := primitives.ParseUUID(namespaceID)
+	if err != nil {
+		return nil, serviceerror.NewInternalf("namespace id %q is not a uuid: %v", namespaceID, err)
+	}
+	return ns, nil
+}
+
+func parseRun(runID string) (primitives.UUID, error) {
+	run, err := primitives.ParseUUID(runID)
+	if err != nil {
+		return nil, serviceerror.NewInternalf("run id %q is not a uuid: %v", runID, err)
+	}
+	return run, nil
 }
 
 // lockRun reads a run row's db_record_version under the transaction's lock, and

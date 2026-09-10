@@ -65,17 +65,19 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 		// [Deps.Registry].
 		return fmt.Errorf("cycle: shard %d has no task category registry, so it cannot replay a tail", c.shard)
 	}
+	// One read of the policy for the whole replay, for the reason [Cycle.add]
+	// takes one per write: a tail cut into transactions under bounds that moved
+	// halfway through is a recovery no configuration describes.
+	cfg := c.policy()
 	// A page is the window's own size, so at most one window's worth of encoded
 	// entries is resident beyond the accumulator.
-	page := c.policy().Mutations
-	if page <= 0 {
-		page = 1
-	}
+	page := max(cfg.Mutations, 1)
+	marks := cfg.watermarks()
 	for e, err := range wal.Entries(ctx, c.deps.Log, c.shard, s.next, page) {
 		if err != nil {
 			return fmt.Errorf("cycle: shard %d: reading the tail: %w", c.shard, err)
 		}
-		if err := c.replayEntry(ctx, s, e); err != nil {
+		if err := c.replayEntry(ctx, s, e, marks); err != nil {
 			return err
 		}
 	}
@@ -102,7 +104,9 @@ const FencedAway = "the shard has been fenced away"
 
 // replayEntry folds one entry of the tail, drains around it when it is
 // provisional, and lets the ordinary size watermarks cut the rest.
-func (c *Cycle) replayEntry(ctx context.Context, s *state, e wal.Entry) error {
+func (c *Cycle) replayEntry(
+	ctx context.Context, s *state, e wal.Entry, marks window.Watermarks,
+) error {
 	if e.Epoch > c.epoch {
 		err := fmt.Errorf("the log holds seqno %d at epoch %d, above this cycle's %d: %s",
 			e.Seqno, e.Epoch, c.epoch, FencedAway)
@@ -151,7 +155,7 @@ func (c *Cycle) replayEntry(ctx context.Context, s *state, e wal.Entry) error {
 	// transaction nothing has ever executed. The age watermark is not consulted,
 	// since every entry here is already as old as the incident — which is why
 	// the rule is asked for by name rather than off the whole policy.
-	if s.window.Trips(c.policy().watermarks()) != window.NoTrip {
+	if s.window.Trips(marks) != window.NoTrip {
 		return c.drain(ctx, s, drainReplay)
 	}
 	return nil

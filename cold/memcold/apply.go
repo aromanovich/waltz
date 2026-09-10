@@ -219,9 +219,9 @@ func (s *Store) applyRequest(
 		return err
 	}
 
-	ns, err := primitives.ParseUUID(e.NamespaceID)
+	ns, err := parseNamespace(e.NamespaceID)
 	if err != nil {
-		return serviceerror.NewInternalf("namespace id %q is not a uuid: %v", e.NamespaceID, err)
+		return err
 	}
 
 	switch e.Request.Kind() {
@@ -282,9 +282,9 @@ func (s *Store) applyRequest(
 	// Batches never merge, so each is a row of its own, written after the
 	// request that may have cleared the rows already there.
 	for _, b := range e.BufferedBatches {
-		run, err := primitives.ParseUUID(b.RunID)
+		run, err := parseRun(b.RunID)
 		if err != nil {
-			return serviceerror.NewInternalf("run id %q is not a uuid: %v", b.RunID, err)
+			return err
 		}
 		if err := insertBufferedEvents(ctx, tx, shardID, ns, e.WorkflowID, run, b.Blob); err != nil {
 			return err
@@ -304,9 +304,9 @@ func applyCurrentRow(ctx context.Context, tx sqlplugin.Tx, shardID int32, e *fol
 	if wf.Current == nil && wf.CurrentWrite == nil {
 		return nil
 	}
-	ns, err := primitives.ParseUUID(e.NamespaceID)
+	ns, err := parseNamespace(e.NamespaceID)
 	if err != nil {
-		return serviceerror.NewInternalf("namespace id %q is not a uuid: %v", e.NamespaceID, err)
+		return err
 	}
 
 	row, err := lockCurrent(ctx, tx, shardID, ns, e.WorkflowID)
@@ -350,9 +350,9 @@ func writeCurrentRow(
 		return serviceerror.NewUnavailablef(
 			"deserialising the current-row state of run %s: %v", cw.RunID, err)
 	}
-	run, err := primitives.ParseUUID(cw.RunID)
+	run, err := parseRun(cw.RunID)
 	if err != nil {
-		return serviceerror.NewInternalf("run id %q is not a uuid: %v", cw.RunID, err)
+		return err
 	}
 
 	row := sqlplugin.CurrentExecutionsRow{
@@ -412,9 +412,9 @@ func deleteCurrentRow(
 		}
 		guard = row.RunID.String()
 	}
-	run, err := primitives.ParseUUID(guard)
+	run, err := parseRun(guard)
 	if err != nil {
-		return serviceerror.NewInternalf("run id %q is not a uuid: %v", guard, err)
+		return err
 	}
 	if _, err := tx.DeleteFromCurrentExecutions(ctx, sqlplugin.CurrentExecutionsFilter{
 		ShardID: shardID, NamespaceID: ns, WorkflowID: e.WorkflowID, RunID: run,
@@ -433,15 +433,15 @@ func assertRuns(ctx context.Context, tx sqlplugin.Tx, shardID int32, e *fold.Emi
 	if len(runs) == 0 {
 		return nil
 	}
-	ns, err := primitives.ParseUUID(e.NamespaceID)
+	ns, err := parseNamespace(e.NamespaceID)
 	if err != nil {
-		return serviceerror.NewInternalf("namespace id %q is not a uuid: %v", e.NamespaceID, err)
+		return err
 	}
 
 	for _, runID := range slices.Sorted(maps.Keys(runs)) {
-		run, err := primitives.ParseUUID(runID)
+		run, err := parseRun(runID)
 		if err != nil {
-			return serviceerror.NewInternalf("run id %q is not a uuid: %v", runID, err)
+			return err
 		}
 		base, err := lockRun(ctx, tx, shardID, ns, e.WorkflowID, run)
 		if err != nil {

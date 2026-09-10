@@ -118,9 +118,7 @@ func loopRoute(
 ) (readRoute, error) {
 	if st == StateRunning {
 		if stalled != 0 {
-			return refuseAsUnresolved, persistenceLimit(
-				"shard %d's apply cycle cannot read the outcome of its drain at seqno %d, and answers no read until it can",
-				shard, stalled)
+			return refuseAsUnresolved, unresolvedDrain(shard, stalled, "answers no read")
 		}
 		return merge, nil
 	}
@@ -217,9 +215,7 @@ func writeRefused(
 ) (*serviceerror.ResourceExhausted, string) {
 	switch {
 	case stalled != 0:
-		return persistenceLimit(
-			"shard %d's apply cycle cannot read the outcome of its drain at seqno %d, and takes no writes until it can",
-			shard, stalled), walmetrics.LimitUnresolved
+		return unresolvedDrain(shard, stalled, "takes no writes"), walmetrics.LimitUnresolved
 	case entries >= int64(cfg.HardMaxEntries) || bytes >= int64(cfg.HardMaxBytes):
 		limit := walmetrics.LimitEntries
 		if bytes >= int64(cfg.HardMaxBytes) {
@@ -242,6 +238,15 @@ func persistenceLimit(format string, args ...any) *serviceerror.ResourceExhauste
 		Scope:   enumspb.RESOURCE_EXHAUSTED_SCOPE_SYSTEM,
 		Message: fmt.Sprintf(format, args...),
 	}
+}
+
+// unresolvedDrain is that same refusal for the one cause both sides raise it on,
+// down to the sentence: waits is what each side is the one waiting for. The
+// shape above is spelled once for the reason the wording is spelled once here.
+func unresolvedDrain(shard wal.ShardID, stalled wal.Seqno, waits string) *serviceerror.ResourceExhausted {
+	return persistenceLimit(
+		"shard %d's apply cycle cannot read the outcome of its drain at seqno %d, and %s until it can",
+		shard, stalled, waits)
 }
 
 // storeError translates a write outcome at the store boundary. A value
