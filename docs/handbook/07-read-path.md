@@ -225,6 +225,17 @@ hand the reader signals, activities, timers and child executions that the drain 
 other function. That is the same fold the drain will write, so **a read answers with what the drain
 will write**.
 
+What that fold produces is then taken apart and put back together by hand: `snapshotOfBase` turns
+the cold store's row into the snapshot the delta folds onto, and `mutableStateOf` turns the result
+into the type the read answers in. Both are field-by-field mirrors of Temporal's
+`InternalWorkflowMutableState`, and a field either of them stops filling comes back **zero** — which
+the caller reads as a run that has no such collection, and then writes the run back without it. A
+snapshot-bearing write clears the run's tables before writing its own rows, so that is an
+acknowledged write *deleted* rather than an answer that was merely stale. The mirrors are therefore
+held to the type: `TestEveryFieldOfAReadAnswerIsFilled` enumerates the answer's fields off
+`InternalWorkflowMutableState` itself and fails by the name of the one nothing fills, which is the
+same claim `fold/merge_test.go` makes for the write path's own hand-filled folds.
+
 The current-execution row is a separate question with its own four shapes (`fold.CurrentShape`):
 `CurrentUnheld`, `CurrentWritten`, `CurrentGone`, and `CurrentGuarded`. `CurrentGuarded` is one or
 more `DeleteCurrentWorkflowExecution` guards standing over the base with no window write above them.

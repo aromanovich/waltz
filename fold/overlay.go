@@ -300,6 +300,9 @@ func copySnapshot(src *p.InternalWorkflowSnapshot) *p.InternalWorkflowSnapshot {
 // reason copySnapshot's are. Tasks and BufferedEvents are not carried across,
 // the read having its own rule for both, and the version comes off the response
 // rather than off the state, where the plugin leaves a zero.
+//
+// What survives of the base here is the collections: the fold runs next and
+// assigns every scalar from the delta, which always carries the whole of one.
 func snapshotOfBase(base *p.InternalGetWorkflowExecutionResponse) *p.InternalWorkflowSnapshot {
 	state := base.State
 	return &p.InternalWorkflowSnapshot{

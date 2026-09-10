@@ -4,6 +4,7 @@ package fold_test
 // has not seen — the shape table, the version rule, the current-row order.
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -147,6 +148,95 @@ func TestTheOverlayShapeTable(t *testing.T) {
 		require.Equal(t, fold.RunSnapshot, shape)
 		require.True(t, found)
 		require.Equal(t, "info-new-run", string(resp.State.ExecutionInfo.Data))
+	})
+}
+
+// fullBaseRow is baseRow with every field of the cold store's answer set, so a
+// field missing from a merged read is the overlay's doing and not the fixture's.
+func fullBaseRow(version int64) *p.InternalGetWorkflowExecutionResponse {
+	return baseRow(version,
+		func(s *p.InternalWorkflowMutableState) {
+			s.ChildExecutionInfos = map[int64]*commonpb.DataBlob{1: blob("base-child")}
+			s.RequestCancelInfos = map[int64]*commonpb.DataBlob{1: blob("base-cancel")}
+			s.SignalInfos = map[int64]*commonpb.DataBlob{1: blob("base-signal")}
+			s.ChasmNodes = map[string]p.InternalChasmNode{"c": {Data: blob("base-chasm")}}
+			s.DBRecordVersion = version
+		},
+		baseSignalRequested("base-signal-id"),
+		baseBuffered("base-batch"),
+	)
+}
+
+// fullSnapshot fills a window snapshot's collections, the counterpart of
+// fullBaseRow on the arm that answers without the cold store.
+func fullSnapshot(s *p.InternalWorkflowSnapshot) {
+	s.ActivityInfos = map[int64]*commonpb.DataBlob{1: blob("window-activity")}
+	s.TimerInfos = map[string]*commonpb.DataBlob{"t": blob("window-timer")}
+	s.ChildExecutionInfos = map[int64]*commonpb.DataBlob{1: blob("window-child")}
+	s.RequestCancelInfos = map[int64]*commonpb.DataBlob{1: blob("window-cancel")}
+	s.SignalInfos = map[int64]*commonpb.DataBlob{1: blob("window-signal")}
+	s.ChasmNodes = map[string]p.InternalChasmNode{"c": {Data: blob("window-chasm")}}
+	s.SignalRequestedIDs = map[string]struct{}{"window-signal-id": {}}
+}
+
+func withChecksum(name string) func(*p.InternalWorkflowMutation) {
+	return func(m *p.InternalWorkflowMutation) { m.Checksum = blob(name) }
+}
+
+// TestEveryFieldOfAReadAnswerIsFilled enumerates the answer off Temporal's own
+// type. A read passes through two hand-filled mirrors — snapshotOfBase takes the
+// cold store's row apart, mutableStateOf puts the answer together — and neither
+// is derived from that type, so a field either stops filling comes back zero.
+// The caller is then told the run has no such collection, and writes the run
+// back without it: a snapshot-bearing write deletes the rows outright, so it is
+// an acked write destroyed rather than a stale one. merge_test.go holds the
+// write path's hand-filled folds to their types; this is that claim for the
+// read, and until it existed five of these thirteen fields could be dropped with
+// the whole of go test ./... green.
+//
+// What it asserts is that a field is filled, not what with: which source each
+// comes from differs per field and is judged case by case in the tests around
+// it. A field zero here is one no arm fills at all.
+func TestEveryFieldOfAReadAnswerIsFilled(t *testing.T) {
+	answer := reflect.TypeFor[p.InternalWorkflowMutableState]()
+	requireFilled := func(t *testing.T, state *p.InternalWorkflowMutableState, from string) {
+		t.Helper()
+		v, seen := reflect.ValueOf(state).Elem(), 0
+		for f := range answer.Fields() {
+			seen++
+			require.Falsef(t, v.FieldByIndex(f.Index).IsZero(),
+				"%s is zero in a read answered from %s, and the fixture fills it: no arm of the "+
+					"overlay carries it, so the caller is told the run does not have it and "+
+					"writes the run back without it", f.Name, from)
+		}
+		require.NotZerof(t, seen, "the answer's type has no fields: this has judged nothing")
+	}
+
+	t.Run("a delta over the cold store's row", func(t *testing.T) {
+		a := fold.New(shard)
+		// Collections untouched, so what reaches the answer is the base's: a
+		// delta that upserted into them would refill what snapshotOfBase dropped.
+		add(t, a, mkUpdate(runX, 2, withChecksum("delta-checksum")))
+
+		resp, found, shape := render(a, runX, fullBaseRow(1))
+		require.True(t, found)
+		require.Equal(t, fold.RunDelta, shape)
+		requireFilled(t, resp.State, "the window's delta over the cold store's row")
+	})
+
+	t.Run("a snapshot the window holds", func(t *testing.T) {
+		a := fold.New(shard)
+		// The update rides the snapshot (I8) and is what puts a buffered batch
+		// on the run; its scalars replace the create's, so both must be set.
+		add(t, a,
+			mkCreate(runX, fullSnapshot),
+			mkUpdate(runX, 2, withBuffered("window-batch"), withChecksum("window-checksum")),
+		)
+
+		resp, found, shape := render(a, runX, nil)
+		require.True(t, found)
+		require.Equal(t, fold.RunSnapshot, shape)
+		requireFilled(t, resp.State, "the window's own snapshot")
 	})
 }
 

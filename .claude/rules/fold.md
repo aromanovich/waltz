@@ -147,6 +147,23 @@ thing to keep in mind below. What to know before changing the fold itself:
   a silent miss of exactly the class a differential run exists to catch. Do not add the check
   back to accommodate a sparse fixture; fix the fixture;
 
+* **the read's answer is a hand-filled mirror too, and it is held to its type.**
+  `snapshotOfBase` takes the cold store's row apart and `mutableStateOf` puts the
+  answer together, and neither is derived from
+  `p.InternalWorkflowMutableState` — so a field either stops filling comes back
+  zero, which the caller reads as a run that has no such collection and then
+  writes the run back without it. A snapshot-bearing write clears the run's
+  tables first, so that is an acked write **deleted** rather than an answer that
+  was merely stale. `TestEveryFieldOfAReadAnswerIsFilled` enumerates the answer
+  off the type and fails by the name of the field nothing fills. Before it
+  existed, five of those thirteen fields could be dropped with the whole of
+  `go test ./...` green — `ChildExecutionInfos`, `RequestCancelInfos`,
+  `SignalInfos`, `ChasmNodes`, `Checksum` — and of the eight that were caught,
+  two were caught only by the e2e server timing its workflow out. It claims a
+  field is *filled* and not what with, which source each comes from being judged
+  case by case in `overlay_test.go`: a field added upstream fails here and is
+  decided there;
+
 * **the contract with apply**: emitted requests carry no epoch, because
   `mutation.Decode` dropped RangeID on the way in (I11) and apply stamps its
   own. The collapse ratio — mutations in over dirty workflows out — is derivable
