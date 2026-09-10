@@ -23,7 +23,6 @@ export const ui = {
   search: 'Search',
   searchWide: 'Search this book',
   searchLabel: 'Search headings and chapters…',
-  theme: 'Switch theme',
   pager: 'Chapter navigation',
   prev: 'Previous',
   next: 'Next',
@@ -38,7 +37,11 @@ export const escapeHTML = (s) =>
 // Heading text arrives as rendered inline HTML: the tags come off, and the
 // entities go back to their characters so that whatever re-escapes the text
 // (the rail, the search index, the <title>) escapes it exactly once.
-export const stripTags = (s) =>
+// titlesByFile is the lookup both builds hand to [renderChapter], so a link
+// whose text is a bare file name can be given the chapter's own title.
+export const titlesByFile = (pages) => Object.fromEntries(pages.map((p) => [p.file, p.title]))
+
+const stripTags = (s) =>
   s
     .replace(/<[^>]*>/g, '')
     .replace(/&quot;/g, '"')

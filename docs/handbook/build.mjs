@@ -24,6 +24,7 @@ import {
   isAbsolute,
   navList,
   shell,
+  titlesByFile,
 } from './render.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -38,8 +39,7 @@ const pages = chapters(here).map((c) => ({
   href: c.file === 'README.md' ? 'index.html' : c.file.replace(/\.md$/, '.html'),
 }))
 
-const titleByFile = {}
-for (const p of pages) titleByFile[p.file] = p.title
+const titleByFile = titlesByFile(pages)
 
 // A sibling chapter is the same page set with a different extension; a path out
 // of this directory gains one hop, because the built pages sit one level deeper

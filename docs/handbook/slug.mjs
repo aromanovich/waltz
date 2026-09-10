@@ -12,7 +12,7 @@
 // Letters, digits, `-` and `_` survive; everything else is dropped, and each
 // remaining space becomes a hyphen.
 
-export const slug = (text) =>
+const slug = (text) =>
   text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s_-]/gu, '')

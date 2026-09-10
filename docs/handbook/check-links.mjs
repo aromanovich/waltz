@@ -10,21 +10,22 @@
 // through slug.mjs, which is the rule the built pages use and the rule GitHub
 // uses, so a link that passes here resolves in the Markdown and in the built page alike.
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { chapters } from './render.mjs'
 import { slugger, slugMarkdown } from './slug.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
-const files = readdirSync(here)
-  .filter((f) => f.endsWith('.md'))
-  .sort()
+// The build's own chapter list, read once: a second walk here is a second
+// answer to "which files are the book", and a second read of every chapter.
+const pages = chapters(here)
 
 const anchors = new Map(
-  files.map((file) => {
+  pages.map(({ file, src }) => {
     const next = slugger()
-    const src = readFileSync(join(here, file), 'utf8')
     let inFence = false
     const ids = new Set()
     for (const line of src.split('\n')) {
@@ -40,8 +41,7 @@ const anchors = new Map(
 let total = 0
 const broken = []
 
-for (const file of files) {
-  const src = readFileSync(join(here, file), 'utf8')
+for (const { file, src } of pages) {
   for (const m of src.matchAll(/\]\(([^)\s]*?)(?:#([^)\s]+))?\)/g)) {
     const [, target, anchor] = m
     if (/^(https?:|mailto:)/.test(target)) continue

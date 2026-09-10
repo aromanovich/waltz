@@ -32,6 +32,7 @@ import {
   isAbsolute,
   navList,
   shell,
+  titlesByFile,
 } from './render.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -47,8 +48,7 @@ const HOME = 'docs/handbook'
 const pages = chapters(here)
 const stemOf = Object.fromEntries(pages.map((p) => [p.file, p.stem]))
 
-const titleByFile = {}
-for (const p of pages) titleByFile[p.file] = p.title
+const titleByFile = titlesByFile(pages)
 
 // A `<script>` written into a document ends at the first `</script` in its
 // source, wherever that appears — including inside a string literal. `<\/script`

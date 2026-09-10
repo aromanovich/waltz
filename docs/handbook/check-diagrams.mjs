@@ -9,10 +9,11 @@
 // that parses here can still lay out badly, but one that fails here is broken
 // everywhere.
 
-import { readFileSync, readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { JSDOM } from 'jsdom'
+
+import { chapters } from './render.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -31,8 +32,7 @@ mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
 let total = 0
 let bad = 0
 
-for (const file of readdirSync(here).filter((f) => f.endsWith('.md')).sort()) {
-  const src = readFileSync(join(here, file), 'utf8')
+for (const { file, src } of chapters(here)) {
   const blocks = [...src.matchAll(/```mermaid\n([\s\S]*?)```/g)]
   for (const [i, block] of blocks.entries()) {
     total++
