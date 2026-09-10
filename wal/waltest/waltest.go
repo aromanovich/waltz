@@ -38,6 +38,7 @@ func RunContractSuite(t *testing.T, log wal.Log) {
 		{"DuplicateSeqnoIsAlreadyWritten", testDuplicateSeqnoIsAlreadyWritten},
 		{"ReadFromAnyPosition", testReadFromAnyPosition},
 		{"ArgumentsTheContractRefuses", testArgumentsTheContractRefuses},
+		{"ACancelledContextChangesNothing", testACancelledContextChangesNothing},
 		{"TrimRemovesUpToAndNothingElse", testTrimRemovesUpToAndNothingElse},
 		{"PayloadsAreNobodyElsesMemory", testPayloadsAreNobodyElsesMemory},
 		{"TrimOfALogWithNothingInIt", testTrimOfALogWithNothingInIt},
@@ -333,6 +334,47 @@ func testArgumentsTheContractRefuses(f *fixture) {
 	f.expectEntries(shard, wal.FirstSeqno-1, 10, one)
 
 	f.expectLog(shard, one)
+}
+
+// What every method owes its context, which [wal.Log] states and nothing else
+// here drives. Three claims, and the first is the one whose violation is
+// invisible from above: a call whose context was already dead when it began
+// leaves the log exactly as it was, so a caller that saw the cancellation knows
+// the log did not move. A backend that changed it anyway hands its caller an
+// entry nothing acked and a fence nobody asked for.
+//
+// The other two are what makes the first usable. The error stays matchable, or
+// the layer above reads a cancellation as an outcome it has never seen and
+// halts a healthy shard; and an argument the contract does not admit outranks
+// the context, or a malformed call is reported as a timeout and retried for
+// ever.
+func testACancelledContextChangesNothing(f *fixture) {
+	shard, epoch := f.newShard(), wal.Epoch(6)
+	f.fence(shard, epoch)
+	f.append(shard, epoch, wal.FirstSeqno, payloadFor(wal.FirstSeqno))
+	one := entriesFrom(epoch, wal.FirstSeqno, 1)
+
+	dead, cancel := context.WithCancel(f.ctx)
+	cancel()
+
+	f.expectError(f.log.Append(dead, shard, epoch, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1)),
+		context.Canceled)
+	f.expectLog(shard, one)
+
+	f.expectError(f.log.Fence(dead, shard, epoch+1), context.Canceled)
+	// The fence did not take, so the epoch below the one it named still writes.
+	f.append(shard, epoch, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1))
+	two := entriesFrom(epoch, wal.FirstSeqno, 2)
+
+	f.expectError(f.log.Trim(dead, shard, wal.FirstSeqno), context.Canceled)
+	f.expectLog(shard, two)
+
+	_, err := f.log.ReadFrom(dead, shard, wal.FirstSeqno, 10)
+	f.expectError(err, context.Canceled)
+
+	f.expectError(f.log.Append(dead, shard, 0, wal.FirstSeqno+2, payloadFor(0)), wal.ErrZeroEpoch)
+	f.expectError(f.log.Fence(dead, shard, 0), wal.ErrZeroEpoch)
+	f.expectLog(shard, two)
 }
 
 // The bottom of guarantee 2: an epoch that has not fenced the shard cannot

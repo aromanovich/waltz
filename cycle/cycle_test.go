@@ -86,9 +86,14 @@ type fakeWatermark struct {
 	reads   int
 }
 
-func (w *fakeWatermark) Watermark(context.Context, wal.ShardID) (wal.Seqno, bool, error) {
+// A read on a dead context fails, as it does on every store: the queued answers
+// are what this shard holds, not what it can be asked for.
+func (w *fakeWatermark) Watermark(ctx context.Context, _ wal.ShardID) (wal.Seqno, bool, error) {
 	i := w.reads
 	w.reads++
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
 	if i < len(w.answers) {
 		a := w.answers[i]
 		return a.seqno, a.found, a.err
@@ -721,6 +726,26 @@ func TestManagerSupersedesByEpoch(t *testing.T) {
 
 	m.Close(ctx)
 	require.Nil(t, m.Shard(testShard))
+}
+
+// TestAnAcquireAfterTheShutdownTakesNoShard: [Manager.Close] is the one stop
+// with no successor implied, and what it answers is every shard still holding
+// acked entries. A cycle installed behind it would ack into a log the layer is
+// about to release, be drained by nothing and appear in no such answer — so the
+// caller taking the layer out is told the entries do not exist, which is the one
+// question that answer is for.
+func TestAnAcquireAfterTheShutdownTakesNoShard(t *testing.T) {
+	logs := newLog()
+	m, err := NewManager(
+		Deps{Log: logs, Writer: &fakeApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry()},
+		Fixed(Defaults()))
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.Empty(t, m.Close(ctx))
+
+	require.ErrorIs(t, m.ShardAcquired(ctx, testShard, 4), ErrClosed)
+	require.Nil(t, m.Shard(testShard))
+	require.Empty(t, m.Close(ctx), "and the second answer names no shard either")
 }
 
 // TestAFailedFenceLeavesNoCycle: the log's epoch may never lag the database's,

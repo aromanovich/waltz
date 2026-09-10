@@ -74,6 +74,16 @@ What to know before changing any of it:
   to one payload per `Append`", true because `cycle` happens to append that way,
   stated in this file and two doc comments, and deleting all three broke no test;
 
+* **the contract's context obligations are a conformance case now**
+  (`ACancelledContextChangesNothing`), and until they were they were prose only:
+  a call whose context was already dead leaves the log exactly as it was, its
+  error stays matchable against `context.Canceled`/`DeadlineExceeded`, and an
+  argument the contract does not admit outranks the context. `refuse.go` carries
+  none of the three — those helpers are the argument rules and the diagnosis
+  order — so a backend author had three obligations no green run mentioned. That
+  the case is the whole of the coverage is measured rather than assumed: deleting
+  every `ctx.Err()` check from `memwal` leaves the other eighteen green and fails
+  this one alone;
 * **a refusal the contract has no name for is a contract change, not an
   adapter's problem.** A backend can reach a state where an append failed *and*
   the check that would say whether it landed failed too — the outcome is

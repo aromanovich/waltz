@@ -81,6 +81,13 @@ var ErrBudget = errors.New("cycle: the per-shard tail bound does not fit the nod
 // through it, so nil would be recovery silently switched off.
 var ErrNoRegistry = errors.New("cycle: no task category registry, so no tail could ever be replayed")
 
+// ErrClosed refuses an acquire on a registry [Manager.Close] has already
+// emptied. The shard would be taken by a cycle acking into a log the layer is
+// releasing, drained by nothing, and named in no [Residue] — and a shutdown
+// that answered nothing is the only evidence a caller removing the layer has
+// that no acked entry is being stranded.
+var ErrClosed = errors.New("cycle: the layer has shut down and acquires no more shards")
+
 // ErrNoBaseRow is what a write gets when the condition authority delegates an
 // assertion to the cold store and the caller brought no [baserow.Rows]. A refusal
 // and not a skip: a refused write provably acked nothing, where a skip would
@@ -883,55 +890,79 @@ const (
 	dropsProvisional
 )
 
-// drainCause is why a drain is happening and whether its outcome is anybody's
-// answer. Both are properties of the call site that the drain cannot see.
+// drainCause is why a drain is happening, whether its outcome is anybody's
+// answer, and whose clock may cut it short. All three are properties of the
+// call site that the drain cannot see.
 //
-// The legal pairs are the fixed list below and there is no constructor:
+// The legal triples are the fixed list below and there is no constructor:
 // attribution that is too permissive reports a failure to a caller who did not
 // write the mutation, on entries that stay in the log marked settled.
 type drainCause struct {
 	trigger string
 	caller  callerRule
+	// detached says the call this drain runs inside is not waiting for its
+	// outcome, so that caller's cancellation is not a bound on it. What such a
+	// transaction carries is earlier writers' acked mutations, and they have
+	// been told it succeeded; the writer still on the line is waiting for its
+	// own append. Bounding the transaction by its clock makes one caller's
+	// deadline a failed drain for everybody in the window, which is a halt and
+	// a failover ([Cycle.resolve] is where that road ends).
+	detached bool
 }
 
 var (
 	// drainSync is sync mode's one write, one drain, and the only cause that
 	// answers a caller. Legal in [Cycle.add] alone, after the append, where the
-	// window holds one mutation whose writer is still inside this call.
-	drainSync = drainCause{walmetrics.TriggerSync, answersCaller}
+	// window holds one mutation whose writer is still inside this call — and is
+	// waiting for this transaction, which is what makes its clock the right one.
+	drainSync = drainCause{walmetrics.TriggerSync, answersCaller, false}
 
 	// The three watermarks, in [Cycle.add] and on the age timer. Their windows
 	// hold work whose callers were already told it succeeded, so a condition
-	// failure is nobody's answer.
-	drainWatermarkMutations = drainCause{walmetrics.TriggerMutations, noCaller}
-	drainWatermarkBytes     = drainCause{walmetrics.TriggerBytes, noCaller}
-	drainWatermarkAge       = drainCause{walmetrics.TriggerAge, noCaller}
+	// failure is nobody's answer and neither is a deadline.
+	drainWatermarkMutations = drainCause{walmetrics.TriggerMutations, noCaller, true}
+	drainWatermarkBytes     = drainCause{walmetrics.TriggerBytes, noCaller, true}
+	drainWatermarkAge       = drainCause{walmetrics.TriggerAge, noCaller, true}
 
 	// drainRefusal empties the window so a refused mutation can head a fresh
-	// one. That mutation is not in what this drains.
-	drainRefusal = drainCause{walmetrics.TriggerRefusal, noCaller}
+	// one. That mutation is not in what this drains, and neither is its writer
+	// waiting for it.
+	drainRefusal = drainCause{walmetrics.TriggerRefusal, noCaller, true}
 
-	// drainExplicit is [Cycle.drainNow]: shutdown, or a test.
-	drainExplicit = drainCause{walmetrics.TriggerExplicit, noCaller}
+	// drainExplicit is [Cycle.drainNow]: shutdown, or a test. Its caller asked
+	// for this drain and nothing else, and the shutdown budget is what bounds
+	// the apply transactions one at a time, so this one keeps that clock.
+	drainExplicit = drainCause{walmetrics.TriggerExplicit, noCaller, false}
 
 	// drainRead is [Config.DrainOnRead]'s arm: a read emptying the window it
-	// would have merged over.
-	drainRead = drainCause{walmetrics.TriggerRead, noCaller}
+	// would have merged over, and then answered out of the cold store. The
+	// reader is waiting for exactly this.
+	drainRead = drainCause{walmetrics.TriggerRead, noCaller, false}
 
-	// drainReplay is a previous owner's tail being applied.
-	drainReplay = drainCause{walmetrics.TriggerReplay, noCaller}
+	// drainReplay is a previous owner's tail being applied. The request that
+	// triggered [Cycle.start] waits through the whole of it, and an inherited
+	// tail has no bound of its own, so this is the one drain a caller's clock
+	// is the only thing that can interrupt.
+	drainReplay = drainCause{walmetrics.TriggerReplay, noCaller, false}
 
 	// drainReplayProvisional is a provisional entry replayed alone: its
 	// condition was never verified before its ack, so a failure is the answer
 	// its caller already has and the entry is dropped rather than the shard
 	// halted. Legal only for a window of exactly one replayed entry.
-	drainReplayProvisional = drainCause{walmetrics.TriggerReplay, dropsProvisional}
+	drainReplayProvisional = drainCause{walmetrics.TriggerReplay, dropsProvisional, false}
 )
 
 // drain applies the window as one transaction and moves the watermark with it.
 func (c *Cycle) drain(ctx context.Context, s *state, cause drainCause) error {
 	if err := c.halted(s); err != nil {
 		return err
+	}
+	// Above everything the drain reaches the store with, the standing stall's
+	// re-ask included ([drainCause.detached]). [Cycle.resolve] detaches again on
+	// its own account, which is not this rule twice: the causes that keep the
+	// caller's clock still may not settle an ambiguity on it.
+	if cause.detached {
+		ctx = context.WithoutCancel(ctx)
 	}
 	// Before the window is taken, so a re-ask that fails leaves this drain's own
 	// work exactly where it was.
@@ -1071,6 +1102,16 @@ func (c *Cycle) resolveStalled(ctx context.Context, s *state) error {
 // a position and not a name, so equality is the whole of what identifies the
 // drain that moved it.
 //
+// The read is detached from the caller's cancellation, and that is the whole of
+// why this one may not simply take ctx: the commonest way an outcome becomes
+// unreadable is the caller's own clock running out inside [cold.Applier.Apply],
+// and a read on that context cannot answer in the one case it exists to answer.
+// A drain that had committed would be stalled, its writer told it failed, and
+// the shard would refuse every write and both reads until the age tick asked
+// again — which is the tick's own [context.Background]. This is that context
+// one drain earlier, so a store that never answers hangs the loop exactly where
+// it already would.
+//
 // Above that seqno is the case worth stating, because "at or above" is the
 // tempting rule and it is wrong. Nothing of this cycle's can commit over an
 // unresolved drain — [Cycle.resolveStalled] runs before every drain and returns
@@ -1081,7 +1122,7 @@ func (c *Cycle) resolveStalled(ctx context.Context, s *state) error {
 // owner replayed, met a failing condition on, and dropped. Losing the shard is
 // the true answer and a recoverable one — the caller re-acquires and reads.
 func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause error) error {
-	mark, found, err := c.deps.Recoverer.Watermark(ctx, c.shard)
+	mark, found, err := c.deps.Recoverer.Watermark(context.WithoutCancel(ctx), c.shard)
 	if err != nil {
 		// Still unknown, and not a halt: halting on a read failure would turn a
 		// blip into a lost shard. The caller stalls the tail instead, and every

@@ -260,7 +260,9 @@ conditions below; the keys are
   [chapter 14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident) was measured on
   another one.
 * **What `unresolved` means.** The last drain returned an unknown outcome and the cycle could not
-  read `appliedSeqno`, its only witness to whether the transaction committed. The error names the
+  read `appliedSeqno`, its only witness to whether the transaction committed. That read runs on a
+  context of the cycle's own rather than on the caller's, so this state says the *store* could not
+  answer — never that some client's deadline ran out. The error names the
   seqno it is stuck on: `shard N's apply cycle cannot read the outcome of its drain at seqno S, and
   takes no writes until it can`. This is a stalled tail, not a halt: writers and readers are both
   refused so that nothing can be applied over an ambiguous transaction. No size knob clears it, and

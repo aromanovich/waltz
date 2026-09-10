@@ -10,6 +10,10 @@ import "fmt"
 //
 // Nothing here touches a log: they take the arguments, and the shard wherever
 // there is an error string for it to appear in.
+//
+// The context obligations are not here and are not derivable from what is: what
+// a cancelled call may leave behind, and that these checks run before it, are
+// stated on [Log] and driven by wal/waltest's ACancelledContextChangesNothing.
 
 // CheckFence refuses a fence whose arguments the contract does not admit.
 func CheckFence(shard ShardID, epoch Epoch) error {

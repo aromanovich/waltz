@@ -111,6 +111,18 @@ What to know before changing it:
   together because a reading that mixed two moments could count one cycle twice,
   in the retired block it had just joined and in the snapshot it had not yet
   left. Ask a cycle for anything — `Stats`, most of all — *outside* the lock;
+* **a shutdown is a state on `held` and not merely an emptied map** (`ErrClosed`).
+  `takeAll` closes the registry, so an acquire arriving behind `Manager.Close` is
+  refused rather than installing a cycle that acks into a log the layer is
+  releasing. That acquire is reachable: the shard controller and the layer's
+  shutdown are ordered by convention, not by a lock, and `UpdateShard` with a
+  moved rangeID drives `ShardAcquired` for as long as the server has shards. What
+  such a cycle would cost is not the entries — they are in the log, which is what
+  a successor replays — it is that they appear in no `Residue`, and a shutdown
+  that answered nothing is the only evidence the caller *removing* the layer has
+  that nothing is being stranded (`waltz.UndrainedError` says so at length). The
+  fence that acquire already took is not undone: a fence changes ownership and
+  nothing else, and the shard's next owner fences above it;
 * **the three reads share one order and it has one home, `Cycle.prelude`: the
   readiness gate, the count, the halt rule, the drain.** A halt found inside the
   replay is left to the halt rule rather than returned from the gate (#155).
@@ -240,6 +252,30 @@ What to know before changing it:
   *drained* window either — those entries' requests were driven, so re-driving
   them builds a transaction out of mutated state. Replay reads the log, which is
   a different thing;
+* **whose clock may cut a drain short is a field of `drainCause` and not the
+  context the call site happens to hold** (`detached`). Three drains run inside a
+  call whose caller is not waiting for their outcome — the two size watermarks
+  and the refusal drain — and what they carry is earlier writers' acked
+  mutations, those writers having been told it succeeded and gone. Bounding the
+  transaction by whichever writer is on the line turns one expired client
+  deadline into a drain that did not commit, which is `halted-invariant` and a
+  failover for the whole window. The entries survive in the log, so the cost is
+  availability rather than data — but the trigger is an ordinary timeout, which
+  is what makes it worth a field rather than a call-site habit. The other five
+  keep the caller's context and each carries its reason on the row: sync mode's
+  outcome *is* the answer, `drainNow` is what the shutdown budget bounds one
+  transaction at a time, a `DrainOnRead` reader is answered out of the cold store
+  after it, and replay has no bound of its own, so a caller's clock is the only
+  thing that can interrupt it;
+* **`Cycle.resolve` detaches whatever the cause says**, and that is a second rule
+  rather than the same one: the commonest way an outcome becomes unreadable is
+  that very context expiring inside `Apply`, so the one read that could settle it
+  would be issued on the context that provably cannot answer. A drain that *had*
+  committed then stalls, its writer is told it failed, and the shard refuses
+  every write and both reads until the age tick asks again on its own
+  `context.Background` — which is what this is, one drain earlier, so a store
+  that never answers hangs the loop exactly where it already would.
+  `draincontext_test.go` holds both rules, each red only for its own half;
 * **replay is `cycle/replay.go`, and it is `start` grown a body** (#98): the
   watermark, then `(appliedSeqno, tail]` in pages of the window's size, folded
   into a fresh accumulator, cut by the **size** watermarks only (everything read

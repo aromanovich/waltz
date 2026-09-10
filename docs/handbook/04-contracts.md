@@ -268,7 +268,8 @@ Six things the table cannot hold:
   between the request and its ack may be durable, which is why a cancelled append counts as an
   attempt like any other. Errors caused by the context satisfy `errors.Is` against
   `context.Canceled` or `context.DeadlineExceeded`. A call that is both cancelled and malformed
-  reports the argument.
+  reports the argument. All three are driven by `ACancelledContextChangesNothing`, so a backend
+  author finds out from a run rather than from this paragraph.
 * **An append is one entry, and there is no batch.** None of the three sentinels can describe a
   batch that landed only in part: each says the write is whole, one way or the other (see **The
   contract has no batch** above, under "What the contract does not say: what an append costs"). Many
@@ -891,7 +892,7 @@ to start. Its surface:
 
 | Method | Who calls it, and what it promises |
 |---|---|
-| `ShardAcquired(ctx, shard, epoch) error` | the `ShardStore` wrapper. Fences the log at the new epoch **first**, then installs a fresh cycle: the log's epoch may never lag the database's. Idempotent at an epoch a cycle already holds; refused with `wal.ErrFenced` at a lower one; a superseded cycle is retired without a drain, its entries staying in the log for the new owner |
+| `ShardAcquired(ctx, shard, epoch) error` | the `ShardStore` wrapper. Fences the log at the new epoch **first**, then installs a fresh cycle: the log's epoch may never lag the database's. Idempotent at an epoch a cycle already holds; refused with `wal.ErrFenced` at a lower one, and with `cycle.ErrClosed` once `Manager.Close` has emptied the registry; a superseded cycle is retired without a drain, its entries staying in the log for the new owner |
 | `Write(ctx, mut, epoch, base) error` | the `ExecutionStore` wrapper. A shard this node holds no cycle for, or a write carrying a non-zero epoch other than the cycle's, is answered with `*p.ShardOwnershipLostError` — falling through to the store below would be a write around the log |
 | `GetWorkflowExecution`, `GetCurrentExecution`, `GetHistoryTasks` | the `ExecutionStore` wrapper's three reads. See [chapter 07](07-read-path.md) |
 | `Use(h metrics.Handler)` | the wrapper's `MetricsSink`. First call wins; a nil handler is ignored |

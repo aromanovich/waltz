@@ -456,6 +456,13 @@ nothing and returns its halt.
 one transaction per shard, and then closes the log. A drain that does not commit is logged
 (`WARN apply cycle: the shutdown drain did not commit`) and does not stop the rest.
 
+Emptying the registry also **closes** it. An acquire arriving behind that step is refused with
+`cycle.ErrClosed` rather than installing a fresh cycle — one that would acknowledge writes into a log
+this layer has stopped draining and is about to release. The entries would survive there for the next
+owner, so the harm is not in losing them: it is that they would be named in no `cycle.Residue`, and
+`Shutdown` answering nil is exactly the evidence a caller taking the layer *out* relies on. The fence
+that acquire already took is left standing, a fence changing ownership and nothing else.
+
 **The detach is the point.** The budget is placed on
 `context.WithTimeout(context.WithoutCancel(ctx), budget)`, a context detached from the caller's
 cancellation. A shutdown drain runs where a context has just been cancelled, because that is what

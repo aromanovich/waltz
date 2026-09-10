@@ -29,6 +29,9 @@ type held struct {
 	mu      sync.Mutex
 	shards  map[wal.ShardID]*Cycle
 	retired Totals
+	// closed is what [held.takeAll] leaves behind, so that a shutdown is a state
+	// and not just an empty map: the map empties at every acquire's install too.
+	closed bool
 }
 
 func newHeld() *held { return &held{shards: make(map[wal.ShardID]*Cycle)} }
@@ -41,22 +44,29 @@ func (h *held) get(shard wal.ShardID) *Cycle {
 }
 
 // install puts fresh in the shard's slot and hands back whatever it displaced,
-// so the caller can count and retire it with no lock held.
-func (h *held) install(shard wal.ShardID, fresh *Cycle) (previous *Cycle) {
+// so the caller can count and retire it with no lock held. took is false once
+// [held.takeAll] has run, and the caller retires what it built rather than
+// leaving a cycle nothing will drain.
+func (h *held) install(shard wal.ShardID, fresh *Cycle) (previous *Cycle, took bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return nil, false
+	}
 	previous = h.shards[shard]
 	h.shards[shard] = fresh
-	return previous
+	return previous, true
 }
 
-// takeAll empties the map and returns what was in it: shutdown's one step, so
-// nothing is left for a second Close to drain.
+// takeAll empties the map and closes it to further installs: shutdown's one
+// step, so nothing is left for a second Close to drain and nothing arrives
+// behind it.
 func (h *held) takeAll() []*Cycle {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	all := h.list()
 	h.shards = make(map[wal.ShardID]*Cycle)
+	h.closed = true
 	return all
 }
 

@@ -105,7 +105,7 @@ whether the fence reaches another machine. Whoever supplies the log owes that te
 `ReadFrom` returns every entry a completed append acked *and no trim has removed*, so a trim is the
 only removal the contract excuses: a retention policy, a TTL on the table, a compaction that drops
 old records are each a violation of it. The suite cannot see any of them. Every case runs to
-completion in milliseconds, so a log that deletes entries after an hour passes all eighteen and
+completion in milliseconds, so a log that deletes entries after an hour passes all nineteen and
 loses an acked entry the first time a shard's tail outlives the policy. A backend on storage that
 expires anything owes itself the test the suite has no way to write, and owes it against the
 configuration it will actually run.
@@ -802,7 +802,7 @@ suites above and are stated where they are:
 
 ## Where this lives in the code
 
-* [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its eighteen
+* [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its nineteen
   cases, and the guarantee each is stated under;
   [`fault.go`](../../wal/waltest/fault.go) is `Faulty`.
 * [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)

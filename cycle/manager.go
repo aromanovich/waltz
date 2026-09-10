@@ -131,7 +131,15 @@ func (m *Manager) ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wa
 
 	fresh := New(shard, epoch, m.deps, m.policy)
 
-	previous := m.held.install(shard, fresh)
+	previous, took := m.held.install(shard, fresh)
+	if !took {
+		// The fence stands, and is not undone: a fence changes ownership and
+		// nothing else, the log outlives this process, and the shard's next owner
+		// fences above it. What may not stand is the cycle, which would ack into
+		// a log this layer has stopped draining and released.
+		fresh.Retire()
+		return fmt.Errorf("%w: shard %d at epoch %d", ErrClosed, shard, epoch)
+	}
 
 	if previous != nil {
 		// Stopped without a drain: its epoch is fenced out, so what it held is
