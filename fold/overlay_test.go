@@ -283,14 +283,55 @@ func TestTheOverlayReturnsTheTailsVersion(t *testing.T) {
 	})
 }
 
+// answerCollections is every map a read's answer carries, enumerated off
+// Temporal's own type so that the two rules below reach a collection added
+// upstream without an edit. Both are about maps the answer hands out, and a map
+// the fixture left nil is one neither rule reaches through.
+func answerCollections(t *testing.T, state *p.InternalWorkflowMutableState) map[string]reflect.Value {
+	t.Helper()
+	out, v := map[string]reflect.Value{}, reflect.ValueOf(state).Elem()
+	for f := range reflect.TypeFor[p.InternalWorkflowMutableState]().Fields() {
+		if m := v.FieldByIndex(f.Index); m.Kind() == reflect.Map {
+			require.Falsef(t, m.IsNil(), "%s is nil in the answer, so nothing here reaches through it", f.Name)
+			out[f.Name] = m
+		}
+	}
+	require.NotEmptyf(t, out, "the answer carries no map: this has judged nothing")
+	return out
+}
+
+// emptyEveryCollection writes into every map the answer carries, as a caller
+// free to do what it likes with what it was handed would.
+func emptyEveryCollection(t *testing.T, state *p.InternalWorkflowMutableState) {
+	t.Helper()
+	for _, m := range answerCollections(t, state) {
+		for _, k := range m.MapKeys() {
+			m.SetMapIndex(k, reflect.Value{})
+		}
+	}
+}
+
+func collectionSizes(t *testing.T, state *p.InternalWorkflowMutableState) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for name, m := range answerCollections(t, state) {
+		out[name] = m.Len()
+	}
+	return out
+}
+
 // TestTheOverlayIsReadOnlyOnTheAccumulator: the drain after any number of reads
 // equals the drain without them. An answer holding the accumulator's own map
 // would let a later fold rewrite a response already returned.
+//
+// The write into the answer is every collection it carries and not a chosen one:
+// copySnapshot copies the snapshot whole and then clones its maps one line per
+// map, so a map added upstream is shared until somebody adds the line.
 func TestTheOverlayIsReadOnlyOnTheAccumulator(t *testing.T) {
 	build := func() *fold.Accumulator {
 		a := fold.New(shard)
 		add(t, a,
-			mkCreate(runX, snapActivity(1, "created"), snapTask("task-create")),
+			mkCreate(runX, fullSnapshot, snapActivity(1, "created"), snapTask("task-create")),
 			mkUpdate(runY, 2, upsertActivity(7, "updated"), withTask("task-update"), withBuffered("batch")),
 		)
 		return a
@@ -300,9 +341,9 @@ func TestTheOverlayIsReadOnlyOnTheAccumulator(t *testing.T) {
 
 	a := build()
 	snapshotResp, _, _ := render(a, runX, nil)
-	deltaResp, _, _ := render(a, runY, baseRow(1))
-	snapshotResp.State.ActivityInfos[1] = blob("clobbered")
-	delete(deltaResp.State.ActivityInfos, 7)
+	deltaResp, _, _ := render(a, runY, fullBaseRow(1))
+	emptyEveryCollection(t, snapshotResp.State)
+	emptyEveryCollection(t, deltaResp.State)
 	deltaResp.State.BufferedEvents = append(deltaResp.State.BufferedEvents, blob("extra"))
 	noisy := reqs(a.Drain())
 
@@ -310,13 +351,17 @@ func TestTheOverlayIsReadOnlyOnTheAccumulator(t *testing.T) {
 }
 
 // TestTheOverlayDoesNotWriteThroughTheBase is the same rule for the caller's
-// base row, which belongs to whoever answered the thunk.
+// base row, which belongs to whoever answered the thunk. Two moments, and the
+// second is the one snapshotOfBase answers for: the fold must not reach the row
+// while it renders, and what it hands back must not be the row's own maps —
+// there too the copy is a line per collection.
 func TestTheOverlayDoesNotWriteThroughTheBase(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a, mkUpdate(runX, 2, upsertActivity(2, "window"), deleteActivity(1)))
 
-	base := baseRow(1, baseBuffered("base-batch"))
+	base := fullBaseRow(1)
 	before := len(base.State.ActivityInfos)
+	held := collectionSizes(t, base.State)
 
 	resp, _, _ := render(a, runX, base)
 	require.Equal(t, "window", activity(t, resp, 2))
@@ -324,6 +369,11 @@ func TestTheOverlayDoesNotWriteThroughTheBase(t *testing.T) {
 	require.Len(t, base.State.ActivityInfos, before, "the base row gained the window's upsert")
 	require.Contains(t, base.State.ActivityInfos, int64(1), "the base row lost a key to the window's delete")
 	require.Len(t, base.State.BufferedEvents, 1, "the base's batches were appended to")
+
+	emptyEveryCollection(t, resp.State)
+	require.Equal(t, held, collectionSizes(t, base.State),
+		"a collection of the answer is the base row's own map, so a caller writing into what it "+
+			"was handed empties the row it still holds")
 }
 
 // TestTheOverlaysBufferedEvents: the store's batches first, then the window's;

@@ -162,7 +162,15 @@ thing to keep in mind below. What to know before changing the fold itself:
   two were caught only by the e2e server timing its workflow out. It claims a
   field is *filled* and not what with, which source each comes from being judged
   case by case in `overlay_test.go`: a field added upstream fails here and is
-  decided there;
+  decided there. **The copy is a line per collection in both mirrors**, so the
+  same hazard has an aliasing half — a map added upstream is handed out shared
+  until somebody writes the clone — and it was invisible too. The two read-only
+  rules (`TestTheOverlayIsReadOnlyOnTheAccumulator` for the accumulator's maps,
+  `TestTheOverlayDoesNotWriteThroughTheBase` for the caller's) write into
+  *every* collection of the answer rather than a chosen one. The one clone
+  neither reaches is `copySnapshot`'s `SignalRequestedIDs`, and that is a fact
+  about the answer rather than a gap: `mutableStateOf` rebuilds it as a sorted
+  slice, so that map never leaves the package;
 
 * **the contract with apply**: emitted requests carry no epoch, because
   `mutation.Decode` dropped RangeID on the way in (I11) and apply stamps its
