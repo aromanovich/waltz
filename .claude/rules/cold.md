@@ -33,6 +33,23 @@ What to know before changing any of it:
   reason the store holds a handle at all, and the transferable half of the
   design: an implementer whose driver offers nothing below the per-workflow
   interface cannot satisfy the contract by trying harder inside it;
+* **the seven collections are named in two literals, and both are held to the
+  type.** `applyMutation` names them off a delta and `applySnapshotCollections`
+  off whole state, and a collection missing from either is rows the drain
+  *acknowledged* and never wrote — with the watermark committed beside them, so
+  the log is trimmed past them. It is the only failure on this path with nothing
+  behind it: a drain that refuses, fails or dies leaves its entries in the log
+  for the next owner, and this one does not. Nothing above caught it — the four
+  conformance suites drive upstream's own 28 methods, none of which goes through
+  `Apply` — and dropping the two CHASM lines from `applyMutation` left the whole
+  of `go test ./...` green. `TestEveryCollectionOfARunReachesTheDatabase` drives
+  every `Upsert*` of a delta and its counterpart on a snapshot through a real
+  drain and reads the run back through the store's own read; it is red for all
+  fourteen lines. Its fixture table is a hand list because what a store will take
+  is not derivable from a type, and it is held to the type in both directions —
+  an `Upsert*` with no entry, and an entry for a collection a delta no longer
+  has, each fail by name;
+
 * **two orderings in `Apply` are the contract and not transcription** — the
   epoch CAS first, so a lost shard is reported as one rather than as the version
   failure underneath it; and the task range deletes before any task row the

@@ -8,6 +8,8 @@ package memcold_test
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -209,6 +211,147 @@ func TestARunTombstonedAndRecreatedInOneWindow(t *testing.T) {
 	require.Equal(t, second, current.RunID, "the current row names the run the window's tail created")
 }
 
+// The seven collections a run's rows are spread over reach the database only
+// because applyMutation and applySnapshotCollections each name all seven in a
+// literal of their own. A collection missing from either is rows this drain
+// acknowledged and never wrote — and the watermark commits with the batch, so
+// the log is trimmed past them. It is the one failure on this path with nothing
+// behind it: a drain that refuses, fails or dies leaves its entries in the log
+// for the next owner, and this one does not.
+//
+// Nothing above catches it. The four conformance suites drive upstream's own 28
+// methods, none of which goes through Apply, and no suite in this repository
+// compares what a drain wrote against the request it carried. Removing the two
+// CHASM lines from applyMutation leaves the whole of `go test ./...` green.
+//
+// upsertOf is a hand list because what a store will take is not derivable from a
+// type — a CHASM node is two blobs, a signal id is a row with no payload of its
+// own — and it is held to the type below, in both directions.
+var upsertOf = map[string]struct {
+	delta    func(*p.InternalWorkflowMutation)
+	snapshot func(*p.InternalWorkflowSnapshot)
+}{
+	"UpsertActivityInfos": {
+		func(m *p.InternalWorkflowMutation) {
+			m.UpsertActivityInfos = map[int64]*commonpb.DataBlob{1: blob("activity")}
+		},
+		func(s *p.InternalWorkflowSnapshot) {
+			s.ActivityInfos = map[int64]*commonpb.DataBlob{1: blob("activity")}
+		},
+	},
+	"UpsertTimerInfos": {
+		func(m *p.InternalWorkflowMutation) {
+			m.UpsertTimerInfos = map[string]*commonpb.DataBlob{"timer": blob("timer")}
+		},
+		func(s *p.InternalWorkflowSnapshot) {
+			s.TimerInfos = map[string]*commonpb.DataBlob{"timer": blob("timer")}
+		},
+	},
+	"UpsertChildExecutionInfos": {
+		func(m *p.InternalWorkflowMutation) {
+			m.UpsertChildExecutionInfos = map[int64]*commonpb.DataBlob{2: blob("child")}
+		},
+		func(s *p.InternalWorkflowSnapshot) {
+			s.ChildExecutionInfos = map[int64]*commonpb.DataBlob{2: blob("child")}
+		},
+	},
+	"UpsertRequestCancelInfos": {
+		func(m *p.InternalWorkflowMutation) {
+			m.UpsertRequestCancelInfos = map[int64]*commonpb.DataBlob{3: blob("cancel")}
+		},
+		func(s *p.InternalWorkflowSnapshot) {
+			s.RequestCancelInfos = map[int64]*commonpb.DataBlob{3: blob("cancel")}
+		},
+	},
+	"UpsertSignalInfos": {
+		func(m *p.InternalWorkflowMutation) {
+			m.UpsertSignalInfos = map[int64]*commonpb.DataBlob{4: blob("signal")}
+		},
+		func(s *p.InternalWorkflowSnapshot) {
+			s.SignalInfos = map[int64]*commonpb.DataBlob{4: blob("signal")}
+		},
+	},
+	"UpsertSignalRequestedIDs": {
+		func(m *p.InternalWorkflowMutation) {
+			m.UpsertSignalRequestedIDs = map[string]struct{}{"signal-id": {}}
+		},
+		func(s *p.InternalWorkflowSnapshot) {
+			s.SignalRequestedIDs = map[string]struct{}{"signal-id": {}}
+		},
+	},
+	"UpsertChasmNodes": {
+		func(m *p.InternalWorkflowMutation) {
+			m.UpsertChasmNodes = map[string]p.InternalChasmNode{
+				"node": {Metadata: blob("metadata"), Data: blob("data")}}
+		},
+		func(s *p.InternalWorkflowSnapshot) {
+			s.ChasmNodes = map[string]p.InternalChasmNode{
+				"node": {Metadata: blob("metadata"), Data: blob("data")}}
+		},
+	},
+}
+
+func TestEveryCollectionOfARunReachesTheDatabase(t *testing.T) {
+	upserts := 0
+	for f := range reflect.TypeFor[p.InternalWorkflowMutation]().Fields() {
+		if !strings.HasPrefix(f.Name, "Upsert") {
+			continue
+		}
+		upserts++
+		require.Containsf(t, upsertOf, f.Name, "a delta carries %s and nothing here drives it "+
+			"through a drain: a collection the applier's literal does not name is rows it "+
+			"acknowledged and never wrote, with the log trimmed past them", f.Name)
+	}
+	require.NotZero(t, upserts, "no field of a delta is named Upsert*: this has judged nothing")
+	require.Len(t, upsertOf, upserts, "an entry here for a collection a delta no longer has: "+
+		"the read-back below would assert on a field the mutable state does not have")
+
+	t.Run("a delta writes them", func(t *testing.T) {
+		h := newDrains(t)
+		wf, run := uuid.NewString(), uuid.NewString()
+		require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, run))))
+
+		m := h.update(wf, run, 2)
+		for _, fill := range upsertOf {
+			fill.delta(&m.Update.UpdateWorkflowMutation)
+		}
+		require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(m)))
+
+		requireEveryCollectionHeld(t, h.runState(wf, run))
+	})
+
+	t.Run("a snapshot writes them", func(t *testing.T) {
+		h := newDrains(t)
+		wf, run := uuid.NewString(), uuid.NewString()
+
+		m := h.create(wf, run)
+		for _, fill := range upsertOf {
+			fill.snapshot(&m.Create.NewWorkflowSnapshot)
+		}
+		require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(m)))
+
+		requireEveryCollectionHeld(t, h.runState(wf, run))
+	})
+}
+
+// requireEveryCollectionHeld reads the run back through the store's own read and
+// requires every collection a drain carried to be there. The field it looks for
+// is the upsert's name without its prefix, which is what upstream calls the same
+// collection on whole state.
+func requireEveryCollectionHeld(t *testing.T, state *p.InternalWorkflowMutableState) {
+	t.Helper()
+	held := reflect.ValueOf(state).Elem()
+	for name := range upsertOf {
+		field, _ := strings.CutPrefix(name, "Upsert")
+		v := held.FieldByName(field)
+		require.Truef(t, v.IsValid(),
+			"a delta upserts %s and the mutable state has no %s to read it back from", name, field)
+		require.NotZerof(t, v.Len(), "the run holds no %s after a drain that carried one: the "+
+			"collection is missing from the applier's literal, so those rows were acknowledged, "+
+			"never written, and the log trimmed past them", field)
+	}
+}
+
 // drains is one store, one shard held at one epoch, and a seqno that only ever
 // rises: a second drain reusing the first's seqnos would move the watermark
 // backwards, which is a shard that re-folds rather than a test.
@@ -306,6 +449,17 @@ func (h *drains) runVersion(workflowID, runID string) int64 {
 	})
 	require.NoError(h.t, err)
 	return row.DBRecordVersion
+}
+
+// runState is the whole of what the store holds for one run, read back through
+// the store's own read rather than out of the tables.
+func (h *drains) runState(workflowID, runID string) *p.InternalWorkflowMutableState {
+	h.t.Helper()
+	row, err := h.store.GetWorkflowExecution(h.ctx, &p.GetWorkflowExecutionRequest{
+		ShardID: int32(h.shard), NamespaceID: h.namespaceID, WorkflowID: workflowID, RunID: runID,
+	})
+	require.NoError(h.t, err)
+	return row.State
 }
 
 func (h *drains) runExists(workflowID, runID string) bool {
