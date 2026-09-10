@@ -279,18 +279,10 @@ func storeError(st State, shard wal.ShardID, err error) error {
 // appendOutcome is what an [wal.Log.Append] that did not return nil left in the
 // log. Three of the four are the contract's own refusals, each of which says
 // the write is whole one way or the other; the fourth is everything else, and
-// it is the default because nothing in the contract makes it anything narrower.
+// it is the zero value because nothing in the contract makes it narrower.
 type appendOutcome int
 
 const (
-	// wroteNothing: the contract names this refusal and says it writes nothing,
-	// so the seqno is still the next mutation's to take.
-	wroteNothing appendOutcome = iota
-	// appendFenced: the shard has a new owner (I4).
-	appendFenced
-	// appendTaken: the seqno this cycle replayed past is occupied at this
-	// cycle's own epoch. See [ErrTailNotEmpty].
-	appendTaken
 	// appendUnknown: an error the contract has no name for, so whether the
 	// entry is in the log is not established. It is what a transport failure
 	// arrives as, and the one thing that may not follow it is another mutation
@@ -298,7 +290,21 @@ const (
 	// of the two ends up at that position is the backend's race to settle, and
 	// a caller was told each of the two answers. The log itself is the witness
 	// ([Cycle.settleAppend]), as the watermark is for a drain.
-	appendUnknown
+	//
+	// It is the zero value, and that is the whole rule stated once: an outcome
+	// nobody set is one nobody established, where a zero of any of the three
+	// below would be this classifier assuming what it exists to refuse to assume.
+	appendUnknown appendOutcome = iota
+	// appendNothing: the contract names this refusal and says it writes nothing,
+	// so the seqno is still the next mutation's to take. It is the one value
+	// with no arm in the switch over these, because what it asks for is that
+	// nothing happen.
+	appendNothing
+	// appendFenced: the shard has a new owner (I4).
+	appendFenced
+	// appendTaken: the seqno this cycle replayed past is occupied at this
+	// cycle's own epoch. See [ErrTailNotEmpty].
+	appendTaken
 )
 
 // appendOutcomeOf reads an append's error as one of the four. Anything the
@@ -312,7 +318,7 @@ func appendOutcomeOf(err error) appendOutcome {
 	case errors.Is(err, wal.ErrAlreadyWritten):
 		return appendTaken
 	case errors.Is(err, wal.ErrGap):
-		return wroteNothing
+		return appendNothing
 	}
 	return appendUnknown
 }

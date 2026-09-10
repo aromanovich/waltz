@@ -770,7 +770,7 @@ func (c *Cycle) appendFailed(ctx context.Context, s *state, cause error, payload
 //     read that failed leaves the fate of the seqno open, and the one thing that
 //     may not follow is another mutation taking it.
 func (c *Cycle) settleAppend(ctx context.Context, s *state, cause error, payload []byte) error {
-	entry, held, err := c.entryAt(ctx, s.next)
+	entry, held, err := wal.EntryAt(context.WithoutCancel(ctx), c.deps.Log, c.shard, s.next)
 	switch {
 	case err != nil:
 		c.deps.Logger.Warn("apply cycle: an append's outcome could not be read",
@@ -789,23 +789,6 @@ func (c *Cycle) settleAppend(ctx context.Context, s *state, cause error, payload
 	c.deps.Logger.Info("apply cycle: an ambiguous append had landed",
 		tag.ShardID(int32(c.shard)), tag.NewInt64("seqno", int64(s.next)), tag.Error(cause))
 	return nil
-}
-
-// entryAt reads back the one entry a seqno holds, and whether it holds one. A
-// log that answers a read from a seqno with a higher one has a hole where this
-// caller is looking, which is no answer about the seqno asked for.
-func (c *Cycle) entryAt(ctx context.Context, seqno wal.Seqno) (wal.Entry, bool, error) {
-	entries, err := c.deps.Log.ReadFrom(context.WithoutCancel(ctx), c.shard, seqno, 1)
-	switch {
-	case err != nil:
-		return wal.Entry{}, false, err
-	case len(entries) == 0:
-		return wal.Entry{}, false, nil
-	case entries[0].Seqno != seqno:
-		return wal.Entry{}, false, fmt.Errorf(
-			"the log answered a read from seqno %d with seqno %d", seqno, entries[0].Seqno)
-	}
-	return entries[0], true, nil
 }
 
 // refold folds an entry whose own fold was refused and whose recovery drain then

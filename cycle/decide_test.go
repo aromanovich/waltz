@@ -10,6 +10,7 @@ package cycle
 // mode's window is one by construction.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -381,6 +382,44 @@ func TestAFailedAssertionIsAttributedOnlyToACallerInAWindowOfOne(t *testing.T) {
 		"a provisional entry is dropped only where it was carried alone")
 	require.Equal(t, haltsShard, attribute(drainWatermarkMutations, 1),
 		"a window of one whose caller was already acked has nobody to answer either")
+}
+
+// TestTheOutcomeOfEveryAppendError is the classifier's whole rule: the three
+// refusals the contract names, and the default that everything else falls to.
+// The default is the half worth enumerating — an error read as "wrote nothing"
+// is a seqno whose fate nobody established handed to the next mutation — so the
+// unrecognised cases below are the ones a transport actually produces, each
+// asked in the shapes a caller wraps them in.
+func TestTheOutcomeOfEveryAppendError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want appendOutcome
+	}{
+		{"fenced", wal.ErrFenced, appendFenced},
+		{"fenced, wrapped by a backend", fmt.Errorf("shard 3: %w", wal.ErrFenced), appendFenced},
+		{"the seqno is taken", wal.ErrAlreadyWritten, appendTaken},
+		{"taken, wrapped", fmt.Errorf("shard 3: %w", wal.ErrAlreadyWritten), appendTaken},
+		{"a gap below it", wal.ErrGap, appendNothing},
+		{"a gap, wrapped", fmt.Errorf("shard 3: %w", wal.ErrGap), appendNothing},
+
+		{"a timeout", context.DeadlineExceeded, appendUnknown},
+		{"the caller's cancellation", context.Canceled, appendUnknown},
+		{"a zero epoch, which the contract admits but this cycle cannot send", wal.ErrZeroEpoch, appendUnknown},
+		{"a bare transport failure", errors.New("connection reset by peer"), appendUnknown},
+		{"a nil error, which no caller asks about", nil, appendUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, appendOutcomeOf(tc.err),
+				"an append error classified as anything but %v: the three the contract names each "+
+					"say the write is whole one way or the other, and everything else leaves it "+
+					"unestablished", tc.want)
+		})
+	}
+
+	require.Equal(t, appendUnknown, appendOutcome(0),
+		"the zero value is not the unestablished outcome, so an outcome nobody set reads as one "+
+			"somebody did — which is the rounding-down this classifier exists to refuse")
 }
 
 // TestTheSettlementOfEveryClass enumerates every apply class at every cause and

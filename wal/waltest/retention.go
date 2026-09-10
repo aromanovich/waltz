@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -63,6 +64,9 @@ func CheckRetention(
 		return fmt.Errorf("waltest: fencing shard %d at epoch %d: %w", shard, epoch, err)
 	}
 
+	// The payloads say what wrote them rather than reusing the suite's
+	// payloadFor: these are rows somebody reads out of a real deployment's log
+	// table while wondering what put them there, which the suite's never are.
 	want := make([]wal.Entry, 0, retentionEntries)
 	for i := range retentionEntries {
 		seqno := wal.FirstSeqno + wal.Seqno(i)
@@ -105,12 +109,9 @@ func CheckRetention(
 
 // requireRun reads the shard's whole log and holds it against want.
 func requireRun(ctx context.Context, log wal.Log, shard wal.ShardID, want []wal.Entry, when string) error {
-	var got []wal.Entry
-	for e, err := range wal.Entries(ctx, log, shard, wal.FirstSeqno, len(want)+1) {
-		if err != nil {
-			return fmt.Errorf("waltest: reading shard %d back %s: %w", shard, when, err)
-		}
-		got = append(got, e)
+	got, err := readAll(ctx, log, shard, len(want)+1)
+	if err != nil {
+		return fmt.Errorf("waltest: reading shard %d back %s: %w", shard, when, err)
 	}
 	if len(got) < len(want) {
 		return fmt.Errorf("waltest: shard %d holds %d of its %d entries %s: what a completed append "+
@@ -145,15 +146,22 @@ func requireRun(ctx context.Context, log wal.Log, shard wal.ShardID, want []wal.
 // Ages are measured from the append with the process's own clock, and the whole
 // of what expires is a prefix, since a log is appended in order.
 func Expiring(log wal.Log, after time.Duration) wal.Log {
-	return &expiring{log: log, after: after, born: map[wal.ShardID]map[wal.Seqno]time.Time{}}
+	return &expiring{log: log, after: after, born: map[bornKey]time.Time{}}
 }
 
 type expiring struct {
 	log   wal.Log
 	after time.Duration
 
-	mu   sync.Mutex
-	born map[wal.ShardID]map[wal.Seqno]time.Time
+	mu sync.Mutex
+	// born is keyed by both halves at once: nothing here walks one shard's
+	// entries, so a map per shard would buy a nil check and nothing else.
+	born map[bornKey]time.Time
+}
+
+type bornKey struct {
+	shard wal.ShardID
+	seqno wal.Seqno
 }
 
 var _ wal.Log = (*expiring)(nil)
@@ -170,10 +178,7 @@ func (e *expiring) Append(
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.born[shard] == nil {
-		e.born[shard] = map[wal.Seqno]time.Time{}
-	}
-	e.born[shard][seqno] = time.Now()
+	e.born[bornKey{shard, seqno}] = time.Now()
 	return nil
 }
 
@@ -186,28 +191,16 @@ func (e *expiring) ReadFrom(
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	kept := entries[:0]
-	for _, entry := range entries {
-		if born, ok := e.born[shard][entry.Seqno]; ok && time.Since(born) >= e.after {
-			continue
-		}
-		kept = append(kept, entry)
-	}
-	return kept, nil
+	return slices.DeleteFunc(entries, func(entry wal.Entry) bool {
+		born, ok := e.born[bornKey{shard, entry.Seqno}]
+		return ok && time.Since(born) >= e.after
+	}), nil
 }
 
+// Trim keeps no bookkeeping of its own: a seqno a trim removed stays spent, so
+// its birth time is never consulted again whether or not it is still here.
 func (e *expiring) Trim(ctx context.Context, shard wal.ShardID, upTo wal.Seqno) error {
-	if err := e.log.Trim(ctx, shard, upTo); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for seqno := range e.born[shard] {
-		if seqno <= upTo {
-			delete(e.born[shard], seqno)
-		}
-	}
-	return nil
+	return e.log.Trim(ctx, shard, upTo)
 }
 
 func (e *expiring) Close() { e.log.Close() }

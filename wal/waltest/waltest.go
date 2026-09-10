@@ -768,9 +768,16 @@ func (f *fixture) trim(shard wal.ShardID, upTo wal.Seqno) {
 func (f *fixture) readLog(shard wal.ShardID) ([]wal.Entry, error) {
 	// Big enough that the suite's logs come back in one read.
 	const window = 64
+	return readAll(f.ctx, f.log, shard, window)
+}
 
-	var entries []wal.Entry
-	for e, err := range wal.Entries(f.ctx, f.log, shard, wal.FirstSeqno, window) {
+// readAll drains a shard's whole log into a slice. Its two callers want the
+// entries rather than the iterator and fail in their own ways — this one through
+// a [testing.T], [CheckRetention] through an error — so what they share is the
+// drain and nothing past it.
+func readAll(ctx context.Context, log wal.Log, shard wal.ShardID, page int) ([]wal.Entry, error) {
+	entries := make([]wal.Entry, 0, page)
+	for e, err := range wal.Entries(ctx, log, shard, wal.FirstSeqno, page) {
 		if err != nil {
 			return nil, err
 		}

@@ -7,17 +7,18 @@ paths:
 
 `wal/` is the seam this library is built on rather than a test of someone else's: the contract
 (`wal/`), the one backend that ships (`wal/memwal/`, in memory) and, in `wal/waltest/`, the
-conformance suite and the fault decorator every caller drives a failing log through.
+conformance suite, the fault decorator every caller drives a failing log through, and the
+retention check a deployment runs against its own storage.
 [ADR 0002](../../docs/adr/0002-wal-contract-is-backend-independent.md) is why the contract exists
 and what it promises; the handbook's
 [04-contracts.md](../../docs/handbook/04-contracts.md) is the long form of the five guarantees.
 
 What to know before changing any of it:
 
-* neither file in `waltest/` may import a backend, on purpose. The suite imports the
-  contract and an assertion library; the decorator imports the contract alone.
-  A test that needs a particular log is asserting the wrong thing; so is an
-  assertion only one implementation could satisfy;
+* no file in `waltest/` may import a backend, on purpose. The suite imports the
+  contract and an assertion library; the two decorators and the retention check
+  import the contract alone. A test that needs a particular log is asserting the
+  wrong thing; so is an assertion only one implementation could satisfy;
 * a caller wanting a log that fails wraps a real backend in `waltest.Faulty`
   rather than writing an implementation of its own. Three of them had grown
   above this seam and all three had drifted off the contract — one accepted an
