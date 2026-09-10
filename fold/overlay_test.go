@@ -184,32 +184,27 @@ func withChecksum(name string) func(*p.InternalWorkflowMutation) {
 }
 
 // TestEveryFieldOfAReadAnswerIsFilled enumerates the answer off Temporal's own
-// type. A read passes through two hand-filled mirrors — snapshotOfBase takes the
-// cold store's row apart, mutableStateOf puts the answer together — and neither
-// is derived from that type, so a field either stops filling comes back zero.
-// The caller is then told the run has no such collection, and writes the run
-// back without it: a snapshot-bearing write deletes the rows outright, so it is
-// an acked write destroyed rather than a stale one. merge_test.go holds the
-// write path's hand-filled folds to their types; this is that claim for the
-// read, and until it existed five of these thirteen fields could be dropped with
-// the whole of go test ./... green.
+// type, which is what makes a field added upstream fail here rather than come
+// back zero. Two arms, because the answer is assembled twice over: a delta over
+// the cold store's row, whose collections must survive snapshotOfBase, and a
+// snapshot the window holds, which answers with no base at all.
 //
-// What it asserts is that a field is filled, not what with: which source each
-// comes from differs per field and is judged case by case in the tests around
-// it. A field zero here is one no arm fills at all.
+// It claims a field is filled and not what with — which source each comes from
+// is judged case by case in the tests around it. What a zero costs, and which
+// five of the thirteen used to be droppable, are in .claude/rules/fold.md.
 func TestEveryFieldOfAReadAnswerIsFilled(t *testing.T) {
 	answer := reflect.TypeFor[p.InternalWorkflowMutableState]()
+	require.NotZero(t, answer.NumField(), "the answer's type has no fields: this judges nothing")
+
 	requireFilled := func(t *testing.T, state *p.InternalWorkflowMutableState, from string) {
 		t.Helper()
-		v, seen := reflect.ValueOf(state).Elem(), 0
+		v := reflect.ValueOf(state).Elem()
 		for f := range answer.Fields() {
-			seen++
 			require.Falsef(t, v.FieldByIndex(f.Index).IsZero(),
 				"%s is zero in a read answered from %s, and the fixture fills it: no arm of the "+
 					"overlay carries it, so the caller is told the run does not have it and "+
 					"writes the run back without it", f.Name, from)
 		}
-		require.NotZerof(t, seen, "the answer's type has no fields: this has judged nothing")
 	}
 
 	t.Run("a delta over the cold store's row", func(t *testing.T) {
@@ -331,7 +326,7 @@ func TestTheOverlayIsReadOnlyOnTheAccumulator(t *testing.T) {
 	build := func() *fold.Accumulator {
 		a := fold.New(shard)
 		add(t, a,
-			mkCreate(runX, fullSnapshot, snapActivity(1, "created"), snapTask("task-create")),
+			mkCreate(runX, fullSnapshot, snapTask("task-create")),
 			mkUpdate(runY, 2, upsertActivity(7, "updated"), withTask("task-update"), withBuffered("batch")),
 		)
 		return a
@@ -360,13 +355,12 @@ func TestTheOverlayDoesNotWriteThroughTheBase(t *testing.T) {
 	add(t, a, mkUpdate(runX, 2, upsertActivity(2, "window"), deleteActivity(1)))
 
 	base := fullBaseRow(1)
-	before := len(base.State.ActivityInfos)
 	held := collectionSizes(t, base.State)
 
 	resp, _, _ := render(a, runX, base)
 	require.Equal(t, "window", activity(t, resp, 2))
 
-	require.Len(t, base.State.ActivityInfos, before, "the base row gained the window's upsert")
+	require.Len(t, base.State.ActivityInfos, held["ActivityInfos"], "the base row gained the window's upsert")
 	require.Contains(t, base.State.ActivityInfos, int64(1), "the base row lost a key to the window's delete")
 	require.Len(t, base.State.BufferedEvents, 1, "the base's batches were appended to")
 

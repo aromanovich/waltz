@@ -45,10 +45,14 @@ What to know before changing any of it:
   of `go test ./...` green. `TestEveryCollectionOfARunReachesTheDatabase` drives
   every `Upsert*` of a delta and its counterpart on a snapshot through a real
   drain and reads the run back through the store's own read; it is red for all
-  fourteen lines. Its fixture table is a hand list because what a store will take
-  is not derivable from a type, and it is held to the type in both directions —
-  an `Upsert*` with no entry, and an entry for a collection a delta no longer
-  has, each fail by name;
+  fourteen lines. It holds the run against the **entry** the drain carried and
+  not against a count, because a count also passes a drain that wrote two
+  collections into each other's tables. Its fixture is a hand list of values,
+  because what a store will take is not derivable from a type — but there is no
+  second list for the snapshot arm or for the read-back, both of which reach the
+  same collection by taking the `Upsert` prefix off. It is held to the type in
+  both directions: an `Upsert*` with no entry, and an entry for a collection a
+  delta no longer has, each fail by name;
 
 * **two orderings in `Apply` are the contract and not transcription** — the
   epoch CAS first, so a lost shard is reported as one rather than as the version
