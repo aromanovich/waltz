@@ -585,6 +585,85 @@ func TestATakenSeqnoHalts(t *testing.T) {
 		"the halt names the gap it cannot fill")
 }
 
+// The append whose outcome the contract has no name for. Three answers, and
+// the log is the witness for all three, as the watermark is for a drain: the
+// one thing that may not follow such an append is another mutation at the same
+// seqno, since with the first attempt possibly still in flight, which of the two
+// ends up there is the backend's race to settle and a caller was told each of
+// the two answers.
+func TestAnAmbiguousAppend(t *testing.T) {
+	unreachable := errors.New("the connection went away mid-append")
+
+	t.Run("that landed is the caller's success", func(t *testing.T) {
+		e := newEnv(t, nil)
+		e.log.AfterAppend(waltest.Once(unreachable))
+		ns, wf, run := ids()
+
+		require.NoError(t, e.add(t, mkCreate(ns, wf, run)),
+			"the entry is durable, so reporting the append failed would be a lie the caller acts on")
+		require.Equal(t, StateRunning, e.c.State())
+
+		entries := e.entries(t)
+		require.Len(t, entries, 1, "the readback settled the append rather than repeating it")
+		require.Equal(t, wal.FirstSeqno, entries[0].Seqno)
+
+		s := e.c.Stats()
+		require.Equal(t, 1, s.Mutations, "and the mutation is in the window exactly once")
+		require.Equal(t, wal.FirstSeqno, s.CommitSeqno)
+	})
+
+	t.Run("that wrote nothing leaves the seqno free", func(t *testing.T) {
+		e := newEnv(t, nil)
+		e.log.OnAppend(waltest.Once(unreachable))
+		ns, wf, run := ids()
+
+		require.ErrorIs(t, e.add(t, mkCreate(ns, wf, run)), unreachable)
+		require.Equal(t, StateRunning, e.c.State(),
+			"the log proved the append wrote nothing, so a blip is not a lost shard")
+
+		require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
+		entries := e.entries(t)
+		require.Len(t, entries, 1)
+		require.Equal(t, wal.FirstSeqno, entries[0].Seqno, "the next mutation takes the seqno it left")
+	})
+
+	t.Run("nobody could read the outcome of halts the shard", func(t *testing.T) {
+		e := newEnv(t, nil)
+		ns, wf, run := ids()
+		// The first write reads the log once, replaying a tail that is not
+		// there; the readback is the call after it.
+		e.log.OnRead(func(call int) error {
+			if call == 1 {
+				return nil
+			}
+			return unreachable
+		})
+		e.log.AfterAppend(waltest.Once(unreachable))
+
+		err := e.add(t, mkCreate(ns, wf, run))
+		require.ErrorIs(t, err, ErrHalted)
+		require.Equal(t, StateHaltedInvariant, e.c.State(),
+			"the seqno's fate is open, and the one thing that may not follow is another mutation at it")
+		require.Empty(t, e.log.Trims(), "a halted cycle's log is the evidence")
+	})
+
+	t.Run("finding an entry it did not write halts the shard", func(t *testing.T) {
+		e := newEnv(t, nil)
+		ns, wf, run := ids()
+		require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
+
+		// A second writer at this cycle's own epoch takes the seqno it is about
+		// to use, which is what an entry above everything this cycle replayed
+		// and not its own means.
+		require.NoError(t, e.log.Append(
+			context.Background(), testShard, testEpoch, wal.FirstSeqno+1, []byte("somebody else's")))
+		e.log.OnAppend(waltest.Once(unreachable))
+
+		require.ErrorIs(t, e.add(t, mkUpdate(ns, wf, run, 2)), ErrTailNotEmpty)
+		require.Equal(t, StateHaltedInvariant, e.c.State())
+	})
+}
+
 // TestAMutationOfAnotherShardIsRefused: refused before it is acked.
 func TestAMutationOfAnotherShardIsRefused(t *testing.T) {
 	e := newEnv(t, nil)

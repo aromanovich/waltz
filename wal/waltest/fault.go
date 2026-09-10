@@ -68,6 +68,10 @@ type method int
 const (
 	fenceCall method = iota
 	appendCall
+	// landedCall is [Faulty.AfterAppend]'s seam, asked once the append has
+	// reached the log. It is a method of its own here because it is a second
+	// fault on one call, with its own count.
+	landedCall
 	readCall
 	trimCall
 )
@@ -78,6 +82,17 @@ const (
 func (f *Faulty) OnFence(fault Fault) { f.set(fenceCall, fault) }
 
 func (f *Faulty) OnAppend(fault Fault) { f.set(appendCall, fault) }
+
+// AfterAppend sets the fault an append is asked about once it has reached the
+// log, so the call fails having done its work. That is the ambiguous append —
+// durable and reported failed — and it is the one outcome [wal]'s three
+// refusals cannot express, each of them saying the write is whole one way or
+// the other. A caller driving what happens after one has nothing else to reach
+// for: refusing the call ([Faulty.OnAppend]) stages the opposite case.
+//
+// It composes with OnAppend and is asked second, so a call that fault refused
+// never reaches this one.
+func (f *Faulty) AfterAppend(fault Fault) { f.set(landedCall, fault) }
 
 func (f *Faulty) OnRead(fault Fault) { f.set(readCall, fault) }
 
@@ -122,7 +137,12 @@ func (f *Faulty) Append(
 	if err := f.call(appendCall, nil); err != nil {
 		return err
 	}
-	return f.log.Append(ctx, shard, epoch, seqno, payload)
+	if err := f.log.Append(ctx, shard, epoch, seqno, payload); err != nil {
+		return err
+	}
+	// Asked only for an append that landed, so its count is ambiguous appends
+	// staged rather than calls made.
+	return f.call(landedCall, nil)
 }
 
 func (f *Faulty) ReadFrom(

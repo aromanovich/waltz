@@ -326,6 +326,25 @@ What to know before changing it:
   therefore no longer means "somebody left a tail": it means a second writer at
   *this* epoch, which the fence should have made impossible, and the halt keeps
   its old name (`ErrTailNotEmpty`) and its old class;
+* **an append error the contract does not name is read back, not assumed**
+  (`appendOutcomeOf`, `Cycle.settleAppend`). It is the drain's unknown-outcome
+  rule at the other seam and the symmetry is exact: the log is the witness for an
+  append as the watermark is for a drain, the read is detached from the caller's
+  cancellation for the same reason — a client deadline expiring inside the call
+  is the commonest way the outcome became unreadable — and only a *definite*
+  answer moves anything. Three things about it are decisions. **An entry that is
+  there is a success**, not a halt: the payload is this cycle's own, it is
+  durable, and telling the caller it failed is the lie the first rule is about,
+  the caller's next write standing on a state this entry is about to move.
+  **Nothing there is not a halt either**, which is what keeps a transport blip
+  from costing a shard — the contract's three refusals already write nothing, and
+  this makes the fourth case say so rather than assume it. And **a read that
+  failed halts**, where the drain's equivalent stalls: a stall lets the shard
+  keep acking, and the very next thing a writer needs here is that seqno, so
+  there is nothing to keep. An append-side stall that refused writes until the
+  readback answered would heal where this fails over, and it is a bigger
+  mechanism than the one place it would help — a log that answers no reads is
+  a log the successor cannot write to either;
 * **`cycle/acked.go` is gone and must not come back** (#142). It held I7's bound
   — per (shard, epoch, category), raised only, filled from a queue's goroutine
   under a mutex, snapshotted per drain — and every one of those placements was

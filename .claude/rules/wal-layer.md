@@ -84,17 +84,28 @@ What to know before changing any of it:
   the case is the whole of the coverage is measured rather than assumed: deleting
   every `ctx.Err()` check from `memwal` leaves the other eighteen green and fails
   this one alone;
-* **a refusal the contract has no name for is a contract change, not an
-  adapter's problem.** A backend can reach a state where an append failed *and*
-  the check that would say whether it landed failed too — the outcome is
-  unknown, and it is the one answer a caller may not replay on, since a replay
-  may write a second entry at a seqno the first attempt still lands at. The
-  cycle's append switch recognises only the three sentinels: anything else
-  arrives as an ordinary error, `s.next` does not move, and the next mutation
-  appends at the same seqno — which is exactly the replay such a state forbids.
-  Closing it means either a fourth answer in `wal` meaning "the outcome is
-  unknown, do not retry this seqno", or the cycle halting on an append error it
-  does not recognise. Both are decisions about every backend rather than about
-  one, which is why neither has been taken here;
+* **a refusal the contract has no name for is settled by reading the log, not by
+  a fourth sentinel.** An append can fail with an error the contract does not
+  name — every transport failure does — and whether the entry is in the log is
+  then not established. It used to be *assumed*: the cycle's append switch
+  recognised the three sentinels, anything else left `s.next` where it was, and
+  the next mutation took the same seqno with the first attempt possibly still in
+  flight. Which of the two ends up at that position is then the backend's race
+  to settle, and a caller was told each of the two answers.
+  Two closes were considered and the third is what shipped. **A fourth answer in
+  `wal`** meaning "the outcome is unknown" asks every backend to know something
+  most cannot: the state it describes is exactly the one where a backend's own
+  check failed. **Halting on any unrecognised append error** is correct and
+  costs a shard per blip, since the common case is a transport error that wrote
+  nothing. What ships instead is `cycle.Cycle.settleAppend`: the log is the
+  witness, read back at that one seqno, exactly as the cold store's watermark is
+  the witness for a drain — nothing there and the append wrote nothing, this
+  cycle's own payload there and the append *succeeded* and the caller is told so,
+  anything else (a stranger's entry, or a read that failed) and the shard halts
+  holding the log as evidence. So the contract is unchanged and `wal`'s three
+  refusals still mean what they meant; what changed is that the cycle stopped
+  reading "an error I do not recognise" as "wrote nothing".
+  `waltest.Faulty.AfterAppend` is what stages one — a fault asked *after* the
+  append has landed, the ambiguity no `OnAppend` can express;
 * the whole of it runs with nothing installed: `go test ./wal/...` is
   milliseconds, and it is the first thing to run on a fresh clone.

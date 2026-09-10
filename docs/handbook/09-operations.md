@@ -310,9 +310,10 @@ import ban in [03-components.md](03-components.md) exist to allow.
 * **What to check.** For `halted-invariant`, the `apply cycle halted` log line. It carries the shard
   id, the state and the cause, and the cause is the only thing that says which assertion failed.
   Several roads lead here. The ones you will see: an `apply.InvariantViolationError` from a drain;
-  `cycle.ErrTailNotEmpty` — "the log holds an entry at a seqno this cycle replayed past", which is
-  either a second writer holding this cycle's own epoch or one of this cycle's own appends that
-  failed ambiguously and was durable after all; a decode failure, a seqno gap or a shard-id mismatch
+  `cycle.ErrTailNotEmpty` — "the log holds an entry at a seqno this cycle replayed past", which is a
+  second writer holding this cycle's own epoch; an append whose outcome nobody could read, which
+  carries "the append at seqno N has an outcome nobody could read" and means the log answered
+  neither the append nor the read that would have settled it; a decode failure, a seqno gap or a shard-id mismatch
   while replaying the tail; a drain whose outcome was unreadable and which a later watermark then
   proved had not committed; an acked entry this cycle could not fold at all; and any apply class
   nobody enumerated. The metrics cannot narrow it further:

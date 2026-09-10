@@ -117,6 +117,19 @@ They run in `Delegated.Settle`'s order and stop at the first refusal, so a faili
 pays less than a succeeding one. In sync mode none is taken at all: the drain that asserts
 everything runs inside the same call, so the round trip would buy nothing.
 
+**When the append itself has no answer.** The three refusals `wal` names each say the write is whole
+one way or the other, and everything else — every transport failure — says nothing at all. The cycle
+does not read that as "wrote nothing": it reads the seqno back, which is the log answering for an
+append the way the cold store's watermark answers for a drain
+([chapter 06](06-shard-lifecycle.md)). Three outcomes, and only the middle one is new to a reader who
+knows the drain's version. Nothing at the seqno and the append wrote nothing, so the seqno is the
+next mutation's and the caller gets the error. **This cycle's own payload at it and the append
+succeeded**, so the caller is told nil — the entry is durable and every later write of that workflow
+will stand on it, which is exactly the state a "failed" would have the caller act against. Anything
+else — a stranger's entry, or a read that failed too — halts the shard holding the log as evidence.
+The read is detached from the caller's cancellation, because a client deadline expiring inside the
+append is the commonest way the outcome became unreadable in the first place.
+
 **How far that read can be trusted.** The reads run on the cycle's own goroutine, so no drain of
 this process can wedge between one of them and the append. That is a claim about this process, not
 about the world: another process can move one of those rows only by taking the shard, and once it

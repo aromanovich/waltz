@@ -879,7 +879,7 @@ archival is configured. A nil `Logger` becomes a noop logger and a nil `Metrics`
 | Error | What it reports |
 |---|---|
 | `ErrHalted` | matches, via `errors.Is`, every refusal a halted cycle answers with; the class is in `Cycle.State()` and the cause travels wrapped, so a caller can still reach the `*apply.InvariantViolationError` |
-| `ErrTailNotEmpty` | an append refused because the log already holds the seqno the cycle meant to write. A cycle replays past the whole tail before it appends, so it is one of two things: a second writer holding this cycle's own epoch, or one of this cycle's own appends that failed ambiguously and was durable after all. It halts |
+| `ErrTailNotEmpty` | the log holds the seqno the cycle meant to write. A cycle replays past the whole tail before it appends, and an append that failed ambiguously is read back at once and settled, so what is left is a second writer holding this cycle's own epoch. It halts |
 | `ErrBudget` | a policy whose `HardMaxBytes × MaxShards` does not fit `TailBudgetBytes` |
 | `ErrNoRegistry` | a nil `Deps.Registry` |
 | `ErrNoBaseRow` | the condition authority delegated an assertion to the cold store and the caller brought no `*baserow.Rows`. It is a refusal, not a skip: a refused write provably acked nothing, whereas a skip would ack an assertion nobody evaluated |

@@ -12,6 +12,7 @@
 package cycle
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -667,16 +668,12 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 		return fmt.Errorf("cycle: encoding a mutation of shard %d: %w", c.shard, err)
 	}
 	if err := c.deps.Log.Append(ctx, c.shard, c.epoch, s.next, payload); err != nil {
-		switch {
-		case errors.Is(err, wal.ErrFenced):
-			// The shard has a new owner: I4 working, not an incident.
-			c.halt(s, StateHaltedLost, err)
-		case errors.Is(err, wal.ErrAlreadyWritten):
-			// Someone acked a seqno this cycle already replayed past, at this
-			// cycle's own epoch. See [ErrTailNotEmpty].
-			c.halt(s, StateHaltedInvariant, fmt.Errorf("%w (seqno %d): %w", ErrTailNotEmpty, s.next, err))
+		// nil here is the one append that failed and is durable anyway, which
+		// falls through to the accept below: the entry is in the log at this
+		// seqno, so the caller is owed what a nil append would have given it.
+		if err := c.appendFailed(ctx, s, err, payload); err != nil {
+			return err
 		}
-		return err
 	}
 	if err := c.accept(ctx, s, m, len(payload)); err != nil {
 		return err
@@ -729,6 +726,86 @@ func (c *Cycle) accept(ctx context.Context, s *state, m mutation.Mutation, size 
 	}
 	c.folded(s, kind, size)
 	return nil
+}
+
+// appendFailed says what becomes of a write whose append did not return nil,
+// and returns nil for the one that is durable regardless ([Cycle.settleAppend]).
+//
+// The three refusals the contract names each say the write is whole one way or
+// the other, so nothing has to be established about them. What is left is
+// everything a transport can fail with, and the seqno's fate then has to be
+// read rather than assumed — which is what this exists for.
+func (c *Cycle) appendFailed(ctx context.Context, s *state, cause error, payload []byte) error {
+	switch appendOutcomeOf(cause) {
+	case appendFenced:
+		// The shard has a new owner: I4 working, not an incident.
+		c.halt(s, StateHaltedLost, cause)
+	case appendTaken:
+		// Someone acked a seqno this cycle already replayed past, at this
+		// cycle's own epoch. See [ErrTailNotEmpty].
+		c.halt(s, StateHaltedInvariant, fmt.Errorf("%w (seqno %d): %w", ErrTailNotEmpty, s.next, cause))
+	case appendUnknown:
+		return c.settleAppend(ctx, s, cause, payload)
+	}
+	return cause
+}
+
+// settleAppend turns an append whose outcome the contract cannot name into one
+// it can, by reading the seqno back. The log is the only witness, exactly as the
+// cold store's watermark is for a drain, and the read is detached from the
+// caller's cancellation for that same reason: a client deadline expiring inside
+// the append is the commonest way the outcome became unreadable, so a read on
+// that context could not answer in the one case it exists to answer.
+//
+// The three answers, and nil for the one that is a successful write:
+//
+//   - the log does not hold the seqno, so the append wrote nothing and the
+//     seqno stays this cycle's next. The caller gets the append's own error,
+//     which is now established rather than assumed;
+//   - the log holds this cycle's own payload at it, so the append was durable
+//     and reporting it failed would be a lie the caller acts on — a write it
+//     would replay against a state this entry is about to move;
+//   - anything else halts. An entry this cycle did not write, at its own epoch
+//     and above everything it replayed, is [ErrTailNotEmpty]'s second writer; a
+//     read that failed leaves the fate of the seqno open, and the one thing that
+//     may not follow is another mutation taking it.
+func (c *Cycle) settleAppend(ctx context.Context, s *state, cause error, payload []byte) error {
+	entry, held, err := c.entryAt(ctx, s.next)
+	switch {
+	case err != nil:
+		c.deps.Logger.Warn("apply cycle: an append's outcome could not be read",
+			tag.ShardID(int32(c.shard)), tag.NewInt64("seqno", int64(s.next)), tag.Error(err))
+		c.halt(s, StateHaltedInvariant, fmt.Errorf(
+			"the append at seqno %d has an outcome nobody could read (%w): %w", s.next, cause, err))
+		return c.halted(s)
+	case !held:
+		return cause
+	case entry.Epoch != c.epoch || !bytes.Equal(entry.Payload, payload):
+		c.halt(s, StateHaltedInvariant, fmt.Errorf(
+			"%w (seqno %d): the log holds an entry at epoch %d this cycle did not write: %w",
+			ErrTailNotEmpty, s.next, entry.Epoch, cause))
+		return c.halted(s)
+	}
+	c.deps.Logger.Info("apply cycle: an ambiguous append had landed",
+		tag.ShardID(int32(c.shard)), tag.NewInt64("seqno", int64(s.next)), tag.Error(cause))
+	return nil
+}
+
+// entryAt reads back the one entry a seqno holds, and whether it holds one. A
+// log that answers a read from a seqno with a higher one has a hole where this
+// caller is looking, which is no answer about the seqno asked for.
+func (c *Cycle) entryAt(ctx context.Context, seqno wal.Seqno) (wal.Entry, bool, error) {
+	entries, err := c.deps.Log.ReadFrom(context.WithoutCancel(ctx), c.shard, seqno, 1)
+	switch {
+	case err != nil:
+		return wal.Entry{}, false, err
+	case len(entries) == 0:
+		return wal.Entry{}, false, nil
+	case entries[0].Seqno != seqno:
+		return wal.Entry{}, false, fmt.Errorf(
+			"the log answered a read from seqno %d with seqno %d", seqno, entries[0].Seqno)
+	}
+	return entries[0], true, nil
 }
 
 // refold folds an entry whose own fold was refused and whose recovery drain then
