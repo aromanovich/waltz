@@ -1,7 +1,7 @@
 package fold
 
 // The condition authority: what the accumulator answers about a mutation's
-// preconditions before it is acked, and what it hands on.
+// assertions before it is acked, and what it hands on.
 //
 // Only the head of a window is asserted against the database, so without this
 // file a stale conditional write folds in silently. Every assertion is in one of

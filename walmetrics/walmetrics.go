@@ -134,9 +134,9 @@ const (
 
 // Trigger values for [Drains].
 const (
-	TriggerMutations = "mutations" // the size watermark, in mutations
-	TriggerBytes     = "bytes"     // the size watermark, in bytes
-	TriggerAge       = "age"       // the age watermark
+	TriggerMutations = "mutations" // the size trigger, in mutations
+	TriggerBytes     = "bytes"     // the size trigger, in bytes
+	TriggerAge       = "age"       // the age trigger
 	TriggerRefusal   = "refusal"   // fold.ErrRefused: a window the accumulator cannot express
 	TriggerSync      = "sync"      // intercept mode: one write, one drain
 	TriggerReplay    = "replay"    // a tail a previous owner left, being applied
