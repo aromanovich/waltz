@@ -84,7 +84,7 @@ func (r Recorder) Call(ctx context.Context, m mutation.Mutation) (Outcome, error
 	// belongs to the call, and a case that reads the record for a fence must
 	// find one wherever the caller's own commentary went.
 	if out.Fenced() {
-		if err := r.Record.Note(checker.EventFenced, r.Shard, r.Epoch, out.Detail()); err != nil {
+		if err := r.Record.Fenced(r.Shard, r.Epoch, out.Detail()); err != nil {
 			return out, err
 		}
 	}

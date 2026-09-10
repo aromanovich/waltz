@@ -210,23 +210,23 @@ func assertEpoch(ctx context.Context, tx sqlplugin.Tx, shardID int32, epoch int6
 func (s *Store) applyRequest(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, e *fold.Emitted,
 ) error {
-	if e.FirstOfWorkflow() {
-		if err := applyCurrentRow(ctx, tx, shardID, e); err != nil {
-			return err
-		}
-	}
-	if err := assertRuns(ctx, tx, shardID, e); err != nil {
-		return err
-	}
-
 	ns, err := parseNamespace(e.NamespaceID)
 	if err != nil {
 		return err
 	}
 
+	if e.FirstOfWorkflow() {
+		if err := applyCurrentRow(ctx, tx, shardID, ns, e); err != nil {
+			return err
+		}
+	}
+	if err := assertRuns(ctx, tx, shardID, ns, e); err != nil {
+		return err
+	}
+
 	switch e.Request.Kind() {
 	case mutation.KindCreate:
-		if err := s.applySnapshotAsNew(ctx, tx, shardID, &e.Request.Create.NewWorkflowSnapshot); err != nil {
+		if err := applySnapshotAsNew(ctx, tx, shardID, &e.Request.Create.NewWorkflowSnapshot); err != nil {
 			return err
 		}
 
@@ -236,7 +236,7 @@ func (s *Store) applyRequest(
 			return err
 		}
 		if added := req.NewWorkflowSnapshot; added != nil {
-			if err := s.applySnapshotAsNew(ctx, tx, shardID, added); err != nil {
+			if err := applySnapshotAsNew(ctx, tx, shardID, added); err != nil {
 				return err
 			}
 		}
@@ -252,7 +252,7 @@ func (s *Store) applyRequest(
 			}
 		}
 		if added := req.NewWorkflowSnapshot; added != nil {
-			if err := s.applySnapshotAsNew(ctx, tx, shardID, added); err != nil {
+			if err := applySnapshotAsNew(ctx, tx, shardID, added); err != nil {
 				return err
 			}
 		}
@@ -299,14 +299,12 @@ func (s *Store) applyRequest(
 // they ride the request [fold.Emitted.FirstOfWorkflow] marks — the store reports
 // the first failing assertion, and hoisting every workflow's to the front of
 // the batch would change which failure a mixed drain reports.
-func applyCurrentRow(ctx context.Context, tx sqlplugin.Tx, shardID int32, e *fold.Emitted) error {
+func applyCurrentRow(
+	ctx context.Context, tx sqlplugin.Tx, shardID int32, ns primitives.UUID, e *fold.Emitted,
+) error {
 	wf := e.Workflow()
 	if wf.Current == nil && wf.CurrentWrite == nil {
 		return nil
-	}
-	ns, err := parseNamespace(e.NamespaceID)
-	if err != nil {
-		return err
 	}
 
 	row, err := lockCurrent(ctx, tx, shardID, ns, e.WorkflowID)
@@ -428,14 +426,12 @@ func deleteCurrentRow(
 // order. The order is not the map's: the drain reports the first assertion that
 // fails, and a map's iteration would make which failure a caller sees differ
 // between two runs of the same batch.
-func assertRuns(ctx context.Context, tx sqlplugin.Tx, shardID int32, e *fold.Emitted) error {
+func assertRuns(
+	ctx context.Context, tx sqlplugin.Tx, shardID int32, ns primitives.UUID, e *fold.Emitted,
+) error {
 	runs := e.RunAssertions()
 	if len(runs) == 0 {
 		return nil
-	}
-	ns, err := parseNamespace(e.NamespaceID)
-	if err != nil {
-		return err
 	}
 
 	for _, runID := range slices.Sorted(maps.Keys(runs)) {
