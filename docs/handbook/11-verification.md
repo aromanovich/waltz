@@ -106,9 +106,24 @@ whether the fence reaches another machine. Whoever supplies the log owes that te
 only removal the contract excuses: a retention policy, a TTL on the table, a compaction that drops
 old records are each a violation of it. The suite cannot see any of them. Every case runs to
 completion in milliseconds, so a log that deletes entries after an hour passes all nineteen and
-loses an acked entry the first time a shard's tail outlives the policy. A backend on storage that
-expires anything owes itself the test the suite has no way to write, and owes it against the
-configuration it will actually run.
+loses an acked entry the first time a shard's tail outlives the policy — acked data with no second
+copy, since the cold store not holding it is the whole reason it is in the log.
+
+**That one has an instrument now, and it is not a suite case.** `waltest.CheckRetention` appends a
+short run, waits out a window the caller names, and requires every entry to still be there — same
+seqnos, same payloads, same order, and the log still appendable above them. It is a function
+returning an error rather than a nineteenth case for two reasons: it costs its window in wall-clock
+time, and a deployment runs it from whatever harness it has rather than only from `go test`.
+
+Two things about how to run it. **Point it at a deliberately shortened policy** — set the log's
+table to expire in two minutes on a staging cluster and pass two minutes — because a pass says the
+entries outlived *that* window and not that the backend has no retention, and what is worth
+establishing is whether expiry exists as a mechanism at all. And know that the check itself is
+proved rather than assumed: `TestTheRetentionCheckIsNotVacuous` runs it both ways at a
+twenty-millisecond window, green against `memwal` and red against `waltest.Expiring`, a decorator
+whose entries age out — which is the shape a retention window, a TTL and a compaction all have from
+above. Without that second arm a deployment reading a green check has no way to tell it from a check
+that would have passed anything.
 
 ---
 

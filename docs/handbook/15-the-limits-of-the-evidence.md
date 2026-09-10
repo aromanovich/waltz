@@ -143,7 +143,10 @@ implementation runs. It is also **in one process's memory**, so:
   the reason it cannot be closed here: one process is all there is.
 
 A deployment's log is where the interesting failures live, and it is judged by
-`waltest.RunContractSuite` plus a two-process failover test the deployment writes.
+`waltest.RunContractSuite` plus `waltest.CheckRetention` against its own storage, plus a two-process
+failover test the deployment writes. The middle one is the suite's other blind spot — time — as a
+check that can be run rather than a limit: it costs the window it is given, so only a deployment can
+spend it, and only a deployment knows what its storage was configured to expire.
 
 ## The cold store is real, and it is in memory
 

@@ -107,5 +107,23 @@ What to know before changing any of it:
   reading "an error I do not recognise" as "wrote nothing".
   `waltest.Faulty.AfterAppend` is what stages one — a fault asked *after* the
   append has landed, the ambiguity no `OnAppend` can express;
+* **the suite's blind spot on time has an instrument, and it is deliberately not
+  a case in the suite.** Guarantee 5 excuses a trim and nothing else, so a
+  retention window, a TTL on the log's table or a compaction that drops old
+  records each break it silently — and the suite runs in milliseconds, so a
+  backend that expires entries passes all nineteen and loses the first tail that
+  outlives its policy. `waltest.CheckRetention` is that obligation as a function
+  a deployment calls: append a run, wait out a window the caller names, require
+  every entry back with the log still appendable above them. It returns an error
+  rather than taking a `*testing.T` for the reason `internal/verify/drive` does —
+  a deployment runs it from whatever harness it has — and it costs its window in
+  wall-clock time, which is why it cannot be a twentieth case. Point it at a
+  **deliberately shortened policy**: a pass says the entries outlived that
+  window, never that the backend has no retention. `waltest.Expiring` is the
+  backend it is proved against and the one decorator here that is not a log a
+  backend may be — `Faulty` refuses calls, which a correct backend does, while
+  this one breaks the readback guarantee on purpose. Without it a deployment
+  reading a green check cannot tell it from a check that passes anything, which
+  is what `TestTheRetentionCheckIsNotVacuous` exists to say;
 * the whole of it runs with nothing installed: `go test ./wal/...` is
   milliseconds, and it is the first thing to run on a fresh clone.

@@ -1,11 +1,13 @@
-// The contract is asserted by the suite in waltest and by nothing else. The two
+// The contract is asserted by the suite in waltest and by nothing else. The
 // tests below it pin the promises this backend makes as a substitute, where it
-// could differ from every real backend in a way the contract has no words for.
+// could differ from every real backend in a way the contract has no words for —
+// and, in the retention case, prove an instrument the suite cannot carry.
 package memwal_test
 
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -18,6 +20,30 @@ import (
 // own: the suite is entitled to one with no shards.
 func TestMemWALContractSuite(t *testing.T) {
 	waltest.RunContractSuite(t, memwal.New())
+}
+
+// TestTheRetentionCheckIsNotVacuous is where waltest.CheckRetention is proved,
+// since a deployment running it against its own storage has no way to tell a
+// pass from a check that would have passed anything. Both directions, on a
+// window short enough to be a unit test: this backend keeps what it acked, and
+// one wrapped so its entries expire does not — which is the shape a retention
+// window, a TTL on a table and a compaction that drops old records all have.
+//
+// The check itself costs the window it is given, which is why it is a function a
+// deployment calls rather than a case in the suite.
+func TestTheRetentionCheckIsNotVacuous(t *testing.T) {
+	ctx := context.Background()
+	const shard, epoch, window = wal.ShardID(4), wal.Epoch(7), 20 * time.Millisecond
+
+	require.NoError(t, waltest.CheckRetention(ctx, memwal.New(), shard, epoch, window),
+		"this backend takes entries away at a trim and at nothing else")
+
+	expires := waltest.Expiring(memwal.New(), window/4)
+	err := waltest.CheckRetention(ctx, expires, shard, epoch, window)
+	require.Error(t, err, "a log whose entries expire passed a check for entries that expire")
+	require.Contains(t, err.Error(), "holds 0 of its 3 entries after "+window.String(),
+		"the failure has to name the moment as well as the shortfall: one raised before the wait "+
+			"is about an append that never landed, which is a different fault and not this one's")
 }
 
 // TestATrimmedLogRemembersWhereItIs pins the next seqno surviving a trim that
