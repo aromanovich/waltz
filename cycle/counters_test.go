@@ -83,9 +83,7 @@ func TestCountersAreSummableAndEveryOneIsSummed(t *testing.T) {
 func TestARetiredCyclesCountersReachTheNodesTotals(t *testing.T) {
 	ctx := context.Background()
 	logs := newLog()
-	m, err := NewManager(Deps{
-		Log: logs, Writer: &fakeApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry(),
-	}, Fixed(func() Config {
+	m, err := NewManager(testDeps(logs, &fakeApplier{}), Fixed(func() Config {
 		// A window nothing reaches, so the cycle counts and never drains.
 		c := Defaults()
 		c.Mutations, c.Bytes = 1<<20, 1<<30
@@ -140,9 +138,7 @@ func TestARetiredCyclesCountersReachTheNodesTotals(t *testing.T) {
 func TestATrimCommittingOnTheWayOutIsInTheNodesTotals(t *testing.T) {
 	ctx := context.Background()
 	logs := newLog()
-	m, err := NewManager(Deps{
-		Log: logs, Writer: &fakeApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry(),
-	}, Fixed(func() Config {
+	m, err := NewManager(testDeps(logs, &fakeApplier{}), Fixed(func() Config {
 		// Drain on every write and trim on every drain, so one mutation is one
 		// trim and the cadence needs no clock.
 		c := Defaults()
@@ -176,9 +172,7 @@ func TestATrimCommittingOnTheWayOutIsInTheNodesTotals(t *testing.T) {
 // fixture here drives is still asserted to arrive.
 func TestTotalsSumsEveryCounterOverEveryCycle(t *testing.T) {
 	ctx := context.Background()
-	m, err := NewManager(Deps{
-		Log: newLog(), Writer: &fakeApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry(),
-	}, Fixed(Defaults()))
+	m, err := NewManager(testDeps(newLog(), &fakeApplier{}), Fixed(Defaults()))
 	require.NoError(t, err)
 	t.Cleanup(func() { m.Close(ctx) })
 

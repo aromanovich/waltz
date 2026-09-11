@@ -359,7 +359,7 @@ func TestARetiredCycleAnswersOffItsMirroredTail(t *testing.T) {
 // case: a write around the log is fatal, while refusing a read would refuse
 // every role that legitimately reads a shard without owning it.
 func TestAShardThisNodeDoesNotHoldIsPassthrough(t *testing.T) {
-	m, err := NewManager(Deps{Log: newLog(), Writer: &fakeApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry()}, Fixed(Defaults()))
+	m, err := NewManager(testDeps(newLog(), &fakeApplier{}), Fixed(Defaults()))
 	require.NoError(t, err)
 
 	base := &coldStore{info: "cold"}

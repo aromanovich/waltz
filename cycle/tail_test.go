@@ -90,7 +90,7 @@ func TestTheMirrorFollowsEveryTailMove(t *testing.T) {
 		second := takeShard(t, log, 8, nil)
 		second.ap.errs = []error{&p.WorkflowConditionFailedError{Msg: "stale"}}
 		_, err := second.c.getCurrentExecution(ctx,
-			&p.GetCurrentExecutionRequest{ShardID: int32(testShard), NamespaceID: ns, WorkflowID: wf},
+			getCurrent(ns, wf),
 			func(context.Context) (*p.InternalGetCurrentExecutionResponse, error) {
 				return nil, serviceerror.NewNotFound("no current execution")
 			})

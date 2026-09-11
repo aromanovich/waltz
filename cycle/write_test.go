@@ -35,7 +35,7 @@ func newManager(t *testing.T, apply cold.Applier, shape func(*Config)) *Manager 
 	if shape != nil {
 		shape(&cfg)
 	}
-	m, err := NewManager(Deps{Log: memwal.New(), Writer: apply, Recoverer: &fakeWatermark{}, Registry: testRegistry()}, Fixed(cfg))
+	m, err := NewManager(testDeps(memwal.New(), apply), Fixed(cfg))
 	require.NoError(t, err)
 	t.Cleanup(func() { m.Close(context.Background()) })
 	return m
@@ -145,8 +145,7 @@ func TestAHaltedInvariantIsNotAFailover(t *testing.T) {
 func TestTheRefusalReachesTheBoundaryUntouched(t *testing.T) {
 	ctx := context.Background()
 	m := newManager(t, &fakeApplier{}, func(c *Config) {
-		c.Sync = false
-		c.Mutations, c.Bytes, c.Age = 1<<30, 1<<30, time.Hour
+		neverDrains(c)
 		c.HardMaxEntries = 1
 	})
 	require.NoError(t, m.ShardAcquired(ctx, testShard, 7))
@@ -171,10 +170,7 @@ func TestTheRefusalReachesTheBoundaryUntouched(t *testing.T) {
 func TestAConditionTheWindowAnswersIsTheCallersOwnError(t *testing.T) {
 	ctx := context.Background()
 	applier := &fakeApplier{}
-	m := newManager(t, applier, func(c *Config) {
-		c.Sync = false
-		c.Mutations, c.Bytes, c.Age = 1<<30, 1<<30, time.Hour
-	})
+	m := newManager(t, applier, neverDrains)
 	require.NoError(t, m.ShardAcquired(ctx, testShard, 7))
 	ns, wf, run := ids()
 
@@ -226,9 +222,10 @@ func TestAWindowedWriteRetainsTheCallersOwnRequest(t *testing.T) {
 		"the drain must reach the caller's own request rather than a copy of it")
 }
 
-func requireLost(t *testing.T, err error) {
+func requireLost(t *testing.T, err error) *p.ShardOwnershipLostError {
 	t.Helper()
 	lost, ok := err.(*p.ShardOwnershipLostError) //nolint:errorlint // the concrete type is the assertion
 	require.True(t, ok, "expected the store's own ShardOwnershipLostError, got %T: %v", err, err)
 	require.EqualValues(t, testShard, wal.ShardID(lost.ShardID))
+	return lost
 }

@@ -217,9 +217,7 @@ func TestATaskReadOnAShardThisNodeDoesNotOwnIsRefused(t *testing.T) {
 
 	_, err := m.GetHistoryTasks(context.Background(),
 		taskReq(tasks.CategoryTransfer, minKey, maxKey, 100), cold.Read)
-	lost, ok := err.(*p.ShardOwnershipLostError) //nolint:errorlint // the concrete type is the assertion
-	require.True(t, ok, "expected the store's own ShardOwnershipLostError, got %T: %v", err, err)
-	require.EqualValues(t, testShard, wal.ShardID(lost.ShardID))
+	requireLost(t, err)
 	require.Zero(t, cold.Calls, "a refused read must not reach the store below either")
 }
 

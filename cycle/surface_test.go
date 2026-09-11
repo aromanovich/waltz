@@ -19,18 +19,32 @@ import (
 // what waltz.Layer.ShardStats and RetireShard answer off, and Shard, Epoch and
 // Close are reached only from inside this package today. All six either read or
 // stop.
-var doors = map[string]string{
-	"Shard":  "what the cycle owns; a handle out of Manager.Shard names itself by this and Epoch",
-	"Epoch":  "the same, and the number that says a shard has changed hands",
-	"Stats":  "one shard's counters, which Manager.Totals sums and a witness reads per shard",
-	"State":  "whether the shard is still this node's to write, answerable after the goroutine is gone",
-	"Retire": "stop without draining, which is what a fenced-out epoch's tail requires",
-	"Close":  "drain and stop, Manager.Close's half of shutdown",
+// Each row carries the call as well, so the two tests below range over one
+// table: a door added to a second list and not the first is how a name gets
+// judged and never driven.
+var doors = map[string]struct {
+	why  string
+	call func(*env)
+}{
+	"Shard": {"what the cycle owns; a handle out of Manager.Shard names itself by this and Epoch",
+		func(e *env) { e.c.Shard() }},
+	"Epoch": {"the same, and the number that says a shard has changed hands",
+		func(e *env) { e.c.Epoch() }},
+	"Stats": {"one shard's counters, which Manager.Totals sums and a witness reads per shard",
+		func(e *env) { e.c.Stats() }},
+	"State": {"whether the shard is still this node's to write, answerable after the goroutine is gone",
+		func(e *env) { e.c.State() }},
+	"Retire": {"stop without draining, which is what a fenced-out epoch's tail requires",
+		func(e *env) { e.c.Retire() }},
+	"Close": {"drain and stop, Manager.Close's half of shutdown",
+		func(e *env) { e.c.Close(context.Background()) }},
 }
 
-// TestOnlyTheRegistryCanWriteToACycle reads both ways: an exported method the
-// table does not name, and a row naming a method that no longer exists.
-func TestOnlyTheRegistryCanWriteToACycle(t *testing.T) {
+// TestEveryDoorOnACycleIsInTheTable reads both ways: an exported method the
+// table does not name, and a row naming a method that no longer exists. That
+// every one of them is a read or a stop is the test below, which drives the
+// same rows.
+func TestEveryDoorOnACycleIsInTheTable(t *testing.T) {
 	ct := reflect.TypeFor[*Cycle]()
 
 	for method := range ct.Methods() {
@@ -42,10 +56,10 @@ func TestOnlyTheRegistryCanWriteToACycle(t *testing.T) {
 				"for — and it may not be a write", name)
 	}
 
-	for name, why := range doors {
+	for name, door := range doors {
 		_, ok := ct.MethodByName(name)
 		require.True(t, ok, "doors claims Cycle.%s is exported (%s), and it is not: a row "+
-			"nothing checks is the prose this test replaced", name, why)
+			"nothing checks is the prose this test replaced", name, door.why)
 	}
 }
 
@@ -68,16 +82,8 @@ func TestNoDoorOnACycleAppends(t *testing.T) {
 		return top
 	}
 
-	for name, door := range map[string]func(*env){
-		"Shard":  func(e *env) { e.c.Shard() },
-		"Epoch":  func(e *env) { e.c.Epoch() },
-		"Stats":  func(e *env) { e.c.Stats() },
-		"State":  func(e *env) { e.c.State() },
-		"Retire": func(e *env) { e.c.Retire() },
-		"Close":  func(e *env) { e.c.Close(context.Background()) },
-	} {
+	for name, door := range doors {
 		t.Run(name, func(t *testing.T) {
-			require.Contains(t, doors, name, "a door this test drives is not one the table declares")
 			e := newEnv(t, nil)
 			// A window with something in it, so the two doors that drain have a
 			// transaction to run rather than nothing to do.
@@ -86,7 +92,7 @@ func TestNoDoorOnACycleAppends(t *testing.T) {
 			acked := highest(t, e)
 			require.NotZero(t, acked, "nothing was acked, so an appending door would have nothing to exceed")
 
-			door(e)
+			door.call(e)
 
 			for _, entry := range e.entries(t) {
 				require.LessOrEqualf(t, entry.Seqno, acked,

@@ -8,7 +8,6 @@ package cycle
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/api/serviceerror"
@@ -22,10 +21,7 @@ import (
 // reach, so the window is what the authority is asked about.
 func asyncEnv(t *testing.T, store *basetest.Store) *env {
 	t.Helper()
-	e := newEnv(t, func(c *Config) {
-		c.Sync = false
-		c.Mutations, c.Bytes, c.Age = 1<<30, 1<<30, time.Hour
-	})
+	e := newEnv(t, neverDrains)
 	e.useStore(store)
 	return e
 }
@@ -269,8 +265,7 @@ func TestTheBoundIsAnsweredBeforeTheCondition(t *testing.T) {
 	store := basetest.New()
 	ns, wf, run := ids()
 	e := newEnv(t, func(c *Config) {
-		c.Sync = false
-		c.Mutations, c.Bytes, c.Age = 1<<30, 1<<30, time.Hour
+		neverDrains(c)
 		c.HardMaxEntries = 1
 	})
 	e.useStore(store)

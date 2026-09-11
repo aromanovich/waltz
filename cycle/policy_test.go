@@ -31,9 +31,7 @@ func TestAWatermarkThatMovesReachesARunningCycle(t *testing.T) {
 
 	store := basetest.New()
 	ap := &fakeApplier{store: store}
-	m, err := NewManager(Deps{
-		Log: newLog(), Writer: ap, Recoverer: &fakeWatermark{}, Registry: testRegistry(),
-	}, Live(static, Moving{Mutations: func() int { return int(window.Load()) }}))
+	m, err := NewManager(testDeps(newLog(), ap), Live(static, Moving{Mutations: func() int { return int(window.Load()) }}))
 	require.NoError(t, err)
 	t.Cleanup(func() { m.Close(ctx) })
 

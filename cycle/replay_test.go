@@ -144,7 +144,7 @@ func TestAReadWaitsForTheReplayItTriggered(t *testing.T) {
 		return nil, serviceerror.NewNotFound("workflow execution not found")
 	}
 	_, err := second.c.getWorkflowExecution(ctx,
-		&p.GetWorkflowExecutionRequest{ShardID: int32(testShard), NamespaceID: ns, WorkflowID: wf, RunID: run}, base)
+		getExec(ns, wf, run), base)
 	require.Error(t, err, "the run is in the cold store now, and this fixture's cold store is empty")
 
 	require.Equal(t, 1, len(second.ap.drains), "the read replayed the tail")
@@ -208,7 +208,7 @@ func TestAProvisionalEntryWhoseConditionFailsIsDropped(t *testing.T) {
 	second := takeShard(t, log, 8, nil)
 	second.ap.errs = []error{&p.WorkflowConditionFailedError{Msg: "stale"}}
 	_, err := second.c.getCurrentExecution(ctx,
-		&p.GetCurrentExecutionRequest{ShardID: int32(testShard), NamespaceID: ns, WorkflowID: wf},
+		getCurrent(ns, wf),
 		func(context.Context) (*p.InternalGetCurrentExecutionResponse, error) {
 			return nil, serviceerror.NewNotFound("no current execution")
 		})

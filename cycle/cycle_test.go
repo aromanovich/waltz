@@ -21,6 +21,7 @@ import (
 
 	"github.com/aromanovich/waltz/apply"
 	"github.com/aromanovich/waltz/baserow"
+	"github.com/aromanovich/waltz/cold"
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/internal/verify/basetest"
 	"github.com/aromanovich/waltz/internal/verify/mutbuild"
@@ -110,6 +111,12 @@ func (w *fakeWatermark) Watermark(ctx context.Context, _ wal.ShardID) (wal.Seqno
 //
 // Not for a cycle left unfenced at its epoch ([zombie]) or left without a
 // registry: in both the absence is what is under test.
+// testDeps is the trio a manager here is built over, named once: a new required
+// field of [Deps] is then filled in one place rather than in twelve literals.
+func testDeps(log wal.Log, apply cold.Applier) Deps {
+	return Deps{Log: log, Writer: apply, Recoverer: &fakeWatermark{}, Registry: testRegistry()}
+}
+
 func standUp(t *testing.T, epoch wal.Epoch, deps Deps, cfg Config) *Cycle {
 	t.Helper()
 	require.NoError(t, deps.Log.Fence(context.Background(), testShard, epoch))
@@ -150,6 +157,14 @@ type env struct {
 
 // newEnv builds a cycle whose clock is the test's: time only moves when the
 // test moves it.
+// neverDrains is a cycle that folds and does not drain on its own: no size
+// watermark within reach and an age timer that will not fire inside a test, so
+// what drains the window is the test. Callers add the bound they are about.
+func neverDrains(c *Config) {
+	c.Sync = false
+	c.Mutations, c.Bytes, c.Age = 1<<30, 1<<30, time.Hour
+}
+
 func newEnv(t *testing.T, shape func(*Config)) *env {
 	t.Helper()
 	e := &env{
@@ -776,7 +791,7 @@ func TestCloseDrainsWhatTheWindowHolds(t *testing.T) {
 // idempotent, and a lower one is refused.
 func TestManagerSupersedesByEpoch(t *testing.T) {
 	logs := newLog()
-	m, err := NewManager(Deps{Log: logs, Writer: &fakeApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry()}, Fixed(Defaults()))
+	m, err := NewManager(testDeps(logs, &fakeApplier{}), Fixed(Defaults()))
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -816,7 +831,7 @@ func TestManagerSupersedesByEpoch(t *testing.T) {
 func TestAnAcquireAfterTheShutdownTakesNoShard(t *testing.T) {
 	logs := newLog()
 	m, err := NewManager(
-		Deps{Log: logs, Writer: &fakeApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry()},
+		testDeps(logs, &fakeApplier{}),
 		Fixed(Defaults()))
 	require.NoError(t, err)
 	ctx := context.Background()
@@ -832,7 +847,7 @@ func TestAnAcquireAfterTheShutdownTakesNoShard(t *testing.T) {
 func TestAFailedFenceLeavesNoCycle(t *testing.T) {
 	logs := newLog()
 	logs.OnFence(waltest.Always(wal.ErrFenced))
-	m, err := NewManager(Deps{Log: logs, Writer: &fakeApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry()}, Fixed(Defaults()))
+	m, err := NewManager(testDeps(logs, &fakeApplier{}), Fixed(Defaults()))
 	require.NoError(t, err)
 
 	err = m.ShardAcquired(context.Background(), testShard, 9)

@@ -39,10 +39,7 @@ func requireRoute(t *testing.T, want, got readRoute, refusal, halt error) {
 	case merge, passThrough, retryOnSuccessor:
 		require.NoError(t, refusal, "a route that answers refuses nothing")
 	case refuseAsLost:
-		lost, ok := refusal.(*p.ShardOwnershipLostError) //nolint:errorlint // the concrete type is the assertion
-		require.True(t, ok,
-			"the shard's read path matches this one concrete type and nothing else, got %T: %v", refusal, refusal)
-		require.EqualValues(t, testShard, wal.ShardID(lost.ShardID))
+		requireLost(t, refusal)
 	case refuseAsHalt:
 		require.Same(t, halt, refusal,
 			"the halt's own error, unrebuilt: its cause is the only record of what diverged")
@@ -324,9 +321,7 @@ func TestOnlyAFenceBecomesShardOwnershipLost(t *testing.T) {
 			case tc.wantNil:
 				require.NoError(t, got, "a write that worked has nothing to translate")
 			case tc.toLost:
-				lost, ok := got.(*p.ShardOwnershipLostError) //nolint:errorlint // the concrete type is the assertion
-				require.True(t, ok, "a fenced shard's refusal is what ShardOwnershipLost means, got %T: %v", got, got)
-				require.EqualValues(t, testShard, wal.ShardID(lost.ShardID))
+				lost := requireLost(t, got)
 				require.Contains(t, lost.Msg, tc.err.Error(), "and it carries what the cycle said")
 			default:
 				require.Same(t, tc.err, got,
@@ -340,28 +335,32 @@ func TestOnlyAFenceBecomesShardOwnershipLost(t *testing.T) {
 // The drain's attribution.
 // ---------------------------------------------------------------------------
 
+// drainCauses is every declared cause, with what the attribution rule makes of
+// it at a window of one. Written once, so a tenth cause is given a reading by
+// both tests below rather than by whichever one somebody remembered.
+var drainCauses = []struct {
+	name  string
+	cause drainCause
+	atOne attribution
+}{
+	{"sync mode's own drain", drainSync, answersItsCaller},
+	{"a replayed provisional entry", drainReplayProvisional, dropsItsEntry},
+	{"the mutation watermark", drainWatermarkMutations, haltsShard},
+	{"the byte watermark", drainWatermarkBytes, haltsShard},
+	{"the age watermark", drainWatermarkAge, haltsShard},
+	{"fold's refusal", drainRefusal, haltsShard},
+	{"an explicit drain", drainExplicit, haltsShard},
+	{"a read draining the window", drainRead, haltsShard},
+	{"a previous owner's tail", drainReplay, haltsShard},
+}
+
 // TestAFailedAssertionIsAttributedOnlyToACallerInAWindowOfOne pins both halves
 // of [attribute]: the cause must say a caller is still on the line, and the
 // window must hold the one mutation that caller wrote. Dropping the window
 // conjunct would let a caller be told its write failed on entries somebody else
 // wrote, which stay in the log marked settled.
 func TestAFailedAssertionIsAttributedOnlyToACallerInAWindowOfOne(t *testing.T) {
-	// Every declared cause, so a new one has to be given a reading here.
-	for _, tc := range []struct {
-		name  string
-		cause drainCause
-		atOne attribution
-	}{
-		{"sync mode's own drain", drainSync, answersItsCaller},
-		{"a replayed provisional entry", drainReplayProvisional, dropsItsEntry},
-		{"the mutation watermark", drainWatermarkMutations, haltsShard},
-		{"the byte watermark", drainWatermarkBytes, haltsShard},
-		{"the age watermark", drainWatermarkAge, haltsShard},
-		{"fold's refusal", drainRefusal, haltsShard},
-		{"an explicit drain", drainExplicit, haltsShard},
-		{"a read draining the window", drainRead, haltsShard},
-		{"a previous owner's tail", drainReplay, haltsShard},
-	} {
+	for _, tc := range drainCauses {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.atOne, attribute(tc.cause, 1),
 				"at a window of one the cause is the whole of the rule")
@@ -429,20 +428,6 @@ func TestTheOutcomeOfEveryAppendError(t *testing.T) {
 // settlement settles is the branch [Cycle.drain] takes, not a property of the
 // value. It is covered by cycle tests that drive the settlement branch.
 func TestTheSettlementOfEveryClass(t *testing.T) {
-	causes := []struct {
-		name  string
-		cause drainCause
-	}{
-		{"sync mode's own drain", drainSync},
-		{"a replayed provisional entry", drainReplayProvisional},
-		{"the mutation watermark", drainWatermarkMutations},
-		{"the byte watermark", drainWatermarkBytes},
-		{"the age watermark", drainWatermarkAge},
-		{"fold's refusal", drainRefusal},
-		{"an explicit drain", drainExplicit},
-		{"a read draining the window", drainRead},
-		{"a previous owner's tail", drainReplay},
-	}
 	windows := []int{0, 1, 2, 3, 256}
 
 	// The four classes whose meaning is a function of the class alone: what the
@@ -457,7 +442,7 @@ func TestTheSettlementOfEveryClass(t *testing.T) {
 		{apply.ClassRefused, haltsInvariant},
 	} {
 		t.Run(tc.class.String(), func(t *testing.T) {
-			for _, c := range causes {
+			for _, c := range drainCauses {
 				for _, in := range windows {
 					require.Equal(t, tc.want, settlementOf(tc.class, c.cause, in),
 						"%s at a window of %d", c.name, in)

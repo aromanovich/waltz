@@ -38,16 +38,14 @@ func askAllThree(t *testing.T, c *Cycle, cold *coldtasks.Store) readAnswers {
 	ns, wf, run := ids()
 	minKey, maxKey := immediateRange()
 
-	_, exec := c.getWorkflowExecution(ctx, &p.GetWorkflowExecutionRequest{
-		ShardID: int32(testShard), NamespaceID: ns, WorkflowID: wf, RunID: run,
-	}, func(context.Context) (*p.InternalGetWorkflowExecutionResponse, error) {
-		return &p.InternalGetWorkflowExecutionResponse{}, nil
-	})
-	_, current := c.getCurrentExecution(ctx, &p.GetCurrentExecutionRequest{
-		ShardID: int32(testShard), NamespaceID: ns, WorkflowID: wf,
-	}, func(context.Context) (*p.InternalGetCurrentExecutionResponse, error) {
-		return &p.InternalGetCurrentExecutionResponse{}, nil
-	})
+	_, exec := c.getWorkflowExecution(ctx, getExec(ns, wf, run),
+		func(context.Context) (*p.InternalGetWorkflowExecutionResponse, error) {
+			return &p.InternalGetWorkflowExecutionResponse{}, nil
+		})
+	_, current := c.getCurrentExecution(ctx, getCurrent(ns, wf),
+		func(context.Context) (*p.InternalGetCurrentExecutionResponse, error) {
+			return &p.InternalGetCurrentExecutionResponse{}, nil
+		})
 	_, taskErr := c.getHistoryTasks(ctx, taskReq(tasks.CategoryTransfer, minKey, maxKey, 100), cold.Read)
 	return readAnswers{exec: exec, current: current, tasks: taskErr}
 }
@@ -57,9 +55,9 @@ func askAllThree(t *testing.T, c *Cycle, cold *coldtasks.Store) readAnswers {
 func zombie(t *testing.T, log wal.Log, epoch wal.Epoch) *Cycle {
 	t.Helper()
 	ap := &fakeApplier{}
-	c := New(testShard, epoch, Deps{
-		Log: log, Writer: ap, Recoverer: appliedWatermark{ap}, Registry: testRegistry(),
-	}, Fixed(Defaults()))
+	deps := testDeps(log, ap)
+	deps.Recoverer = appliedWatermark{ap}
+	c := New(testShard, epoch, deps, Fixed(Defaults()))
 	t.Cleanup(func() { c.Retire() })
 	return c
 }

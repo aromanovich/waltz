@@ -103,10 +103,7 @@ func newTailEnv(t *testing.T, shape func(*Config)) *bpEnv {
 	t.Helper()
 	logs := memwal.New()
 	cfg := Defaults()
-	cfg.Sync = false
-	// Nothing drains on its own: no size watermark within reach, and an age
-	// timer that will not fire inside a test.
-	cfg.Mutations, cfg.Bytes, cfg.Age = 1<<30, 1<<30, time.Hour
+	neverDrains(&cfg)
 	if shape != nil {
 		shape(&cfg)
 	}
@@ -359,11 +356,10 @@ func TestBackpressureNeverCostsTheNodeItsShard(t *testing.T) {
 	ctx := context.Background()
 	logs := memwal.New()
 	cfg := Defaults()
-	cfg.Sync = false
-	cfg.Mutations, cfg.Bytes, cfg.Age = 1<<30, 1<<30, time.Hour
+	neverDrains(&cfg)
 	cfg.HardMaxEntries = 2
 
-	m, err := NewManager(Deps{Log: logs, Writer: &heldApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry()}, Fixed(cfg))
+	m, err := NewManager(testDeps(logs, &heldApplier{}), Fixed(cfg))
 	require.NoError(t, err)
 	require.NoError(t, m.ShardAcquired(ctx, testShard, testEpoch))
 
@@ -395,7 +391,7 @@ func TestBackpressureNeverCostsTheNodeItsShard(t *testing.T) {
 // than quietly overcommit it. The registry is where that happens, because a
 // composed binary has no cycle without one.
 func TestTheNodeBudgetIsAStartupAssertion(t *testing.T) {
-	deps := Deps{Log: memwal.New(), Writer: &heldApplier{}, Recoverer: &fakeWatermark{}, Registry: testRegistry()}
+	deps := testDeps(memwal.New(), &heldApplier{})
 
 	t.Run("the measured policy fits, exactly", func(t *testing.T) {
 		d := Defaults()
