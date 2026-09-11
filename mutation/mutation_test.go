@@ -85,6 +85,16 @@ func TestRoundTripEveryKind(t *testing.T) {
 			NewWorkflowSnapshot:     new(sampleSnapshot()),
 			CurrentWorkflowMutation: new(sampleMutation()),
 		}},
+		// The zero value of ConflictResolveWorkflowMode is UpdateCurrent, so the
+		// case above round-trips identically whether the mode is carried or
+		// dropped. This one carries the other mode, in the shape that goes with
+		// it: bypassing the current row leaves no current mutation to send.
+		"conflict-resolve bypassing the current row": {
+			ConflictResolve: &p.InternalConflictResolveWorkflowExecutionRequest{
+				ShardID:               10,
+				Mode:                  p.ConflictResolveWorkflowModeBypassCurrent,
+				ResetWorkflowSnapshot: snapshot,
+			}},
 		"set": {Set: &p.InternalSetWorkflowExecutionRequest{
 			ShardID:             5,
 			SetWorkflowSnapshot: snapshot,
