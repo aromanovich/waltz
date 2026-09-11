@@ -34,6 +34,22 @@ func windowed(c *Config) {
 	c.Bytes = 1 << 30
 }
 
+// installed spins until the registry answers with a cycle other than was, and
+// reports whether it ever did. It runs inside the base callback, which the loop
+// goroutine calls, so it may not fail the test itself: an unwind there kills the
+// loop the caller is waiting on. And it is bounded because ShardAcquired has
+// three early returns that install nothing — a fenced log, a closed registry, a
+// refused epoch — each of which an unbounded spin turns into go test's own
+// timeout at 100% CPU, with the acquire's answer unread in its channel.
+func installed(m *Manager, was *Cycle) bool {
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); runtime.Gosched() {
+		if m.Shard(testShard) != was {
+			return true
+		}
+	}
+	return false
+}
+
 // transferTask is one transfer task riding an update of a fresh workflow, with
 // the two cold-store reads that update asserts on: a pre-window row at 1 and a
 // current row naming the run.
@@ -118,12 +134,11 @@ func TestAnAcquireLandingWhileThePageIsBuiltRebuildsItToo(t *testing.T) {
 	var landed atomic.Bool
 	acquired := make(chan error, 1)
 	var wrote error
+	var superseded bool
 	base := func(ctx context.Context, req *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error) {
 		if landed.CompareAndSwap(false, true) {
 			go func() { acquired <- m.ShardAcquired(context.Background(), testShard, 9) }()
-			for m.Shard(testShard) == answering {
-				runtime.Gosched()
-			}
+			superseded = installed(m, answering)
 			// The write that makes the two windows differ: it goes to whichever
 			// cycle the registry holds now, which is the fresh one.
 			task, taskRows := transferTask(90)
@@ -137,6 +152,7 @@ func TestAnAcquireLandingWhileThePageIsBuiltRebuildsItToo(t *testing.T) {
 		taskReq(tasks.CategoryTransfer, minKey, maxKey, 100), base)
 	require.NoError(t, err)
 	require.NoError(t, <-acquired)
+	require.True(t, superseded, "the acquire installed no cycle, so the page was never rebuilt for one")
 	require.NoError(t, wrote)
 	require.Equal(t, []int64{10, 90}, pageIDs(resp),
 		"the rebuilt page carries the successor's window: the ack that landed on it after the install")
@@ -165,12 +181,11 @@ func TestAShardSupersededTwiceInOnePageIsDeclaredLost(t *testing.T) {
 	second := m.Shard(testShard)
 	var landed atomic.Bool
 	acquired := make(chan error, 1)
+	var superseded bool
 	base := func(ctx context.Context, req *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error) {
 		if landed.CompareAndSwap(false, true) {
 			go func() { acquired <- m.ShardAcquired(context.Background(), testShard, 10) }()
-			for m.Shard(testShard) == second {
-				runtime.Gosched()
-			}
+			superseded = installed(m, second)
 		}
 		return cold.Read(ctx, req)
 	}
@@ -179,6 +194,7 @@ func TestAShardSupersededTwiceInOnePageIsDeclaredLost(t *testing.T) {
 	_, err := m.taskPage(ctx, testShard, stale,
 		taskReq(tasks.CategoryTransfer, minKey, maxKey, 100), base)
 	require.NoError(t, <-acquired)
+	require.True(t, superseded, "the second acquire installed no cycle, so this is one supersede and not two")
 	require.IsType(t, &p.ShardOwnershipLostError{}, err,
 		"unwrapped: the shard's read path matches this one concrete type and nothing else, got %v", err)
 }
@@ -241,7 +257,9 @@ func TestAnAcquireDoesNotHoldTheRegistryWhileItAsksASupersededCycle(t *testing.T
 			return nil
 		}
 	}
-	for resolve("while the acquire runs") == busy {
+	for deadline := time.Now().Add(15 * time.Second); resolve("while the acquire runs") == busy; {
+		require.False(t, time.Now().After(deadline),
+			"the acquire never installed the fresh cycle, and the registry answered with the busy one throughout")
 		runtime.Gosched()
 	}
 	require.NotNil(t, resolve("once the fresh cycle is installed"),
