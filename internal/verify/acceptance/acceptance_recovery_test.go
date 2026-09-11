@@ -119,18 +119,20 @@ func TestACrashOnTopOfADrainNobodyCouldReadRecoversEitherWay(t *testing.T) {
 	// Whether the transaction ran before the applier lost the ability to say so.
 	// Committed, the successor must not apply those entries a second time; not
 	// committed, it must find them in the log and apply them.
+	const seed = 20260910
+
+	// One uninterrupted owner, driven once: the two subtests differ in what
+	// happens to the crashed arm and compare against the same database.
+	control := newSeams(t, seed)
+	require.NoError(t, control.drive(t, seamsMutations))
+	control.mgr.Close(control.ctx)
+	expected := control.ledger.snapshot()
+
 	for name, committed := range map[string]bool{
 		"the transaction had committed": true,
 		"the transaction never ran":     false,
 	} {
 		t.Run(name, func(t *testing.T) {
-			const seed = 20260910
-
-			control := newSeams(t, seed)
-			require.NoError(t, control.drive(t, seamsMutations))
-			control.mgr.Close(control.ctx)
-			expected := control.ledger.snapshot()
-
 			crashed := newSeams(t, seed)
 			require.NoError(t, crashed.drive(t, seamsMutations/2))
 

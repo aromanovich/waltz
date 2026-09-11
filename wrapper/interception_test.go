@@ -34,19 +34,13 @@ func TestEveryInterceptedKindHasARow(t *testing.T) {
 // persistence method the write arrived on. A row copied from its neighbour is
 // the failure this catches.
 func TestTheOpTagsAreTheStoreMethodNames(t *testing.T) {
-	want := map[mutation.Kind]string{
-		mutation.KindCreate:             "CreateWorkflowExecution",
-		mutation.KindUpdate:             "UpdateWorkflowExecution",
-		mutation.KindConflictResolve:    "ConflictResolveWorkflowExecution",
-		mutation.KindSet:                "SetWorkflowExecution",
-		mutation.KindDelete:             "DeleteWorkflowExecution",
-		mutation.KindDeleteCurrent:      "DeleteCurrentWorkflowExecution",
-		mutation.KindAddTasks:           "AddHistoryTasks",
-		mutation.KindRangeCompleteTasks: "RangeCompleteHistoryTasks",
-	}
-	require.Len(t, want, mutation.KindCount-1, "every kind but the zero one")
-	for k, op := range want {
-		require.Equal(t, op, interception[k].op, "kind %s", k)
+	// Against intercepted rather than a literal of its own: that map's keys are
+	// held to being real ExecutionStore methods by the reflection over the
+	// interface in intercept_test.go, where a third hand-written copy of these
+	// eight pairs would be held to nothing.
+	require.Len(t, intercepted, mutation.KindCount-1, "every kind but the zero one")
+	for name, k := range intercepted {
+		require.Equal(t, name, interception[k].op, "kind %s", k)
 	}
 
 	seen := map[string]bool{}

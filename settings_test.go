@@ -126,23 +126,32 @@ func TestAKnobThatMovedIsRefusedByName(t *testing.T) {
 	}
 }
 
-// A live setting through a real dynamic config client: the policy a composed
-// node holds answers with the new number at the next call, no re-composition
-// and no re-acquire. The rest of the policy must stand unchanged.
-func TestAChangeTakesEffectWithoutRebuildingThePolicy(t *testing.T) {
+// Every live setting through a real dynamic config client: the policy a composed
+// node holds answers with the new number at the next call, no re-composition and
+// no re-acquire. The rest of the policy must stand unchanged. Every one of them,
+// because a row that quietly became start-only reads the same on both tables and
+// differs only in the handbook's "when it is read" column.
+func TestEveryLiveSettingTakesEffectWithoutRebuildingThePolicy(t *testing.T) {
 	client := dynamicconfig.NewMemoryClient()
 	policy := NewPolicy(dynamicconfig.NewCollection(client, log.NewNoopLogger()), section)
 
 	require.Equal(t, filled(), policy(), "nothing overridden is the measured policy")
 
-	cleanup := client.OverrideValue(WindowMutations.Key(), 512)
-	want := filled()
-	want.Mutations = 512
-	require.Equal(t, want, policy(),
-		"the same policy value answers with the new window: no re-composition, no re-acquire")
+	for _, s := range settings {
+		if !s.live {
+			continue
+		}
+		value := distinct(t, s.field(&cycle.Config{}), 9)
+		cleanup := client.OverrideValue(s.key, value)
 
-	cleanup()
-	require.Equal(t, filled(), policy(), "and an override withdrawn is the default again")
+		want := filled()
+		reflect.ValueOf(s.field(&want)).Elem().Set(reflect.ValueOf(value))
+		require.Equal(t, want, policy(),
+			"%q: the policy already built must answer with the new number", s.key)
+
+		cleanup()
+		require.Equal(t, filled(), policy(), "%q: and an override withdrawn is the default again", s.key)
+	}
 }
 
 // The start-only settings are read when the policy is built and a change needs

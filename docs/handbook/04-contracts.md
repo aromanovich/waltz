@@ -405,10 +405,9 @@ over every mirrored request struct and fails on a field with no recorded decisio
 of *carried*, *derived* or *dropped*, with a reason required for the last two. Which structs it
 walks is decided by `kinds.go` rather than by a hand-kept list, and
 `TestEveryKindsRequestStructIsWalked` holds it to that. A Temporal bump that adds a field is
-*expected* to fail this test; that failure is the mechanism. The guard holds two things and a bump
-usually trips both: the per-field decisions, and a `fingerprint` — one hex digest per request struct,
-recorded in `mutation/fieldset_test.go` — that catches a struct changing shape without a field being
-named. Recording the new digest is never the fix on its own; the field it moved needs a decision.
+*expected* to fail this test; that failure is the mechanism. What it compares is the recorded list
+against the struct's own, in order — so a field added, a field removed and a field that merely moved
+each fail by name. Recording the field is never the fix on its own; it needs a decision.
 
 ## `fold` — the exported surface
 

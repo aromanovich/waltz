@@ -1,7 +1,6 @@
 package mutation
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"reflect"
 	"slices"
@@ -15,9 +14,9 @@ import (
 
 // The field-set guard. The codec is a hand-filled mirror, so a field Temporal
 // adds is state the WAL silently stops carrying; this fails at the Temporal
-// bump instead. Updating the fingerprint is never the fix: decide whether the
-// new field is carried, derived or dropped, implement it in
-// encode.go/decode.go, then record the decision here.
+// bump instead. Recording the field is never the fix on its own: decide whether
+// it is carried, derived or dropped, implement it in encode.go/decode.go, then
+// record the decision here.
 
 type disposition int
 
@@ -37,10 +36,9 @@ type fieldDecision struct {
 }
 
 type mirroredStruct struct {
-	name        string
-	typ         reflect.Type
-	fingerprint string
-	fields      []fieldDecision
+	name   string
+	typ    reflect.Type
+	fields []fieldDecision
 }
 
 const (
@@ -56,9 +54,8 @@ const (
 
 var mirroredStructs = []mirroredStruct{
 	{
-		name:        "InternalWorkflowMutation",
-		typ:         reflect.TypeFor[p.InternalWorkflowMutation](),
-		fingerprint: "e880d1f64f11",
+		name: "InternalWorkflowMutation",
+		typ:  reflect.TypeFor[p.InternalWorkflowMutation](),
 		fields: []fieldDecision{
 			{"NamespaceID string", carried, ""},
 			{"WorkflowID string", carried, ""},
@@ -93,9 +90,8 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "InternalWorkflowSnapshot",
-		typ:         reflect.TypeFor[p.InternalWorkflowSnapshot](),
-		fingerprint: "fea0e027c016",
+		name: "InternalWorkflowSnapshot",
+		typ:  reflect.TypeFor[p.InternalWorkflowSnapshot](),
 		fields: []fieldDecision{
 			{"NamespaceID string", carried, ""},
 			{"WorkflowID string", carried, ""},
@@ -121,9 +117,8 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "InternalChasmNode",
-		typ:         reflect.TypeFor[p.InternalChasmNode](),
-		fingerprint: "1d1be5d11202",
+		name: "InternalChasmNode",
+		typ:  reflect.TypeFor[p.InternalChasmNode](),
 		fields: []fieldDecision{
 			{"Metadata *common.DataBlob", carried, ""},
 			{"Data *common.DataBlob", carried, ""},
@@ -132,27 +127,24 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "InternalHistoryTask",
-		typ:         reflect.TypeFor[p.InternalHistoryTask](),
-		fingerprint: "c13aae1130a9",
+		name: "InternalHistoryTask",
+		typ:  reflect.TypeFor[p.InternalHistoryTask](),
 		fields: []fieldDecision{
 			{"Key tasks.Key", carried, ""},
 			{"Blob *common.DataBlob", carried, ""},
 		},
 	},
 	{
-		name:        "tasks.Key",
-		typ:         reflect.TypeFor[tasks.Key](),
-		fingerprint: "bd39a05af33a",
+		name: "tasks.Key",
+		typ:  reflect.TypeFor[tasks.Key](),
 		fields: []fieldDecision{
 			{"FireTime time.Time", carried, ""},
 			{"TaskID int64", carried, ""},
 		},
 	},
 	{
-		name:        "InternalCreateWorkflowExecutionRequest",
-		typ:         reflect.TypeFor[p.InternalCreateWorkflowExecutionRequest](),
-		fingerprint: "e71c54265b5c",
+		name: "InternalCreateWorkflowExecutionRequest",
+		typ:  reflect.TypeFor[p.InternalCreateWorkflowExecutionRequest](),
 		fields: []fieldDecision{
 			{"ShardID int32", carried, ""},
 			{"RangeID int64", dropped, whyEpoch},
@@ -164,9 +156,8 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "InternalUpdateWorkflowExecutionRequest",
-		typ:         reflect.TypeFor[p.InternalUpdateWorkflowExecutionRequest](),
-		fingerprint: "627a8313c269",
+		name: "InternalUpdateWorkflowExecutionRequest",
+		typ:  reflect.TypeFor[p.InternalUpdateWorkflowExecutionRequest](),
 		fields: []fieldDecision{
 			{"ShardID int32", carried, ""},
 			{"RangeID int64", dropped, whyEpoch},
@@ -178,9 +169,8 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "InternalConflictResolveWorkflowExecutionRequest",
-		typ:         reflect.TypeFor[p.InternalConflictResolveWorkflowExecutionRequest](),
-		fingerprint: "e20f2761c498",
+		name: "InternalConflictResolveWorkflowExecutionRequest",
+		typ:  reflect.TypeFor[p.InternalConflictResolveWorkflowExecutionRequest](),
 		fields: []fieldDecision{
 			{"ShardID int32", carried, ""},
 			{"RangeID int64", dropped, whyEpoch},
@@ -194,9 +184,8 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "InternalSetWorkflowExecutionRequest",
-		typ:         reflect.TypeFor[p.InternalSetWorkflowExecutionRequest](),
-		fingerprint: "4532643ef7bc",
+		name: "InternalSetWorkflowExecutionRequest",
+		typ:  reflect.TypeFor[p.InternalSetWorkflowExecutionRequest](),
 		fields: []fieldDecision{
 			{"ShardID int32", carried, ""},
 			{"RangeID int64", dropped, whyEpoch},
@@ -204,9 +193,8 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "DeleteWorkflowExecutionRequest",
-		typ:         reflect.TypeFor[p.DeleteWorkflowExecutionRequest](),
-		fingerprint: "eabe71f2a479",
+		name: "DeleteWorkflowExecutionRequest",
+		typ:  reflect.TypeFor[p.DeleteWorkflowExecutionRequest](),
 		fields: []fieldDecision{
 			{"ShardID int32", carried, ""},
 			{"NamespaceID string", carried, ""},
@@ -217,9 +205,9 @@ var mirroredStructs = []mirroredStruct{
 	{
 		name: "DeleteCurrentWorkflowExecutionRequest",
 		typ:  reflect.TypeFor[p.DeleteCurrentWorkflowExecutionRequest](),
-		// Same four fields as the request above, hence the same fingerprint;
-		// they stay two kinds all the same.
-		fingerprint: "eabe71f2a479",
+		// The same four fields as the request above, and two kinds all the same:
+		// a delete of the run and a delete of the current row are not one
+		// decision.
 		fields: []fieldDecision{
 			{"ShardID int32", carried, ""},
 			{"NamespaceID string", carried, ""},
@@ -228,9 +216,8 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "InternalAddHistoryTasksRequest",
-		typ:         reflect.TypeFor[p.InternalAddHistoryTasksRequest](),
-		fingerprint: "b96729ad51f8",
+		name: "InternalAddHistoryTasksRequest",
+		typ:  reflect.TypeFor[p.InternalAddHistoryTasksRequest](),
 		fields: []fieldDecision{
 			{"ShardID int32", carried, ""},
 			{"RangeID int64", dropped, whyEpoch},
@@ -240,9 +227,8 @@ var mirroredStructs = []mirroredStruct{
 		},
 	},
 	{
-		name:        "RangeCompleteHistoryTasksRequest",
-		typ:         reflect.TypeFor[p.RangeCompleteHistoryTasksRequest](),
-		fingerprint: "86099ca54ccf",
+		name: "RangeCompleteHistoryTasksRequest",
+		typ:  reflect.TypeFor[p.RangeCompleteHistoryTasksRequest](),
 		fields: []fieldDecision{
 			{"ShardID int32", carried, ""},
 			{"TaskCategory tasks.Category", derived, whyCategory},
@@ -270,12 +256,8 @@ does not know about is state the WAL silently stops carrying. Decide what the
 change means for a log — carried, derived, or dropped with a reason — implement
 it in encode.go/decode.go, then record the decision here.
 
-Updating the fingerprint alone is never the fix.`, s.name, diff)
+Recording the field alone is never the fix.`, s.name, diff)
 			}
-
-			require.Equal(t, s.fingerprint, fingerprint(actual),
-				"%s: the field set matches the recorded decisions but the fingerprint does not — "+
-					"the recorded value is stale", s.name)
 		})
 	}
 }
@@ -288,7 +270,6 @@ func TestTheGuardCatchesAnUpgrade(t *testing.T) {
 	t.Run("a new sub-collection", func(t *testing.T) {
 		upgraded := append(slices.Clone(recorded), "UpsertNexusInfos map[int64]*common.DataBlob")
 		require.Contains(t, describeFieldDiff(recorded, upgraded), "new field, no decision recorded")
-		require.NotEqual(t, fingerprint(recorded), fingerprint(upgraded))
 	})
 
 	t.Run("a field that went away", func(t *testing.T) {
@@ -358,11 +339,6 @@ func fieldSet(t reflect.Type) []string {
 	return out
 }
 
-func fingerprint(fields []string) string {
-	sum := sha256.Sum256([]byte(strings.Join(fields, "\n")))
-	return fmt.Sprintf("%x", sum[:6])
-}
-
 // describeFieldDiff reports which fields appeared, which vanished, and whether
 // the order moved; the empty string when the two agree.
 func describeFieldDiff(recorded, actual []string) string {
@@ -387,7 +363,8 @@ func describeFieldDiff(recorded, actual []string) string {
 		}
 	}
 	if b.Len() == 0 && !slices.Equal(recorded, actual) {
-		// Same names, different order: the fingerprint is order-sensitive.
+		// Same names, different order: the recorded list is the struct's own
+		// order, so the two can be read side by side.
 		fmt.Fprintf(&b, "  the fields are the same but their order changed\n")
 	}
 	return b.String()

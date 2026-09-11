@@ -319,7 +319,7 @@ func TestAShutdownWithoutABudgetIsRefused(t *testing.T) {
 		require.ErrorContains(t, err, "is not a budget")
 
 		var undrained *UndrainedError
-		require.NotErrorIs(t, err, undrained,
+		require.NotErrorAs(t, err, &undrained,
 			"a refused argument is not a shard holding a tail, and a caller type-switching must not read it as one")
 	}
 }
