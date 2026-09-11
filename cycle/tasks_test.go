@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"reflect"
 	"testing"
 	"time"
 
@@ -479,4 +480,44 @@ func TestASharedFirstKeyStillAdvancesThePagination(t *testing.T) {
 	minKey, maxKey := immediateRange()
 	pages := paginate(t, e.c, cold.Read, taskReq(tasks.CategoryTransfer, minKey, maxKey, 2))
 	require.Equal(t, []int64{1, 2, 3, 9}, taskIDs(pages))
+}
+
+// TestTheBaseIsAskedTheCallersOwnQuestion: the merge decides two fields of the
+// base's request — the batch the cut needs and the cursor it carries — and
+// states the caller's own question in every other. A request rebuilt here
+// instead of copied drops whatever this layer does not know about, and the
+// store below then answers a question nobody asked. Enumerated off the type, so
+// a field upstream adds fails here by name rather than going silently missing.
+func TestTheBaseIsAskedTheCallersOwnQuestion(t *testing.T) {
+	e := taskEnv(t, func(c *Config) { c.Mutations = 1 << 20 })
+	cold := coldtasks.New()
+	cold.Hold(tasks.CategoryTransfer, immediate(10))
+	require.NoError(t, e.add(t, mkTasks("ns", "wf", "run", 2, map[tasks.Category][]p.InternalHistoryTask{
+		tasks.CategoryTransfer: {immediate(5)},
+	})))
+
+	var seen *p.GetHistoryTasksRequest
+	var base BaseTasks = func(ctx context.Context, req *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error) {
+		seen = req
+		return cold.Read(ctx, req)
+	}
+
+	minKey, maxKey := immediateRange()
+	req := taskReq(tasks.CategoryTransfer, minKey, maxKey, 100)
+	_, err := e.c.getHistoryTasks(context.Background(), req, base)
+	require.NoError(t, err)
+	require.NotNil(t, seen, "the base was never asked, so this judges nothing")
+
+	decided := map[string]bool{"BatchSize": true, "NextPageToken": true}
+	asked, reached := reflect.ValueOf(*req), reflect.ValueOf(*seen)
+	fields := reflect.TypeFor[p.GetHistoryTasksRequest]()
+	require.NotZero(t, fields.NumField())
+	for f := range fields.Fields() {
+		if decided[f.Name] {
+			continue
+		}
+		require.Equalf(t, asked.FieldByIndex(f.Index).Interface(), reached.FieldByIndex(f.Index).Interface(),
+			"%s reached the store below changed: the merge decides the batch and the cursor, and "+
+				"carries the caller's question in everything else", f.Name)
+	}
 }
