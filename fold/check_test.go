@@ -301,31 +301,24 @@ func TestAnUndeterminedCurrentRowIsRefusedRatherThanAdmitted(t *testing.T) {
 	t.Run("behind a bypass-current write", func(t *testing.T) {
 		// A bypass-current update records the head current-row assertion without
 		// writing the row, so nothing can say what the row holds.
-		bypass := mkUpdate(runY, 2)
-		bypass.Update.Mode = p.UpdateWorkflowModeBypassCurrent
 		a := fold.New(shard)
-		add(t, a, bypass)
+		add(t, a, bypass(runY, 2))
 
 		require.ErrorIs(t, check(t, a, mkUpdate(runX, 2)), fold.ErrRefused)
 		require.NoError(t, check(t, a, mkSet(runX, 4)),
 			"a request that asserts nothing about the row is unaffected")
 	})
 
-	t.Run("behind a delete-current", func(t *testing.T) {
+	t.Run("behind a delete-current, until the drain makes it a head", func(t *testing.T) {
 		// The delete is a guarded no-op with no assertion above it, and a
 		// delegated read would read a row this window is about to remove.
 		a := fold.New(shard)
 		add(t, a, mkDeleteCurrent(runX))
 		require.ErrorIs(t, check(t, a, mkCreate(runY)), fold.ErrRefused)
-	})
-
-	t.Run("and an empty window discards nothing, which is why it terminates", func(t *testing.T) {
-		a := fold.New(shard)
-		add(t, a, mkDeleteCurrent(runX))
-		require.ErrorIs(t, check(t, a, mkCreate(runY)), fold.ErrRefused)
 
 		a.Drain()
-		require.NoError(t, check(t, a, mkCreate(runY)), "the drain makes the refused mutation a head")
+		require.NoError(t, check(t, a, mkCreate(runY)),
+			"an empty window discards nothing, which is why drain-and-retry terminates")
 	})
 }
 
@@ -523,16 +516,16 @@ func TestCheckLeavesTheAccumulatorExactlyAsItWas(t *testing.T) {
 		// A window headed by a bypass-current update determines nothing about
 		// the current row, so the next assertion on it is refused; the recovery
 		// is only safe if the refusal touched nothing.
-		bypass := func() *fold.Accumulator {
+		bypassWindow := func() *fold.Accumulator {
 			m := mkUpdate(runY, 2, upsertActivity(3, "bypassed"))
 			m.Update.Mode = p.UpdateWorkflowModeBypassCurrent
 			a := fold.New(shard)
 			add(t, a, m)
 			return a
 		}
-		quiet := reqs(bypass().Drain())
+		quiet := reqs(bypassWindow().Drain())
 
-		a := bypass()
+		a := bypassWindow()
 		require.ErrorIs(t, check(t, a, mkCreate(runX)), fold.ErrRefused)
 		noisy := reqs(a.Drain())
 

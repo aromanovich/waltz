@@ -258,7 +258,6 @@ func requireSameDerivation(t *testing.T, byFold, byCheck derived) {
 // both files.
 type shape struct {
 	name  string
-	kind  mutation.Kind
 	build func() mutation.Mutation
 
 	// runs is how many run assertions this request must produce, current
@@ -293,13 +292,13 @@ func conflictResolve(mode p.ConflictResolveWorkflowMode) *p.InternalConflictReso
 // unlike the kind axis a mode a temporal bump adds gets no row and no failure.
 var assertionShapes = []shape{
 	{
-		name: "create/brand-new", kind: mutation.KindCreate, runs: 1, current: true, write: runA,
+		name: "create/brand-new", runs: 1, current: true, write: runA,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{Create: create(p.CreateWorkflowModeBrandNew)}
 		},
 	},
 	{
-		name: "create/update-current", kind: mutation.KindCreate, runs: 1, current: true, write: runA,
+		name: "create/update-current", runs: 1, current: true, write: runA,
 		build: func() mutation.Mutation {
 			req := create(p.CreateWorkflowModeUpdateCurrent)
 			req.PreviousRunID, req.PreviousLastWriteVersion = runB, 11
@@ -307,31 +306,31 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "create/bypass-current", kind: mutation.KindCreate, runs: 1, current: false,
+		name: "create/bypass-current", runs: 1, current: false,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{Create: create(p.CreateWorkflowModeBypassCurrent)}
 		},
 	},
 	{
-		name: "update/update-current", kind: mutation.KindUpdate, runs: 1, current: true, write: runA,
+		name: "update/update-current", runs: 1, current: true, write: runA,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{Update: update(p.UpdateWorkflowModeUpdateCurrent)}
 		},
 	},
 	{
-		name: "update/bypass-current", kind: mutation.KindUpdate, runs: 1, current: true,
+		name: "update/bypass-current", runs: 1, current: true,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{Update: update(p.UpdateWorkflowModeBypassCurrent)}
 		},
 	},
 	{
-		name: "update/ignore-current", kind: mutation.KindUpdate, runs: 1, current: false,
+		name: "update/ignore-current", runs: 1, current: false,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{Update: update(p.UpdateWorkflowModeIgnoreCurrent)}
 		},
 	},
 	{
-		name: "update/update-current+continue-as-new", kind: mutation.KindUpdate, runs: 2, current: true, write: runB,
+		name: "update/update-current+continue-as-new", runs: 2, current: true, write: runB,
 		build: func() mutation.Mutation {
 			req := update(p.UpdateWorkflowModeUpdateCurrent)
 			ns := snapshot(runB, 1)
@@ -340,7 +339,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "update/bypass-current+continue-as-new", kind: mutation.KindUpdate, runs: 2, current: true,
+		name: "update/bypass-current+continue-as-new", runs: 2, current: true,
 		build: func() mutation.Mutation {
 			req := update(p.UpdateWorkflowModeBypassCurrent)
 			ns := snapshot(runB, 1)
@@ -349,7 +348,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "set", kind: mutation.KindSet, runs: 1, current: false,
+		name: "set", runs: 1, current: false,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{Set: &p.InternalSetWorkflowExecutionRequest{
 				ShardID: int32(shardID), SetWorkflowSnapshot: snapshot(runA, 4),
@@ -357,7 +356,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "conflict-resolve/update-current", kind: mutation.KindConflictResolve, runs: 1, current: true, write: runA,
+		name: "conflict-resolve/update-current", runs: 1, current: true, write: runA,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{ConflictResolve: conflictResolve(p.ConflictResolveWorkflowModeUpdateCurrent)}
 		},
@@ -366,7 +365,7 @@ var assertionShapes = []shape{
 		// The current-row assertion is derived from the mutated current run
 		// rather than from the reset one, on both sides: the pair most likely
 		// to drift, and why this row and the one below are separate.
-		name: "conflict-resolve/update-current+current-mutation", kind: mutation.KindConflictResolve,
+		name: "conflict-resolve/update-current+current-mutation",
 		runs: 2, current: true, write: runA,
 		build: func() mutation.Mutation {
 			req := conflictResolve(p.ConflictResolveWorkflowModeUpdateCurrent)
@@ -376,7 +375,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "conflict-resolve/update-current+new-run", kind: mutation.KindConflictResolve,
+		name: "conflict-resolve/update-current+new-run",
 		runs: 2, current: true, write: runB,
 		build: func() mutation.Mutation {
 			req := conflictResolve(p.ConflictResolveWorkflowModeUpdateCurrent)
@@ -386,7 +385,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "conflict-resolve/update-current+all-three-parts", kind: mutation.KindConflictResolve,
+		name: "conflict-resolve/update-current+all-three-parts",
 		runs: 3, current: true, write: runC,
 		build: func() mutation.Mutation {
 			req := conflictResolve(p.ConflictResolveWorkflowModeUpdateCurrent)
@@ -397,13 +396,13 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "conflict-resolve/bypass-current", kind: mutation.KindConflictResolve, runs: 1, current: true,
+		name: "conflict-resolve/bypass-current", runs: 1, current: true,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{ConflictResolve: conflictResolve(p.ConflictResolveWorkflowModeBypassCurrent)}
 		},
 	},
 	{
-		name: "conflict-resolve/bypass-current+all-three-parts", kind: mutation.KindConflictResolve,
+		name: "conflict-resolve/bypass-current+all-three-parts",
 		runs: 3, current: true,
 		build: func() mutation.Mutation {
 			req := conflictResolve(p.ConflictResolveWorkflowModeBypassCurrent)
@@ -414,7 +413,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "delete", kind: mutation.KindDelete, runs: 0, current: false,
+		name: "delete", runs: 0, current: false,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{Delete: &p.DeleteWorkflowExecutionRequest{
 				ShardID: int32(shardID), NamespaceID: nsID, WorkflowID: wfID, RunID: runA,
@@ -422,7 +421,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "delete-current", kind: mutation.KindDeleteCurrent, runs: 0, current: false,
+		name: "delete-current", runs: 0, current: false,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{DeleteCurrent: &p.DeleteCurrentWorkflowExecutionRequest{
 				ShardID: int32(shardID), NamespaceID: nsID, WorkflowID: wfID, RunID: runA,
@@ -430,7 +429,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "add-tasks", kind: mutation.KindAddTasks, runs: 0, current: false,
+		name: "add-tasks", runs: 0, current: false,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{AddTasks: &p.InternalAddHistoryTasksRequest{
 				ShardID: int32(shardID), NamespaceID: nsID, WorkflowID: wfID,
@@ -441,7 +440,7 @@ var assertionShapes = []shape{
 		},
 	},
 	{
-		name: "range-complete-tasks", kind: mutation.KindRangeCompleteTasks, runs: 0, current: false,
+		name: "range-complete-tasks", runs: 0, current: false,
 		build: func() mutation.Mutation {
 			return mutation.Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
 				ShardID:             int32(shardID),
@@ -458,8 +457,6 @@ var assertionShapes = []shape{
 func TestTheAuthorityDerivesWhatTheFoldRecords(t *testing.T) {
 	for _, s := range assertionShapes {
 		t.Run(s.name, func(t *testing.T) {
-			require.Equal(t, s.kind, s.build().Kind(), "the row's kind column is not what it builds")
-
 			// Built twice: Add merges requests in place and takes ownership of
 			// what it is handed, so the decided side must not be given a request
 			// the fold has already consumed.
@@ -486,7 +483,7 @@ func TestTheAuthorityDerivesWhatTheFoldRecords(t *testing.T) {
 func TestEveryKindIsInTheAssertionShapeTable(t *testing.T) {
 	covered := map[mutation.Kind]bool{}
 	for _, s := range assertionShapes {
-		covered[s.kind] = true
+		covered[s.build().Kind()] = true
 	}
 	for k := mutation.KindInvalid + 1; int(k) < mutation.KindCount; k++ {
 		require.Truef(t, covered[k], "no shape covers %s: the two derivations are compared for "+

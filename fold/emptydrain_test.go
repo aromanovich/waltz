@@ -23,11 +23,13 @@ import (
 // kind the row is about.
 type foldedWindow struct {
 	name string
-	kind mutation.Kind
 	// window is the whole prefix, not the mutation alone: three of the kinds
 	// fold into a window rather than emit on their own.
 	window []mutation.Mutation
 }
+
+// kind is what the window ends in, which is the kind the row is about.
+func (w foldedWindow) kind() mutation.Kind { return w.window[len(w.window)-1].Kind() }
 
 // foldedWindows covers every kind, and covers twice each of the three whose
 // folds have a shape a reader will suspect of emitting nothing — fold's three
@@ -35,23 +37,23 @@ type foldedWindow struct {
 // if it came from anywhere but the shape below.
 var foldedWindows = []foldedWindow{
 	{
-		name: "create", kind: mutation.KindCreate,
+		name:   "create",
 		window: []mutation.Mutation{mkCreate(runX)},
 	},
 	{
-		name: "update", kind: mutation.KindUpdate,
+		name:   "update",
 		window: []mutation.Mutation{mkUpdate(runX, 2)},
 	},
 	{
-		name: "conflict-resolve", kind: mutation.KindConflictResolve,
+		name:   "conflict-resolve",
 		window: []mutation.Mutation{mkConflictResolve(runX, 2)},
 	},
 	{
-		name: "set", kind: mutation.KindSet,
+		name:   "set",
 		window: []mutation.Mutation{mkSet(runX, 2)},
 	},
 	{
-		name: "delete", kind: mutation.KindDelete,
+		name:   "delete",
 		window: []mutation.Mutation{mkDelete(runX)},
 	},
 	{
@@ -59,34 +61,34 @@ var foldedWindows = []foldedWindow{
 		// too, so the second delete returns having appended nothing — the
 		// no-op that looks most like a window folding to nothing, and the
 		// first delete is why it is not.
-		name: "delete/of a run the window already tombstoned", kind: mutation.KindDelete,
+		name:   "delete/of a run the window already tombstoned",
 		window: []mutation.Mutation{mkDelete(runX), mkDelete(runX)},
 	},
 	{
-		name: "delete-current", kind: mutation.KindDeleteCurrent,
+		name:   "delete-current",
 		window: []mutation.Mutation{mkCreate(runX), mkDeleteCurrent(runX)},
 	},
 	{
 		// The guarded no-op: the run named is not the one the window wrote the
 		// current row for, so this appends no pending request of its own.
-		name: "delete-current/naming another run", kind: mutation.KindDeleteCurrent,
+		name:   "delete-current/naming another run",
 		window: []mutation.Mutation{mkCreate(runX), mkDeleteCurrent(runY)},
 	},
 	{
-		name: "add-tasks", kind: mutation.KindAddTasks,
+		name:   "add-tasks",
 		window: []mutation.Mutation{mkAddTasks(keyed(1, "a"))},
 	},
 	{
 		// Alone, so there is nothing in the window for the range to sweep: the
 		// range itself is the work, and it stays in TaskWork.Delete until a
 		// drain applies it.
-		name: "range-complete-tasks", kind: mutation.KindRangeCompleteTasks,
+		name:   "range-complete-tasks",
 		window: []mutation.Mutation{mkRangeComplete(0, 10)},
 	},
 	{
 		// And with every row it could sweep swept, which is the shape that
 		// looks like it folds to nothing and does not.
-		name: "range-complete-tasks/sweeping the whole window", kind: mutation.KindRangeCompleteTasks,
+		name:   "range-complete-tasks/sweeping the whole window",
 		window: []mutation.Mutation{mkAddTasks(keyed(1, "a")), mkRangeComplete(0, 10)},
 	},
 }
@@ -97,9 +99,6 @@ var foldedWindows = []foldedWindow{
 func TestAWindowThatFoldedAnythingSettlesWhatItAcked(t *testing.T) {
 	for _, w := range foldedWindows {
 		t.Run(w.name, func(t *testing.T) {
-			last := w.window[len(w.window)-1]
-			require.Equal(t, w.kind, last.Kind(), "the row's kind column is not what its window ends in")
-
 			a := fold.New(shard)
 			add(t, a, w.window...)
 
@@ -133,7 +132,7 @@ func TestAWindowThatFoldedNothingSettlesNothing(t *testing.T) {
 func TestEveryKindIsInTheFoldedWindowTable(t *testing.T) {
 	covered := map[mutation.Kind]bool{}
 	for _, w := range foldedWindows {
-		covered[w.kind] = true
+		covered[w.kind()] = true
 	}
 	for k := mutation.KindInvalid + 1; int(k) < mutation.KindCount; k++ {
 		require.Truef(t, covered[k], "no window ends in %s: every other kind is held to "+

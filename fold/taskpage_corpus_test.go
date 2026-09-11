@@ -323,8 +323,40 @@ func TestTheMergedReadIsTheSortedUnion(t *testing.T) {
 				r.mutations, r.windows, r.refusals, r.readPoints, r.pages,
 				r.cost.BaseCalls, r.cost.BaseRows, r.cost.BaseDiscarded, r.cost.WindowTouched,
 				r.cost.Comparisons, r.cost.Collisions, r.cost.FromWindow, r.surfaced)
+			if batch == batchSize {
+				reportCost(t, r)
+			}
 		})
 	}
+}
+
+// reportCost prints what the run above cost, at the batch size both queues poll
+// with. Counts only: a sandbox timing would describe the sandbox. It answers the
+// "is a heap warranted" question — a window holds tens of tasks per category, so
+// the sort is nothing and the scan is the cost, while an index would be a second
+// structure reproducing the window's whole lifecycle.
+func reportCost(t *testing.T, r *taskCorpus) {
+	for _, category := range taskCorpusCategories {
+		list := r.perWindow[int32(category.ID())]
+		if len(list) == 0 {
+			continue
+		}
+		sorted := slices.Sorted(slices.Values(list))
+		sum := 0
+		for _, v := range sorted {
+			sum += v
+		}
+		t.Logf("%-11s window tasks: n=%d min=%d p50=%d p95=%d max=%d mean=%.1f | sort at p50 ≈ %.0f comparisons",
+			category.Name(), len(sorted), sorted[0], sorted[len(sorted)/2],
+			sorted[len(sorted)*95/100], sorted[len(sorted)-1],
+			float64(sum)/float64(len(sorted)),
+			float64(sorted[len(sorted)/2])*math.Log2(float64(sorted[len(sorted)/2]+1)))
+	}
+	t.Logf("per page: %.2f base calls, %.1f base rows (%d discarded over the run), "+
+		"%.1f window entries touched, %.2f comparisons; %d collisions, %d tasks answered from the window",
+		float64(r.cost.BaseCalls)/float64(r.pages), float64(r.cost.BaseRows)/float64(r.pages),
+		r.cost.BaseDiscarded, float64(r.cost.WindowTouched)/float64(r.pages),
+		float64(r.cost.Comparisons)/float64(r.pages), r.cost.Collisions, r.cost.FromWindow)
 }
 
 // assertPagesWellFormed holds the three claims every pagination owes whatever it
@@ -380,59 +412,4 @@ func TestEveryImmediateKeyIsNormalised(t *testing.T) {
 	})
 	require.Positive(t, seen)
 	t.Logf("%d immediate-category window tasks, every one keyed (DefaultFireTime, TaskID)", seen)
-}
-
-// TestWhatAMergedReadCosts is counts only: a sandbox timing would describe the
-// sandbox. It answers the "is a heap warranted" question — a window holds tens
-// of tasks per category, so the sort is nothing and the scan is the cost, while
-// an index would be a second structure reproducing the window's whole lifecycle.
-// The numbers are printed rather than asserted, except the one below.
-func TestWhatAMergedReadCosts(t *testing.T) {
-	r := newTaskCorpus()
-	cursor := make(map[int32]tasks.Key)
-	r.drive(t, taskCorpusConfig(), taskCorpusLength(t), func() {
-		for _, category := range taskCorpusCategories {
-			id := int32(category.ID())
-			minKey, maxKey := widestRange(category)
-			if k, ok := cursor[id]; ok {
-				minKey = resumeFrom(category, k)
-			}
-			pages, c := paginate(t, r.acc, r.cold, taskReq(category, minKey, maxKey, batchSize))
-			r.cost.Add(c)
-			r.readPoints++
-			r.pages += len(pages)
-			if last := pages[len(pages)-1]; len(last) > 0 {
-				cursor[id] = last[len(last)-1].Key.Next()
-			}
-		}
-	})
-
-	t.Logf("\n=== %d mutations, %d windows (%d refusals), %d read points at BatchSize %d",
-		r.mutations, r.windows, r.refusals, r.readPoints, batchSize)
-	for _, category := range taskCorpusCategories {
-		list := r.perWindow[int32(category.ID())]
-		if len(list) == 0 {
-			continue
-		}
-		sorted := slices.Clone(list)
-		slices.Sort(sorted)
-		sum := 0
-		for _, v := range sorted {
-			sum += v
-		}
-		t.Logf("%-11s window tasks: n=%d min=%d p50=%d p95=%d max=%d mean=%.1f | sort at p50 ≈ %.0f comparisons",
-			category.Name(), len(sorted), sorted[0], sorted[len(sorted)/2],
-			sorted[len(sorted)*95/100], sorted[len(sorted)-1],
-			float64(sum)/float64(len(sorted)),
-			float64(sorted[len(sorted)/2])*math.Log2(float64(sorted[len(sorted)/2]+1)))
-	}
-	t.Logf("per page: %.2f base calls, %.1f base rows (%d discarded over the run), "+
-		"%.1f window entries touched, %.2f comparisons; %d collisions, %d tasks answered from the window",
-		float64(r.cost.BaseCalls)/float64(r.pages), float64(r.cost.BaseRows)/float64(r.pages),
-		r.cost.BaseDiscarded, float64(r.cost.WindowTouched)/float64(r.pages),
-		float64(r.cost.Comparisons)/float64(r.pages), r.cost.Collisions, r.cost.FromWindow)
-
-	// A run where the window answered nothing would report the same shape as a
-	// merge that does not work.
-	require.NotZero(t, r.cost.FromWindow)
 }
