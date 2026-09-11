@@ -14,20 +14,38 @@ package acceptance
 // At a window of one nothing is ever merged. Each drain carries the request one
 // mutation makes, which is the shape Temporal's own write path has without this
 // layer, so the two arms differ in the merge and in nothing else — and the
-// comparison is between two real databases rather than against a model, which is
-// what makes it total.
+// comparison is between two real databases rather than against a model.
+//
+// What it reads back is named rather than assumed, because a region left out is
+// a region the fold may destroy while this stays green: the run rows, the
+// current-execution rows, and every category's queue rows. The queue was the
+// one added last and the one that mattered — a sweep covering one key too many
+// took six acked task rows out of the folded arm with the other two comparisons
+// identical.
 //
 // What it cannot see is a defect the two arms share: the codec, the encoding of
 // a request, an assertion neither arm makes. Those are the codec guards' and the
 // condition authority's own.
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/server/service/history/tasks"
 	"google.golang.org/protobuf/testing/protocmp"
 )
+
+// oracleCategories is every category the corpus writes into: a comparison over
+// one of them is green while the fold loses rows out of the other three.
+var oracleCategories = []tasks.Category{
+	tasks.CategoryTransfer,
+	tasks.CategoryTimer,
+	tasks.CategoryVisibility,
+	tasks.CategoryReplication,
+}
 
 // TestFoldingChangesNothingButTheNumberOfTransactions is that comparison.
 func TestFoldingChangesNothingButTheNumberOfTransactions(t *testing.T) {
@@ -69,6 +87,23 @@ func TestFoldingChangesNothingButTheNumberOfTransactions(t *testing.T) {
 	for _, key := range current {
 		require.Equal(t, one.currentRun(t, key), folded.currentRun(t, key),
 			"workflow %s names a different run once its mutations are folded", key.workflowID)
+	}
+
+	// The queue rows, which the two comparisons above do not reach and which are
+	// where the fold does its own deleting: a range delete is folded against the
+	// tasks the window still holds, so a sweep that covers one key too many
+	// destroys a row the sequential arm keeps. Read whole, per category, since a
+	// category's rows are ordered and paged on their own.
+	for _, category := range oracleCategories {
+		lowest, highest := tasks.NewImmediateKey(0), tasks.NewImmediateKey(math.MaxInt64)
+		if category.Type() == tasks.CategoryTypeScheduled {
+			lowest = tasks.NewKey(time.Unix(0, 0).UTC(), 0)
+			highest = tasks.NewKey(time.Unix(1<<40, 0).UTC(), 0)
+		}
+		require.Equal(t,
+			one.taskIDsOf(t, category, lowest, highest),
+			folded.taskIDsOf(t, category, lowest, highest),
+			"the %s queue came out of the fold holding different rows", category.Name())
 	}
 
 	// Both ends of the log meet the stream's length in both arms, so neither

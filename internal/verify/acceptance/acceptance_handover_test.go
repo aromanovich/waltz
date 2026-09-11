@@ -239,13 +239,18 @@ func immediateTask(id int64) p.InternalHistoryTask {
 // pages deliberately small: a comparison over whatever came back in one page is
 // a comparison of first pages.
 func (s *seams) taskIDs(t *testing.T, lowest, highest tasks.Key) []int64 {
+	return s.taskIDsOf(t, taskCategory, lowest, highest)
+}
+
+// taskIDsOf pages one category's rows back out of the store, in key order.
+func (s *seams) taskIDsOf(t *testing.T, category tasks.Category, lowest, highest tasks.Key) []int64 {
 	t.Helper()
 	var out []int64
 	var token []byte
 	for {
 		resp, err := s.store.GetHistoryTasks(s.ctx, &p.GetHistoryTasksRequest{
 			ShardID:             seamsShard,
-			TaskCategory:        taskCategory,
+			TaskCategory:        category,
 			InclusiveMinTaskKey: lowest,
 			ExclusiveMaxTaskKey: highest,
 			BatchSize:           2,
