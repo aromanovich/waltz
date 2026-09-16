@@ -50,10 +50,14 @@ Four rules make that a shape rather than an accretion:
    would make every suite above it green for the wrong reason.
 3. **Neither may have knobs, hooks or fault injection.** Making a backend misbehave is a *test's*
    need and belongs to a decorator, not to the backend: `waltest.Faulty` at the log seam,
-   `internal/verify/coldtest` at the cold one. The doubles therefore stay, and stay in `internal/verify/`.
+   `internal/verify/coldtest` at the cold one. The doubles therefore stay, and stay outside the
+   backends: the log's beside the conformance suite a backend author runs, in `wal/waltest`, and the
+   cold store's in `internal/verify/`.
 4. **Neither may know waltz.** `memwal` knows the log contract and nothing else; `memcold` answers
-   Temporal's interfaces and imports nothing of the layer. A backend that could see the layer would
-   be judged by the thing sitting on top of it.
+   Temporal's interfaces and names no more of this module than the vocabulary the seam is stated
+   in — `fold`, `wal`, `apply`, `baserow`, `mutation` — never `cycle`, the wrapper, `walmetrics` or
+   the root package. A backend that could see the layer would be judged by the thing sitting on top
+   of it.
 
 ## Consequences
 
@@ -80,7 +84,8 @@ in prose and `memcold` as the worked example. **Nothing exported from here judge
 true: waltz *writes to* no store of its own. The layer reaches storage through `cold.Applier`,
 `cold.Watermarker` and the base store the wrapper decorates, and through nothing else;
 `cold/memcold` sits at the seam rather than in the layer, which is a dependency rule and not a
-figure of speech — nothing in the layer may import it, and it may import nothing of the layer.
+figure of speech — nothing in the layer may import it, and what it may import stops at the
+vocabulary the seam is stated in: never `cycle`, the wrapper, `walmetrics` or the root package.
 
 **Neither shipped backend is durable, and this decision does not make one.** Both live in one
 process's memory and die with it. What

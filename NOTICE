@@ -57,19 +57,18 @@ cold/memcold/rows.go
     applyWorkflowSnapshotTxAsReset, applyWorkflowSnapshotTxAsNew, applyTasks,
     createImmediateTasks, createScheduledTasks and the four per-table task
     inserts, buildExecutionRow, createExecution, updateExecution,
-    lockExecution), from execution_state_map.go and execution_state_non_map.go
-    (the seven update*Infos and delete*Map functions, updateSignalsRequested,
-    updateBufferedEvents, deleteBufferedEvents), from execution_tasks.go (the
-    rangeComplete* family) and from execution.go (DeleteWorkflowExecution,
-    getStartTimeFromState).
+    lockExecution), from execution_state_map.go (its six update-and-delete
+    pairs, one per keyed map) and execution_state_non_map.go
+    (updateSignalsRequested, deleteSignalsRequestedSet, updateBufferedEvents,
+    deleteBufferedEvents), from execution_tasks.go (the rangeComplete* family)
+    and from execution.go (DeleteWorkflowExecution, getStartTimeFromState).
     The statement sequence of each write path is upstream's, and every row and
-    filter literal — the executions row, the seven keyed maps, buffered events,
+    filter literal — the executions row, the seven keyed tables, buffered events,
     the six task tables, the range-delete filters — is field-for-field
     identical. startTimeOf is getStartTimeFromState with its identifiers
-    renamed. Error strings are this repository's own except two that are
-    upstream's verbatim: "Workflow execution already running. WorkflowId: %v"
-    (execution_util.go) and "unknown task category type: %v"
-    (persistence_metric_clients.go). One
+    renamed. Error strings are this repository's own except one that is
+    upstream's verbatim, in both places a task category is switched on:
+    "unknown task category type: %v" (persistence_metric_clients.go). One
     function takes less than that: lockCurrent follows
     lockCurrentExecutionIfExists in shape and filter only, and issues a
     different statement.

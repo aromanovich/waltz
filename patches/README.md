@@ -8,14 +8,15 @@ the strongest evidence a composition over waltz can produce: upstream's own
 functional suites — real frontend, history and matching, real workers, real
 workflows — running against your datastore instead of SQL or Cassandra.
 
-`0001-custom-persistence-test-base-factory.patch` is fifteen lines against
+`temporal/0001-custom-persistence-test-base-factory.patch` is fifteen lines against
 `tests/testcore/test_cluster.go`. Everything needed to boot such a cluster is
 already exported and already threaded: `NewTestClusterFactoryWithCustomTestBaseFactory`
 takes a `PersistenceTestBaseFactory`, and the cluster it builds hands that base's
 `AbstractDataStoreFactory` to the server. What stands in the way is one call
 site — every suite in `./tests` embeds `FunctionalTestBase`, whose `SetupSuite`
-builds its cluster from the no-argument `NewTestClusterFactory()`, which switches
-on `-persistenceType` / `-persistenceDriver` and panics on anything else. The
+builds its cluster from the no-argument `NewTestClusterFactory()`, which always
+builds `defaultPersistenceTestBaseFactory`, the one that switches on
+`-persistenceType` / `-persistenceDriver` and panics on anything else. The
 patch adds a package-level override read at that one site.
 
 A patch is a diff, so the file carries upstream's code by construction: its
