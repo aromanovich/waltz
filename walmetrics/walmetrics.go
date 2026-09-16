@@ -42,8 +42,9 @@ var (
 	MergedTaskPages = metrics.NewCounterDef("wal_merged_task_pages",
 		metrics.WithDescription("GetHistoryTasks pages routed at the layer's merge."))
 	// MergedTaskCollisions counts keys both sources carried. The sources are
-	// disjoint by construction — the window drops a task exactly when the drain
-	// carrying it commits — so a non-zero value means something is wrong.
+	// disjoint by construction — the window drops a task when the drain carrying
+	// it takes the window, and the store gains that row only when the same drain
+	// commits — so a non-zero value means something is wrong.
 	MergedTaskCollisions = metrics.NewCounterDef("wal_merged_task_collisions",
 		metrics.WithDescription("Task keys a merged page found in both the window and the cold store."))
 

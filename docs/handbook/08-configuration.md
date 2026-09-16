@@ -129,7 +129,7 @@ Each switch turns off the mechanism it exists to expose, which is why neither is
 
 | key | type | default | effect | what a typo costs |
 |---|---|---|---|---|
-| `sync` | bool | `false` | `true` drains inside every write and hands the drain's outcome back to the caller, instead of acking the write to the log and applying it later. The debugging configuration, not a shipped mode: the window is one mutation, so nothing collapses and a write costs an append **plus** an apply transaction — more than the store alone. This book describes the layer with `sync` off; where a chapter says a series is always zero — `trigger="sync"`, for instance — that is why | `snyc: true` is a refusal to start, which is the whole reason this key is on the strict surface |
+| `sync` | bool | `false` | `true` drains inside every write and hands the drain's outcome back to the caller, instead of answering the caller as soon as the log holds the write and applying it later. The debugging configuration, not a shipped mode: the window is one mutation, so nothing collapses and a write costs an append **plus** an apply transaction — more than the store alone. This book describes the layer with `sync` off; where a chapter says a series is always zero — `trigger="sync"`, for instance — that is why | `snyc: true` is a refusal to start, which is the whole reason this key is on the strict surface |
 | `drain_on_read` | bool | `false` | `true` makes a read drain the window first, so all three reads are answered by the cold store. An attribution instrument, not a shipped mode; it costs a transaction per read that crosses a window | as above: an unknown key is a refusal to start |
 
 Both are read once, when the node composes its layer. There is no way to change them without a
@@ -181,7 +181,7 @@ services restarted**.
 | `wal.trimAfter` | duration | `1m0s` | **live** | the same cadence in time, whichever trips first | raising `trimEvery` alone does not keep a log: this one fires anyway |
 | `wal.hardMaxEntries` | int | `8192` | **START-UP** | invariant [I10](02-concepts-and-invariants.md#the-invariants)'s bound on one shard's tail in entries — what has been acked and not yet applied. A shard at the bound refuses its writers with `ResourceExhausted` rather than parking them behind the apply | it is one half of a bound whose other half is `hardMaxBytes`; neither unit works alone, and a node honouring one from a different edit than the other is a bound nobody wrote |
 | `wal.hardMaxBytes` | int | `8388608` | **START-UP** | the same bound in encoded bytes. One workflow near the server's own 8 MB mutable-state limit turns an entries-only bound into a byte budget with no ceiling | arithmetic, not taste: the node's tail budget divided by the shards it may own. It is a factor of the product asserted before the node boots |
-| `wal.maxShards` | int | `256` | **START-UP** | what one node may own at once — **not** the cluster's shard count. The default is a steady-state figure doubled, so that a node picking up a departed neighbour's shards does not trip the budget assertion; [chapter 14](14-where-the-defaults-came-from.md) has where the steady-state figure came from | the other factor of the same product |
+| `wal.maxShards` | int | `256` | **START-UP** | what one node may own at once — **not** the cluster's shard count. Nothing counts the shards a node actually holds, so this is the figure the budget arithmetic is done against rather than a limit the layer enforces: the default is a steady-state figure doubled, so that the product still covers a node that has picked up a departed neighbour's shards. [Chapter 14](14-where-the-defaults-came-from.md) says the steady-state figure itself is recorded nowhere | the other factor of the same product |
 | `wal.tailBudgetBytes` | int | `2147483648` | **START-UP** | the **encoded** bytes of unapplied tail one node may hold — not heap, which is several times larger ([chapter 14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident)) | `hardMaxBytes × maxShards` must fit in it or the node refuses to start |
 
 > **Why the four marked START-UP are read once rather than live.** Three of them —
@@ -320,9 +320,9 @@ accumulator's indices make the live heap several times larger, so a node sized b
 `tailBudgetBytes` as a memory figure is sized wrong. [Chapter
 14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident) has the multiplier the
 research prototype measured, what the shipped budget therefore costs with every shard at its bound,
-and what moves it. Re-measure that multiplier for the workload being deployed rather than trusting
-it, and size the node from your own result. The settings to change are `wal.tailBudgetBytes` and
-`wal.hardMaxBytes`, and both need a restart.
+and what that probe did not show. Re-measure that multiplier for the workload being deployed rather
+than trusting it, and size the node from your own result. The settings to change are
+`wal.tailBudgetBytes` and `wal.hardMaxBytes`, and both need a restart.
 
 **Read traffic does not enter this budget**, because the read path retains nothing
 ([chapter 07](07-read-path.md#1-route-only-reads-whose-answer-can-be-split)). What a shard holds is

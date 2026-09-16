@@ -61,8 +61,8 @@ type ShardWriter interface {
 	// did with it; the mutation names its own shard.
 	//
 	// The layer takes ownership of m's request: in a windowed mode it is
-	// retained past this call, and the drain stamps its rangeID. A caller may
-	// not read or reuse it once Write has returned.
+	// retained past this call and merged in place with the window's other
+	// requests. A caller may not read or reuse it once Write has returned.
 	//
 	// epoch is the rangeID the caller wrote under, so a write from a fenced-out
 	// shard context is refused rather than re-stamped with this node's. Zero
