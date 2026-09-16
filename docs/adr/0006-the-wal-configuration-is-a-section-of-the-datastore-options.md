@@ -12,10 +12,10 @@ config. Where the layer's configuration lives is unchanged.
 
 ## Context
 
-A custom `main` receives the persistence configuration as an opaque `map[string]any` and hands it
-to `temporal.WithCustomDataStoreFactory` unparsed. The layer needs to read its own mode out of
-that map — whether it is on at all, and how it behaves — while the rest of the map belongs to the
-plugin holding the cold store and must reach that plugin untouched.
+A custom `main` receives the persistence configuration as an opaque `map[string]any`, and it reaches
+the factory handed to `temporal.WithCustomDataStoreFactory` unparsed. The layer needs to read its
+own mode out of that map — whether it is on at all, and how it behaves — while the rest of the map
+belongs to the plugin holding the cold store and must reach that plugin untouched.
 
 Three routes, and each has a different cost to a deployment that already exists:
 
@@ -128,10 +128,10 @@ So:
 * every number is on the consolidated surface. A mistyped `wal.windowMutatoins` is a node at the
   measured policy — a different order of wrong, and the price of having one place to look.
 
-**Four of the nine are read once, and they say so.** `hard_max_bytes × max_shards ≤
-tail_budget_bytes` is asserted when the policy is turned into a composition, so a factor that could
-move afterwards would be that refusal with nothing behind it; `hardMaxEntries` is I10's other unit,
-read in the same statement as `hardMaxBytes`. Their descriptions carry `READ AT START-UP` and
+**Four of the nine are read once, and they say so.** `hardMaxBytes × maxShards ≤ tailBudgetBytes`
+is asserted when the policy is turned into a composition, so a factor that could move afterwards
+would be that refusal with nothing behind it; `hardMaxEntries` is I10's other unit, read in the
+same statement as `hardMaxBytes`. Their descriptions carry `READ AT START-UP` and
 `TestAStartOnlySettingDoesNotMoveUnderTheNode` holds it. The refusal itself is `cycle.NewManager`'s,
 reached through `Compose`, which opens nothing and reaches nothing — so it is still a binary that
 does not start rather than a connection attempt followed by a complaint.
@@ -151,12 +151,12 @@ cannot tell "not written" from "written as zero", while an unset setting is a ke
 have.
 
 **The reference is the deliverable.** The handbook's configuration chapter
-([08-configuration.md](../handbook/08-configuration.md)) carries one table — key, where it lives,
-when it is read, what it defaults to — as the operator's copy of `knobs` and `settings`. It is
-maintained by hand: a key added, renamed, re-homed or given a different default is edited there in
-the same commit, and nothing reports it if it is not. `TestEveryPolicyFieldIsConfigurableOnce` is
-the same claim from the other side: every exported `cycle.Config` field is claimed by exactly one
-of the two tables.
+([08-configuration.md](../handbook/08-configuration.md)) carries a table per surface — the section's
+two keys, and the nine settings with their defaults and when each of them is read — as the
+operator's copy of `knobs` and `settings`. It is maintained by hand: a key added, renamed, re-homed
+or given a different default is edited there in the same commit, and nothing reports it if it is
+not. `TestEveryPolicyFieldIsConfigurableOnce` is the same claim from the other side: every exported
+`cycle.Config` field is claimed by exactly one of the two tables.
 
 **A process with no config file states the same settings.** A caller configuring the layer from
 flags builds a `dynamicconfig.StaticClient` over the exported settings and hands the collection to
