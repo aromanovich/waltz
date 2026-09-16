@@ -136,9 +136,9 @@ flowchart TD
     C -->|"yes"| D["prelude: replay gate, then count"]
     D --> E{"cycle state and tail"}
     E -->|"running, drain outcome unreadable"| R["refuse: ResourceExhausted"]
-    E -->|"halted, empty tail, mutable-state read"| Z
-    E -->|"halted-lost, task read"| L
-    E -->|"halted, non-empty tail"| H["refuse: the halt's own error"]
+    E -->|"halted-lost: a task read, or a non-empty tail"| L
+    E -->|"halted, empty tail"| Z
+    E -->|"halted-invariant, non-empty tail"| H["refuse: the halt's own error"]
     E -->|"running"| F{"DrainOnRead?"}
     F -->|"on"| G["drain the window, trigger tag read"]
     G --> Z
@@ -225,7 +225,7 @@ hand the reader signals, activities, timers and child executions that the drain 
 other function. That is the same fold the drain will write, so **a read answers with what the drain
 will write**.
 
-What that fold produces is then taken apart and put back together by hand: `snapshotOfBase` turns
+Both ends of that fold are taken apart and put back together by hand: `snapshotOfBase` turns
 the cold store's row into the snapshot the delta folds onto, and `mutableStateOf` turns the result
 into the type the read answers in. Both are field-by-field mirrors of Temporal's
 `InternalWorkflowMutableState`, and a field either of them stops filling comes back **zero** — which
@@ -429,9 +429,10 @@ rather than inventing a window cursor that was never handed out.
 ### The collision counter
 
 `mergeSorted` counts keys that both sources carried. **The two sources are disjoint by
-construction**: the window drops a task exactly when the drain carrying it commits, so no key should
-ever be in both. A collision therefore means the window is still holding a task a committed drain
-already put in the store.
+construction**: the window drops a task when the drain carrying it takes the window, and the cold
+store gains that row only when the same drain commits, so no key should ever be in both. A
+collision therefore means the window is still holding a task a committed drain already put in the
+store.
 
 It is counted rather than raised, because a read is the wrong place to discover a broken invariant.
 The page is still correct — the base's row wins and the duplicate is dropped — so the merge finishes
@@ -463,11 +464,12 @@ rising, so no later range covers the row and every reader scope is rebuilt above
 be permanent garbage. There is exactly one such row for every task the drop removes — the rows I7
 declines to write are precisely the rows that would leak.
 
-Nothing anywhere would notice such a row. Task rows are plain upserts into `executions`, a range
-completion is a bare `DELETE`, and no check compares an inserted key against a boundary already
-completed. That is not an oversight. In the unmodified server the row cannot appear, because a task
-row and the mutable state that produced it are written **at the same moment, by the same
-transaction**, and a queue does not complete a range while somebody's task write is still in flight.
+Nothing anywhere would notice such a row. Task rows are plain inserts into the store's own
+per-category task tables, a range completion is a bare `DELETE`, and no check compares an inserted
+key against a boundary already completed. That is not an oversight. In the unmodified server the
+row cannot appear, because a task row and the mutable state that produced it are written **at the
+same moment, by the same transaction**, and a queue does not complete a range while somebody's task
+write is still in flight.
 
 Acknowledging a write before its task rows reach the store destroys that simultaneity, and I7 is
 what fills the hole it opens. It fills the hole by **never writing such a row** rather than by
@@ -512,12 +514,12 @@ Three things about the drop are decisions rather than mechanics:
 One operational asymmetry comes with the ranges a drain carries. A range is a predicate, not a key
 tuple, so unlike the drain's other delete families it cannot collapse into one statement per family.
 Each range is its own statement, and the drain's statement count is therefore a function of how many
-ranges the batch was handed — never of how many rows those ranges cover.
+ranges the batch carries — never of how many rows those ranges cover.
 
 A range too large for one statement fails the drain it rides in, rather than degrading into pages
-the way the standalone call does ([chapter 05](05-write-path.md#2-the-drain-itself) has why). That
-limitation is named rather than closed, and it is worth knowing at the console: you will see it as a
-drain failing for the size of somebody's queue checkpoint.
+the way a standalone call is free to ([chapter 05](05-write-path.md#2-the-drain-itself) has why).
+That limitation is named rather than closed, and it is worth knowing at the console: you will see it
+as a drain failing for the size of somebody's queue checkpoint.
 
 `fold.Accumulator.taskRows` enumerates, in one walk, every place a task row can live inside a window:
 

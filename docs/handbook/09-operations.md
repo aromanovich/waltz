@@ -56,7 +56,7 @@ requires a migration, that migration belongs to the log's own deployment.
    a restart of the processes that run the history service.
 
 4. **Verify.** Watch `wal_intercepted_writes` become non-zero: it is the series that says traffic is
-   going through the log at all. Have the binary log a start-up line naming the mode it composed and
+   reaching the layer at all. Have the binary log a start-up line naming the mode it composed and
    the window it composed at. The failure that line catches is silent from both ends: a node that
    came up in passthrough under a file asking for intercept looks healthy, and so does a node
    intercepting when nobody meant it to.
@@ -86,17 +86,19 @@ Two rules, and moving either is not a refactor:
 the context handed in: `Shutdown` detaches from the caller's cancellation (`context.WithoutCancel`)
 before it starts the timer. A shutdown drain runs where a context has just been cancelled — that is
 what shutdown means — and a drain inheriting that cancellation would return at once, leaving a tail
-behind and nothing in the log that says so.
+behind and nothing in the log that says so. A budget of zero or less is refused rather than obeyed,
+since `context.WithTimeout` reads zero as a deadline already past where much of Go reads it as no
+limit.
 
 A drain the budget cuts short is **not** data loss: the entries are in the log, acked, and the next
 owner replays them. It costs that owner a read loop and a transaction before it serves anything.
 
 That holds while there *is* a next owner, so `Shutdown` names what it could not empty rather than
-returning nothing. Its error is a `*waltz.UndrainedError` and nothing else, carrying one
-`cycle.Residue` per shard — the shard, its epoch, how many acked entries the tail still held, and what
-that shard's drain answered, which is what tells a halted cycle from a budget that ran out. Nil means
-every tail emptied. Log it: it is the only moment those entries are nameable, and the next section is
-the one procedure that needs the answer.
+returning nothing. Given a budget it can use, its error is a `*waltz.UndrainedError` and nothing
+else, carrying one `cycle.Residue` per shard — the shard, its epoch, how many acked entries the tail
+still held, and what that shard's drain answered, which is what tells a halted cycle from a budget
+that ran out. Nil means every tail emptied. Log it: it is the only moment those entries are nameable,
+and the next section is the one procedure that needs the answer.
 
 ### Taking the layer out
 
@@ -234,8 +236,10 @@ will clear it.
 
 ## 5. Runbooks
 
-Seven of them, each explaining the mechanism behind a symptom the tree above has already routed.
-Each names the metric series and the configuration key involved. The series are
+Seven of them, each explaining the mechanism behind one symptom. The tree above routes into the
+first three; the other four begin somewhere else — at an instrument, or at a node that will not
+boot. Each names the metric series involved, and the configuration key where there is one. The
+series are
 [10-metrics.md](10-metrics.md#3-the-reference-table), including the alert shape for each of the
 conditions below; the keys are
 [08-configuration.md](08-configuration.md#3-table-2--the-nine-dynamic-config-settings).
@@ -282,9 +286,9 @@ keeps the shard loaded and slows its queues instead of DLQ-ing tasks.
 
 Nothing has to be reconciled afterwards either. A refused write is retried at the version it was
 refused at: the caller was told "no", so it still holds the row it read and its assertion still
-stands. Once the applier catches up, a replay reads back exactly the acknowledged set — in order,
-gap-free, with none of the refusals in it. That is the concrete reason `ResourceExhausted` is the
-right answer here and a condition failure is not.
+stands. A later replay reads back exactly the acknowledged set — in order, gap-free, with none of
+the refusals in it. That is the concrete reason `ResourceExhausted` is the right answer here and a
+condition failure is not.
 
 I10 bounds what a slow cold store can cost you; it does not make the two halves independent. If the
 log lives in the same database as the cold store, a database-wide incident takes out both at once,
@@ -327,9 +331,11 @@ import ban in [03-components.md](03-components.md) exist to allow.
   it refuses every write. A cycle that halted this way with an empty tail still passes both
   mutable-state and task reads through to the cold store; one that halted holding a tail refuses
   every routed read, and it will never drain that tail — a halted cycle does not drain, so only a
-  fresh cycle at a higher epoch clears it. Nothing re-acquires the shard on its own, because the
-  halt is deliberately not an ownership loss. The halt is not durable, though. Its state is in
-  memory, so a process restart — or any acquire at a strictly greater epoch — installs a fresh
+  fresh cycle at a higher epoch clears it. The layer asks nobody to take the shard over, because the
+  halt is deliberately not an ownership loss — which is not the same as pinning ownership: the
+  server re-acquires a shard in the background when a write comes back with an error it does not
+  recognise, and the halt's own error is one of those. The halt is not durable either. Its state is
+  in memory, so a process restart — or any acquire at a strictly greater epoch — installs a fresh
   cycle, which reads the watermark and replays the same tail. Whether the shard writes again then
   depends on what diverged: an ambiguous apply outcome need not recur on the replay, while a
   genuine disagreement between what the layer folded and what the store holds is met again by the
@@ -364,7 +370,7 @@ import ban in [03-components.md](03-components.md) exist to allow.
   `outcome="started"`.
 * **What it means.** The trim is the lazy deletion of log entries below the applied watermark. It
   runs beside the apply cycle, not in it, and a failed trim is logged, retried at the next cadence,
-  and **halts nothing**. This counter is the only place a failing trim is visible.
+  and **halts nothing**. This counter is the only series a failing trim appears in.
 * **What to check.** Whether it is failing on every cadence or only occasionally. Trimming is part
   of the latency budget rather than hygiene: a backend's reads get dearer as its log gets longer, so
   a permanently failing trim degrades the layer's latency over hours rather than minutes. How much
@@ -408,8 +414,9 @@ import ban in [03-components.md](03-components.md) exist to allow.
 
 * **Symptom.** `wal_merged_task_collisions` is anything but zero.
 * **What it means.** A merged `GetHistoryTasks` page found the same task key in both the window and
-  the cold store. The two sources are disjoint by construction — the window drops a task exactly
-  when the drain carrying it commits — so **any** non-zero value means something is wrong: a second
+  the cold store. The two sources are disjoint by construction — the window drops a task when the
+  drain carrying it takes the window, and the store gains that row only when the same drain
+  commits — so **any** non-zero value means something is wrong: a second
   writer for the shard, a drain whose window release did not happen, or a merge reading a stale
   window.
 * **What to check.** `wal_merged_task_pages` (are pages being routed at all?) and `wal_halts`. Both
@@ -466,7 +473,7 @@ go test ./...
 No cluster, no container, no port to configure, no cgo, no fixture directory. That falls out of
 every backend living in the test process: the log is `wal/memwal`, and the cold store and the base
 store are both `cold/memcold` — Temporal's own SQL persistence over an in-memory SQLite database,
-through the pure-Go `modernc.org/sqlite` driver. When a suite has to make one of those two
+through the pure-Go `modernc.org/sqlite` driver. When a suite has to make one of those two stores
 misbehave it reaches for the doubles in `internal/verify/coldtest` and `internal/verify/basetest`.
 So there is nothing to connect to and nothing to wait for, and `internal/verify/e2e` starts four
 Temporal services on OS-assigned ports on the same terms.
@@ -485,9 +492,9 @@ Two things worth knowing about that, both of which are limits rather than featur
   `internal/verify/e2e` is the in-tree version of the same idea at a fraction of the coverage: one
   server, one workflow, no installation.
 
-`go vet ./...` and `golangci-lint run` are the other two, and `.golangci.yml` says which linters are
-deliberately off and why — a check switched off in silence is one somebody re-enables and then
-disables again.
+`make lint` is the other check — golangci-lint and gopls's `modernize`, both pinned in the
+Makefile — and `.golangci.yml` says which linters are deliberately off and why: a check switched off
+in silence is one somebody re-enables and then disables again.
 
 ---
 
