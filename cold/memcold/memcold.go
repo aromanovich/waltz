@@ -3,9 +3,11 @@
 // and dies with it. It is a store, not a test double. The execution store is
 // upstream's, embedded whole — all 28 methods, the schema they were written
 // against, the row layouts, the error classes — and none of them is shadowed
-// here. What waltz adds beside them is the batched write of a folded window,
-// which is the one thing this package exists for and the one thing Temporal has
-// no method for.
+// here. What waltz adds beside them is the batched write of a folded window —
+// the one thing this package exists for and the one thing Temporal has no
+// method for — with the watermark that write commits inside itself, and the
+// current-row read that carries the last_write_version Temporal's own response
+// type has nowhere to hold.
 //
 // That embedding is why the package is this small, and why it will not grow. A
 // history shard's store is the hardest thing here to get right and the easiest

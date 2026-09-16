@@ -116,10 +116,10 @@ func Refuse(err error) error { return &refusedError{err: err} }
 
 // Diverged names one row whose state is not where fold thought it was. RunID is
 // empty when the row is the workflow's current-execution row rather than a
-// run's base row; AssertedBase and ActualBase are -1 when there is no version
-// to report — a MustNotExist assertion, an absent row, any current-row
-// divergence. Detail always says what was asserted and what the cold store
-// holds.
+// run's base row; either version is -1 when that side has none to report —
+// AssertedBase under a MustNotExist assertion, ActualBase where the row is
+// gone, both for any current-row divergence. Detail always says what was
+// asserted and what the cold store holds.
 type Diverged struct {
 	NamespaceID string
 	WorkflowID  string
@@ -153,7 +153,7 @@ type InvariantViolationError struct {
 	// CutSeqno is the highest seqno a partial re-drain may acknowledge: one
 	// below the lowest entry answering for any diverged row. Zero means nothing
 	// may be acknowledged, and covers three cases that demand the same of the
-	// caller — no divergence was found, the window's first entry diverged, and
+	// caller — no divergence was found, [wal.FirstSeqno] itself diverged, and
 	// ReadbackErr, where a row nobody read could answer for an entry below
 	// anything seen. Applying anything above it would leave entries applied
 	// above any watermark the drain could set.
