@@ -50,8 +50,8 @@ The layer packages sit at the **module root** and `internal/verify/` holds what
 judges them
 ([ADR 0009](docs/adr/0009-the-tree-separates-the-layer-from-what-judges-it.md)).
 `cold/memcold` is the one thing at the root that is neither: it is a *store*,
-sitting under the cold seam, so nothing of the layer may import it and it may
-import nothing of the layer
+sitting under the cold seam, so nothing of the layer may import it and what it
+may import is the vocabulary the seam is stated in and nothing above it
 ([`.claude/rules/cold.md`](.claude/rules/cold.md)).
 The root package `waltz` is the front door — `Compose`, the `wal` configuration
 section, the dynamic-config settings, `AbstractFactory` — and nothing of the
@@ -92,9 +92,11 @@ quote one:
   number produced here would describe a laptop.
 * **it says nothing about a fold against a store that was not folded for.**
   `cold/memcold` is a real store and the acceptance lands real batches in it, so
-  a batch that contradicts the schema is now caught. What is still missing is
-  the differential oracle — one stream applied twice, sequentially and folded,
-  the two required to end identical — which needs two real cold stores.
+  a batch that contradicts the schema is caught, and the differential oracle —
+  one stream applied twice, sequentially and folded, the two required to end
+  identical — runs here too. Both its arms are `cold/memcold`, so a defect the
+  two share cancels, and nothing in it speaks for the schema, the row layouts or
+  the condition failures of a store a deployment would run.
 
 The handbook's
 [15-the-limits-of-the-evidence.md](docs/handbook/15-the-limits-of-the-evidence.md)

@@ -1,7 +1,7 @@
 package cycle
 
 // Replay: what a new owner does with a tail it did not write. A read loop over
-// `(appliedSeqno, tail]` into the accumulator, and four decisions:
+// `(appliedSeqno, commitSeqno]` into the accumulator, and four decisions:
 //
 //   - it is [Cycle.start] grown a body, which makes it the readiness gate: a
 //     request arriving mid-replay parks in [ask] behind it. A read
