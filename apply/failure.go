@@ -6,6 +6,11 @@
 // vocabulary — [Refuse] for what it turned away before anything reached the
 // cold store, [Attribute] to turn a bare condition failure into the rows it was
 // about, and [Classify] for the rule the cycle reads both through.
+//
+// It judges what it is handed and may not name wal.Log or wal.Entry: an outcome
+// says what a drain did, and what the cycle does about the log next — pace,
+// trim, halt — is the cycle's policy. A package that can reach the log is a
+// package where those land early, one convenience at a time.
 package apply
 
 import (

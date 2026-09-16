@@ -49,8 +49,9 @@ package.
   Nothing stops a layer package from reaching for a corpus generator or an
   in-memory cold store; both are in this module and both are useful, and the
   first such import puts test scaffolding into the binary an operator runs. Test
-  files are exempt and must be: fold's and cycle's own tests legitimately fold a
-  generated stream from `internal/verify/mutgen`.
+  files are exempt and must be: fold's own tests legitimately fold a generated
+  stream from `internal/verify/mutgen`, and cycle's build their mutations with
+  `internal/verify/mutbuild`.
 * **the root package is the front door and nothing else** — `Compose`, the `wal`
   section, the dynamic-config settings, `AbstractFactory`. It may import the
   whole layer and **nothing of the layer may import it**, which is what keeps
