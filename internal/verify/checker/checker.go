@@ -35,8 +35,8 @@ const (
 	Removed
 	// NoClaim: the mutation is not about a run's mutable state, so nothing
 	// reading the record can check it against an execution row. Both
-	// history-task records are such mutations — they name a shard, a category
-	// and a range, and no run.
+	// history-task records are such mutations — the rows they move are keyed by
+	// shard, category and task key, and neither names a run.
 	//
 	// It is a value rather than an error because the alternative readings are
 	// both wrong: refusing the mutation would stop a driver that is behaving,

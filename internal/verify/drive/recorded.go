@@ -33,8 +33,9 @@ type Recorder struct {
 	Store  p.ExecutionStore
 	Record *checker.Record
 
-	// Shard and Epoch are what every line carries. The epoch is stamped onto
-	// the request too, the mutation not carrying one (I11).
+	// Shard and Epoch are what the call and fenced lines carry, an outcome
+	// pointing back at its call instead. The epoch is stamped onto the request
+	// too, the mutation not carrying one (I11).
 	Shard wal.ShardID
 	Epoch wal.Epoch
 

@@ -1,10 +1,11 @@
 package mutgen
 
-// The steps: one call to step() is one thing that happens to one workflow, and
-// what may happen is decided by the state the stream has already put that
-// workflow in. That is the whole validity model — a request is only ever built
-// for a state the store would accept it in, and the exported validators below
-// are asked to confirm it before it is emitted.
+// The steps: one call to step() is one thing that happens to one workflow — or,
+// for the two history-task shapes, to the shard — and what may happen to a
+// workflow is decided by the state the stream has already put it in. That is
+// the whole validity model — a request is only ever built for a state the store
+// would accept it in, and the exported validators below are asked to confirm it
+// before it is emitted.
 
 import (
 	"encoding/binary"
@@ -85,9 +86,7 @@ func (g *Generator) newRun() *runState {
 		state:            enumsspb.WORKFLOW_EXECUTION_STATE_CREATED,
 		status:           enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 		// Event ids start at 1 upstream (0 is EmptyEventID, "no event"), so a
-		// scheduled-event key of 0 is a shape no real mutation carries. The
-		// generator models what upstream writes, and every measurement taken
-		// over it is a function of the streams these seeds produce.
+		// scheduled-event key of 0 is a shape no real mutation carries.
 		nextActivity: 1,
 	}
 }
@@ -214,8 +213,8 @@ func (g *Generator) emitUpdate(w *workflowState) error {
 	case continuing:
 		// The new run takes the current-execution row; the run just continued
 		// stays in the store and the stream never touches it again. Deleting it
-		// would need the delete of a non-current run, which the package comment
-		// explains is left out.
+		// would be a delete of a run the current row does not name, and the pair
+		// below is the only deletion shape this generator emits.
 		w.run, w.closed = next, nil
 		g.runs++
 	case closing:
@@ -258,8 +257,9 @@ func (g *Generator) emitConflictResolve(w *workflowState) error {
 		ResetWorkflowSnapshot: snapshot,
 	}
 
-	// The store checks the reset snapshot with the *update* validator (mss.go),
-	// and Temporal's mode validator has a rule of its own for the three parts.
+	// A store checks the reset snapshot with the *update* validator — Cassandra's
+	// reset path runs exactly that one — and Temporal's mode validator has a rule
+	// of its own for the three parts.
 	if err := p.ValidateUpdateWorkflowStateStatus(r.state, r.status); err != nil {
 		return fmt.Errorf("mutgen: generated an invalid conflict-resolve: %w", err)
 	}
@@ -563,7 +563,7 @@ func (g *Generator) historyTasks(w *workflowState, r *runState) (map[tasks.Categ
 // live and gone are taken by pointer because the reuse arm moves a key between
 // them, and fresh mints one for the arm that does not — the two key kinds differ
 // in nothing else, and the rng is touched in the same order either way, which is
-// what keeps a recorded corpus valid across this.
+// what keeps the stream a function of the seed whichever kind a step draws.
 func pickKey[K comparable](g *Generator, live, gone *[]K, fresh func() K) K {
 	if n := len(*live) + len(*gone); n > 0 && g.chance(g.cfg.KeyReuse) {
 		i := g.rng.IntN(n)
@@ -621,9 +621,9 @@ func remove[K comparable](keys []K, key K) []K {
 // ---------------------------------------------------------------- blobs
 
 // rowBlobs are the three blobs every execution row is written from. All three
-// must be non-nil: a store reads .Data off each of them to build the row, and
-// the one this was written against does so without a check, so a missing
-// checksum is a panic rather than a rejection.
+// must be non-nil: a store reads .Data off each of them to build the row and
+// does so without a nil check — Cassandra's create and update dereference the
+// checksum blob outright — so a missing one is a panic rather than a rejection.
 func (g *Generator) rowBlobs(w *workflowState, r *runState) (info, state, checksum *commonpb.DataBlob, err error) {
 	if info, err = g.serializer.WorkflowExecutionInfoToBlob(g.executionInfo(w, r)); err != nil {
 		return nil, nil, nil, err
@@ -734,7 +734,8 @@ func (g *Generator) chance(p float64) bool {
 
 // newUUID draws a v4 UUID out of the seeded source. uuid.New would be a second,
 // unseeded source of randomness — and namespace ids and run ids have to be
-// parseable UUIDs, because the plugin calls primitives.MustParseUUID on them.
+// parseable UUIDs, because the store below keys its rows by the parsed form and
+// upstream's own SQL store parses them with primitives.MustParseUUID.
 func (g *Generator) newUUID() string {
 	var b [16]byte
 	binary.LittleEndian.PutUint64(b[0:8], g.rng.Uint64())
@@ -821,9 +822,9 @@ func (g *Generator) emitAddTasks(w *workflowState, r *runState) error {
 //
 // The cut is drawn among the keys not yet covered, so every range this generator
 // produces covers at least one task — which is what [Report.TasksCovered]
-// counts and what a corpus acceptance gates on. A category with nothing left to
-// cover produces nothing rather than an empty range: an empty range is a
-// statement the store runs and a rule nothing exercises.
+// counts. A category with nothing left to cover produces nothing rather than an
+// empty range: an empty range is a statement the store runs and a rule nothing
+// exercises.
 func (g *Generator) emitRangeComplete() {
 	if len(g.cats) == 0 {
 		return

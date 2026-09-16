@@ -32,8 +32,9 @@
 // model that stands in for the plugin is asked the same questions from both
 // sides. A second copy would be two models of one store, and the first
 // divergence between them would be a rule tested against a store the other half
-// does not have. It sits under verify/ for the reason verify/mutgen does: it is
-// an instrument, and the layer may not import it outside a test.
+// does not have. It sits under internal/verify/ for the reason
+// internal/verify/mutgen does: it is an instrument, and the layer may not import
+// it outside a test.
 package coldtasks
 
 import (
@@ -86,8 +87,9 @@ func (c *Store) Hold(category tasks.Category, list ...p.InternalHistoryTask) {
 }
 
 // Remove is the other half of what a drain's transaction does: the range deletes
-// it carries, applied before the rows it inserts, which is the order the plugin
-// itself uses (every delete is gathered before every upsert).
+// it carries, applied before the rows it inserts, which is the order a drain's
+// transaction owes: a task that arrived after a range is one fold deliberately
+// keeps, and a delete running after that insert would take it away.
 //
 // The predicate is passed in rather than named here, so that this model does not
 // have to agree with the layer about what a range covers — the caller hands it

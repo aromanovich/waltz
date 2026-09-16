@@ -11,17 +11,16 @@ import (
 type Stream struct {
 	Mutations []mutation.Mutation
 	// Payloads are the mutations encoded before any consumer has touched a
-	// request, so a differential run's second path reads the log's bytes rather
-	// than a rendering of what its first path already stamped.
+	// request, so a second path over one stream reads the log's bytes rather
+	// than a rendering of what the first path already stamped.
 	Payloads [][]byte
 	Report   Report
 }
 
-// Corpus generates n mutations from cfg and materialises them. It is the four
-// lines every suite that wants a corpus was writing — build, take, encode,
-// blame the seed in the failure — and it exists for the fifth: what a corpus is
-// judged on is [Report.Missing], which those suites were each enumerating by
-// hand.
+// Corpus generates n mutations from cfg and materialises them: the mutations,
+// the bytes a log would carry for each, and the report a corpus is judged on
+// ([Report.Missing]). Every error names the seed, since the seed is the whole
+// of what reproduces the failure.
 //
 // A run of 10^5 mutations and up drives [Generator.Next] itself: a materialised
 // stream of that size is gigabytes of payload, and a consumer folding as it

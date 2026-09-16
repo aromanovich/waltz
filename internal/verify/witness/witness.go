@@ -1,6 +1,6 @@
 // Package witness is the WAL layer's witness as one judged module: the claims
 // a run over the layer must be able to make about the layer's own counters,
-// stated once and checked the same way by the acceptance and by a live run.
+// stated once and checked the same way by every run that composes one.
 //
 // A witness exists because the failure it catches is silent in both directions,
 // and green is what it looks like either way: a layer that came out empty is
@@ -13,11 +13,11 @@
 // cluster, no server, no environment: the module whose job is to catch a silent
 // pass must be judgeable itself.
 //
-// [Observed] takes a [cycle.Totals] and nothing weaker. A witness that sums
-// [cycle.Manager.Shards] instead sums the current cycles, so a shard
-// re-acquired mid-suite drops its counters out of the witness silently, and a
-// hand-written copy of the totals loses whichever counters it was not updated
-// for.
+// [Observed] takes a [cycle.Totals] and nothing weaker. A witness that adds up
+// the shards a node holds now — [cycle.Cycle.Stats] apiece — sums the current
+// cycles only, so a shard re-acquired mid-suite drops its counters out of the
+// witness silently, and a hand-written copy of the totals loses whichever
+// counters it was not updated for.
 package witness
 
 import (
@@ -35,8 +35,8 @@ import (
 // Window is what window the run's cycle kept — the axis the witness's two
 // central claims invert on, and neither reading is the other's default:
 // in sync mode no read ever crosses a held workflow and nothing is left in the
-// tail, and in a windowed mode both must have happened, or the run was
-// intercept mode wearing a window's name. NoLayer is the control's claim — the
+// tail, and in a windowed mode both must have happened, or the run was sync
+// mode wearing a window's name. NoLayer is the control's claim — the
 // layer was out of the path entirely, and everything it counts must be zero.
 //
 // The zero value is deliberately not a window. An Expect that states no window
@@ -67,9 +67,8 @@ func (w Window) String() string {
 
 // KindClaim is one coverage claim: this kind of entry reached the log, and the
 // reason a zero is a loss rather than a fact. The why names what went missing
-// — for the live slice, the suite that drives exactly this kind — because a red
-// run must tell its reader which half of the layer went missing rather than
-// that something did.
+// and what in the run should have produced it, because a red run must tell its
+// reader which half of the layer went missing rather than that something did.
 type KindClaim struct {
 	Kind mutation.Kind
 	Why  string
@@ -86,8 +85,8 @@ type Emission struct {
 // deliberately this package's own type rather than metricstest's: the judged
 // module may not depend on upstream test machinery to be judged, and a table
 // test builds an Emissions literal where it could not build a captured
-// recording. The acceptance converts its capture handler's snapshot in a few
-// lines; a live run has no capture handler and passes nil.
+// recording. A run holding a capture handler converts its snapshot in a few
+// lines; a run without one passes nil.
 type Emissions map[string][]Emission
 
 // Observed is what a run's instruments saw. Totals is required and is the
@@ -105,15 +104,15 @@ type Emissions map[string][]Emission
 type Observed struct {
 	// Totals is the layer's own account of the whole run: every cycle the node
 	// has held, retired ones included. Taken from [cycle.Manager.Totals] —
-	// never assembled by hand from [cycle.Manager.Shards], which holds the
-	// current cycles only and so loses every re-acquired shard's counters.
+	// never assembled by hand out of the cycles held now, which lose every
+	// re-acquired shard's counters.
 	//
 	// One caveat travels with Acked: it is a position, not a count, and the
 	// claims that read it as "how many entries went into the log" (the
-	// condition-failure arithmetic below) hold only over folders that started
-	// empty — which the acceptance's fixture guarantees and a live run's
-	// witness must not assume, and does not: no claim a live run makes does
-	// that arithmetic.
+	// condition-failure arithmetic below) hold only over shards whose log
+	// started empty. Both of those claims are gated on [Sync], so a run over
+	// shards that inherited a tail must not claim that window with
+	// ConditionFailures.
 	Totals cycle.Totals
 	// Store is the wrapper's own traffic counters — what was sent *at* the
 	// layer, counted on the way in, against which Totals says what the layer
@@ -151,14 +150,13 @@ type Expect struct {
 	// claim from HistoryTasks because the two come apart in time: a queue's
 	// checkpoint is on a 30s timer per queue per shard, so a run shorter than
 	// that legitimately raises no range, and a witness that demanded one
-	// would fail honest runs (measured: a 30s two-suite live run reports
-	// acked-ranges=0).
+	// would fail honest runs.
 	Ranges bool
 	// TailHeld claims the run *ends* with entries still in the tail — acked
-	// and not applied — which is the windowed acceptance's half of the
-	// inversion, sampled before the fixture's cleanup drains what is left. A
-	// live run must not claim it: its witness deliberately waits for a drain
-	// before sampling (WaitForDrain), so its tail may honestly be empty.
+	// and not applied — which is a windowed run's half of the inversion. It is
+	// as much a claim about when the counters were read as about the window: a
+	// run that waits for a drain before sampling must not make it, since its
+	// tail may honestly be empty by then.
 	TailHeld bool
 	// ConditionFailures claims the run's suites write conditions they expect
 	// to fail. Its sync-mode reading is the mode's carve-out stated outright: a
@@ -210,11 +208,10 @@ func Universal(t cycle.Totals) []error {
 // the claim's own name put in front of it by [Expect.Check].
 type report func(format string, args ...any)
 
-// claim is one thing the witness says about a run — the shape verify/checker's
-// assertions have, for the reason that package's leave-one-out gives: a claim
-// with a name can be shown to catch a defect no other claim catches, and a
-// failure tells its reader which half of the layer went missing rather than
-// that something did.
+// claim is one thing the witness says about a run, and it carries a name for
+// two reasons: a claim that has one can be shown by a leave-one-out to catch a
+// defect no other claim catches, and a failure tells its reader which half of
+// the layer went missing rather than that something did.
 type claim struct {
 	// Name is what a failure reports under, and what the leave-one-out table is
 	// keyed on.
@@ -509,7 +506,7 @@ var layerClaims = []claim{{
 	Name: "W23 a windowed read crossed a held workflow",
 	// The inversion, and the reason the mode exists: sync mode's claims are that
 	// no read ever crossed a held workflow and that nothing was left in the
-	// tail, and here each must be false or the run was intercept mode wearing a
+	// tail, and here each must be false or the run was sync mode wearing a
 	// window's name — the same silent failure the witness was built for, one
 	// phase further on.
 	Gate: all(inWindowed, writesState),
@@ -709,10 +706,11 @@ func describeKinds(t cycle.Totals) string {
 	return strings.Join(parts, " ")
 }
 
-// drainTriggers summarises what asked for the drains, which at the acceptance's
-// two windows is the run's most informative single number: at the knee the size
-// watermark never fires inside a test and every drain is a fold.ErrRefused
-// force-drain, while at window 2 the mutation watermark dominates.
+// drainTriggers summarises what asked for the drains — [walmetrics.Drains]'s
+// trigger tag — which says more about the window a run kept than the number of
+// drains does: a run whose drains are all fold.ErrRefused force-drains never
+// reached a watermark at all, where one the mutation watermark dominates is a
+// window that filled.
 func drainTriggers(emitted Emissions) string {
 	by := map[string]int{}
 	for _, r := range emitted[seriesDrains] {
