@@ -221,7 +221,8 @@ func TestHeadTailRule(t *testing.T) {
 }
 
 // TestUpsertVsDeleteResolvedPerKey: a key must never be in both sets, because
-// the store's delete-before-upsert query ordering resurrects one that is.
+// the store issues every upsert before every delete, so a key re-upserted after
+// being deleted would be written and then deleted again.
 func TestUpsertVsDeleteResolvedPerKey(t *testing.T) {
 	t.Run("delete after upsert wins", func(t *testing.T) {
 		a := fold.New(shard)
@@ -356,7 +357,7 @@ func TestSnapshotBarrierSet(t *testing.T) {
 	require.Equal(t, []string{"t-upd", "t-set"}, taskNames(snap.Tasks))
 	require.Equal(t, fold.RunAssertion{BaseVersion: 1}, out[0].RunAssertions()[runX])
 
-	// A Set heading its window asserts version-1.
+	// A Set heading its window asserts one below the version it writes.
 	b := fold.New(shard)
 	add(t, b, mkSet(runX, 5))
 	out = reqs(b.Drain())

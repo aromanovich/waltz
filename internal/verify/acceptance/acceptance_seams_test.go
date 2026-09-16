@@ -311,8 +311,10 @@ func (s *seams) drive(t *testing.T, n int) error {
 // trimStaysBehind is the log's half of "nothing acked is lost": every entry the
 // cold store has not applied is still in the log. The two reads are in this
 // order deliberately — the log's lower end first, the watermark second —
-// because the watermark only rises, so a drain committing between them can only
-// make the comparison stricter than the moment it is about.
+// because the watermark only rises: a drain committing between them can only
+// raise the number the log's lower end is judged against, so a failure here is
+// a trim that really did run ahead of the cold store and never two reads that
+// crossed.
 //
 // An empty log is that same claim at its boundary and not an exception to it. The
 // legal trim reaches applied+1, which is one past the last entry once the drain

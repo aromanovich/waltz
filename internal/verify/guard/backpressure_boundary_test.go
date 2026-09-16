@@ -18,10 +18,12 @@ package guard
 //     the switch's default arm — a background shard re-acquire, which is
 //     backpressure converted into the failover it exists to prevent.
 //
-// The switch itself is unexported. Its list is not: persistence.
-// OperationPossiblySucceeded is the same set of concrete types, exported, and
-// the same decision — the server's own transaction code asks it exactly the
-// question this test asks (service/history/workflow/transaction_impl.go:75).
+// The switch itself is unexported. Its decision is not: persistence.
+// OperationPossiblySucceeded answers false for every concrete type the switch
+// keeps out of that default arm — the eight it calls definitely not committed,
+// plus the ownership-lost and append-timeout arms beside them — and the server's
+// own transaction code asks it exactly the question this test asks
+// (service/history/workflow/transaction_impl.go:75).
 
 import (
 	"context"

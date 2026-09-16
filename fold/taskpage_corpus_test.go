@@ -6,7 +6,7 @@ package fold_test
 //
 // Four properties, each mapping to a failure upstream:
 //
-//   - every key inside the requested range. queues/slice.go:373 is a literal
+//   - every key inside the requested range. queues/slice.go:375 is a literal
 //     panic on a key outside it, with no recover in the reader loop;
 //   - strictly ascending across page boundaries. collection.PagingIterator hands
 //     pages straight on, and queues/iterator.go silently skips what does not
@@ -119,8 +119,8 @@ func (r *taskCorpus) drive(t *testing.T, cfg mutgen.Config, n int, at func()) {
 		}
 		batch := r.acc.Drain()
 		out, work := reqs(batch), batch.Tasks()
-		// What the drain's transaction does, in the plugin's own order: every
-		// delete before every upsert.
+		// What the drain's transaction does, in the order it owes: every range
+		// delete before any row it writes.
 		for _, rng := range work.Delete {
 			r.cold.Remove(rng.Category, rng.Covers)
 		}
@@ -390,11 +390,11 @@ func assertPagesWellFormed(
 // TestEveryImmediateKeyIsNormalised pins the upstream fact that lets one
 // comparator serve both category types: every immediate-category task type's
 // GetKey() returns NewImmediateKey, whose fire time is the constant
-// tasks.DefaultFireTime, and the plugin reconstructs that on the way out because
-// the column is NULL for immediate rows. The merge normalises the range and
-// takes tasks as they come, so a type putting a real fire time on an immediate
-// key would hand the queue a key outside the range asked for, which
-// queues/slice.go:373 panics on.
+// tasks.DefaultFireTime, and the plugin reconstructs that on the way out
+// because an immediate row carries no fire time at all: its table is keyed by
+// task id alone. The merge normalises the range and takes tasks as they come,
+// so a type putting a real fire time on an immediate key would hand the queue a
+// key outside the range asked for, which queues/slice.go:375 panics on.
 func TestEveryImmediateKeyIsNormalised(t *testing.T) {
 	r := newTaskCorpus()
 	seen := 0

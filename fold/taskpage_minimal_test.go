@@ -36,9 +36,10 @@ import (
 type minimalBase struct {
 	// rows is this base's whole content for the category, ascending by key.
 	rows []p.InternalHistoryTask
-	// page is how many rows it will part with at once, whatever it was asked
-	// for. One is the adversarial setting and the legal one: nothing requires a
-	// page to be full, only that an empty one means the range is exhausted.
+	// page caps how many rows it will part with at once, under whatever it was
+	// asked for. One is the adversarial setting and the legal one: nothing
+	// requires a page to be full, only that an empty one means the range is
+	// exhausted.
 	page int
 	// trailingToken hands a token back beside the last row rather than reporting
 	// exhaustion with it, so the pagination has to survive one more call

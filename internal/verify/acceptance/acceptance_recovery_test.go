@@ -6,13 +6,15 @@ package acceptance
 // mutations are in the log and nowhere else. The two databases must agree, row
 // for row and blob for blob.
 //
-// It is the only run in this package that takes an entry out of the log. Every
-// other one ends in a shutdown drain, which applies the last window from memory
-// and never asks the log for anything, and [TestAShardThatLosesItsEpochMidRun]
-// stops one step short: it proves the entries a refused drain carried are still
-// in the log, not that anybody can turn them back into rows. This is that step,
-// and it is the one the first rule is stated over — a write acked into the log
-// and never applied is lost exactly when a successor cannot recover it.
+// The seams and oracle runs beside it never take an entry out of the log: each
+// ends in a shutdown drain, which applies the last window from memory and asks
+// the log for nothing. The handover runs do replay, a successor there inheriting
+// the window a fenced predecessor was holding; and
+// [TestAShardThatLosesItsEpochMidRun] stops one step short of what this run
+// does: it proves the entries a refused drain carried are still in the log, not
+// that anybody can turn them back into rows. This is that step, and it is the
+// one the first rule is stated over — a write acked into the log and never
+// applied is lost exactly when a successor cannot recover it.
 //
 // The comparison is against another database rather than against a model, which
 // is what makes it total. The ledger knows what the drains carried, so a
@@ -60,7 +62,7 @@ func TestARecoveredShardHoldsWhatAnUninterruptedOneDoes(t *testing.T) {
 		require.Greater(t, totals.Acked, totals.Applied,
 			"crash %d lands on an empty tail, so its successor recovers nothing", crash+1)
 		// A crash, in the two things the layer can see of one: the range id has
-		// moved and this cycle never drained.
+		// moved and the window this cycle is holding is never drained.
 		crashed.takeShard(t)
 	}
 	require.NoError(t, crashed.drive(t, seamsMutations-crashed.acked))

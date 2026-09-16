@@ -4,7 +4,7 @@ package fold_test
 // is acked, what it hands on, and what it refuses. A failed assertion must
 // produce the plugin's own error value down to the message and the payload,
 // because the caller type-switches on it and reads its fields; where a test
-// names a line of the plugin, that line is the source.
+// names a condition of the plugin, the plugin's own code is the source.
 //
 // A check that is subtly too strict refuses a legal write, which these tables
 // cannot see; that is check_corpus_test.go's job.
@@ -201,8 +201,9 @@ func currentCases() []currentCase {
 	completed := &rowContent{run: runX, state: enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED, version: 11}
 	completedOther := &rowContent{run: runY, state: enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED, version: 11}
 
-	// "must exist" is the plugin's answer to any assertion but must-not-exist on
-	// a row that is not there (its current-row assertion's extractError).
+	// "must exist" is the answer to any assertion but must-not-exist on a row
+	// that is not there, and it is bare: there is no row to build the store's
+	// payload out of.
 	return []currentCase{
 		{"must not exist, and there is no row", mkCreate(runY), nil, ""},
 		{"must not exist, and a row is in the way", mkCreate(runY), running, "must not exist"},
@@ -218,9 +219,10 @@ func currentCases() []currentCase {
 		{"not-equals, and there is no row", bypass(runY, 2), nil, "must exist"},
 
 		// A create over a previous run requires the row to be COMPLETED as well
-		// as to name that run at that version (rows/assertions.go:326): left
-		// out, a start over a running run is admitted here and rejected by the
-		// store.
+		// as to name that run at that version — Cassandra asserts all three in
+		// templateUpdateCurrentWorkflowExecutionForNewQuery and the SQL store in
+		// createWorkflowExecutionTx: left out, a start over a running run is
+		// admitted here and rejected by the store.
 		{"reuse, and the row is that run, completed, at that version", mkCreateOver(runY, runX, 11), completed, ""},
 		{"reuse, and the run has not finished", mkCreateOver(runY, runX, 11), running,
 			reuseRefusal(running, runX, 11)},
