@@ -50,7 +50,7 @@ var (
 
 	// Drains is tagged by what tripped it: size is the design working, age is a
 	// shard nobody is pushing on, refusal is the accumulator's drain-and-retry,
-	// sync is intercept mode's one drain per write.
+	// sync is sync mode's one drain per write.
 	Drains = metrics.NewCounterDef("wal_drains",
 		metrics.WithDescription("Committed drains, by what triggered them."))
 	DrainedMutations = metrics.NewCounterDef("wal_drained_mutations",
@@ -139,7 +139,7 @@ const (
 	TriggerBytes     = "bytes"     // the size trigger, in bytes
 	TriggerAge       = "age"       // the age trigger
 	TriggerRefusal   = "refusal"   // fold.ErrRefused: a window the accumulator cannot express
-	TriggerSync      = "sync"      // intercept mode: one write, one drain
+	TriggerSync      = "sync"      // sync mode: one write, one drain
 	TriggerReplay    = "replay"    // a tail a previous owner left, being applied
 	TriggerExplicit  = "explicit"  // a caller asked — shutdown, or a test
 	TriggerRead      = "read"      // [cycle.Config.DrainOnRead]: a read emptying the window it would have merged

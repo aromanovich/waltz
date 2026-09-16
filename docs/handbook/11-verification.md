@@ -10,10 +10,11 @@ mechanism participated, that the experiment was capable of exposing a difference
 failure occurred in the interval the claim is about. This chapter develops those three obligations
 through the log's contract suite, the fold acceptance, the server that boots over both seams, the
 witness and the guards, then states the limits of each. Its last sections are reference: what the
-words *checker* and *witness* mean here, the map of `internal/verify/`, and what is not claimed.
+words *checker* and *witness* mean here, the map of `internal/verify/`, the two house rules, and
+what is not claimed.
 
-**Every suite here runs with nothing installed** — no cluster, no container, no port, no cgo, no
-build tag. That is not because the suites steer around storage. Both seams have a real
+**Every suite here runs with nothing installed** — no cluster, no container, no port to configure,
+no cgo, no build tag. That is not because the suites steer around storage. Both seams have a real
 implementation that lives in this process: `wal/memwal` is a log, and `cold/memcold` is Temporal's
 own SQL persistence over a SQLite database opened in memory. A suite therefore has somewhere real to
 append and somewhere real to commit, and one of them boots four Temporal services over the pair.
@@ -53,7 +54,7 @@ what the process owned is still there afterwards, and both backends here die wit
 ## The log contract suite
 
 `waltest.RunContractSuite(t, log)` is where the five guarantees of
-[`wal.Log`](04-contracts.md#the-five-guarantees) stop being prose. Eighteen cases, one `wal.Log`
+[`wal.Log`](04-contracts.md#the-five-guarantees) stop being prose. Nineteen cases, one `wal.Log`
 value, no cluster:
 
 | what it holds | the cases |
@@ -62,6 +63,7 @@ value, no cluster:
 | gap-freedom | `GapIsRefused`, `DuplicateSeqnoIsAlreadyWritten`, `AppendBelowATrimIsRefused` |
 | trim | `TrimRemovesUpToAndNothingElse`, `TrimOfALogWithNothingInIt` |
 | fencing | `AppendNeedsAFenceAtItsEpoch`, `FenceCutsOffLowerEpochs`, `FenceAtALowerEpochIsRefused`, `FenceAtTheSameEpochIsIdempotent`, `FencedOutranksAMissingPredecessor`, `EpochGrowsWithoutChangingOwner`, `TwoWritersContendForOneShard`, `ZeroEpochIsRefused` |
+| what every method owes its context | `ACancelledContextChangesNothing` |
 | the obligations that belong to no one backend | `PayloadsAreNobodyElsesMemory`, `ArgumentsTheContractRefuses` |
 
 The last row is what makes this a contract rather than a test of `memwal`. Its two cases state
@@ -112,7 +114,7 @@ copy, since the cold store not holding it is the whole reason it is in the log.
 **That one has an instrument now, and it is not a suite case.** `waltest.CheckRetention` appends a
 short run, waits out a window the caller names, and requires every entry to still be there — same
 seqnos, same payloads, same order, and the log still appendable above them. It is a function
-returning an error rather than a nineteenth case for two reasons: it costs its window in wall-clock
+returning an error rather than a twentieth case for two reasons: it costs its window in wall-clock
 time, and a deployment runs it from whatever harness it has rather than only from `go test`.
 
 Two things about how to run it. **Point it at a deliberately shortened policy** — set the log's
@@ -142,7 +144,7 @@ persistence, embedded whole. That is what says the embedding ([chapter
 saving.
 
 **Those suites do not judge `Apply`**, and cannot: the folded window's transaction is a method
-upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is seven cases —
+upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is nine cases —
 the ordering of the transaction, the refusals that must happen before it opens, the attribution a
 condition failure carries, and the rollback that undoes the requests that had already run — each
 proved by staging the defect that makes it red. `internal/verify/acceptance` is the volume half, below.
@@ -254,9 +256,10 @@ folds them again — and W32 only when metric emissions were captured.
 
 Two more things are worth knowing about what those counters mean.
 
-**They count routing, not hits.** The overlay and merge counters count reads *routed* through the
-layer, not reads answered out of the window. A counter that only fired on a hit would read zero on an
-idle cluster and zero on a layer wired up wrong, and the witness could not tell those apart.
+**The denominators count routing, not hits.** `Reads` and `TaskReads` count reads *routed* through
+the layer, where the `ReadsHeld` and `TaskReadsMerged` above them are the subsets the window had
+something for. A counter that only fired on a hit would read zero on an idle cluster and zero on a
+layer wired up wrong, and the witness could not tell those apart.
 
 **`wal_answered_condition_failures` must be zero under a window, and that zero is an assertion**
 (W33). Every condition a windowed run meets is decided before the append, by the authority in
@@ -271,8 +274,8 @@ conditions makes neither claim — worth checking before believing a green witne
 The witness was verified the way everything here is verified — by breaking it on purpose.
 `TestEachClaimHasADefectOnlyItCatches` is the leave-one-out over the claim table: a claim no defect
 reaches exclusively is redundant or unreachable, and both look exactly like a witness working.
-`TestReadingAroundTheLayerIsAsRedAsReadingThroughIt` and `TestTheEmptyLayerIsAssertedNotAssumed` are
-the two that state the failure this module exists for.
+`TestTheExpectMustStateAWindow` and `TestTheEmptyLayerIsAssertedNotAssumed` are the two that state
+the failure this module exists for.
 
 ### Both seams real: the same shape, into a database
 
@@ -345,9 +348,10 @@ database Temporal's own write path would have left, one mutation at a time.
 real databases, once at the shipped window and once at `Mutations: 1` — a window that holds one
 request when the drain takes it, so no two mutations of a run ever meet and nothing is ever merged.
 Then every run row is read back and diffed whole, blobs included, over the union of both ledgers'
-keys, and so is every workflow's current row. The two arms must differ in transactions and in nothing
-else: 6,000 mutations commit 77 transactions folded and 6,000 sequential, and leave 519 identical run
-rows and 32 identical current rows.
+keys; so is every workflow's current row, and so are all four task categories' rows, paged back out
+of each store in key order. The two arms must differ in transactions and in nothing else: 6,000
+mutations commit 77 transactions folded and 6,000 sequential, and leave 519 identical run rows and
+32 identical current rows.
 
 Staging the merge's upsert-after-delete resolution — dropping the line that takes a re-upserted key
 back out of the delete set, so the store writes the row and then deletes it again — reddens this run
@@ -462,7 +466,7 @@ task work asserts nothing.** A range completion is a category and two keys, with
 a second owner could have moved, so for a batch of task work the epoch is the only refusal in the
 transaction. That is the third obligation in [`cold`](../../cold/cold.go)'s doc, and this run is a
 guard on the one store in this repository that carries it — not a claim about a deployment's, which
-[level 2](#the-levels-of-evidence) says nothing here can make. Its worth is that `cold/memcold` is
+[nothing here judges](#the-cold-stores-suites-are-temporals). Its worth is that `cold/memcold` is
 underneath every other run in this package, so a defect in its fence would weaken all of them without
 reddening one.
 
@@ -567,8 +571,10 @@ kept.
 Some properties are too narrow for the large suites and too important to infer from code shape. A
 guard observes the external consequence of such a property. It earns its place only when
 deliberately breaking that property makes the guard red while the ordinary suite could otherwise
-stay green. **A guard is green on a broken layer and red on a reverted decision**, which is the
-opposite of a unit test and the reason they are collected apart.
+stay green. **A guard is red on a reverted decision where a unit test is red on broken code**, which
+is the reason they are collected apart. The wiring guard below is only that; the three backpressure
+cases drive a real cycle, so they go red on either, and a failure there is the layer's until the
+composition is ruled out.
 
 * **the three backpressure-boundary tests**, which hold the refusal's concrete type across a
   boundary neither the cycle nor the wrapper can see from its own side.
@@ -682,15 +688,15 @@ passed. `internal/verify/witness` is itself a judged module: a run states what i
 *Not to be confused with:* smoke check, sanity assert — both name something weaker than the suite,
 and this is the stronger claim.
 
-A third word belongs here as an absence. An **oracle** — one stream applied twice, once mutation by
-mutation through a real store and once folded, with the two stores required to end identical — is
-the only instrument that can say a fold rule is *mechanically* right, because fold's rules have no
-specification of their own beyond the behaviour of the code they compact for. There is none here.
-`cold/memcold` could run both halves, but a store this repository built its folded path against,
-judged by a sequential path through the same code, would only be agreeing with itself. A deployment
-that wants the strongest possible statement about the fold builds an oracle over its own store, and
-[chapter 13](13-designs-that-were-rejected.md#judging-it) has the two cheaper instruments it should
-not build instead.
+A third word belongs here, and here it reaches exactly one store. An **oracle** — one stream applied
+twice, once mutation by mutation through a real store and once folded, with the two stores required
+to end identical — is the only instrument that can say a fold rule is *mechanically* right, because
+fold's rules have no specification of their own beyond the behaviour of the code they compact for.
+The one here runs both halves against `cold/memcold` ([above](#the-fold-against-not-folding)), which
+leaves it blind to whatever both arms share and silent about the store a deployment actually runs. A
+deployment that wants the strongest possible statement about the fold builds the same comparison
+over its own store, and [chapter 13](13-designs-that-were-rejected.md#judging-it) has the two
+cheaper instruments it should not build instead.
 
 ---
 
@@ -717,7 +723,7 @@ drive; they assert nothing. **Judgements** say yes or no.
 | `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, end up the same whether the stream crossed one owner or six, lose no row to an owner that kept draining after it had been fenced, and are the rows one mutation per transaction would have left |
 | `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
 | `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
-| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the seven cases over the one method those suites do not know about |
+| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the nine cases over the one method those suites do not know about |
 | `wal/waltest` | an implementation of `wal.Log` satisfies the five guarantees — the one judgement here written to be run against somebody else's code |
 
 Who judges what. Circles are judgements, boxes are what they are stated over.
@@ -803,13 +809,12 @@ suites above and are stated where they are:
   second process would add is the part that is genuinely absent — a real transport hanging, a real
   kill, and storage that outlives either — and the judge that would read such a run's record back is
   still not here;
-* **nothing here judges the fold against the sequential path.** A folded batch now *executes*
-  against a real Temporal schema, which is what `TestBothSeamsRealNoServer` added and which catches
-  a merged request no store would take. What is still unjudged is the stronger claim — that a folded
-  batch leaves a store where mutation-by-mutation writing would have left it — and that needs a
-  differential oracle running one stream twice into two stores. `memcold` could be both of them, and
-  a store judged by a sequential path through its own code would agree with itself; the oracle is
-  worth building over the store a deployment cares about;
+* **nothing here judges the fold against a store a deployment would run.** The fold *is* judged
+  against the sequential path: `TestFoldingChangesNothingButTheNumberOfTransactions` drives one
+  stream twice into two real databases, folded and one mutation per transaction, and requires the
+  rows to come out identical. Both arms are `memcold`, so a defect the two share cancels, and
+  nothing here says how the same window lands on another store's schema, row layouts and condition
+  failures; that comparison is worth building over the store a deployment cares about;
 * **nothing here survives its own process.** Both backends are in memory. No suite has ever fsynced,
   crossed a network, waited on a quorum, or been killed.
 
