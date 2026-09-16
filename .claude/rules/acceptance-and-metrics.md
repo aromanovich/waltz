@@ -8,16 +8,19 @@ paths:
 # This repo: the acceptance, the witness and the metrics
 
 `internal/verify/acceptance/` is one stream of a generated corpus driven end to end
-through the fold, at volume, with no cluster and no store;
+through the fold, at volume, with no cluster — and, in five of its seven test
+files, into `cold/memcold`;
 `internal/verify/witness/` is what a run says about the layer's **own** counters; and
 `walmetrics/` is what those counters go out as. What to know:
 
 * **the acceptance's claim is narrow and stated in its own counters**: a stream
   of ~10^5 mutations folds without refusing anything the drain-and-retry contract
   does not cover, at a collapse ratio that is a function of the generator's reuse
-  knobs. `WAL_ACCEPTANCE_MUTATIONS` moves the length. What it does **not** claim
-  is that a server works, that a cold store accepts the batches, or anything
-  about cost — those need a deployment, and the handbook's
+  knobs. `WAL_ACCEPTANCE_MUTATIONS` moves the length. The runs that land in
+  `cold/memcold` add that the batches execute against Temporal's own schema and
+  that folding agrees with not folding over that one store. What none of it
+  claims is that a server works, that the store a deployment runs accepts the
+  batches, or anything about cost — those need a deployment, and the handbook's
   [15-the-limits-of-the-evidence.md](../../docs/handbook/15-the-limits-of-the-evidence.md)
   is where that boundary is written down;
 * **the collapse ratio is meaningless without the knob it was measured at.** A

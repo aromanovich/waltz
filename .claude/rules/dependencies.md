@@ -38,8 +38,10 @@ suite here judges.
 
 **`cold/memcold` is the one package that is a store**, which is why it has a row
 of its own below rather than an exemption. It sits at the seam and not in the
-layer: nothing in the layer may import it, and it may import nothing of the
-layer.
+layer: nothing in the layer may import it, and what it may import is the
+vocabulary the seam is stated in and no further — `fold`, `wal`, `apply`,
+`baserow`, `mutation` — never `cycle`, the wrapper, `walmetrics` or the root
+package.
 
 ## The tree rules (ADR 0009)
 
@@ -69,7 +71,7 @@ layer.
 | `wrapper` | a cold store | wrap, don't fork: the decorator is defined over upstream's interface, and composing it with a store is the caller's job |
 | `walmetrics` | `wal`, `fold`, `apply`, `cycle`, `wrapper`, `mutation` | the metric names are the layer's vocabulary: nothing that can be measured may be imported here |
 | `cold` | the Temporal server, a cold store, **every store implementation** | the seam is stated for the author of a store that is not in this repository, so it may not know one — and `memcold` least of all |
-| `cold/memcold` | everything of this layer | the shipped store is a store and nothing else: it answers Temporal's own interfaces, and an import of the layer would make the thing under test part of the layer testing it |
+| `cold/memcold` | `cycle`, `wrapper`, `walmetrics`, the root package | the shipped store is a store and nothing else: it answers Temporal's own interfaces, and an import of the layer above the seam would make the thing under test part of the layer testing it. `fold`, `wal`, `apply`, `baserow` and `mutation` it must name — a batch, an epoch and an outcome are what `cold.Applier` is written in |
 | `cycle` | a cold store | the cycle drives the seam; it does not open one beside it |
 | `cycle/tailstate` | a cold store, `fold` | the tail is arithmetic over what the loop acked: not the log those seqnos index, and not the window they outlive |
 | `cycle/window` | a cold store, `fold`, `walmetrics` | the window is arithmetic over what the loop folded: it counts, it does not fold, and it publishes nothing |
