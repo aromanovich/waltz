@@ -233,7 +233,8 @@ func TestUpsertVsDeleteResolvedPerKey(t *testing.T) {
 		out := reqs(a.Drain())
 		merged := out[0].Request.Update.UpdateWorkflowMutation
 		require.NotContains(t, merged.UpsertActivityInfos, int64(1),
-			"a key upserted and then deleted must leave the upsert set, or the store resurrects it")
+			"a key upserted and then deleted must leave the upsert set: a request carrying both "+
+				"leaves the outcome to the store's statement order rather than to the window")
 		require.Contains(t, merged.DeleteActivityInfos, int64(1))
 		require.Contains(t, merged.UpsertActivityInfos, int64(2))
 	})

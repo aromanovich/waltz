@@ -77,8 +77,8 @@ func TestEveryCollectionReachesBothFolds(t *testing.T) {
 				require.Equal(t, value.Interface(), merged.MapIndex(kept).Interface(),
 					"mergeMutation folds Upsert%s under the right key and the wrong value", name)
 				require.False(t, merged.MapIndex(gone).IsValid(), "mergeMutation leaves a key "+
-					"in Upsert%s that a later delta deleted: emitted unresolved, the store orders "+
-					"every delete before every upsert and the key silently survives", name)
+					"in Upsert%s that a later delta deleted: emitted unresolved, what becomes of "+
+					"the key is the store's statement order rather than the window's answer", name)
 				require.True(t, removed.MapIndex(gone).IsValid(), "mergeMutation does not fold "+
 					"Delete%s: the deletion never reaches the store", name)
 			})
