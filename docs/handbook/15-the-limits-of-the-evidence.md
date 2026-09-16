@@ -185,18 +185,21 @@ twice with the *windows* cut differently, not with the fold taken out of one arm
 the folding does not depend on where a window ends — which is the property a crash tests, since a
 crash cuts one — and leaves whether folding at all agrees with not folding to the run above.
 
-Three places where the folded path knowingly answers differently from upstream's sequential path are
+Four places where the folded path knowingly answers differently from upstream's sequential path are
 known and deliberate, and each is written down beside the code it is about:
 
 | the difference | recorded in |
 |---|---|
 | upstream's `dbRecordVersion == 0` fallback, which compares `next_event_id` against the request's condition, has no analogue: a run assertion here is always `DBRecordVersion − 1` | `cold/memcold/rows.go` |
+| a create's current-row assertion is compared against `current_executions.last_write_version`, where upstream joins and compares `executions.last_write_version` | `cold/memcold/rows.go` |
 | a conflict-resolve's current row carries a reduced execution state, because that is what fold hands the applier | `fold/assert.go` |
 | a row count other than one on an execution-row write is a condition failure here rather than upstream's `NotFound` | `cold/memcold/rows.go` |
 
-Two of the three follow from the layer having already acknowledged the write: what fold checked
+Three of the four follow from the layer having already acknowledged the write: what fold checked
 before the ack and what the drain asserts have to be the same question asked twice, so the fold's
-shape reaches the store. A deployment's applier meets the same three questions.
+shape reaches the store — and the column is that rule at its sharpest, since reading upstream's
+would let the layer ack against one value and refuse against another. A deployment's applier meets
+the same four questions.
 
 ## Event history stays outside the log
 
