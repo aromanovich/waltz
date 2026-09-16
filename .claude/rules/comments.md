@@ -18,8 +18,10 @@ paths:
 Every comment in this tree was rewritten once for a reader opening the file for
 the first time, roughly halving them. The
 standard it set is not "comment less", it is **say what only the code cannot**,
-and the density it lands at is ~23% of non-blank lines. A new file well over
-that is the signal to re-read this.
+and the density it lands at is ~28% of non-blank lines over the whole tree —
+which is 35% across the non-test files and 22% across the tests, and those two
+are what to compare a new file against. Well over the one it belongs to is the
+signal to re-read this.
 
 **Cut, every time:**
 

@@ -15,8 +15,8 @@ paths:
 
 # This repo: a test asserts behaviour, never shape
 
-Three bans, all absolute, all introduced after seven files had grown under
-them:
+Three bans, all absolute: the first two were introduced after seven files had
+grown under them, the third after three more did.
 
 * **no test parses Go source.** Nothing in a `_test.go` imports `go/ast`,
   `go/parser` or `go/token` to assert over the shape of the code.
@@ -108,7 +108,8 @@ rule, written where it is read. If one earns a mechanism again it earns option 1
 or option 2 above, not an eighth check.
 
 This rule also does not reach reflection. `cycle/surface_test.go`,
-`cycle/counters_test.go` and the wrapper's two coverage tests assert over
+`cycle/counters_test.go` and the wrapper's two reflective files
+(`wrapper/passthrough_test.go`, `wrapper/intercept_test.go`) assert over
 types at run time rather than over source, and they are **not** covered here.
 They are the same family and worth revisiting; that is a separate decision and
 nobody should take it by reading this file.

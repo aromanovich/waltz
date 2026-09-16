@@ -52,7 +52,9 @@ files, into `cold/memcold`;
 * **the witness's two central claims invert between the modes, and neither
   reading is the other's default**: in sync mode `ReadsHeld == 0` and
   `TailEntries == 0` at the end — the claim the "no replay needed" boundary rests
-  on — and in a windowed mode both must be non-zero, plus a
+  on — and in a windowed mode `ReadsHeld` must be non-zero, the tail too wherever
+  the run claims `TailHeld`, since a run that waits for a drain before it samples
+  may honestly end with an empty one, plus a
   `wal_drained_mutations` above 1, which is the only number that says a drain
   carried a batch. A windowed run reporting sync mode's numbers *is* sync mode.
   `TailEntries` is **not** `CommitSeqno − AppliedSeqno` in either — sync mode's
