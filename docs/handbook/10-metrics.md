@@ -44,9 +44,10 @@ the series land in whatever the operator already configured.
 
 That costs one piece of plumbing, and the plumbing is where the metrics' own failure mode comes
 from. The handler exists *later* than the layer. A custom main composes the log, the apply cycles
-and the store wrappers first; the server hands a handler to `AbstractDataStoreFactory.NewFactory`
-afterwards, inside its own fx graph. So the handler travels back down the same seam, through
-`wrapper.MetricsSink` — one method, `Use(h metrics.Handler)`, **first call wins**.
+and the factory that will wrap its stores first; the server hands a handler to
+`AbstractDataStoreFactory.NewFactory` afterwards, inside its own fx graph. So the handler travels
+back down the same seam, through `wrapper.MetricsSink` — one method, `Use(h metrics.Handler)`,
+**first call wins**.
 
 Keep one ambiguity in mind for the rest of the chapter. A blank dashboard means no traffic, or
 passthrough mode, or a layer that never received the real handler. Scraped metrics describe what was
@@ -69,8 +70,9 @@ handler — before anything on the right happens. That has two consequences.
 * A binary running several services in one process reports **every** series to the handler of
   whichever service built persistence first. The list is not split across two of them.
 * A layer whose `Use` is never called works perfectly and emits nothing. A store wrapper built by
-  hand with `wrapper.Options.Metrics` nil is the way to get there: it records into a private noop
-  emitter that nothing can later replace.
+  hand with `wrapper.Options.Metrics` nil silences the three series the wrapper raises, and
+  permanently: it records into a private noop emitter that nothing can later replace, while the
+  cycles behind it go on reporting to the handler they were handed.
 
 Silence is therefore not evidence of passthrough — a correctly wired idle cluster looks the same.
 [11-verification.md](11-verification.md) covers the in-process witness that exists because that
@@ -139,7 +141,7 @@ theirs from their definitions — `wal_tail_entries` and `wal_unapplied_entries`
 | `wal_overlaid_reads` | counter | reads | `operation` = `GetCurrentExecution` or `GetWorkflowExecution` | `ExecutionStore.GetCurrentExecution` / `GetWorkflowExecution` | Reads **routed** through the overlay — not reads the window could answer. A counter that only fired on a hit would read zero on a healthy idle cluster and zero on a layer wired up wrong. |
 | `wal_merged_task_pages` | counter | pages | none | `ExecutionStore.GetHistoryTasks` | `GetHistoryTasks` pages **routed** at the layer's merge, for the same reason as `wal_overlaid_reads`. The name says merged and the counter does not; renaming it would break every expression over it, so the description carries the distinction instead. |
 | `wal_merged_task_collisions` | counter | keys | none | `Cycle.readTasks` (`cycle/tasks.go`), on the shard's own goroutine | Task keys a merged page found in **both** the window and the cold store. The sources are disjoint by construction, so any non-zero value means something is wrong. Recorded only when the count is above zero. |
-| `wal_drains` | counter | drains | `trigger` = `mutations`, `bytes`, `age`, `refusal`, `sync`, `replay`, `explicit`, `read` — eight values, of which `sync` appears only under [`wal.sync: true`](08-configuration.md#2-table-1--the-wal-sections-keys) | `Cycle.drain`, after the apply transaction commits | Committed drains, by what tripped them — transactions, not passes of the cycle. A drain that halted never reaches this, and neither does one whose batch folded to nothing: an empty batch settles its entries and returns before this is recorded. `sync` is a cause of its own rather than a flavour of `explicit`, because it is the only one whose outcome is reported back to a caller: one write, one drain, one answer. Under `sync` the size triggers are never reached — the sync arm returns before `window.Trips` is evaluated — so `mutations` and `bytes` cannot appear there. |
+| `wal_drains` | counter | drains | `trigger` = `mutations`, `bytes`, `age`, `refusal`, `sync`, `replay`, `explicit`, `read` — eight values, of which `sync` appears only under [`wal.sync: true`](08-configuration.md#2-table-1--the-wal-sections-keys) | `Cycle.drain`, after the apply transaction commits | Committed drains, by what tripped them — transactions, not passes of the cycle. A drain that halted never reaches this, and neither does one whose batch folded to nothing: an empty batch settles its entries and returns before this is recorded. `sync` is a cause of its own rather than a flavour of `explicit`, because it is the only one that answers a caller: one write, one drain, one answer. Under `sync` the size triggers are never reached — the sync arm returns before `window.Trips` is evaluated — so `mutations` and `bytes` cannot appear there. |
 | `wal_drained_mutations` | counter | mutations | none | same call as `wal_drains` | Mutations carried into a committed drain — the collapse ratio's numerator. Untagged: it cannot be split by trigger. |
 | `wal_drained_workflows` | counter | workflows | none | same call as `wal_drains` | Workflows written by a committed drain — the collapse ratio's denominator. |
 | `wal_window_age` | **timer** | see §4 | none | same call as `wal_drains` | Age of the oldest mutation in the window at the moment it drained. |
@@ -312,8 +314,9 @@ operation — which is why the class is a tag rather than a bare counter.
 ## 8. The in-process counters, and what they add
 
 Beside the series there are three in-process readings: plain Go values a caller in the same process
-asks for directly, rather than scraping. They exist because a test cannot assert on a number it would
-have to scrape out of a metrics stack. Two are on the layer — `cycle.Stats` for one shard,
+asks for directly, rather than scraping. They exist because not every run can reach the series: a
+live server's emissions are not reachable from the test process judging it, so a claim stated over
+these readings is one every run can make. Two are on the layer — `cycle.Stats` for one shard,
 `cycle.Totals` for the node, both carrying the same embedded `cycle.Counters` — and the third is the
 wrapper's own `ExecutionStore.Counts()`.
 
@@ -337,8 +340,8 @@ string per shard whose current cycle is not running.
 not go in, because a new cycle inherits a log's positions and summing them counts the same entries
 once per acquire; that is why `Acked` and `Applied` sit outside it.
 
-Two of those fields have no series at all, and they are the reason to reach for the in-process
-counters rather than the dashboard: `ReadsHeld`, the subset of overlay reads the window actually had
+Two of those fields are the reason to reach for the in-process counters rather than the dashboard,
+and neither has a series of its own: `ReadsHeld`, the subset of overlay reads the window actually had
 something for, and `TaskReadsMerged`, the subset of routed task pages that carried a task out of the
 window. `wal_overlaid_reads` counts reads *routed*, so a run in which every one of them found an
 empty window looks exactly like passthrough. `ReadsHeld` is the number that tells the two apart,
