@@ -142,7 +142,8 @@ func TestTheBaseIsAskedForWhatTheWindowDoesNotFill(t *testing.T) {
 // first row on one key. The base page's token bounds the window's reach to that
 // key, so the tie deduplicates to one row and the pagination still advances.
 // mergePage's own tie-break — the cut at the base's first key, where an empty
-// page with a token would never end — is reached by nothing in this package.
+// page with a token would never end — is reached by nothing in this file;
+// taskpage_minimal_test.go's [TestATieAtTheCutIsEmittedOnce] is what drives it.
 func TestASharedFirstKeyStillAdvancesThePagination(t *testing.T) {
 	a := fold.New(shard)
 	cold := coldtasks.New()

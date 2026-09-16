@@ -69,9 +69,9 @@ func TestTheWindowCarriesTheRowsAnAddPutInIt(t *testing.T) {
 	require.EqualValues(t, 1, work.TailSeqno)
 }
 
-// TestARangeTakesOutWhatTheWindowAlreadyHeld: the plugin gathers every delete
-// before every upsert, so a batch holding both a range and a row inside it
-// would come out written. Both sources of a task are swept — an
+// TestARangeTakesOutWhatTheWindowAlreadyHeld: a drain applies its range deletes
+// before it writes the batch's task rows, so a batch holding both a range and a
+// row inside it would come out written. Both sources of a task are swept — an
 // AddHistoryTasks' rows and a mutable-state write's task map — because both end
 // up in the same UPSERT.
 func TestARangeTakesOutWhatTheWindowAlreadyHeld(t *testing.T) {

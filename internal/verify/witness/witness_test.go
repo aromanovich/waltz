@@ -36,7 +36,8 @@ func messages(errs []error) string {
 }
 
 // series is n recordings of one value each, the shape a counter series takes in
-// a capture; the acceptance's emission-length claims count entries, not sums.
+// a capture; the emission claims count entries rather than sums, W32 excepted,
+// which reads the largest value a series was recorded with.
 func series(n int, value int64) []Emission {
 	rs := make([]Emission, n)
 	for i := range rs {
