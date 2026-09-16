@@ -73,14 +73,15 @@ If you want the curve, you will have to write the measurement yourself. It is al
 workload — the collapse a window buys is a function of how often a deployment re-touches a workflow
 inside one window — so 256 is a defensible start value and not a number to inherit without looking.
 
-Two facts about the shipped trigger that are easy to mis-read:
+Two facts about the shipped triggers that are easy to mis-read:
 
 * **the byte trigger is the mutation trigger restated, not a second measurement.** 256 KiB is
   256 mutations at about a kilobyte each, and the kilobyte is rounded up: the generated corpus
   averages 572 encoded bytes a mutation — the acceptance's own configuration, and re-measurable here
   rather than inherited — so 256 of them come to about 143 KiB. On a stream of that shape the
-  mutation trigger is always the one that fires. The byte trigger earns its place on the other shape
-  — 256 mutations carrying large payloads, which would otherwise become one outsized transaction;
+  mutation trigger is always the one of the two that fires. The byte trigger earns its place on the
+  other shape — 256 mutations carrying large payloads, which would otherwise become one outsized
+  transaction;
 * **the size trigger is not the effective window, and under load it is not even what fires.** A
   window holding a shape `fold` cannot express is force-drained on the spot (`fold.ErrRefused`), and
   that happens often enough to set the pace by itself. In `TestAcceptanceFoldNoCluster`, at a
@@ -184,7 +185,7 @@ bytes, while the server's own limits allow a single mutation thousands of times 
 a half thousand at the 2 MB blob, fourteen thousand at 8 MB of mutable state. A bound stated in one
 unit is a bound that admits the other unit's worst case unchecked.
 
-Which unit tripped is on the refusal's `limit` tag, and the two tag values are different operator
+Which unit tripped is on the refusal's `limit` tag, and its two unit values are different operator
 sentences. `bytes` says this node is close to holding more than it should, which
 [`cycle/decide.go`](../../cycle/decide.go) reads as one workflow near the server's own blob limits.
 `entries` says a failover would take longer than it should, which the same file reads as an applier

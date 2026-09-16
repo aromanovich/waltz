@@ -9,14 +9,14 @@ expected to improve.
 
 **The baseline here is one particular store, and the chapter says so throughout.** waltz is not a
 persistence implementation: the one store in this tree, `cold/memcold`, runs Temporal's own SQL
-persistence over a SQLite database inside the test process so that the layer can be exercised, and
-it dies with the process. Nobody deploys it, so without a concrete incumbent this chapter would have
+persistence over a SQLite database in the layer's own process so that the layer can be exercised, and
+it dies with that process. Nobody deploys it, so without a concrete incumbent this chapter would have
 nothing to describe. What follows is instead the store the design was built and measured
 against in the research prototype: an implementation of Temporal's persistence API over a
 distributed SQL database whose single-partition transactions are *immediate* — a word this chapter
 leans on, and defines in [its own section](#immediate-and-distributed-transactions). Every
 structural claim below is that store's, not a law about stores. Where something generalises, the
-text says so, and the two conclusions at the end are the parts that do.
+text says so: the adjacency in the next section, and the two conclusions at the end.
 
 ## One transaction holds the whole world of a shard
 
@@ -86,12 +86,12 @@ stated here in the open because everything downstream stands on it:
 > There are many shards, and one shard's data is small against the size at which the table splits
 > itself. The whole touched key range therefore lives in one partition.
 
-The schema does not prove that assumption, but it does say what scale it holds at. The example store
-creates the table pre-split eight ways over the shard-id space, so a deployment's shards divide
-across those eight partitions and each partition holds many whole shards. Two auto-partitioning
-settings can then split further: by size, at four gigabytes, and by load. Four gigabytes is therefore
-the point past which a split is certain, not the only thing that causes one — a hot partition can be
-split well below it.
+The schema does not prove that assumption, but it does say what scale it holds at. The research
+prototype's store creates the table pre-split eight ways over the shard-id space, so a deployment's
+shards divide across those eight partitions and each partition holds many whole shards. Two
+auto-partitioning settings can then split further: by size, at four gigabytes, and by load. Four
+gigabytes is therefore the point past which a split is certain, not the only thing that causes
+one — a hot partition can be split well below it.
 
 Nothing in the query enforces the assumption. If one shard's rows grow across a split boundary, or a
 split lands in the middle of one shard's range, the same code silently starts paying for
@@ -133,13 +133,14 @@ the first one that did not hold.
 Three consequences follow. The layer above depends on all three, and each is a design decision a
 different store might have made differently:
 
-* **statement order decides which failure is reported**, because the transaction stops at the first
-  assertion that fails, which is why the epoch check goes first and the range deletes go ahead of
-  the task inserts ([chapter 05](05-write-path.md#2-the-drain-itself));
+* **statement order decides which failure is reported**, because the store answers with the first
+  assertion in registration order that did not hold, which is why the epoch check goes first; the
+  range deletes go ahead of the task inserts for a different reason, which
+  [chapter 05](05-write-path.md#2-the-drain-itself) gives;
 * **an assertion that held must still be walked**, because a transaction carrying more than one
   workflow will have some assertions that hold and some that do not.
   [Chapter 05](05-write-path.md#2-the-drain-itself) states that obligation at length; it is also the
-  one the example store originally got wrong;
+  one the research prototype's store originally got wrong;
 * **a drain the store rejected and a drain that never ran leave byte-identical state.** Nothing in
   the rows distinguishes them, so the only witness to whether an ambiguous drain committed is the
   watermark it would have moved
@@ -165,8 +166,8 @@ key space, and a different partitioning.
 
 They are also written **before** the conditional write, not inside it. `CreateWorkflowExecution` and
 `UpdateWorkflowExecution` each begin by calling the history store, and only then the mutable-state
-store. In the example store that first stage is **one transaction per row**, all of them started in
-parallel and all of them finished before the conditional write is sent.
+store. In the research prototype's store that first stage is **one transaction per row**, all of them
+started in parallel and all of them finished before the conditional write is sent.
 
 A batch of events is one row. So:
 
@@ -302,11 +303,11 @@ how fast the log acknowledges. That is what the rest of the layer is about.
 
 **Event history is the ceiling on that win.** History rows never enter the log and were never amplified in
 the first place: they are append-only, one row per batch, written before the mutation that refers to
-them. So a workflow with hundreds of transitions still pays hundreds of history writes by the old
-path however wide the window is. Whatever fraction of a deployment's write volume is event history is
-a fraction the layer cannot address at all. So if you tune the window against total write volume, you
-are tuning against a number that includes writes no window can remove; tune against the mutable-state
-half instead.
+them. So a workflow whose transitions carry hundreds of event batches still pays hundreds of history
+writes by the old path however wide the window is. Whatever fraction of a deployment's write volume
+is event history is a fraction the layer cannot address at all. So if you tune the window against
+total write volume, you are tuning against a number that includes writes no window can remove; tune
+against the mutable-state half instead.
 
 ## What this picture does not give
 
