@@ -1,16 +1,17 @@
 // Package coldtest is the cold store a drain lands in, in memory.
 //
-// It is the only adapter here at the two seams the apply cycle reaches the cold
-// store through, [cold.Applier] and [cold.Watermarker]: the real one is the
-// caller's, and needs a store — so every package composing a layer to test
-// something else wrote a pair of its own, and the seam that exists "so a test
-// can vary a drain's outcome without a cluster" had no adapter that did.
+// It is the second adapter here at the two seams the apply cycle reaches the
+// cold store through, [cold.Applier] and [cold.Watermarker]. The other is
+// cold/memcold, which is a store: it writes the rows a batch carries and answers
+// what became of them. This one answers the drain's outcome instead — refused,
+// counted, the watermark read back — which is what a package composing a layer
+// to test something else needs and what a store has no way to be asked for.
 //
-// It is a double and not a cold store: it records what a drain carried and what
-// watermark it moved, and interprets nothing. What a folded batch *means* has no
-// specification apart from the incumbent store's behaviour, so a memory store
-// that answered that question would be a second implementation of the thing
-// under test rather than a fixture for it.
+// It is a double and not a cold store: it counts the drains that landed and the
+// watermark each moved, and interprets nothing. What a folded batch *means* has
+// no specification apart from a real store's behaviour, so a memory store that
+// answered that question would be a second implementation of the thing under
+// test rather than a fixture for it.
 package coldtest
 
 import (

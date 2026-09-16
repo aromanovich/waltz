@@ -255,7 +255,9 @@ func (b Builder) validateCreate(req *p.InternalCreateWorkflowExecutionRequest) {
 }
 
 // runningState is a live run: the state and status pair every shape here is
-// built at, and the only pair Temporal admits for a run that has not finished.
+// built at. Temporal admits a status of RUNNING for every state but COMPLETED,
+// so a fixture closing a run moves both through [WithState] or the validators
+// refuse it.
 func runningState(run string) *persistencespb.WorkflowExecutionState {
 	return &persistencespb.WorkflowExecutionState{
 		CreateRequestId: uuid.NewString(),

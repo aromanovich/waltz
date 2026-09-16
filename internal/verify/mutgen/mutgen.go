@@ -103,8 +103,8 @@ type Config struct {
 	// The range is derived from keys the stream has already emitted, never
 	// drawn at random, and that is the trap this knob exists to avoid: a random
 	// range covers nothing, the rule under test is exercised in name only, and
-	// the run is green. [Report.TasksCovered] is the number an acceptance gates
-	// on, exactly as [Report.Collapses] is for the collapse ratio.
+	// the run is green. [Report.TasksCovered] is the number that tells the two
+	// apart, as [Report.Collapses] does for the collapse ratio.
 	RangeCompleteRate float64
 }
 
@@ -200,8 +200,8 @@ type Report struct {
 	Seed      int64
 	Mutations int
 	Workflows int // distinct workflow keys the stream touched
-	// Runs counts runs the stream created, which is above Creates: a
-	// continue-as-new starts a run without being a create.
+	// Runs counts runs the stream created, which a continue-as-new raises above
+	// Creates: it starts a run without being a create.
 	Runs          int
 	WorkflowReuse float64
 	// CollapseRatio is workflow mutations over distinct workflows: the upper
@@ -228,8 +228,9 @@ type Report struct {
 	ConflictResolves int
 	Sets             int
 	// Deletes counts DeleteWorkflowExecution requests, which is also the number
-	// of workflows the stream tombstoned: a run is deleted at most once, and
-	// always as the second half of a pair.
+	// of runs the stream tombstoned: a run is deleted at most once, and always
+	// as the second half of a pair. One workflow id can be tombstoned more than
+	// once, the key being free to be created again after each.
 	Deletes       int
 	DeleteCurrent int
 	Recreations   int // runs created under a workflow id that already had one

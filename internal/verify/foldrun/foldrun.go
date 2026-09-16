@@ -31,9 +31,9 @@ type Run struct {
 	FoldedIn int
 	// Emitted sums the merged requests the drains produced.
 	Emitted int
-	// Drains counts calls of the drain callback, empty batches included. A
-	// caller that means "windows that emitted something" counts that itself,
-	// off the batch.
+	// Drains counts the loop's drains, empty batches included and whether or
+	// not a callback saw them. A caller that means "windows that emitted
+	// something" counts that itself, off the batch.
 	Drains int
 	// Refusals counts fold.ErrRefused recoveries: the documented drain-and-retry
 	// loop actually running, rather than a run that never met one.
@@ -62,7 +62,8 @@ type Driver struct {
 
 // New drives shard's accumulator, draining every window mutations. on receives
 // each drained batch, including an empty one — an empty drain is a fact about
-// the window and some callers assert on it.
+// the window rather than a call to skip. A nil on counts the drains and
+// discards what they carried.
 //
 // A window of 0 or less drains at every mutation, which is sync mode's shape.
 func New(shard wal.ShardID, window int, on func(fold.Batch) error) *Driver {

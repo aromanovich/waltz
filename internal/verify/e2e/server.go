@@ -59,10 +59,10 @@ type Cluster struct {
 }
 
 // Start builds the server's configuration around base and starts it. base is
-// reached because Persistence names a custom datastore and nothing else: that
-// naming is the whole of how temporal.WithCustomDataStoreFactory's value enters
-// a server's persistence graph, so a run that reaches base at all has proved
-// the production door works.
+// reached because Persistence names a custom datastore: that naming is the
+// whole of how temporal.WithCustomDataStoreFactory's value enters a server's
+// persistence graph, so a run that reaches base at all has proved the
+// production door works.
 //
 // Visibility is the one store that does not come from base. It is SQLite in
 // memory, its own database: the custom-datastore seam vends persistence stores,

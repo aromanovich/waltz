@@ -28,9 +28,10 @@ import (
 
 // Apply drives one mutation through an ExecutionStore, stamping the epoch the
 // store asserts. The mutation carries no RangeID — the codec drops it, because
-// it is the epoch and travels with the WAL entry (invariant I11) — so filling it
-// in is the caller's job here exactly as it is apply's. The three requests that
-// are handed over unstamped have no RangeID field of their own.
+// it is the epoch and travels with the WAL entry (invariant I11) — so a decoded
+// mutation cannot be handed to a store as it stands, and the epoch has to come
+// from whoever took the shard. The three requests that are handed over unstamped
+// have no RangeID field of their own.
 //
 // A mutation holding no request, or several, is refused with
 // [mutation.ErrNotExactlyOneRequest] rather than ignored, so a ninth kind added

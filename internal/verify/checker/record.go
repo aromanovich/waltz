@@ -271,8 +271,10 @@ func isRefusal(err error) bool {
 }
 
 // Fenced reports the one refusal a claimant must stop on: this node no longer
-// holds the shard. The layer returns it unwrapped, which is why this is a type
-// match and not a string one.
+// holds the shard. The layer answers it as a ShardOwnershipLostError, so that
+// arm matches on the type; a driver going through a history service instead
+// meets the shard's own "shard status unknown", an Unavailable like every other
+// transport failure, so there the text is the only thing that tells it apart.
 func Fenced(err error) bool {
 	if _, ok := errors.AsType[*p.ShardOwnershipLostError](err); ok {
 		return true
