@@ -22,9 +22,11 @@ import (
 )
 
 // TestEveryDrainNamesWhatTriggeredIt: the drain counter without its trigger tag
-// is a number nobody can act on. The five values are five different diagnoses —
-// size is the design working, age is a shard nobody is pushing on, refusal is
-// fold's drain-and-retry, sync is intercept mode, explicit is a shutdown.
+// is a number nobody can act on. Five of the tag's eight values are driven here
+// and each is its own diagnosis — size, in either unit, is the design working,
+// age is a shard nobody is pushing on, refusal is fold's drain-and-retry, sync
+// is intercept mode. The explicit drain below is of an empty window and emits
+// nothing; replay's value is replay_test.go's and read's drainonread_test.go's.
 func TestEveryDrainNamesWhatTriggeredIt(t *testing.T) {
 	ns := uuid.NewString()
 
@@ -112,7 +114,7 @@ func TestTheTailIsRecordedInBothUnitsWhereverItMoves(t *testing.T) {
 	require.NoError(t, e.add(t, mkCreate(ns, "a", "r1")))
 	require.NoError(t, e.add(t, mkCreate(ns, "b", "r2")))
 
-	// One recording per append, plus the one the first Add's watermark read
+	// One recording per append, plus the one the first write's watermark read
 	// made before anything was in the tail.
 	require.Equal(t, []any{int64(0), int64(1), int64(2)}, values(e.recorded("wal_tail_entries")))
 	require.Equal(t, []any{int64(0), int64(1), int64(2)}, values(e.recorded("wal_unapplied_entries")))
