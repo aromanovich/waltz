@@ -16,8 +16,8 @@ appliedSeqno <= resolved <= commitSeqno < next seqno
 `commitSeqno` is the highest entry the log has acknowledged. `appliedSeqno` is the highest entry
 whose effects a cold-store transaction contains. Between them, `resolved` marks the highest entry
 whose fate is known. Usually `resolved` and `appliedSeqno` move together. They separate when a
-window folds to no database work — an `AddHistoryTasks` carrying no rows is the common shape — so
-its entries are finished, but there was no transaction in which to advance the persistent
+window folds to no database work — an `AddHistoryTasks` carrying no rows is the one mutation that
+does — so its entries are finished, but there was no transaction in which to advance the persistent
 watermark.
 
 This third position prevents two tempting mistakes. Measuring the tail as
@@ -231,7 +231,7 @@ node, which is `Shutdown` (it drains *and* closes).
 
 **Apply.** The step that turns folded summary updates into cold-store writes: one transaction
 carrying the merged requests, the appliedSeqno bump and the epoch compare-and-swap. Who performs it
-is `cold.Applier`, which this library does not implement — the drain hands over a `fold.Batch` and
+is `cold.Applier`, which no package of the layer implements — the drain hands over a `fold.Batch` and
 never a column. What the layer keeps of it is `apply`, the package that says what a drain's outcome
 demands of its caller: the five classes an error sorts into — committed, refused, shard lost,
 invariant violated, unknown outcome — and what each one obliges the cycle to do next.
@@ -381,10 +381,10 @@ the layer names a column, and none may name a store. `cold/memcold` is the one i
 those two interfaces here: Temporal's own SQL persistence, embedded whole, over a SQLite database
 that lives in this process and dies with it. Everything above the seam is exercised against it, and
 it is a real store rather than a stub — Temporal's own persistence suites judge it exactly as they
-judge a plugin. A deployment supplies its own as one `cold.Store`, and what it owes is four things, each stated on
-its two halves: one drain is one transaction, the watermark commits inside
-it, the epoch is asserted first, and the outcome comes back in `apply`'s five classes. What each
-demands of the cycle is [chapter 04](04-contracts.md#apply--what-a-drains-outcome-demands), and why
+judge a plugin. A deployment supplies its own as one `cold.Store` — one value answering both halves
+of the seam — and what it owes is four things: one drain is one transaction, the watermark commits
+inside it, the epoch is asserted first, and the outcome comes back in `apply`'s five classes. What
+each demands of the cycle is [chapter 04](04-contracts.md#apply--what-a-drains-outcome-demands), and why
 the watermark has to ride that transaction is [the recovery
 rule](04-contracts.md#the-recovery-rule-the-watermark-exists-for) there. *Not to be confused with:*
 "main storage", "base" — both overloaded.
@@ -509,11 +509,11 @@ the right.
 * **At or below `appliedSeqno`** — in the cold store. Trim eventually removes it from the log, up to
   the committed watermark with no safety lag.
 * **The `settled, not applied` box** is why **tail is not `commitSeqno − appliedSeqno`**. A drain
-  whose batch carries no transaction — an `AddHistoryTasks` with no rows is the common shape — still
-  releases the entries its window folded, and those entries are acked and dead. Counting them would
-  make the memory bound guard memory nobody holds; moving `appliedSeqno` over them would strand a
-  recovering owner, since a trim goes to `appliedSeqno`. So a third position, `resolved`, sits
-  between them, and the tail is `commitSeqno − resolved`.
+  whose batch carries no transaction — an `AddHistoryTasks` with no rows is the one mutation that
+  folds to such a batch — still releases the entries its window folded, and those entries are acked
+  and dead. Counting them would make the memory bound guard memory nobody holds; moving
+  `appliedSeqno` over them would strand a recovering owner, since a trim goes to `appliedSeqno`. So a
+  third position, `resolved`, sits between them, and the tail is `commitSeqno − resolved`.
 * **A condition that did not hold at the drain settles the same way**, and it is the other shape of
   entry that lands in that box. The entry stays in the log forever: an append is not undoable, and
   gap-freedom is what a seqno means. But nobody holds it and no drain will ever carry it, so I10's
@@ -590,16 +590,17 @@ The numbered invariants below turn that reasoning into claims code and tests can
 
 ## The invariants
 
-Eleven invariants, numbered. The numbers are the layer's own: they appear in the code and in the
-tests. They follow the order the layer was built in rather than any order of exposition, so do not
-read the list as an argument — read it as an index. The suites in the last column belong to
+Eleven invariants, numbered. The numbers are the layer's own: most of them appear in the code and in
+the tests. They follow the order the layer was built in rather than any order of exposition, so do
+not read the list as an argument — read it as an index. The suites in the last column belong to
 [chapter 11](11-verification.md), which owns `waltest` and the guards.
 
 Three of them are claims about things this library does not implement, and they are stated anyway
-because a deployment that breaks any of them loses acknowledged data. I4's cold-store half and I5
-are both obligations on the `cold.Applier` a deployment supplies: nothing here can check them, and
-the "how it is verified" column says so rather than naming a suite that does not judge them. I9 is
-the same shape one seam lower, on the log.
+because the deployment that supplies those things is the only place they can hold. I4's cold-store
+half and I5 are both obligations on the `cold.Applier` a deployment supplies, and a deployment that
+breaks either loses acknowledged data: nothing here can check them, and the "how it is verified"
+column says so rather than naming a suite that does not judge them. I9 is the same shape one seam
+lower, on the log.
 
 | # | What it claims | Enforced in | How it is verified |
 |---|---|---|---|

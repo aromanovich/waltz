@@ -55,7 +55,9 @@ Neither group holds a `main` package. waltz is a library: the composition it pro
 Most of these directories are siblings at the module root even where one imports another. `cycle`
 imports `fold`, but so does `apply`, and `fold` imports neither. A nested directory says the parent
 owns what is under it, so the only packages under `cycle/` are the three nothing outside the cycle
-uses: `window`, `tailstate` and `trim`. The order below is the order a mutation actually travels.
+uses: `window`, `tailstate` and `trim`. The order below is bottom-up rather than the order a
+mutation travels: the log's contract comes first, and a mutation does not reach it until the wrapper
+and the cycle have handed it on.
 
 | Package | Role, in one line | Key exported types | May not import — and why |
 |---|---|---|---|
@@ -66,7 +68,7 @@ uses: `window`, `tailstate` and `trim`. The order below is the order a mutation 
 | `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — `wrapper`, `cycle` and `apply` all need this pair and none of them may name another's copy, so it imports Temporal's persistence and nothing more |
 | `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page merge. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
 | `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. `Store` is the pair as a deployment supplies it — one value, because a watermark read from a store other than the one the drains landed in is no witness at all. | `Store`, `Applier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
-| `cold/memcold` | That contract satisfied, and the one cold store this repository ships: Temporal's own SQL persistence over an in-memory SQLite database, embedded whole, with the folded window's transaction added beside its 28 inherited methods. It sits *under* the layer rather than being part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | everything of this layer — a store that could see the layer would be judged by the thing sitting on top of it |
+| `cold/memcold` | That contract satisfied, and the one cold store this repository ships: Temporal's own SQL persistence over an in-memory SQLite database, embedded whole, with the folded window's transaction added beside its 28 inherited methods. It sits *under* the layer rather than being part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | `cycle`, `wrapper` and the root package — a store that could see the layer would be judged by the thing sitting on top of it. It does name the vocabulary the contract is stated in: `fold`, `wal`, `apply`, `baserow`, `mutation` |
 | `apply` | What a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries. | `Class`, `Classify`, `Diverged`, `InvariantViolationError` | `wal.Log` and `wal.Entry` — pacing and trim are the cycle's policy, not the outcome's |
 | `cycle/window` | The size and age of what a cycle folded since its last drain, as a type whose counters cannot be written from outside. | `Window`, `Taken`, `Watermarks`, `Trip` | `fold`, `walmetrics` — the window counts, it does not fold, and it publishes nothing |
 | `cycle/tailstate` | The tail's arithmetic in one place: everything invariant [I10](02-concepts-and-invariants.md#the-invariants) bounds, plus the off-loop mirror of it. | `Tail`, `Mirror`, `New`, `NewMirror`, `WatermarkMove`, `Unresolved` | `fold` — the tail is arithmetic over what the loop acked, not the log those seqnos index nor the window they outlive |
@@ -134,10 +136,10 @@ graph TD
 
 How to read this. Nothing crosses a shard boundary below `cycle.Manager`: the manager resolves a
 shard to its one cycle, and everything under that cycle belongs to that shard alone. Two paths reach
-the cold store from the layer, and both are interfaces the deployment implements — `cold.Applier`,
-the layer's only *write* door, and `cold.Watermarker`, which reads back what the last drain
-committed when its outcome was unknown. The wrapper's own arrows to the cold store are the transits.
-`wrapper.ExecutionStore` has 28 methods; in intercept mode it answers eleven of them itself — the
+the cold store through an interface the layer names, and both are the deployment's to implement —
+`cold.Applier`, the layer's only *write* door, and `cold.Watermarker`, which reads back what the last
+drain committed when its outcome was unknown. The wrapper's own arrows to the cold store are the
+transits. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers eleven of them itself — the
 eight writes and the three reads on the diagram — refuses a twelfth, `CompleteHistoryTask`, with
 `wrapper.ErrCompleteHistoryTaskUnsupported`, and hands the other sixteen straight to the store below.
 
@@ -158,7 +160,7 @@ graph TD
 
   ES2 -->|"counts intercepted writes and routed reads"| EM
   CY2 -->|"counts drains, halts, refusals, task rows"| EM
-  CY2 -->|"Ack, Settle, Stall, Resolve"| TS
+  CY2 -->|"Floor, Ack, Settle, Stall, Resolve"| TS
   TS -->|"publishes tail entries and bytes"| EM
 ```
 
@@ -208,8 +210,8 @@ ends there, and the root package starts them. The dashed `x` arrows are the bans
 * **`wal` and its implementations may not import the Temporal server** — the arrow shows the
   narrower half of it, that they may not import a persistence implementation. An entry's payload is opaque
   bytes and `wal.Log`'s five methods name no Temporal type, so somebody writing a log over a new
-  backend has one thing to satisfy — `waltest.RunContractSuite` — and never has to learn what a
-  history shard is.
+  backend has one contract to satisfy, the one `waltest.RunContractSuite` drives, and never has to
+  learn what a history shard is.
 * **`fold` may not import `apply`.** `apply` names `baserow`, so a fold that could import it would
   be one hop from the cold store's rows. Instead, an assertion the window cannot settle comes back
   as a `fold.Delegated`; `Delegated.Settle` then hands each obligation to the caller, which reads the
@@ -227,8 +229,10 @@ ends there, and the root package starts them. The dashed `x` arrows are the bans
   costs the most and matters the most: it holds the log, the accumulator and the write path at once,
   so one import of a store would give the shard a second write path beside the one every suite here
   judges. **`cold/memcold` is the one package in the tree that *is* a store**, and the ban reads the
-  same way from its side: nothing in the layer may import it, and it may import nothing of the
-  layer. It sits under the seam, where a deployment's own store sits.
+  same way from its side: nothing in the layer may import it, and what it may import is the
+  vocabulary the contract is stated in — `fold`, `wal`, `apply`'s outcome classes, `baserow`'s row
+  shapes and `mutation`'s payloads — and nothing of `cycle`, the wrapper or the root package. It
+  sits under the seam, where a deployment's own store sits.
 * **`walmetrics` is named by both ends of the layer** — the wrapper counts what crosses it, the
   cycle counts what the accumulator did — so it must be reachable from both, which is exactly why it
   may reach neither. The hazard is specific: a metric is easiest to add where the number already is,
@@ -284,7 +288,7 @@ that range. Both consequences are [chapter
 | Thing | Owner | How it is safe |
 |---|---|---|
 | `tailstate.Mirror` | published by every `Tail` mutator | atomics; read by `Cycle.write` *before* it queues anything, and by a retired cycle's read path |
-| `Cycle.State()` | the loop writes, anyone reads | one `atomic.Int32`, so a stopped cycle still reports the state it stopped in |
+| `Cycle.State()` | the loop writes, and `Cycle.Retire` as it stops one; anyone reads | one `atomic.Int32`, so a stopped cycle still reports the state it stopped in |
 | `Cycle.finished` | written by the loop on its way out | read by `Cycle.Retire` only after the loop's `done` channel is closed — that is the happens-before, and the reason there is no lock |
 | `trim.Trimmer` | its own goroutine, beside the loop | a `Trimmer` is handed a watermark *by value*; one trim in flight at a time; `Trimmer.Wait` is how a caller waits for it |
 | `walmetrics.Emitter` | shared, one per node | every method is an atomic load and a `Record`; `Emitter.Use` is the only mutation and takes the first handler it is given |

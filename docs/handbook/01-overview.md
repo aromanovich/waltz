@@ -163,8 +163,8 @@ graph TD
 ```
 
 How to read this. Nothing crosses the shard boundary: every arrow out of `wrapper.ExecutionStore`
-that is not a transit goes to *that shard's* cycle goroutine, which is the only thing that touches
-that shard's accumulator, log and drain.
+that is not a transit or a metric goes to *that shard's* cycle goroutine, which is the only thing
+that touches that shard's accumulator, log and drain.
 
 Three kinds of path reach the cold store, and the diagram draws two of them. **Transits** are the
 calls the layer has no record shape for; they go to the base store unchanged. **The applier** is the
@@ -273,8 +273,8 @@ commit to; that possibility is why `wal.Log` is a contract rather than a fixed c
 
 ## What "mode" names here
 
-Two settings decide how the layer behaves. They are **independent axes**, not one dial with four
-positions:
+Two settings decide which mode the layer runs in. They are **independent axes**, not one dial with
+four positions:
 
 * **what the wrapper does** — passthrough or intercept, chosen by whether the node's config has a
   `wal` section (`wrapper.Options.Layer` nil or not). It decides whether writes go into the log at
@@ -284,11 +284,12 @@ positions:
 
 Intercept says nothing about the window, and the window means nothing without intercept.
 
-Only one of those four positions is a deployment: intercept, windowed. `sync` sets the window to one
-mutation, so nothing collapses and a write costs an append *plus* an apply transaction — more than
-the store alone. It exists to make a single write attributable while you are measuring, and
-[chapter 08](08-configuration.md#2-table-1--the-wal-sections-keys) says so at length. The rest of
-this book describes the windowed path and names sync only where it changes an answer.
+Only one of those four positions is a deployment that runs the layer: intercept, windowed. `sync`
+sets the window to one mutation, so nothing collapses and a write costs an append *plus* an apply
+transaction — more than the store alone. It exists to make a single write attributable while you
+are measuring, and [chapter 08](08-configuration.md#2-table-1--the-wal-sections-keys) says so at
+length. The rest of this book describes the windowed path and names sync only where it changes an
+answer.
 
 **Passthrough vs intercept.** The switch is exactly one field, `wrapper.Options.Layer`: nil is
 passthrough, non-nil is intercept. In passthrough every call goes to the base store untouched, and
@@ -327,9 +328,10 @@ The second: **a drain can still meet a failed assertion** — a condition the la
 for, failing inside the transaction. Fencing makes the layer the shard's only writer, so nothing
 legitimate can have moved a row the accumulator stood behind. When this fires, it is the layer's
 self-audit catching a bug, not a condition an operator should plan around. It halts the shard,
-because every write in the batch was acked before the drain started and there is no caller left to
-tell. Nothing is lost when it fires: the log keeps its entries and the trim stops. [Path 6 of
-chapter 05](05-write-path.md#6-failed-drain--an-invariant-was-violated) is the whole story; halts
+because every write in the batch was acked before the drain started, and a condition that did not
+hold cannot be pinned on one of them. Nothing is lost when it fires: the log keeps its entries and
+the trim stops. [Path 6 of chapter
+05](05-write-path.md#6-failed-drain--an-invariant-was-violated) is the whole story; halts
 and replay in general are [chapter 06](06-shard-lifecycle.md#5-halts-the-two-classes), and what an
 operator does about a halt is [chapter
 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
