@@ -8,7 +8,8 @@ paths:
 `wal/` is the seam this library is built on rather than a test of someone else's: the contract
 (`wal/`), the one backend that ships (`wal/memwal/`, in memory) and, in `wal/waltest/`, the
 conformance suite, the fault decorator every caller drives a failing log through, and the
-retention check a deployment runs against its own storage.
+retention check a deployment runs against its own storage beside the expiring log that check
+is proved against.
 [ADR 0002](../../docs/adr/0002-wal-contract-is-backend-independent.md) is why the contract exists
 and what it promises; the handbook's
 [04-contracts.md](../../docs/handbook/04-contracts.md) is the long form of the five guarantees.
@@ -50,8 +51,9 @@ What to know before changing any of it:
   by `AppendBelowATrimIsRefused`, because a backend that hands them out again
   writes a hole into a log everything above reads as gap-free. What stays local
   is *which* refusal: `memwal` keeps its next seqno and says
-  `ErrAlreadyWritten`, a backend that keeps a trim marker instead would say
-  `ErrGap`, and the contract deliberately picks neither — so the suite asserts
+  `ErrAlreadyWritten`, a backend that keeps its entries as rows and derives the
+  verdict from the ones around the seqno says `ErrGap`, those rows being what
+  the trim deleted, and the contract deliberately picks neither — so the suite asserts
   the refusal and admits both answers, and the choice stays each backend's own
   test to make;
 * **the contract has no batch, and that is a decision rather than an omission**

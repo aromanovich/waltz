@@ -165,8 +165,8 @@ What to know before changing it:
 * **`Totals.Acked` and `Totals.Applied` are positions and stay positions**, and
   the rule above is why they sit *outside* `Counters` rather than why they
   should be booleans. They are summed over the cycles held **now**, never over
-  retired ones, so the double-count the rule names cannot happen; and the
-  a run's store starts empty, which makes a position also a count — that is
+  retired ones, so the double-count the rule names cannot happen; and a run's
+  log starts empty, which makes a position also a count — that is
   what lets the sync witness do its condition-failure arithmetic
   (`witness.go`'s `Acked - Drains` against the emitted series, and its
   `Acked <= Drains` refusal). The caveat rides on `witness.Observed` because it
@@ -248,14 +248,16 @@ What to know before changing it:
   to avoid in both directions;
 * an unknown outcome reads the **watermark** and nothing else. Re-deriving the
   answer from base versions is the recovery that applies a committed batch
-  twice (`apply.Recoverer`'s whole point), and the cycle does not rebuild a
+  twice (`cold.Watermarker`'s whole point: the value the committing transaction
+  wrote inside itself, never one derived from the rows), and the cycle does not rebuild a
   *drained* window either — those entries' requests were driven, so re-driving
   them builds a transaction out of mutated state. Replay reads the log, which is
   a different thing;
 * **whose clock may cut a drain short is a field of `drainCause` and not the
-  context the call site happens to hold** (`detached`). Three drains run inside a
-  call whose caller is not waiting for their outcome — the two size watermarks
-  and the refusal drain — and what they carry is earlier writers' acked
+  context the call site happens to hold** (`detached`). Four drains carry it —
+  the three watermarks and the refusal drain, three of them inside a call whose
+  caller is not waiting for their outcome, the age tick's on a
+  `context.Background` of its own — and what they carry is earlier writers' acked
   mutations, those writers having been told it succeeded and gone. Bounding the
   transaction by whichever writer is on the line turns one expired client
   deadline into a drain that did not commit, which is `halted-invariant` and a
@@ -279,7 +281,7 @@ What to know before changing it:
 * **replay is `cycle/replay.go`, and it is `start` grown a body** (#98): the
   watermark, then `(appliedSeqno, tail]` in pages of the window's size, folded
   into a fresh accumulator, cut by the **size** watermarks only (everything read
-  is already as old as the incident) and ending in a drain. Four things about it
+  is already as old as the incident) and ending in a drain. Five things about it
   are decisions, not mechanics:
   - **the readiness gate is the placement**, so there is no flag and nothing to
     refuse: a request arriving mid-replay is already parked in `ask` on its
@@ -360,25 +362,27 @@ What to know before changing it:
 * the numbers are measured: 256 mutations / 256 KB is #45's knee, and the 5 s
   age is explicitly *not* — it is a recovery-budget choice the collapse curve
   does not constrain. Changing either means reading #45 first. The I7 drop's
-  share is measured too and it is **13.4% at the shipped cadence**, a function of
-  drains per queue checkpoint and nothing else (60.6% at one per drain, *smaller*
-  under load); the cheap knob is the incumbent's
+  share was measured on #45's stream too — **13.4% at the shipped cadence**, 60.6%
+  at one drain per checkpoint, *smaller* under load — and what moves it is drains
+  per queue checkpoint, the share itself being a workload measurement rather than
+  a constant of this implementation; the cheap knob is the incumbent's
   `history.*ProcessorUpdateAckInterval`, not this layer's age watermark;
-* **the watermark branch is exercised by nothing but this package's own tests**
-  — a sync-mode run's window is 1, so `cycle/cycle_test.go` is its only coverage.
-  The tests drive fakes because every input the state machine reacts to is one
-  of their answers — the log's, the applier's, the watermark's. Since the
-  decisions came out (below) one half of that branch is judged apart from it:
-  what a condition failure in a watermark-triggered window *means* is
-  `attribute` and is enumerated in `decide_test.go`. The branch itself — the
-  drain those watermarks trigger — still runs in `cycle_test.go` and nowhere
-  else;
+* **the watermark branch runs above this package too; its outcomes are this
+  package's own** — `internal/verify/acceptance` drives the layer at
+  `cycle.Defaults()`, whose window is 256, so the drain those watermarks trigger
+  is exercised there against a real store and a real log, committing. What
+  `cycle/cycle_test.go` adds is the outcome: its tests drive fakes because every
+  input the state machine reacts to is one of their answers — the log's, the
+  applier's, the watermark's — which is how a watermark-triggered window meets a
+  condition failure at all. Since the decisions came out (below) one half of that
+  branch is judged apart from the cycle as well: what such a failure *means* is
+  `attribute` and is enumerated in `decide_test.go`;
 * **trim is `cycle/trim`**, beside `tailstate` and `window`, and it runs
   beside the loop rather than in it: a stuck trim must not stop the shard from
   acking and applying, and `TestATrimNeverBlocksADrain` is what says so. The
   cadence, the one trim in flight and the two counters are the module's; the
   cycle hands it a watermark and the two numbers read at the decision
-  (`Config.cadence`, the trim half of `watermarks`) and asks nothing back but
+  (`Config.cadence`'s `TrimEvery` and `TrimAfter`) and asks nothing back but
   `Counters` at `stats` and `Wait` at `Retire`. What that bought beyond locality
   is the ownership rule below: the `go` statement is in a package that cannot
   see a `*state`, so it is structural rather than prose, and the cadence
@@ -388,9 +392,10 @@ What to know before changing it:
   its retry is observed rather than assumed, which is #86: a second write issued
   while the first trim is still in flight is *correctly* given no trim at all,
   so a test driving the next cadence waits on `Trimmer.Wait` first. A concurrent
-  trim also does **not** cost the appends their I9 immediacy (#49, measured: the
-  coordinated count did not move), so the cadence's numbers stay free to move
-  for read-cost reasons alone;
+  trim also does **not** cost the appends their I9 immediacy — measured once on
+  the research prototype's cluster (#49: the coordinated write count did not
+  move) and unmeasurable here, where no log a run uses has such a counter — so
+  the cadence's numbers stay free to move for read-cost reasons alone;
 * **the tail bound (I10, #47/#56) is not the window watermark**, and the two
   byte counters are different numbers: the window empties when a drain starts,
   the tail only when its transaction commits. An outcome nobody could read
@@ -446,7 +451,10 @@ What to know before changing it:
   `publish`. Two readers for "is it empty" stay, named apart because which is
   correct depends on whether there is still a loop to ask (`Tail.Empty` on it,
   `Mirror.Empty` after it is gone). `TestTheMirrorFollowsEveryTailMove` drives
-  all four moves, and the other direction — a *new* site writing the numbers
+  the floor, an append and three of the four settles;
+  `TestADrainThatFoldsToNothingStillSettlesWhatItAcked` is the fourth, and the
+  stall and its resolve publish too with no test reading the mirror they leave.
+  The other direction — a *new* site writing the numbers
   around the mutators — **is a compile error and no longer a test**: the counters
   are unexported fields of an exported type in a package of their own, so
   `s.tail.resolved = 0` does not build in `cycle` at all. It used to be
@@ -470,8 +478,9 @@ What to know before changing it:
   do deliberately, the entries behind a halted window being acked and the cycle
   finished; Go has no way to make that one a compile error, so it is not one.
   This is why `tailstate` imports `window` at all — for the token, not for the
-  window: the two byte counts stay two numbers, and `internal/verify/guard`'s rule that
-  the tail may not reach `fold` is what keeps them that way;
+  window: the two byte counts stay two numbers, and [dependencies.md](dependencies.md)'s
+  rule that the tail may not reach `fold` is what keeps them that way — prose
+  read when you open the package, and checked by nothing;
 * **the window's arithmetic has one owner too, `cycle/window`** — the
   bullet above applied to the other three counters, with two differences.
   Emptying is `Take`, which hands back the bytes the tail goes on holding: a
@@ -481,12 +490,14 @@ What to know before changing it:
   fold to nothing and the batch's own `MutationsIn` is the number a drain
   applied. And it **publishes nothing**, where every move of the tail is a
   publish: the drain's numbers are emitted once the transaction has an outcome,
-  so `internal/verify/guard` forbids `walmetrics` here and requires it in `tailstate`.
+  so [dependencies.md](dependencies.md) bans `walmetrics` here where `tailstate`
+  must hold it.
   `Trips` and `Aged` are separate for replay's reason — it consults the size
   rule and not the age one, which used to live in a comment beside one of two
   inline copies. `s.window.mutations = 0` does not build in `cycle`, and neither
-  does `w := &s.window`;
-* **`settle` takes `keepWatermark`/`moveWatermark` rather than being written
+  does the same assignment through a `w := &s.window` — the alias that walked
+  past the AST scan the bullet above buried;
+* **`Tail.Settle` takes `KeepWatermark`/`MoveWatermark` rather than being written
   three times**: a committed drain moves `applied`, sync mode's answered
   condition failure (#57) and replay's dropped provisional entry do not. That is
   the same rule as the bullet above about the two counters, in the direction
@@ -520,8 +531,10 @@ What to know before changing it:
   one rule because the precedence between them is a decision rather than the
   order two calls sit in), the store boundary's translation (`storeError`), the drain's
   attribution (`attribute`) and what a drain's outcome *means* (`settlementOf`,
-  which reads `attribute` for the one class that turns on the cause). Each keeps
-  a method beside its call site that supplies the values, so the loop reads as it
+  which reads `attribute` for the one class that turns on the cause). Four of
+  them keep a method beside the call site that supplies the values — the other
+  three, `noCycleRoute`, `supersededRoute` and `storeError`, are called from
+  `Manager` directly, where their values already are — so the loop reads as it
   did and what a call site can still get wrong is *which* values it hands over.
   This is #174's argument turned on this package — the module that answers for a divergence must be
   judgeable itself — and the attribution rule is why it is not tidiness: its
@@ -530,7 +543,7 @@ What to know before changing it:
   Dropping it (measured) leaves the whole pre-existing suite green, and what it
   buys is a caller told its write failed on entries somebody else wrote, which
   stay in the log marked settled. `decide_test.go` enumerates instead — the
-  routing matrix's four moments over state × reader × tail, both units across
+  routing matrix's four rules over state × reader × tail, both units across
   the bound, the recognised and unrecognised errors at each state, every drain
   cause at every window size — and of three deliberate mutations run against it
   two were caught by the tables alone, while the third (the store boundary's
@@ -567,9 +580,10 @@ What to know before changing it:
   unbounded memory by another road. **Only the first may read the mirror**: on
   the loop the tail is exact and the mirror is a drain behind, and both answer in
   the same types, so a function holding a `*state` may not mention it — and
-  nothing catches the swap, which is why it is stated twice here. Nothing else
-  reads it — with the halt rule reading the mirror the whole of `./...`
-  stays green;
+  nothing catches the swap, which is why it is stated twice here. Nothing on the
+  loop reads it — with the halt rule reading the mirror the whole of `./...`
+  stays green — and the three sites that do are all off it (`Cycle.stoppedRead`,
+  `Cycle.residue`, and this fast path);
 * the node's budget is a **startup assertion**, which is why `NewManager`
   returns an error: `hard_max × MaxShards` must fit `TailBudgetBytes`, and
   `Defaults()` fits exactly (2 GB over 256 shards is the 8 MB). Its three
@@ -577,17 +591,22 @@ What to know before changing it:
   and that is what keeps this assertion meaning something — see `waltz.settings`,
   and `Compose`, which opens nothing and reaches nothing, so the refusal is a
   process that does not start rather than one that connected first. It bounds
-  encoded bytes and not RSS, and the multiplier is now measured (#50): **~7.6×
-  and flat** where nothing collapses, lower but drifting up towards it where
-  there is locality, because a longer tail spans more workflows and the collapse
-  ratio falls. So 8 MB of tail is ~50–63 MB resident and the node's 2 GB is
-  ~15 GB of live heap at the bound. The multiplier is a function of how much a
-  stream re-touches its workflows, so quote the number with that knob or not at
-  all — and re-measure it rather than carrying it forward, since it was measured
-  on a tree, not derived;
-* `cycle` may not import a cold store: it *defines* the seam one arrives at
-  (`Applier`, `Watermarker`), and a package holding the log, the accumulator and
-  the write path at once is where a "just this once" write would land. The rules
+  encoded bytes and not RSS, and the multiplier is measured — the table this
+  tree carries is the handbook's
+  [14-where-the-defaults-came-from.md](../../docs/handbook/14-where-the-defaults-came-from.md),
+  and it reads **~8.2× and flat**: all six points, a 32× range of tail sizes
+  crossed with both locality settings, lie between 8.11 and 8.40. So 8 MB of
+  tail is ~68 MB resident and the node's 2 GB is ~17 GB of live heap at the
+  bound. That probe caps no workflow pool, so its two locality settings collapse
+  1.03 against 1.15 and it shows no locality effect at all, where #50's run on
+  the research prototype reached a ratio of 3.30 and a multiplier of 2.94 — so
+  quote the number with the collapse ratio it was taken at or not at all, and
+  re-measure it rather than carrying it forward, since it was measured on a
+  tree, not derived;
+* `cycle` may not import a cold store: it *drives* the seam one arrives at,
+  which is `cold`'s to state (`cold.Applier`, `cold.Watermarker`), and a package
+  holding the log, the accumulator and the write path at once is where a "just
+  this once" write would land. The rules
   and their reasoning are in [dependencies.md](dependencies.md); nothing checks
   them. `tailstate` and `window` are listed there separately, because
   that rule is a statement about one package and a sub-package of `cycle` would

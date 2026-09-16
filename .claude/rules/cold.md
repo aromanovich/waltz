@@ -75,5 +75,8 @@ What to know before changing any of it:
   what turns an upstream rename into a store that refuses to be built rather
   than a drain that silently loses its watermark;
 * **`cold` may not name a store and `memcold` least of all**, and `memcold` may
-  not import the layer ([dependencies.md](dependencies.md)). A store that could
-  see the layer would be judged by the thing sitting on top of it.
+  not import the layer above the seam — `cycle`, the wrapper, `walmetrics` and
+  the root package — while the vocabulary the seam is stated in, `fold`, `wal`,
+  `apply`, `baserow` and `mutation`, it must name
+  ([dependencies.md](dependencies.md)). A store that could see the layer would be
+  judged by the thing sitting on top of it.

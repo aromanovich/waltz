@@ -44,8 +44,9 @@ thing to keep in mind below. What to know before changing the fold itself:
 
 * **and it is evaluated once too**: one predicate per assertion type
   (`RunAssertion.against`, `CurrentAssertion.against` in `check.go`), over a row
-  the caller resolves. The window resolves it from `currentWrite`/`currentRemoved`,
-  the pre-append check and apply's attribution from a row they read
+  the caller resolves. The window resolves it from `workflowAcc.currentView` —
+  the row the window's last writer left, or its removal — while
+  the pre-append check and apply's attribution resolve it from a row they read
   (`VerifyRow`), and only the resolution may differ. A site that judges a
   condition of its own is how they drift, and the drift is silent: the copies
   were a whole condition apart (`last_write_version`) before this collapsed
@@ -179,8 +180,8 @@ thing to keep in mind below. What to know before changing the fold itself:
   from `Stats`; fold reports the two counts and emits no metric of its own;
 
 * **`Batch` is `Drain`'s to build and nobody else's**, which is why its fields
-  are unexported and its consumers read it through `Each`, `Len`, `Watermark`,
-  `Stats`, `Tasks`, `Shard` and `Settles`. The last one is there because the
+  are unexported and its consumers read it through `Each`, `Len`, `Empty`,
+  `Watermark`, `Stats`, `Tasks`, `Shard` and `Settles`. The last one is there because the
   apply cycle used to reconstruct "did this window ack entries whose fate this
   drain must settle" out of `Stats().MutationsIn` — a number whose purpose is
   the collapse ratio — and the rule it reconstructed lived in three places and
