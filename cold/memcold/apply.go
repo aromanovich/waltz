@@ -150,7 +150,11 @@ func refusals(shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 	return nil
 }
 
-// drain is everything the transaction carries, in the order Apply's doc states.
+// drain is everything the transaction carries, in the order the numbered list
+// above states — which is this store's, [cold.Applier] stating what a drain
+// must carry and not the sequence. A store ordering it otherwise would leak
+// every row the window's own range sweep took out.
+//
 // It does not commit: the caller does, so that a failure here is always a
 // transaction still open and always rolled back.
 func (s *Store) drain(
