@@ -110,9 +110,9 @@ sequenceDiagram
     BS-->>SC: committed
 ```
 
-How to read this. Every arrow above the base store happens *first*. If `Fence` fails, the last two
-arrows never happen, so the database still says the previous owner holds range `N` while this node
-holds no cycle for the shard.
+How to read this. Every arrow above the base store happens *first*. If `Fence` fails, none of the
+four arrows below it happen, so the database still says the previous owner holds range `N` while
+this node holds no cycle for the shard.
 
 The two other shapes of the same call:
 
@@ -141,11 +141,11 @@ Four cases, in the order [`../../cycle/manager.go`](../../cycle/manager.go) take
 1. **a cycle already held at exactly this epoch** — return `nil` and do nothing. Fencing is
    idempotent, and so is this: a retried acquire at the same epoch must not throw away a
    running cycle's window.
-2. **a cycle held at a *higher* epoch** — refuse with `wal.ErrFenced`. This node has already moved
-   on.
-3. **otherwise, fence first** — `Log.Fence(ctx, shard, epoch)`, whose error is returned
-   **unwrapped**, because the shard's write path type-switches on concrete error types and one
-   `%w` turns a recognised outcome into an unknown one.
+2. **a cycle held at a *higher* epoch** — refuse with `wal.ErrFenced`, wrapped in a message naming
+   both epochs. This node has already moved on.
+3. **otherwise, fence first** — `Log.Fence(ctx, shard, epoch)`, whose error is the one that is
+   returned **unwrapped**, because the shard's write path type-switches on concrete error types and
+   one `%w` turns a recognised outcome into an unknown one.
 4. **then install** a fresh `cycle.New(shard, epoch, …)` in the registry, and `Retire()` whatever
    cycle it displaced — outside the registry's lock, and without draining it (see
    [§5](#5-halts-the-two-classes) and [§6](#6-stopping-a-node)).
@@ -189,8 +189,9 @@ Two consequences a writer must know:
 
 That obligation is discharged upstream, by a conditional write. An acquire reads the shard row and
 then writes one greater value, and the write itself demands that the row still hold the value that
-was read: the persistence plugin's `UpdateShard` puts `AssertShard(true, PreviousRangeID)` and
-`UpsertShard(RangeID, …)` on one transaction. Two nodes that both read `N` cannot both install `N+1`.
+was read: Temporal's own SQL store takes a write lock on the shard row and compares it inside the
+transaction that updates it, and its Cassandra store makes the update conditional on the row still
+holding `PreviousRangeID`. Two nodes that both read `N` cannot both install `N+1`.
 One transaction's assertion fails, and its author is told nothing except that its write did not
 happen. The server drains its in-flight requests before it renews, because those requests are
 conditioned on the number about to move.
@@ -314,10 +315,11 @@ Seven rules the loop applies, entry by entry:
   decodes but names a different shard halts the same way. This is why `cycle.Deps.Registry` is
   required and `NewManager` refuses a nil one with `cycle.ErrNoRegistry`: a node that decoded with no
   registry would recover nothing, silently, until its first failover.
-* **an entry those two rules stop on is charged to the tail first** (`Cycle.strand`). All three halts
-  above happen before `Cycle.accept`, so nothing else would put the entry there, and a tail left
-  empty is read exactly one way: [§5](#5-halts-the-two-classes)'s rule passes both readers through to
-  the cold store on it. That store does not hold this entry, and for the task read a page short of
+* **an entry those two rules stop on is charged to the tail first** (`Cycle.strand`). All three of
+  them — the seqno gap, the decode failure and the foreign shard — halt before `Cycle.accept`, so
+  nothing else would put the entry there, and a tail left empty is read exactly one way:
+  [§5](#5-halts-the-two-classes)'s rule passes both readers through to the cold store on it. That
+  store does not hold this entry, and for the task read a page short of
   its rows is [not staleness but loss](07-read-path.md#why-a-read-served-anywhere-else-is-not-merely-stale)
   — the queue completes the range it asked for and acks past keys no owner running this build can
   decode to write. What the tail then *counts* is not a number to read: the entries above the one it
@@ -388,7 +390,7 @@ cycle's to shorten.
 | | `halted-lost` | `halted-invariant` |
 |---|---|---|
 | What it means | the shard was fenced away: another node owns it | a divergence this process owns |
-| Reached by | `wal.ErrFenced` on an append, `apply.ClassShardLost` at a drain, a replayed entry above this cycle's epoch, or `Retire` on a running cycle — the one way in that emits nothing, since a rangeID renewal and a graceful shutdown both take it | a condition failure at a drain, `cycle.ErrTailNotEmpty`, a decode or seqno violation at replay, an unreadable drain proven not to have committed, or any apply class nobody enumerated |
+| Reached by | `wal.ErrFenced` on an append, `apply.ClassShardLost` at a drain, a replayed entry above this cycle's epoch, a watermark found *past* an unreadable drain's own seqno, or `Retire` on a running cycle — the one way in that emits nothing, since a rangeID renewal and a graceful shutdown both take it | a condition failure at a drain, `cycle.ErrTailNotEmpty`, a decode or seqno violation at replay, an unreadable drain proven not to have committed, or any apply class nobody enumerated |
 | Who continues the work | the next owner: it fences, replays the tail and applies it | the halted cycle never resumes. The layer asks nobody to take over, although Temporal may independently acquire a higher rangeID, install a successor and make it replay the same tail |
 | At the store boundary | translated to `ShardOwnershipLost`, which is what the shard's write path matches to re-acquire | returned unchanged rather than translated to ownership-lost, so this error does not request a failover; a separate background acquisition at a higher rangeID still supersedes the halted cycle |
 | Operator response | none — this is fencing working | page: [runbook (b)](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes) |
@@ -429,7 +431,7 @@ a reference to come back to once the transitions above are familiar, not a way o
 | a committed drain | `wal_drains{trigger=…}`, `wal_drained_mutations`, `wal_drained_workflows`, `wal_window_age`; `Counters.Drains` |
 | a write refused before its append | `wal_backpressure_refusals{limit="entries"\|"bytes"\|"unresolved"}` |
 | entering either halt | `wal_halts{state="halted-lost"\|"halted-invariant"}`, plus a `WARN apply cycle halted` log line carrying the cause. **A retire is the exception**: it leaves the cycle reporting `halted-lost` and emits neither, because nothing went wrong |
-| a replay that applied anything | `wal_replayed_entries` |
+| a replay that found entries and finished | `wal_replayed_entries` |
 | every move of the tail | `wal_tail_entries`, `wal_tail_bytes`, `wal_unapplied_entries` — one `Emitter.Tail` call records all three |
 
 [Chapter 10](10-metrics.md) owns every series in that table.
@@ -453,7 +455,7 @@ nothing and returns its halt.
 
 **`Layer.Shutdown(ctx, budget)` — the node's stop.** It puts `budget` on a context and calls
 `Manager.Close`, which empties the registry in one step and closes every cycle it took, in sequence,
-one transaction per shard, and then closes the log. A drain that does not commit is logged
+one transaction per shard; the layer closes the log after that. A drain that does not commit is logged
 (`WARN apply cycle: the shutdown drain did not commit`) and does not stop the rest.
 
 Emptying the registry also **closes** it. An acquire arriving behind that step is refused with
@@ -525,7 +527,7 @@ latency budget rather than hygiene.
   comes due while a trim is in flight is **skipped rather than queued**, since the next one takes a
   watermark that has moved further, and two trims of one log are the same trim twice.
 * **A failed trim halts nothing.** It is logged, retried at the next cadence, and counted — and
-  `wal_trims{outcome="started"|"failed"}` is the only place it is visible at all. Two counters
+  `wal_trims{outcome="started"|"failed"}` is the only series that reports it. Two counters
   rather than one, because a run whose every trim failed would otherwise read exactly like one whose
   cadence never fired.
 * **A halted cycle trims nothing**, in either class. Under `halted-lost` the log belongs to the next
