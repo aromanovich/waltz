@@ -134,7 +134,8 @@ const (
 
 // Settle takes a window out of the tail: its entries up to seqno are accounted
 // for and its bytes no longer held. Called once per resolving outcome — a
-// committed drain, an answered condition failure, a dropped provisional entry.
+// committed drain, a drain whose batch carried nothing, an answered condition
+// failure, a dropped provisional entry.
 //
 // held is what [window.Window.Take] produced and is consumed here, so the bytes
 // the tail releases are always bytes a window handed over, and never the same
@@ -160,10 +161,10 @@ func (t *Tail) Settle(seqno wal.Seqno, held *window.Taken, mark WatermarkMove) {
 
 // Stall records a drain whose transaction outcome could not be read: its window
 // is gone, its entries are acked, and whether the cold store holds them is
-// unknown. held is consumed rather than released — those bytes stay counted,
-// because the entries are still this cycle's to account for, and they leave
-// with [Tail.Resolve] or with the floor a successor plants. cause is what that
-// drain was told, carried for whoever eventually attributes the halt.
+// unknown. held is consumed, but the tail does not shrink by it — those bytes
+// stay counted, because the entries are still this cycle's to account for, and
+// they leave with [Tail.Resolve] or with the floor a successor plants. cause is
+// what that drain was told, carried for whoever eventually attributes the halt.
 //
 // The cold store's own watermark is the only witness, so the way out is to ask
 // it again ([Tail.Stalled] is how a drain knows it must). A tail is never empty

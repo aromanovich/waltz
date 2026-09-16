@@ -102,8 +102,8 @@ func noCycleRoute(who reader, shard wal.ShardID) (readRoute, error) {
 //
 //   - lost + task read: refused whatever the tail says, since halted-lost means
 //     another owner whose acks this cycle can neither see nor merge;
-//   - lost + mutable-state read: the cold store on an empty tail (ADR 0003),
-//     else ShardOwnershipLost;
+//   - lost + mutable-state read: the cold store on an empty tail, else
+//     ShardOwnershipLost;
 //   - halted-invariant: the tail rule alone for both readers, and a non-empty
 //     tail gets halt unconverted. Converting a divergence this process owns
 //     would hand it to the next owner as an ordinary failover.
@@ -201,10 +201,11 @@ func supersededRoute(stillCurrent, retried bool, shard wal.ShardID) (readRoute, 
 //     [tailstate.Tail]) and a shard taking more work would grow a tail it has
 //     no way to discharge. I10's rule at the moment the applier is not behind
 //     but blind;
-//   - I10 itself: entries means the applier is stalled, bytes a workflow near
-//     the server's own blob limits, both over reads as bytes. It reads the tail
-//     as it stands, never the tail this mutation would make, so no mutation is
-//     refused for its own size and the tail overshoots by at most one entry.
+//   - I10 itself: entries means the applier is behind, bytes a workflow near
+//     the server's own blob limits, and a tail over both is named as bytes. It
+//     reads the tail as it stands, never the tail this mutation would make, so
+//     no mutation is refused for its own size and the tail overshoots by at
+//     most one entry.
 //
 // The refusal must reach the caller unwrapped: ContextImpl.handleWriteErrorLocked
 // switches on the concrete type, where *serviceerror.ResourceExhausted means

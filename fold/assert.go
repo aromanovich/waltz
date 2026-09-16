@@ -186,8 +186,10 @@ func currentWriteOfCreate(req *p.InternalCreateWorkflowExecutionRequest) *Curren
 	return nil
 }
 
-// currentWriteOfUpdate: the store's update path re-serialises the full execution
-// state, and a continue-as-new passes the new run's snapshot blob through.
+// currentWriteOfUpdate: the store's update path renders the row off the
+// mutation's own execution state — Cassandra re-serialises it, the SQL plugin
+// takes the blob already beside it — and a continue-as-new renders it off the
+// new run's snapshot instead.
 func currentWriteOfUpdate(req *p.InternalUpdateWorkflowExecutionRequest) (*CurrentWrite, error) {
 	if req.Mode != p.UpdateWorkflowModeUpdateCurrent {
 		return nil, nil

@@ -39,15 +39,16 @@ type ExecutionStore struct {
 	// store method.
 	emit *walmetrics.Emitter
 
-	// intercepted counts the mutable-state writes that took the WAL path,
-	// tasksWritten and tasksCompleted the two halves of the history-task path.
-	// They duplicate metrics because a metrics handler is write-only and the
-	// acceptance has to ask this store what it did.
+	// intercepted counts the mutable-state writes and the two tombstones that
+	// took the WAL path, tasksWritten and tasksCompleted the two halves of the
+	// history-task path. They duplicate metrics because a metrics handler is
+	// write-only and the acceptance has to ask this store what it did.
 	intercepted    atomic.Int64
 	tasksWritten   atomic.Int64
 	tasksCompleted atomic.Int64
 	// overlaid counts the mutable-state reads through the layer, taskReads the
-	// merged task pages.
+	// task pages routed at the merge — routed, not merged: a page the layer
+	// answers out of the cold store alone is in it.
 	overlaid  atomic.Int64
 	taskReads atomic.Int64
 }
@@ -191,8 +192,8 @@ func (s *ExecutionStore) GetHistoryBranchUtil() p.HistoryBranchUtil {
 //
 // Each hands its request to write, which puts the events down, acks the
 // mutation, and answers with what the drain said. The epoch is the request's own
-// rangeID, the token the plugin's AssertShard would have compared (invariant
-// I11).
+// rangeID, the token the plugin's own write would have conditioned its
+// transaction on (invariant I11).
 
 func (s *ExecutionStore) CreateWorkflowExecution(
 	ctx context.Context, request *p.InternalCreateWorkflowExecutionRequest,

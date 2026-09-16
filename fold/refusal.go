@@ -1,10 +1,11 @@
 package fold
 
 // [ErrRefused]'s recovery, written once: drain the window, retry the mutation
-// at the head of a fresh one. It terminates because both refusals turn on what
-// the window already holds and [Accumulator.Drain] empties it, so a drained
-// accumulator refuses nothing. That is a property of the merge rules rather
-// than of anything here, and a second refusal is an invariant violation.
+// at the head of a fresh one. It terminates because both refusals — the fold's
+// and the condition authority's — turn on what the window already holds and
+// [Accumulator.Drain] empties it, so a drained accumulator refuses nothing.
+// That is a property of the merge rules rather than of anything here, and a
+// second refusal is an invariant violation.
 //
 // The drain is a callback because each consumer does something different with a
 // drained window: a transaction, a kept batch, a write to a cold store.

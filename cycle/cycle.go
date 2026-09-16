@@ -63,9 +63,13 @@ func (s State) String() string {
 	return fmt.Sprintf("State(%d)", int(s))
 }
 
-// ErrHalted matches (via errors.Is) every refusal a halted cycle answers with.
-// The class is in [Cycle.State]; the cause travels wrapped, so a caller can
-// still reach the [apply.InvariantViolationError].
+// ErrHalted matches (via errors.Is) every refusal a halted cycle's loop answers
+// with, and the one [ask] gives once that loop is gone. It is not always what
+// the caller sees: [storeError] turns a halted-lost write into
+// ShardOwnershipLost, and a read is [loopRoute]'s, which hands this back only on
+// the route that refuses as halted. The class is in [Cycle.State]; the cause
+// travels wrapped, so a caller can still reach the
+// [apply.InvariantViolationError].
 var ErrHalted = errors.New("cycle: the shard is halted")
 
 // ErrTailNotEmpty reports an append refused because the log already holds the
@@ -255,8 +259,9 @@ type Stats struct {
 	AppliedSeqno wal.Seqno
 	// TailEntries and TailBytes are what I10 bounds: acked entries whose fate is
 	// not yet settled. TailEntries is not CommitSeqno − AppliedSeqno; the gap is
-	// sync mode's answered condition failures, which hold no memory and ride no
-	// drain. See the resolved field of [tailstate.Tail].
+	// what a [tailstate.KeepWatermark] settle released — entries no transaction
+	// wrote, sync mode's answered condition failures among them, which hold no
+	// memory. See the resolved field of [tailstate.Tail].
 	TailEntries int
 	TailBytes   int
 	// Counters is everything this cycle counted, embedded so a counter added to
@@ -695,7 +700,7 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 // counters move, the tail grows by size (the payload's encoded length, which is
 // what both the watermark and I10 count), and the accumulator folds it.
 //
-// Shared by [Cycle.add] and [Cycle.replay], and nothing here may depend on
+// Shared by [Cycle.add] and [Cycle.replayEntry], and nothing here may depend on
 // which: a replayed entry has no caller to answer and no ack to give.
 func (c *Cycle) accept(ctx context.Context, s *state, m mutation.Mutation, size int) error {
 	s.tail.Ack(s.next, size)

@@ -1,8 +1,9 @@
 // Package waltz puts a write-ahead log in front of a Temporal history shard's
 // cold store, so that many mutations are acked into the log and folded into one
 // cold-store transaction. It implements no persistence itself: the log is a
-// [wal.Log] and the cold store is a [cold.Store], both the caller's, and the
-// only log shipped here is wal/memwal, in memory.
+// [wal.Log] and the cold store is a [cold.Store], both the caller's. One
+// implementation of each ships here, wal/memwal and cold/memcold, and both die
+// with the process.
 //
 // waltz is developed against go.temporal.io/server v1.29.6 and needs Go 1.26 or
 // newer. The requirement on the server is a floor under minimal version
@@ -137,7 +138,7 @@ type Backends struct {
 }
 
 // Compose is the one graph every process running intercept mode builds. Its
-// four varying inputs:
+// five varying inputs:
 //
 //   - backends is where the bytes go, and the reason it is a parameter is on
 //     [Backends];
@@ -147,6 +148,9 @@ type Backends struct {
 //   - categories is required: it is what replay decodes a tail with, and
 //     [cycle.NewManager] refuses nil rather than starting a node whose recovery
 //     is silently off;
+//   - logger is optional, and nil is a noop: the layer's own warnings — a
+//     shutdown drain that did not commit, a trim retried at the next cadence —
+//     then have nowhere to go;
 //   - handler is optional, and nil is the production value: the server hands one
 //     down through [wrapper.MetricsSink] after this runs.
 //

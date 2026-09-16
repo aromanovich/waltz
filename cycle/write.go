@@ -23,10 +23,11 @@ import (
 // drain carrying it did. base carries the cold-store reads the condition
 // authority needs for assertions the window does not determine ([baserow.Rows]).
 //
-// epoch is the rangeID the caller wrote under, checked as the plugin's own
-// AssertShard(rangeID) would (I11): without it a shard context already fenced
-// out has its write re-stamped with this node's epoch and accepted. Zero means
-// no rangeID, as on the deletes, which the drain's epoch CAS fences instead.
+// epoch is the rangeID the caller wrote under, checked here as the plugin's own
+// write would have conditioned its transaction on it (I11): without it a shard
+// context already fenced out has its write re-stamped with this node's epoch and
+// accepted. Zero means no rangeID, as on the deletes, which the drain's epoch
+// CAS fences instead.
 //
 // A shard this node holds no cycle for is answered with ShardOwnershipLost.
 // Falling through to the store below would be a write around the log, and the

@@ -952,7 +952,8 @@ func (a *Accumulator) addDeleteCurrent(seqno wal.Seqno, req *p.DeleteCurrentWork
 	// asks about the row at the delete's position in the stream, which where
 	// the window has already written it is the window's own write. Leaving both
 	// for apply hands the transaction an upsert and a delete of one row, and
-	// the plugin runs every delete first.
+	// which of the two wins is then the store's statement order rather than the
+	// window's.
 	if w.cur.write != nil {
 		if w.cur.write.RunID != req.RunID {
 			// The row names the window's own write, not this run: sequentially

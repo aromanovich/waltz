@@ -189,7 +189,8 @@ func (f *AbstractDataStoreFactory) NewFactory(
 
 // DataStoreFactory is the decorator proper: the ExecutionStore and the
 // ShardStore come back wrapped, everything else as the plugin built it, since
-// matching, visibility, cluster metadata and the queues are outside the layer.
+// the task stores, namespace and cluster metadata, the queues and the Nexus
+// endpoints are outside the layer.
 type DataStoreFactory struct {
 	base p.DataStoreFactory
 	opts Options

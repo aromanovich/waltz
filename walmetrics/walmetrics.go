@@ -84,7 +84,7 @@ var (
 	Trims = metrics.NewCounterDef("wal_trims",
 		metrics.WithDescription("Log trims, by outcome."))
 
-	// The three tail units, one observation per shard per event.
+	// The tail in the two units I10 bounds, one observation per shard per event.
 	TailEntries = metrics.NewDimensionlessHistogramDef("wal_tail_entries",
 		metrics.WithDescription("Entries acked and not yet settled on one shard, at each append and each drain."))
 	TailBytes = metrics.NewBytesHistogramDef("wal_tail_bytes",

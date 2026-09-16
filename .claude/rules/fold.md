@@ -90,8 +90,9 @@ thing to keep in mind below. What to know before changing the fold itself:
   they concatenate across the barrier;
 
 * **upsert-vs-delete is resolved per key, inside the accumulator.** Left
-  unresolved, the store's own query ordering puts every delete before every
-  upsert and the deleted key survives — a silent wrong answer. The
+  unresolved, the store's own query ordering issues every upsert before every
+  delete, so a key re-upserted after being deleted is written and then deleted
+  again — an acked write gone, silently. The
   current-execution row obeys the same rule since #54, when apply gained a
   transactional delete for it: a window that writes the row and then removes it
   emits the removal alone (`WorkflowRecord.CurrentRemoved`);

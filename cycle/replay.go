@@ -1,7 +1,8 @@
 package cycle
 
-// Replay: what a new owner does with a tail it did not write. A read loop over
-// `(appliedSeqno, commitSeqno]` into the accumulator, and four decisions:
+// Replay: what a new owner does with a tail it did not write. A read loop from
+// the watermark's successor to the end of the log, into the accumulator, and
+// four decisions:
 //
 //   - it is [Cycle.start] grown a body, which makes it the readiness gate: a
 //     request arriving mid-replay parks in [ask] behind it. A read
@@ -95,11 +96,13 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 	return nil
 }
 
-// FencedAway is the cause a replay carries when it finds the log already at a
-// higher epoch, and the words are load-bearing outside this package: at the
-// store boundary every road to a fence answers the same ShardOwnershipLost, so
-// an instrument that has to tell this road from an append fence has only the
-// cause to read. Match on this constant rather than copying the string.
+// FencedAway is the cause carried where the fence is discovered rather than
+// returned: a replay finding the log already at a higher epoch, and a drain
+// whose watermark another owner has moved past ([Cycle.resolve]). The words are
+// load-bearing outside this package: at the store boundary every road to a
+// fence answers the same ShardOwnershipLost, so an instrument that has to tell
+// these roads from an append fence has only the cause to read. Match on this
+// constant rather than copying the string.
 const FencedAway = "the shard has been fenced away"
 
 // replayEntry folds one entry of the tail, drains around it when it is
