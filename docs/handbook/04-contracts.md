@@ -268,8 +268,9 @@ Six things the table cannot hold:
   between the request and its ack may be durable, which is why a cancelled append counts as an
   attempt like any other. Errors caused by the context satisfy `errors.Is` against
   `context.Canceled` or `context.DeadlineExceeded`. A call that is both cancelled and malformed
-  reports the argument. All three are driven by `ACancelledContextChangesNothing`, so a backend
-  author finds out from a run rather than from this paragraph.
+  reports the argument. The three the contract does resolve are driven by
+  `ACancelledContextChangesNothing`, so a backend author finds out from a run rather than from this
+  paragraph.
 * **An append is one entry, and there is no batch.** None of the three sentinels can describe a
   batch that landed only in part: each says the write is whole, one way or the other (see **The
   contract has no batch** above, under "What the contract does not say: what an append costs"). Many
@@ -354,7 +355,7 @@ deletion flow does send both, but that pairing is a property of the server and t
 none of it — a fold rule phrased as "a delete always comes with a delete-current" would be a piece of
 Temporal's semantics living inside the layer.
 
-Four accessors carry every consumer:
+Four kinds of accessor carry every consumer:
 
 * `ShardID() int32` is the routing key: one shard is one log and one apply transaction. It answers 0
   for `KindInvalid`.
@@ -411,7 +412,7 @@ each fail by name. Recording the field is never the fix on its own; it needs a d
 
 ## `fold` — the exported surface
 
-A window of those entries folds into one accumulator. Every section after this one names its types,
+A window of those entries folds into one accumulator. The three sections that follow name its types,
 so it comes before them.
 
 `fold.New(shard) *Accumulator` folds one shard's window. It is **not safe for concurrent use**: the
@@ -475,10 +476,10 @@ request rather than a policy: a mutation has exactly one `NewBufferedEvents` slo
 in a window carry two independent batches with no way to express both in one request. The accumulator
 strips each blob out of the merged request — whose own slot is therefore always nil — and appends it
 to a per-run list; `Emitted.BufferedBatches` is that list in arrival order, each batch carrying the
-run that produced it. An applier spreads it across rows, one buffered-events row per batch under a
-freshly minted event id that nothing ever reads back. A window whose merged state came out a
-*snapshot* has no mutation to put a batch in at all, which is why the batch carries its own run id
-rather than reading it off a request that may not be there.
+run that produced it. An applier spreads it across rows, one buffered-events row per batch, written
+after the merged request that may have cleared the rows already there. A window whose merged state
+came out a *snapshot* has no mutation to put a batch in at all, which is why the batch carries its
+own run id rather than reading it off a request that may not be there.
 
 `Accumulator.TaskPage(req, base BasePage)` is the merge-on-read. `BasePage` is `func(batch int,
 token []byte) ([]p.InternalHistoryTask, []byte, error)`: a batch size and a token rather than a
@@ -551,11 +552,11 @@ Obligations of the intercepted path, which the store discharges:
   `last_write_version`. The refusal happens where the server is still starting and can be told what
   its store is missing, rather than at the first create of the first workflow.
 
-`ExecutionStore.Counts() Counts` reports what the store itself saw: `Intercepted` (mutable-state
-writes that took the WAL path), `TasksWritten` (`AddHistoryTasks`), `TasksCompleted`
-(`RangeCompleteHistoryTasks`), `Overlaid` (mutable-state reads routed through the layer) and
-`TaskReads` (`GetHistoryTasks` pages routed at the merge). Every field counts on the way *in*, so a
-write the tail refused is included in the count, and all are zero in passthrough mode.
+`ExecutionStore.Counts() Counts` reports what the store itself saw: `Intercepted` (the mutable-state
+writes and the two tombstones that took the WAL path), `TasksWritten` (`AddHistoryTasks`),
+`TasksCompleted` (`RangeCompleteHistoryTasks`), `Overlaid` (mutable-state reads routed through the
+layer) and `TaskReads` (`GetHistoryTasks` pages routed at the merge). Every field counts on the way
+*in*, so a write the tail refused is included in the count, and all are zero in passthrough mode.
 
 ### `wrapper.ShardStore` — 6 methods
 
@@ -590,16 +591,16 @@ may be keyed on it.
   unwrapped. Nothing reports the other direction: closing a shard makes no persistence call.
 * **`ShardWriter`** — `Write(ctx context.Context, m mutation.Mutation, epoch wal.Epoch, base
   *baserow.Rows) error`. The mutation names its own shard. **The layer takes ownership of `m`'s
-  request**: in a windowed mode it is retained past this call and the drain stamps its rangeID, so a
-  caller may not read or reuse it once `Write` has returned. `epoch` is the rangeID the caller wrote
-  under, so a write from a fenced-out shard context is refused rather than re-stamped with this
-  node's epoch; zero means "the caller named no epoch", not "epoch 0" — the two deletes and the
-  range delete carry none, and the drain's own epoch CAS fences them instead. The error is the
-  store's own — condition failure, fenced shard, tail at its bound — and comes back unwrapped. In a
-  windowed mode a condition failure is this caller's own, because fold's `Check` decides it before
-  the entry is appended; under `Sync` the drain decides it, and the window is one mutation, so it is
-  this caller's there too. `base` is called inside the goroutine that owns the window, at most once
-  per asserted row.
+  request**: in a windowed mode it is retained past this call and merged in place with the window's
+  other requests, so a caller may not read or reuse it once `Write` has returned. `epoch` is the
+  rangeID the caller wrote under, so a write from a fenced-out shard context is refused rather than
+  re-stamped with this node's epoch; zero means "the caller named no epoch", not "epoch 0" — the two
+  deletes and the range delete carry none, and the drain's own epoch CAS fences them instead. The
+  error is the store's own — condition failure, fenced shard, tail at its bound — and comes back
+  unwrapped. In a windowed mode a condition failure is this caller's own, because fold's `Check`
+  decides it before the entry is appended; under `Sync` the drain decides it, and the window is one
+  mutation, so it is this caller's there too. `base` is called inside the goroutine that owns the
+  window, at most once per asserted row.
 * **`ShardReader`** — three reads, each taking the caller's request and the cold store's own answer
   as a closure, so the layer decides whether to call it. `GetWorkflowExecution` and
   `GetCurrentExecution` take `base func(context.Context) (…, error)`; `GetHistoryTasks` takes `base
@@ -639,7 +640,8 @@ refusals. `apply.Refuse(err)` wraps an error raised **before** anything was sent
 that wrapper is what makes `Classify` answer `ClassRefused`. An unmarked pre-flight refusal is read
 as an unknown outcome, and the shard then goes looking for a transaction that never existed.
 
-The requests carry no epoch. The applier stamps it, from the epoch it was handed.
+The requests name no epoch the applier may use — a replayed one lost its rangeID with the payload —
+so the epoch every drain asserts under is the one `Apply` was handed.
 
 ### What a drain asserts, and what it must not
 
@@ -881,6 +883,7 @@ archival is configured. A nil `Logger` becomes a noop logger and a nil `Metrics`
 | `ErrTailNotEmpty` | the log holds the seqno the cycle meant to write. A cycle replays past the whole tail before it appends, and an append that failed ambiguously is read back at once and settled, so what is left is a second writer holding this cycle's own epoch. It halts |
 | `ErrBudget` | a policy whose `HardMaxBytes × MaxShards` does not fit `TailBudgetBytes` |
 | `ErrNoRegistry` | a nil `Deps.Registry` |
+| `ErrClosed` | an acquire arriving after `Manager.Close` has emptied the registry. The shard would be taken by a cycle acking into a log the layer is releasing, drained by nothing and named in no shutdown answer |
 | `ErrNoBaseRow` | the condition authority delegated an assertion to the cold store and the caller brought no `*baserow.Rows`. It is a refusal, not a skip: a refused write provably acked nothing, whereas a skip would ack an assertion nobody evaluated |
 
 ### `Manager` — the door to every cycle
@@ -897,7 +900,7 @@ to start. Its surface:
 | `Use(h metrics.Handler)` | the wrapper's `MetricsSink`. First call wins; a nil handler is ignored |
 | `Shard(shard) *Cycle` | internal callers that have already resolved a shard; nil when this node has not acquired it |
 | `Totals() Totals` | a witness |
-| `Close(ctx)` | shutdown — drains and stops every cycle. The one moment a tail is drained without a size or age trigger asking for it; the drain is tagged `trigger="explicit"` |
+| `Close(ctx)` | shutdown — drains and stops every cycle. The one drain with neither a watermark nor a request in flight behind it: a refusal, a read and a replay all drain off some caller's call, and the node's stop is nobody's. The drain is tagged `trigger="explicit"` |
 
 `cycle.BaseTasks` is a type **alias** for the task-read closure, deliberately: the two packages that
 must agree on the signature may not import each other, so `wrapper.ShardReader` spells the function
@@ -1017,8 +1020,9 @@ has to answer for itself — see `cycle.ErrNoBaseRow`.
 * [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — the obligations stated once,
   including the two that belong to no single backend: payload ownership, and the spentness of
   trimmed seqnos.
-* [`../../mutation/mutation.go`](../../mutation/mutation.go) — the record format,
-  and the rule that nothing may ever be renumbered or reused.
+* [`../../mutation/mutation.proto`](../../mutation/mutation.proto) — the record format itself, and
+  the rule that nothing in it may ever be renumbered or reused;
+  [`mutation.go`](../../mutation/mutation.go) is the type, the codec and the four accessors.
 * [`../../mutation/kinds.go`](../../mutation/kinds.go) — one row per kind: name, slot,
   shard, rangeID and event slots.
 * [`../../fold/assert.go`](../../fold/assert.go) — what each kind claims about the store,

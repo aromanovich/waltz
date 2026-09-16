@@ -49,7 +49,7 @@ need no row — *the next owner's cycle* and *the operator*.
 | `history service` | the caller: Temporal's own shard context, holding the shard's rangeID |
 | `wrapper.ExecutionStore` | the decorator the history service holds instead of the base store |
 | `cycle.Manager` | the per-node registry of shards to cycles; the epoch check lives on its `Write` |
-| `cycle.Cycle` | one goroutine per (shard, epoch): the accumulator, the drain, the trim, the reads |
+| `cycle.Cycle` | one goroutine per (shard, epoch): the accumulator, the drain, the trim cadence, the reads |
 | `fold.Accumulator` | the window — merged requests per dirty workflow, plus the assertions they stand on |
 | `wal.Log` | the log contract; `memwal` is the implementation this tree ships |
 | `cold.Applier` | one drain, one transaction — the layer's only write door; `memcold` is the implementation this tree ships |
@@ -121,12 +121,14 @@ everything runs inside the same call, so the round trip would buy nothing.
 one way or the other, and everything else — every transport failure — says nothing at all. The cycle
 does not read that as "wrote nothing": it reads the seqno back, which is the log answering for an
 append the way the cold store's watermark answers for a drain
-([chapter 06](06-shard-lifecycle.md)). Three outcomes, and only the middle one is new to a reader who
-knows the drain's version. Nothing at the seqno and the append wrote nothing, so the seqno is the
+([chapter 06](06-shard-lifecycle.md)). Three outcomes, and the third is where this parts from the
+drain's version in section 7. Nothing at the seqno and the append wrote nothing, so the seqno is the
 next mutation's and the caller gets the error. **This cycle's own payload at it and the append
 succeeded**, so the caller is told nil — the entry is durable and every later write of that workflow
 will stand on it, which is exactly the state a "failed" would have the caller act against. Anything
-else — a stranger's entry, or a read that failed too — halts the shard holding the log as evidence.
+else — a stranger's entry, or a read that failed too — halts the shard holding the log as evidence:
+where a drain whose outcome cannot be read stalls and asks again later, an append has nothing to
+wait for, the next thing any writer needs being that same seqno.
 The read is detached from the caller's cancellation, because a client deadline expiring inside the
 append is the commonest way the outcome became unreadable in the first place.
 
@@ -284,9 +286,11 @@ How to read this. What the diagram does not show is who is waiting while the dra
 what the triggers really differ in. `mutations`, `bytes` and `refusal` run inside some caller's
 write, and the window they drain is full of other people's work. Under `mutations`, `bytes` and a
 `refusal` raised at the fold, that caller has already been acked for its own mutation; a `refusal`
-raised at the condition check runs before the append, so that caller has consumed no seqno. `age`,
-`replay` and `explicit` have no caller waiting at all. `read` happens only when `drain_on_read` is
-on, which nothing that ships turns on ([chapter 08](08-configuration.md)).
+raised at the condition check runs before the append, so that caller has consumed no seqno. `age` has
+nobody waiting at all; `replay` and `explicit` do — the request that started the cycle waits through
+the whole replay, and a shutdown waits for the drain it asked for — but neither waiter wrote anything
+the window carries. `read` happens only when `drain_on_read` is on, which nothing that ships turns
+on ([chapter 08](08-configuration.md)).
 
 **`sync` is the eighth, and it is the same cycle rather than a path around it.** With `sync: true`
 the window holds one mutation and its drain runs inside the write, so every drain a caller triggers
@@ -358,9 +362,10 @@ recognise a retried request and answer it as already-started, `RunID` to decide 
 or attach to, `Status` to fill the client's response, and `LastWriteVersion` both to decide whether
 the namespace is active here and to carry as the previous run's version when creating the new run as
 current. The layer therefore does not synthesise those fields: `fold.currentConflict` deserialises
-the window's own current-execution state blob and fills exactly the fields a store's own conflict
-error fills. A refusal of the right type with empty fields would create a second run where a start
-should have deduplicated.
+the window's own current-execution state blob and fills the conflict error from it, short of two of
+the store's own: the start time is never carried, and the request ids are empty where the window's
+last current-row write came from a conflict-resolve. A refusal of the right type with empty fields
+would create a second run where a start should have deduplicated.
 
 In the windowed modes, then, `wal_answered_condition_failures` stays at **zero**: no failed
 condition ever reaches a drain there. A non-zero value means one of two things — the check let a
@@ -397,7 +402,7 @@ the retry stays inside the history client. It must reach the caller **unwrapped*
 path reads `*serviceerror.ResourceExhausted` as "definitely not committed", and one `%w` drops it to
 the default arm, which is a background re-acquire — a self-inflicted failover.
 
-Three units can run out, and the metric says which through the `limit` tag on
+Three things refuse a write here, and the metric says which through the `limit` tag on
 `wal_backpressure_refusals`:
 
 | `limit` | What ran out | What it means |
@@ -448,7 +453,7 @@ sequenceDiagram
   Note over CY: halt, state = halted-lost — the window is dropped, nothing is trimmed
   Note over CY: wal_halts{state="halted-lost"} + 1
   CY-->>CY: every later write is refused, and the two mutable-state reads while the tail is non-empty
-  NX->>CS: Fence the log at the new epoch, read the watermark
+  NX->>CS: read the watermark, the log already fenced at the new epoch
   NX->>NX: replay every entry above appliedSeqno, then drain
 ```
 
@@ -549,7 +554,7 @@ and gating every write statement on that count being zero. A failed assertion th
 anywhere, the transaction **commits** having written nothing, and the error the client returns is
 built from a readback in the same query. Either way, a drain the store rejected and a drain that
 never ran leave byte-identical state — so the ambiguity of an ambiguous code comes down to one bit:
-whether the commit landed.
+whether this drain's own writes landed.
 
 **The rule, and the wrong rule beside it.** The watermark is the only witness, because it rides the
 drain's own transaction behind the same gate: it moved if and only if the batch committed, and the
