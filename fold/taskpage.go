@@ -307,11 +307,11 @@ func mergePage(
 	}
 	next := &taskPageToken{BaseDone: baseDone || len(rawPage) == 0}
 	if cut == 0 {
-		// The base's first row ties the window's first, so nothing is strictly
-		// below it and cutting there would emit an empty page for ever. The tie
-		// deduplicates to one entry and this branch holds at most one base row,
-		// so emitting that entry emits the base page whole, which the cut rule
-		// allows.
+		// The base's first row is at or below the window's first, so nothing is
+		// strictly below it and cutting there would emit an empty page for ever.
+		// That row is merged[0] — a tie deduplicates to it — and this branch
+		// holds at most one base row, so emitting that one entry emits the base
+		// page whole, which the cut rule allows.
 		c.BaseDiscarded = 0
 		c.FromWindow = 0
 		next.Base, next.BaseDone = nextBase, !bounded
