@@ -31,7 +31,7 @@ checked out. Printing it as though it were the first kind asserts something the 
 support.
 
 The rule this repository follows is to publish only the first kind. Where a second-kind number is
-carried anyway — the collapse knee behind the drain watermark, the resident cost of a byte of tail,
+carried anyway — the collapse knee behind the drain trigger, the resident cost of a byte of tail,
 the rejection of a two-mutation window — it is attributed to **the research prototype this library
 was extracted from**, every time, because that is the only honest form it has here.
 [Chapter 14](14-where-the-defaults-came-from.md) is where each of them lives with its provenance.
@@ -157,7 +157,7 @@ schema, with those statements and those error classes, which is what the suites 
 `internal/verify/coldtest` sits beside it and is a double, for the suites that need a drain to be
 refused or to fail ambiguously.
 
-Two limits survive that, and the second is the sharpest in this chapter.
+Two limits survive that.
 
 **The database dies with the process.** It has no file, no fsync and no second reader. So it can say
 what a batch does to a schema, and nothing about durability or a store that is still there after a
@@ -167,21 +167,23 @@ same stream, is staged over this store ([chapter
 11](11-verification.md#recovery-the-same-stream-a-different-set-of-windows)). What is missing there
 is the kill, not the replay.
 
-**Nothing here says a folded batch leaves the cold store in the state mutation-by-mutation writing
-would have left it.** The batches execute, so a merged request the schema rejects is caught. What is
-not caught is a merged request the schema *accepts* and which is nevertheless not what the
-sequential path would have produced. Catching that needs a differential oracle: one stream applied
-twice, once sequentially and once folded, the two stores required to end identical. `memcold`
-supplies one of the two stores; it cannot supply the argument, because a rule agreeing with its own
-re-implementation is not evidence ([chapter
-13](13-designs-that-were-rejected.md#a-unit-test-per-fold-rule) is why). The oracle stays a
-deployment's to build, over the store it actually cares about.
+**What says a folded batch leaves the cold store in the state mutation-by-mutation writing would
+have left it is an oracle, and both of its arms land in `cold/memcold`.**
+`TestFoldingChangesNothingButTheNumberOfTransactions` drives one generated stream twice — once at
+the shipped window, once at a window of one mutation, where nothing is ever merged — and then diffs
+every run row, every current row and all four task categories' rows whole, between the two
+databases. So a merged request the schema *accepts* and which is nevertheless not what the
+sequential path would have produced is caught. What is not caught is a defect the two arms
+**share** — the codec, the encoding of a request, an assertion neither arm makes — which cancels;
+and nothing in the comparison speaks for the schema, the row layouts or the condition failures of
+the store a deployment actually runs. Rebuilding that comparison over that store stays the
+deployment's to do, and it is what such a deployment should build instead of a unit test per fold
+rule ([chapter 13](13-designs-that-were-rejected.md#a-unit-test-per-fold-rule) is why).
 
-The recovery run is not that oracle and does not narrow this limit, though it is the same shape one
-axis over: it drives one stream twice with the *windows* cut differently, not with the fold taken out
-of one arm. So it settles that the folding does not depend on where a window ends — which is the
-property a crash tests, since a crash cuts one — and leaves untouched the question of whether folding
-at all agrees with not folding.
+The recovery run is not that oracle, though it is the same shape one axis over: it drives one stream
+twice with the *windows* cut differently, not with the fold taken out of one arm. So it settles that
+the folding does not depend on where a window ends — which is the property a crash tests, since a
+crash cuts one — and leaves whether folding at all agrees with not folding to the run above.
 
 Three places where the folded path knowingly answers differently from upstream's sequential path are
 known and deliberate, and each is written down beside the code it is about:
@@ -269,6 +271,9 @@ Stated exactly, a green `go test ./...` says this and no more:
 * the same fold, at the shipped window, executed against Temporal's own schema and left the rows and
   the watermark the batches said it would — including when the shard's epoch moved under a running
   cycle, where it left exactly the drains that had committed and nothing after them;
+* the same stream driven twice — folded at the shipped window, and one mutation per transaction —
+  left two databases holding identical rows: every run row, every current row, all four task
+  categories;
 * the contract suite says `memwal` satisfies the five guarantees, and would say the same of any
   implementation a deployment passes it;
 * Temporal's own four persistence suites say `cold/memcold` is a store a server can be run on;
@@ -279,7 +284,7 @@ Stated exactly, a green `go test ./...` says this and no more:
 
 ```mermaid
 graph LR
-  A["go test ./..."] --> A1["the fold holds at volume, and executes against a real schema"]
+  A["go test ./..."] --> A1["the fold holds at volume, executes against a real schema, and agrees with not folding"]
   A --> A2["memwal satisfies the contract"]
   A --> A5["memcold passes Temporal's own suites"]
   A --> A4["a Temporal server runs a workflow over the layer"]
@@ -313,8 +318,8 @@ and telling them apart is the reader's job:
    their own store, or measures the incumbent's write amplification. These need a cluster and an
    afternoon, not a design;
 2. **closed by work nobody has started.** A harness that kills processes and the judge that reads
-   the record back; a differential oracle against a real store. These need a deployment first and
-   then a project;
+   the record back; the oracle above rebuilt over the store a deployment runs. These need a
+   deployment first and then a project;
 3. **not closable at all, because the entry describes the boundary of a decision that was taken.**
    Measuring them harder does not move them; they are what the design is.
 
@@ -328,7 +333,7 @@ Where this chapter can say which is which, it says so:
 | nothing is claimed about latency | 1 for a given pair, 3 for the claim in general |
 | the only log here is in memory | 2 — a real log and a two-process failover test |
 | the cold store here dies with the process | 2 — a durable store, and a harness that kills something |
-| the fold is unjudged against the sequential path | 2 — a differential oracle over a store worth caring about |
+| the fold is judged against the sequential path over one store only | 2 — the same oracle over the store a deployment runs |
 | no failure of the log or the store is staged | 2 — a harness with processes to kill |
 | nothing cross-cluster | 2 — a project |
 | no partition between layer nodes | 3 — the nodes speak only to the log and the store |
