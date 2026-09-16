@@ -62,9 +62,9 @@ func TestAWriteToAShardThisNodeDoesNotHoldIsRefused(t *testing.T) {
 	requireLost(t, err)
 }
 
-// TestAWriteUnderAnEpochThisNodeDoesNotHoldIsRefused is I11, the fencing the
-// plugin's own AssertShard(rangeID) does on every such request. Without it a
-// shard context already fenced out would have its write re-stamped with
+// TestAWriteUnderAnEpochThisNodeDoesNotHoldIsRefused is I11, checked here as
+// the plugin's own write would have conditioned its transaction on it. Without
+// it a shard context already fenced out would have its write re-stamped with
 // whatever epoch this node currently holds.
 func TestAWriteUnderAnEpochThisNodeDoesNotHoldIsRefused(t *testing.T) {
 	ctx := context.Background()

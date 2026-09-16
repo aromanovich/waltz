@@ -218,8 +218,8 @@ func TestADeletedExecutionReadsAsDeleted(t *testing.T) {
 
 // TestInSyncModeTheOverlayIsANoOp: with Sync on, the accumulator is empty at
 // every call boundary, so every read is the base's own answer and ReadsHeld is
-// 0 by construction — which is what keeps the acceptance's byte-for-byte
-// comparison of sync mode against the unwrapped server meaningful.
+// 0 by construction — which is what keeps a whole-store comparison meaningful
+// with the read path wired in, and what a sync-mode witness asserts.
 func TestInSyncModeTheOverlayIsANoOp(t *testing.T) {
 	e := newEnv(t, func(c *Config) { c.Sync = true })
 	ns, wf, run := ids()
@@ -324,9 +324,9 @@ func TestAHaltedShardAnswersReadsFromWhatItCanVouchFor(t *testing.T) {
 }
 
 // TestARetiredCycleAnswersOffItsMirroredTail: with no loop left to ask, the
-// tail is read off the mirror Add already consults. Empty means the cold store
-// holds everything acked and the read is answerable; non-empty means it does
-// not.
+// tail is read off the mirror [Cycle.write] already consults. Empty means the
+// cold store holds everything acked and the read is answerable; non-empty means
+// it does not.
 func TestARetiredCycleAnswersOffItsMirroredTail(t *testing.T) {
 	t.Run("drained and stopped", func(t *testing.T) {
 		e := newEnv(t, func(c *Config) { c.Mutations = 1 })

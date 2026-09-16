@@ -5,11 +5,10 @@ package cycle
 // unstarted, on a reader, with the halt discovered inside the call being
 // answered.
 //
-// Two halves of the rule, both stated beside [Cycle.readHalted]: on
-// halted-lost the state alone decides a task read, because another owner's acks
-// are in neither this tail nor (yet) the cold store; the mutable-state reads
-// keep the tail rule, because they have callers that legitimately do not own
-// the shard. These also pin that the read which discovers the halt is answered
+// Two halves of the rule, both stated beside [loopRoute]: on halted-lost the
+// state alone decides a task read, because another owner's acks are in neither
+// this tail nor (yet) the cold store; the mutable-state reads keep the tail
+// rule, because they have callers that legitimately do not own the shard. These also pin that the read which discovers the halt is answered
 // exactly like every read after it — see [Cycle.startForRead].
 
 import (
@@ -151,9 +150,9 @@ func TestACycleFencedAwayHoldingATailRefusesAllThree(t *testing.T) {
 }
 
 // TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree is why
-// [Cycle.readHalted] looks at halted-lost specifically rather than at "is it
-// halted": the tail rule alone applies here, and converting this to
-// ShardOwnershipLost would hand the divergence on as an ordinary failover.
+// [loopRoute] looks at halted-lost specifically rather than at "is it halted":
+// the tail rule alone applies here, and converting this to ShardOwnershipLost
+// would hand the divergence on as an ordinary failover.
 //
 // The tail is what makes that rule safe, and an entry this build cannot decode
 // is charged to it by [Cycle.strand] before the halt. Without that charge the

@@ -6,7 +6,9 @@ package cycle
 //
 // No upstream suite reaches this code — its test methods all run on fresh
 // shards, so none re-acquires one with a window still in it — so this file and
-// the two-owner test at the root are the only coverage.
+// internal/verify/acceptance's recovery run, where one stream is cut by five
+// crashes and each successor replays what its predecessor acked, are the
+// coverage.
 
 import (
 	"context"

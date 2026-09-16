@@ -6,8 +6,8 @@ package cycle
 // does, which is a different claim.
 //
 // The attribution rule cannot be falsified through a cycle at all: the only
-// cause carrying [answersItsCaller] is issued at one call site, where sync
-// mode's window is one by construction.
+// cause carrying [answersCaller] is issued at one call site, where sync mode's
+// window is one by construction.
 
 import (
 	"context"
