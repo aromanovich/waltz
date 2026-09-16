@@ -9,8 +9,8 @@ The root package (`waltz`) is what a running server composes the layer out of:
 the `wal` section of the custom datastore's options, the policy the server's
 dynamic config carries, the backends the layer runs over, the registry a tail is
 decoded with, and the door out to `temporal.WithCustomDataStoreFactory`. It is
-the whole public surface — a caller writes `waltz.` and stops. What to know
-before changing any of it:
+the front door: what a caller names to compose, beside the log, the cold store
+and the policy it hands `Compose`. What to know before changing any of it:
 
 * **`Compose` is the one composition, and there may not be a second.** Everything
   that runs intercept mode calls it. So do not add a `cycle.NewManager` call
@@ -20,9 +20,11 @@ before changing any of it:
   and nothing else. It is a `cycle.Policy` — a source read at each decision — so
   a caller holding numbers passes `cycle.Fixed(cfg)` and one reading a dynamic
   config passes `NewPolicy(dc, cfg.WAL)`. `handler` is nil in production — the
-  server's arrives later through `wrapper.MetricsSink` — and a noop handed in
-  here is worse than nil, because an emitter that already has one ignores the
-  handover;
+  server's arrives later through `wrapper.MetricsSink` — and a handler handed in
+  here is not the one that stands: `walmetrics.Emitter.Use` takes the first
+  handler a `NewFactory` offers and drops whatever the composition was built
+  with, so a caller that wants to read the layer's numbers hands its handler to
+  the factory rather than to `Compose`;
 * **the collaborators are a parameter too, and that is what makes the rule above
   keepable.** `Backends` — the log, the writer and the recoverer — is handed to
   `Compose`, which builds none of the three. That is unchanged by there being a
@@ -81,8 +83,10 @@ before changing any of it:
   do not hand-write an overlay branch beside it. It is two rows, and the
   zero-means-default rule went with the numbers — an unset *setting* is a key the
   file does not have. **That is a statement about this package and not about the
-  tree**: a caller configured from flags has no key to be absent, so an overlay
-  onto `WAL.StaticConfig()` reads zero as "the shipped default";
+  tree**: a caller configured from flags has no key to be absent, so it overlays
+  onto `WAL.StaticConfig()` and `cycle.Config.fill` reads a zero *age* or *bound*
+  as the shipped default — while a zero window size or trim cadence keeps a
+  reading of its own, a drain at every write and a trim at every drain;
 * **there are two tables and the split is a rule, not a preference** (ADR 0006's
   amendment). `knobs` is the section: the two mode flags, no numbers. `settings`
   (`settings.go`) is the whole policy — nine `dynamicconfig` settings, five read
@@ -105,7 +109,7 @@ before changing any of it:
   commit**, and nothing will tell you if it is not. Its "when it is read" column
   is the `live` field of a row, which is why that field exists;
 * **the budget refusal happens before anything is opened**, and that ordering is
-  the claim: `hard_max_bytes × max_shards ≤ tail_budget_bytes` is
+  the claim: `hardMaxBytes × maxShards ≤ tailBudgetBytes` is
   `cycle.NewManager`'s, reached through `Compose`, which opens nothing and takes
   no context. So an operator whose numbers do not fit is told so by a process
   that never connected, rather than after a connection attempt;
@@ -113,7 +117,7 @@ before changing any of it:
   whole.** The first returns `cycle.Defaults()` with the two mode flags overlaid,
   so it is what an assertion about a *section* compares against; every number in
   it is the measured default and is replaced by the second. Reading a configured
-  watermark or bound off `WAL.StaticConfig()` reads the default and nothing says
+  trigger or bound off `WAL.StaticConfig()` reads the default and nothing says
   so;
 * **the default is the windowed policy**, so a node killed without a graceful
   stop leaves a tail — which the next owner replays. Do not "fix" the default to
@@ -132,7 +136,7 @@ before changing any of it:
   The type does not close the whole of it, so the residue is a rule: **do not
   build the no-archival answer inline**, which `TaskCategories` with a noop
   collection still would;
-* **the order is layer-then-server, and close-after-`Start`.** The budget
+* **the order is layer-then-server, and shutdown-after-`Stop`.** The budget
   assertion has to be a process that does not start; the drain has to run when
   the writers are gone. Moving either is not a refactor;
 * **stopping the layer is `Layer.Shutdown(ctx, budget)`, and the detach inside it
@@ -143,4 +147,4 @@ before changing any of it:
   next owner replays, which no log line reports.
   `TestTheShutdownDrainOutlivesTheContextThatAsksForIt` drives it with the
   caller's context already cancelled, and fails if the detach goes. The log is
-  closed *after* the drain, since a drain appends.
+  closed *after* the drain, since a drain still trims through it.

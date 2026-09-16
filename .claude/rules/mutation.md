@@ -6,16 +6,21 @@ paths:
 # This repo: the WAL's record format
 
 `mutation/` turns one ExecutionStore write request into the bytes a
-`wal.Entry` carries, and back (#11). The generated `Mutation` in
-`mutation.pb.go` is the record's specification — the `.proto` it came from is
-not in this tree — and the type's own doc comment says why the record is a
-hand-filled mirror rather than a reflective codec. What to know before changing any of it:
+`wal.Entry` carries, and back (#11). `mutation.proto` is the record's
+specification and `mutation.pb.go` is generated from it: the message an entry
+carries is `Payload`, while `Mutation` — the hand-written struct in
+`mutation.go` — is the in-memory request the codec maps onto it. The proto's own
+file comment says why the record is a hand-filled mirror rather than a
+reflective codec. What to know before changing any of it:
 
 * **changing the record changes the meaning of every entry already written.**
-  There is no version field and no migration path: a tail written by the
-  previous binary is replayed by this one (#98), so a field whose meaning moved
-  is a tail that decodes into something the writer did not mean. Adding a field
-  is safe, repurposing one is not;
+  `Payload.format` is the only version there is and there is no migration path:
+  `Decode` refuses every value but the one this build writes
+  (`TestFormatVersionIsChecked`), so a bump refuses an inherited tail rather
+  than upgrading it. A tail written by the previous binary is replayed by this
+  one (#98), so a field whose meaning moved is a tail that decodes into
+  something the writer did not mean. Adding a field at the end is safe,
+  renumbering or repurposing one is not;
 
 * **the mirror is filled field by field, and the cost is paid by a guard rather
   than by attention.** A field Temporal adds is a field this package silently
@@ -29,8 +34,10 @@ hand-filled mirror rather than a reflective codec. What to know before changing 
 
 * **a kind is declared once, and the spokes it can be forgotten in fail by
   name.** `kinds.go` holds one row per kind — its name, the `Mutation` field it
-  travels in, how to see that field is set, and where its shard id is — and
-  `Kind.String` is driven from it. The field is a *selector*
+  travels in, how to see that field is set, where its shard id is, where its
+  rangeID is, and which slices of new events its request carries — and
+  `Kind.String`, `RangeID` and `EventSlots` are driven from it. The field is a
+  *selector*
   (`func(m *Mutation) any { return &m.Create }`) rather than a name, so a field
   that is renamed breaks its row at compile time; the guard recovers the name
   back out of the pointer, by address, for its messages only. `Kind` and

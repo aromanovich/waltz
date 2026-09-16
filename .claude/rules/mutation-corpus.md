@@ -31,18 +31,25 @@ by `internal/verify/mutbuild`. What to know before changing any of it:
   that is the same trap one step later. A range over an interval nothing
   was written into is a rule judged in name only, so the generator keeps a ledger
   per category and cuts the next range butt-joined to the last.
-  `Report.TasksCovered` is what an acceptance gates on, exactly as
-  `Report.Collapses()` is for the ratio;
+  `Report.TasksCovered` is the number that tells a range that covered something
+  from one that covered nothing, exactly as `Report.Collapses()` does
+  for the ratio — but where `Collapses()` is gated on
+  (`internal/verify/acceptance`), nothing reads `TasksCovered` at all: it is
+  printed by `Report.String()` and judged nowhere, so that half of the trap is
+  closed by the generator rather than by a failing run;
 * **a test that wants a specific stream shape asks for it by name**, never by
-  zeroing knobs: `mutgen.WorkflowRunsOnly()` is [Default] with the two task rates
-  off, and `mutgen.UnbrokenChains()` is that plus the three that end a chain. A
+  zeroing knobs: `mutgen.WorkflowRunsOnly()` is `mutgen.Default()` with the two
+  task rates off, and `mutgen.UnbrokenChains()` is that plus the three that end
+  a chain. A
   task record is neither a create nor an update, so a "plain chain" assertion
   fails on it; and a test that drives its own range delete and counts what it
   covered gets the wrong number from a stream that also wrote tasks it does not
   model — measured, 47 dropped against 17 recorded keys;
 * **one verb drives a stream through the codec**: `drive.NewStream(cfg)` puts
-  mutgen's generator behind it, because what fold and the store are handed in
-  production came back out of the log. `Drive(n, sink)` is the count-bounded loop
+  mutgen's generator behind it, because what a replay hands fold and the store
+  came back out of the log rather than out of the generator — the hot path folds
+  the caller's own request, so a codec loss shows only on the value a replay
+  rebuilds. `Drive(n, sink)` is the count-bounded loop
   and `Next()` is for a caller whose stop rule is a measured quantity; it is
   resumable, since a second generator on one seed re-emits creates the store
   already holds. **A caller that models the store's *client* rather than its

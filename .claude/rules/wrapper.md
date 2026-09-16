@@ -75,12 +75,13 @@ changing either:
 * **a write also hands the layer the store's own two reads** (#74): the condition
   authority verifies an assertion the window does not determine against the
   pre-window row, and this package may not name a cold store any more than
-  `cycle` may. They are method values on the base store rather than closures, because
-  that is all they are — `TestTheWritePathIsHandedTheStoresOwnReads` is what a
+  `cycle` may. They are a `*baserow.Rows` over this store's own base, converted
+  once at construction (`baserow.Of`) rather than a closure built per write,
+  because that is all they are — `TestTheWritePathIsHandedTheStoresOwnReads` is what a
   swapped or foreign pair fails, and a foreign pair would verify a condition
   against somebody else's row, which is worse than not verifying it;
 * **the whole point of the synchronous drain is attributability, and the
-  mapping is the ticket's real work.** At a window of one the failed assertion
+  mapping is the real work in it.** At a window of one the failed assertion
   is the one caller's, so `cycle` answers it with the store's own error instead
   of halting — 19 of the suite's 95 mutable-state writes are expected condition
   failures, and a start racing a start is the same class in production. The
@@ -107,20 +108,21 @@ changing either:
   it; if a temporal bump moves a count, the wrapper and #44's research note both
   need rereading — do not just update the number;
 * the ShardStore's one observation is `UpdateShard` with
-  `RangeID != PreviousRangeID`. It fires **before** the base store call (§9: the
+  `RangeID != PreviousRangeID`. It fires **before** the base store call (I11: the
   log's epoch may never lag the database's) and its error aborts the acquire
   without the rangeID moving. `ShardObserver` is one face of `Options.Layer`
   rather than a field of its own, so the value that hears the acquire is the
   value that takes the writes — in production the apply cycle's registry (#55),
   which was its first implementation and is still the only one;
-* **nothing in this repository starts a server.** The root package composes
-  intercept mode from a configuration and hands back a factory; no test here
-  boots a frontend, a history service and a worker and serves a workflow. So do
-  not read a green `make test` as "the server works"; read it as "the
-  configuration a person writes composes a layer that writes". The strongest
-  evidence available is upstream's own functional suites over a composition —
-  `patches/README.md` is the fifteen lines that make that reachable, and it is a
-  deployment's run rather than this repository's;
+* **a server does start here, and a green `make test` is still not "the server
+  works".** `internal/verify/e2e` boots frontend, history, matching and worker in
+  the test process over a composition, registers a namespace and runs a workflow
+  with an activity through the SDK — twice, the second arm the passthrough
+  control that says the layer was empty. What that run does not carry is load, a
+  kill, or a database that outlives the process: it is one workflow against
+  `cold/memcold`. The stronger evidence is upstream's own functional suites over
+  a composition — `patches/README.md` has the fifteen-line patch that makes them
+  reachable, and that is a deployment's run rather than this repository's;
 * **`Layer.Options()` is complete as it comes, metrics included**, which is what
   lets a caller wiring the layer into a test compose with a capture handler and
   read what *both* halves of the layer recorded through the one emitter that
