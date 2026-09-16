@@ -14,7 +14,8 @@
 //
 //  1. One drain is one transaction. A batch that lands half-applied leaves rows
 //     no replay can reconstruct: the mutations behind it were acked, folded and
-//     collapsed, so there is no per-mutation record left to re-drive.
+//     collapsed, so what a replay re-drives is that same window, against rows
+//     the half that landed has already moved.
 //  2. The watermark commits inside that transaction. It is the seqno the batch
 //     carries ([Applier]), and [Watermarker] reads it back — the only witness to
 //     what a drain did, and the reason a store may never derive that answer from

@@ -30,7 +30,6 @@
 // or in its implementations.
 //
 // [ADR 0002]: ../docs/adr/0002-wal-contract-is-backend-independent.md
-// [ADR 0010]: ../docs/adr/0010-the-log-appends-one-entry-at-a-time.md
 // [chapter 04]: ../docs/handbook/04-contracts.md
 // [CONTEXT.md]: ../CONTEXT.md
 package wal
@@ -190,6 +189,8 @@ type Log interface {
 	// Where more than one applies, [ErrFenced] wins: [ErrAlreadyWritten] is an
 	// ack, and a zombie would take the word of the writer that took the shard
 	// from it as its own commitSeqno.
+	//
+	// [ADR 0010]: ../docs/adr/0010-the-log-appends-one-entry-at-a-time.md
 	Append(ctx context.Context, shard ShardID, epoch Epoch, seqno Seqno, payload []byte) error
 
 	// ReadFrom returns up to limit entries of the shard's log with seqno at or

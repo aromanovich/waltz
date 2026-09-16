@@ -46,7 +46,7 @@ const retentionEntries = 3
 // failed for it. That is deliberate: [wal.Log.Close] admits ownership expiring,
 // and what this is about is the entries.
 //
-// **What it establishes and what it does not.** A pass says the entries outlived
+// What it establishes and what it does not. A pass says the entries outlived
 // window on this deployment's storage. It does not say the backend has no
 // retention — a policy longer than window is a policy this run did not reach.
 // So run it against a deliberately shortened policy: set the log's table to

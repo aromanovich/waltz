@@ -8,7 +8,12 @@ package memcold
 // One merged request's rows, mirrored from upstream's applyWorkflowMutationTx,
 // applyWorkflowSnapshotTxAsReset and applyWorkflowSnapshotTxAsNew. They are
 // unexported, so this is their statement sequence copied rather than called;
-// the order within each is theirs and is the specification.
+// the order a table's own statements come in is theirs and is the
+// specification. Where one table's statements sit relative to another's is not:
+// a reset clears all seven maps and then writes all seven, where upstream
+// interleaves the clear with the write per table. Nothing here reads what
+// another statement of the same request wrote, so that regrouping is the same
+// write.
 //
 // What is missing from two of them is the lock-and-check they open with. A
 // drain stands on fold's head-of-window assertions, which apply.go registers

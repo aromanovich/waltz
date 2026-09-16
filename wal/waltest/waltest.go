@@ -2,6 +2,10 @@
 // it [Faulty]: a backend that keeps the contract, wrapped so that a chosen call
 // fails.
 //
+// [CheckRetention] is the obligation the suite cannot express, because what it
+// is about is time; a deployment runs it against its own storage, and
+// [Expiring] is the log it is proved against.
+//
 // It asserts external behaviour of [wal.Log] only, and imports the contract
 // and an assertion library but never a backend.
 package waltest

@@ -8,8 +8,8 @@ import p "go.temporal.io/server/common/persistence"
 // fan-outs; every mutation field must have exactly one row that agrees with
 // both. The last two columns are read at run time —
 // [Mutation.RangeID] and [Mutation.EventSlots] are the table — so a kind added
-// without them fails by name there rather than fencing against zero or writing
-// no events.
+// without them fails by name in the kind guard rather than fencing against zero
+// or writing no events.
 //
 // History-task maps are deliberately not a column beside events: they are keyed
 // by [Part] as well as by kind, and which parts a request carries is a fact
