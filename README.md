@@ -1,9 +1,9 @@
 # waltz
 
 The logic of a write-ahead log for the Temporal server's history shards. **You bring the storage —
-both ends of it**: the log, [`wal.Log`](wal/wal.go#L146), and the database,
-[`cold.Store`](cold/cold.go#L67). Five methods on the log and two on the database are the whole of
-what waltz asks you to implement.
+both ends of it**: the log, [`wal.Log`](wal/wal.go#L148), and the database,
+[`cold.Store`](cold/cold.go#L67). Five methods on the log and two on the database are nearly the
+whole of what waltz asks you to implement.
 
 Temporal's history service is write-heavy: one workflow moves through hundreds of state transitions,
 and each is a database transaction that rewrites the same mutable-state rows and inserts task rows
@@ -15,10 +15,11 @@ transaction instead of a hundred — whatever an append costs.
 **waltz is not a persistence implementation, and that is the first thing to understand about it.**
 It writes to no disk, opens no connection and speaks no wire protocol; it contains no line of code
 that would. What it is, is everything between two interfaces you implement: the log an
-acknowledgement lands in ([`wal.Log`](wal/wal.go#L146)) and the database a fold lands on
-([`cold.Store`](cold/cold.go#L67)). Both are yours to write over whatever storage you run. What waltz owns is the part that is genuinely hard — the
-window, the fold, the fencing, the replay, the bound on unapplied work, and what each of them must
-do when a write, a process or a shard handover fails.
+acknowledgement lands in ([`wal.Log`](wal/wal.go#L148)) and the database a fold lands on
+([`cold.Store`](cold/cold.go#L67)). Both are yours to write over whatever storage you run. What
+waltz owns is the part that is genuinely hard — the window, the fold, the fencing, the replay, the
+bound on unapplied work, and what each of them must do when a write, a process or a shard handover
+fails.
 
 The server does not know any of this. waltz ships as a persistence decorator: you compose it over
 the plugin that owns your data and hand the result to `temporal.WithCustomDataStoreFactory`, the
@@ -149,7 +150,9 @@ func main() {
 		// After the server has stopped: the shutdown drain still needs a store
 		// to write to. `defer release()` above runs after this one, which is the
 		// order that leaves the drain a database.
-		layer.Shutdown(context.Background(), 30*time.Second)
+		if err := layer.Shutdown(context.Background(), 30*time.Second); err != nil {
+			panic(err)
+		}
 	}()
 
 	// Start returns once the services are up, so a main that did not wait here
@@ -162,12 +165,14 @@ func main() {
 ```
 
 The lifecycle brackets the server's, and both ends matter. `Compose` opens nothing and reaches
-nothing, so a policy whose memory budget does not add up stops the binary rather than a node.
-`Layer.Shutdown` runs last so that every window still open has somewhere to drain.
+nothing, so a policy whose memory budget does not add up stops a process that has connected to
+nothing yet, rather than a node already serving. `Layer.Shutdown` runs last so that every window
+still open has somewhere to drain.
 
 Configuration is a `wal` section inside the custom datastore's own options: absent means
 passthrough, malformed means a refusal to start rather than a node quietly running the other mode.
-The operating numbers live in the server's dynamic config and change under a running node.
+The operating numbers live in the server's dynamic config: nine settings, five of them re-read at
+the decision that consults them and four read once, when the node builds its policy.
 [Chapter 08](docs/handbook/08-configuration.md) is every key.
 
 ## The two seams
@@ -176,7 +181,7 @@ waltz sits between two things it does not own, and a deployment replaces both.
 
 | | the contract | shipped here | what judges your implementation |
 |---|---|---|---|
-| the log | [`wal.Log`](wal/wal.go#L146) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: nineteen cases, one call |
+| the log | [`wal.Log`](wal/wal.go#L148) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: nineteen cases, one call |
 | the database | [`cold.Store`](cold/cold.go#L67) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
 
 `wal.Log` is an append-only, fenced, gap-free sequence of entries per shard — five methods, opaque
@@ -194,6 +199,12 @@ the two halves it is made of because **one value has to answer both** — a wate
 meaningful about the transactions that wrote it, so a layer reading it from anywhere else trims a
 log against a witness that never saw it.
 
+What waltz asks for beyond those two is one read, and it is on the persistence plugin the layer
+decorates rather than on `cold.Store`: a current-execution row with `last_write_version` beside it,
+the column Temporal's own response type has nowhere to carry, and the one a create's condition is
+decided on. A base store that cannot answer it is refused while the server is still starting, rather
+than run in a reduced mode.
+
 The two rows are not mirror images, and the asymmetry is worth knowing before you start. The log's
 contract is waltz's own invention, so waltz owes it a suite and ships one. What a *database* owes a
 Temporal server is Temporal's to state, and Temporal states it as four suites it exports — so
@@ -203,12 +214,12 @@ four: [chapter 04](docs/handbook/04-contracts.md) has both.
 
 ## Documentation
 
-[**`docs/handbook`**](docs/handbook) is the book, and it is where every question below is answered
-properly. Chapters 01–11 are the reference — the components, the contracts, the write and read
-paths, the shard lifecycle, the configuration keys, the metrics, the runbooks, the suites. Chapters
-12–15 are the reasoning the reference states without arguing for it: what one write cost before any
-of this existed, which designs were tried and refused, where each shipped default came from, and
-what a green test run does not say.
+[**`docs/handbook`**](docs/handbook) is the book, and it is where every question this page raises is
+answered properly. Chapters 01–11 are the reference — the components, the contracts, the write and
+read paths, the shard lifecycle, the configuration keys, the metrics, the runbooks, the suites.
+Chapters 12–15 are the reasoning the reference states without arguing for it: what one write cost
+before any of this existed, which designs were tried and refused, where each shipped default came
+from, and what a green test run does not say.
 
 Start at [chapter 01](docs/handbook/01-overview.md). Every identifier, default and count named in
 those pages exists in the code, and every chapter ends with the files it draws from.

@@ -33,7 +33,9 @@ write-then-delete pair: a range folding in removes the tasks the window already
 holds inside it, and the range itself is applied by the drain that carries it.
 It does **not** outlive that drain — a task arriving after a range delete is one
 the caller wrote after it, and the sequential path keeps it.
-_Avoid_: ack level, bound (both describe the compensation this replaced)
+_Avoid_: ack level, bound (an ack level is a standing per-category cursor a
+queue keeps above the store; this is one caller's request, and it dies with the
+drain that carries it)
 
 **seqno**:
 Position of an entry in a shard's WAL; a per-shard LSN assigned by the single
@@ -54,19 +56,22 @@ total over a seqno range, not a container. The entries themselves are in the log
 what the owner holds in memory is the *window's* folded form of them (see
 **Fold**), which is neither the same set — the window empties when a drain
 starts, the tail only when that drain commits — nor entry-shaped. It is also
-**not** `commitSeqno − appliedSeqno`: sync mode can settle an entry no drain will
-ever carry, so the tail is measured from a third position, `resolved`. Everything
-above commitSeqno is speculative and visible only to the shard's write path.
+**not** `commitSeqno − appliedSeqno`: a drain can release entries without moving
+appliedSeqno — a window that folded to no database work, an answered condition
+failure, a provisional entry dropped at replay — so the tail is measured from a
+third position, `resolved`. Above commitSeqno nothing exists yet, because the
+layer keeps no speculative entries: the append happens before the accumulator
+sees the mutation.
 
 **Fold**:
 Compaction of a window: merging a workflow's mutations into one summary update.
 Mechanical rules only — no Temporal business logic. Snapshot-bearing mutations
-reset a workflow's accumulator; deletions turn it into a tombstone.
+reset a run's accumulator; deletions turn it into a tombstone.
 
 **Window (окно)**:
 The slice of the tail one apply batch folds — in the general case the whole
-tail, but a partial drain takes a prefix of it. Fold's rule is stated over a
-window: the assertions come from its head, the data from its tail.
+tail. Fold's rule is stated over a window: the assertions come from its head,
+the data from its tail.
 
 **Collapse ratio (коэффициент схлопывания)**:
 Mutations in a window divided by the dirty workflows in it — the project's
@@ -94,11 +99,12 @@ transaction with the appliedSeqno bump and an epoch CAS.
 
 **Drain**:
 One pass of that cycle: fold a window, write it in a single transaction, move
-appliedSeqno. A drain is all-or-nothing — a rejected one commits and writes
-nothing, so appliedSeqno is the only witness to whether it happened.
+appliedSeqno. A drain is all-or-nothing — a rejected one leaves the cold store
+exactly as a drain that never ran would, so appliedSeqno is the only witness to
+whether it happened.
 
 **Base version**:
-The `DBRecordVersion` of a workflow's row in the cold store as of the last
+The `DBRecordVersion` of a run's row in the cold store as of the last
 drain — what the folded request asserts, as distinct from the tail's version,
 which is what it writes. Read after the epoch is acquired, never before.
 _Avoid_: current version (ambiguous between the two)
@@ -113,21 +119,24 @@ _Avoid_: base reader, cold read (the first names half of it, the second names
 every read this layer makes)
 
 **Watermark**:
-Unqualified, appliedSeqno — the position a drain moves. The apply cycle's
-age/size **trigger** watermarks are a different thing and are always
-named as triggers.
+Unqualified, appliedSeqno — the position a drain moves. The apply cycle's age
+and size **triggers** are a different thing and are always named as triggers.
 
 **Cut point**:
-The highest seqno a partial drain may acknowledge: the entry before the first
-one it did not apply. Applying past a cut point and acknowledging up to it are
-the same bug.
+The highest seqno a partial re-drain may acknowledge after a condition failure:
+one below the lowest entry answering for any diverged row. Nothing re-drains
+partially, so `apply.InvariantViolationError.CutSeqno` is forensic — and a zero
+there is not a position but "acknowledge nothing", covering three cases at once:
+no divergence was found, the window's first entry diverged, and the readback
+failed with rows unread. Applying anything above a cut point would leave entries
+applied above any watermark the drain could set.
 
 **Replay**:
-What a new owner does with the tail it inherits: read (appliedSeqno .. tail],
-fold it into a fresh accumulator, drain. It is the third step of a shard
-acquire, it runs before the owner serves anything — so "readiness" is that
-placement rather than a gate — and it is triggered by a read as much as by a
-write.
+What a new owner does with the tail it inherits: read
+`(appliedSeqno, commitSeqno]`, fold it into a fresh accumulator, drain. It runs
+on the shard's first request rather than inside the acquire, and that request is
+served behind it — so "readiness" is that placement rather than a gate — and it
+is triggered by a read as much as by a write.
 _Avoid_: recovery (the layer's other recovery is one drain whose outcome was
 lost, and the rule they share is the interesting part: read the watermark
 first, never re-derive from base versions)
@@ -139,9 +148,9 @@ an addressee nor an undo — and the set that rule is about: exactly the
 assertions the fold discards. Recorded assertions travel with the drain's
 transaction and stay claims about the pre-window row; discarded ones stand on
 the window's own state. The two partition, so nothing is checked twice and a new
-request shape gets its check for free. The predicate is read-only on the
-accumulator, and an assertion the window does not determine is **refused**
-rather than admitted.
+request shape needs no check of its own once its assertions are derived. The
+predicate is read-only on the accumulator, and an assertion the window does not
+determine is **refused** rather than admitted.
 _Avoid_: validation, precondition check (both suggest something the store would
 repeat; this one is what answers instead of the store)
 
@@ -163,14 +172,15 @@ Keeps a log implementation's working set small; part of the latency budget, not
 hygiene.
 
 **Backpressure (граница хвоста)**:
-The refusal a shard's write meets once its tail passes hard_max in either unit —
-or, ahead of both and not a size at all, once its applier cannot read whether
-its last drain committed. Raised **before** the append, so a refused mutation is provably not in the log;
-returned unwrapped and in the shape the server's own persistence limiter uses,
-because the shard's write path matches concrete types and anything it does not
-recognise becomes a background re-acquire; never raised on a read and never on
-the ShardStore path, since refusing a rangeID renewal would turn degradation
-into a lost shard. Degradation, not loss.
+The refusal a shard's write meets once its tail reaches its hard maximum in
+either unit — or, ahead of both and not a size at all, once its applier cannot
+read whether its last drain committed. Raised **before** the append, so a
+refused mutation is provably not in the log; returned unwrapped and in the shape
+the server's own persistence limiter uses, because the shard's write path
+matches concrete types and anything it does not recognise becomes a background
+re-acquire; never raised on a read as a size bound, though the unresolved
+refusal is raised there too, and never on the ShardStore path, since refusing a
+rangeID renewal would turn degradation into a lost shard. Degradation, not loss.
 _Avoid_: throttling, rate limit (both name a pace; this is a bound on memory)
 
 **Epoch**:
@@ -230,7 +240,7 @@ The record a driver writes of the calls it made and what it was told: two
 fsynced lines per call, the first before the store is touched and the second
 once it has answered, so the gap between them is the third outcome class — a
 call nobody knows the result of. It judges nothing; the judge that reads such a
-record back is not in this repository. Whatever writes one may not import the
+record back is not in this repository. Whatever judges one may not import the
 layer, which is the point — an assertion compiled into the layer sees what the
 layer *believes* and dies with it under `kill -9`.
 
@@ -243,8 +253,8 @@ invert between sync and windowed modes, which is why both are run. It is one
 judged module, `internal/verify/witness`: a run states what it was supposed to
 be (`Expect` — the window, and what its suites drove) and hands over what its
 instruments saw (`Observed` — `cycle.Totals` required, the store's counts and
-the metric emissions optional), so a run that has a capture handler and one
-that does not make the same claims.
+the metric emissions optional), so an instrument a run does not have skips
+exactly the claims that read it and weakens none of the rest.
 _Avoid_: smoke check, sanity assert (both name something weaker than the suite;
 this is the stronger claim)
 
