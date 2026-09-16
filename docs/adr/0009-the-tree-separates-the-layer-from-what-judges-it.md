@@ -102,9 +102,10 @@ the two-group split does not describe it. `cold/` is the layer (the contract the
 `cold/memcold/` is a **store**: it does not run in production, it does not judge, and it is not a
 double. So the module root now holds three kinds of thing rather than two, and what keeps that
 legible is a dependency rule rather than a directory — nothing of the layer may import `memcold`,
-and `memcold` may import nothing of the layer.
+and what `memcold` may import stops at the vocabulary the seam is stated in: never `cycle`, the
+wrapper, `walmetrics` or the root package.
 
-`internal/verify/` gains `e2e/`, which is a judgement in the sense the section below uses: it boots a
+`internal/verify/` gains `e2e/`, which is a judgement in the sense the section above uses: it boots a
 Temporal server over the layer and states what the layer must have seen.
 
 The sentence in "the tests somewhere other than beside the code" that says "the cold store is
