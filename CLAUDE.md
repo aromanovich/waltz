@@ -12,6 +12,12 @@ of what this library does — acknowledge into a log, fold many mutations into o
 cold-store transaction — is an optimisation bought against that rule, so any
 change that trades it away has misunderstood what is being optimised.
 
+[`DURABILITY.md`](DURABILITY.md) is the standing list of every known way the rule
+can break, each marked closed, open or **unknown** — and unknown means nobody
+established it, which is to be treated as open. A closed entry names the
+mechanism and a test that fails without it. A new way found belongs there whether
+or not it is closed the same day.
+
 ## What this is
 
 waltz puts a write-ahead log in front of a Temporal history shard's cold store.

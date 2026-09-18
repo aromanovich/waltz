@@ -64,6 +64,11 @@ acknowledgement is easy; keeping it honest across a crash is the whole problem. 
 is one transaction with its watermark inside it, and why a drain whose outcome is unknown is
 resolved by reading that watermark back rather than by re-applying.
 
+[`DURABILITY.md`](DURABILITY.md) is the standing list of every known way that rule can break: what
+is closed, with the mechanism and a test that fails without it; what is open, including the two
+shipped implementations dying with the process; and what nobody has established, which is treated as
+open. Read it before trusting a green run, and add to it before fixing anything it does not name.
+
 ## Try it
 
 ```sh
