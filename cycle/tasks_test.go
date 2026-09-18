@@ -495,10 +495,10 @@ func TestTheBaseIsAskedTheCallersOwnQuestion(t *testing.T) {
 	})))
 
 	var seen *p.GetHistoryTasksRequest
-	var base BaseTasks = func(ctx context.Context, req *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error) {
+	base := BaseTasks(func(ctx context.Context, req *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error) {
 		seen = req
 		return cold.Read(ctx, req)
-	}
+	})
 
 	minKey, maxKey := immediateRange()
 	req := taskReq(tasks.CategoryTransfer, minKey, maxKey, 100)

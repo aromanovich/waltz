@@ -37,7 +37,7 @@ var doors = map[string]struct {
 	"Retire": {"stop without draining, which is what a fenced-out epoch's tail requires",
 		func(e *env) { e.c.Retire() }},
 	"Close": {"drain and stop, Manager.Close's half of shutdown",
-		func(e *env) { e.c.Close(context.Background()) }},
+		func(e *env) { _ = e.c.Close(context.Background()) }},
 }
 
 // TestEveryDoorOnACycleIsInTheTable reads both ways: an exported method the

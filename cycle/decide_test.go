@@ -321,8 +321,8 @@ func TestOnlyAFenceBecomesShardOwnershipLost(t *testing.T) {
 			case tc.wantNil:
 				require.NoError(t, got, "a write that worked has nothing to translate")
 			case tc.toLost:
-				lost := requireLost(t, got)
-				require.Contains(t, lost.Msg, tc.err.Error(), "and it carries what the cycle said")
+				requireLost(t, got)
+				require.ErrorContains(t, got, tc.err.Error(), "and it carries what the cycle said")
 			default:
 				require.Same(t, tc.err, got,
 					"the value must not be rebuilt on the way out: the shard type-switches on it")

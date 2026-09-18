@@ -222,10 +222,9 @@ func TestAWindowedWriteRetainsTheCallersOwnRequest(t *testing.T) {
 		"the drain must reach the caller's own request rather than a copy of it")
 }
 
-func requireLost(t *testing.T, err error) *p.ShardOwnershipLostError {
+func requireLost(t *testing.T, err error) {
 	t.Helper()
 	lost, ok := err.(*p.ShardOwnershipLostError) //nolint:errorlint // the concrete type is the assertion
 	require.True(t, ok, "expected the store's own ShardOwnershipLostError, got %T: %v", err, err)
 	require.EqualValues(t, testShard, wal.ShardID(lost.ShardID))
-	return lost
 }
