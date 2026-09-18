@@ -424,6 +424,44 @@ func TestAReplayDoesNotTakeAShortPageForTheEndOfTheLog(t *testing.T) {
 	require.Empty(t, second.ap.drains, "nothing may be applied over a tail that was read short")
 }
 
+// TestAConfirmationThatMeetsASuccessorReportsAFailover: the confirmation above
+// finds an entry, and which halt that is turns on the same question the read
+// loop asks of every entry it reaches. An entry above this cycle's epoch means
+// somebody took the shard, which is fencing working; calling it an invariant
+// violation would put an ordinary failover under an operator's nose as this
+// process's own bug, and halted-invariant is deliberately never converted back.
+//
+// The successor can land there between the loop's last read and the
+// confirmation, so the two sites cannot answer it differently.
+func TestAConfirmationThatMeetsASuccessorReportsAFailover(t *testing.T) {
+	ctx := context.Background()
+	log := newLog()
+
+	first := takeShard(t, log, 7, nil)
+	for range 2 {
+		ns, wf, run := ids()
+		require.NoError(t, first.c.write(ctx, mkCreate(ns, wf, run), coldRows()))
+	}
+	first.c.Retire()
+
+	// The successor takes the shard and appends above what this cycle will read.
+	successor := takeShard(t, log, 9, nil)
+	ns, wf, run := ids()
+	require.NoError(t, successor.c.write(ctx, mkCreate(ns, wf, run), coldRows()))
+	successor.c.Retire()
+
+	// A cycle at an epoch the log has been fenced past, reading two entries a
+	// page, so its loop ends below the successor's entry and the confirmation is
+	// what meets it.
+	c := zombie(t, waltest.Truncating{Log: log, Cap: 2}, 8)
+	ns2, wf2, run2 := ids()
+
+	err := c.write(ctx, mkCreate(ns2, wf2, run2), coldRows())
+	require.Equal(t, StateHaltedLost, c.State(),
+		"an entry above this cycle's epoch is a shard that changed hands, not a divergence it owns")
+	require.ErrorContains(t, err, FencedAway)
+}
+
 // TestReplayCutsItsTransactionsWhereTheWatermarksSay: a replayed transaction is
 // the size of an ordinary one. The tail may be at I10's bound, and one
 // transaction of that size is one no steady-state run ever executes.

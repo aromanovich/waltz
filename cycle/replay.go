@@ -94,6 +94,13 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 		return fmt.Errorf("cycle: shard %d: confirming the tail ends below seqno %d: %w", c.shard, s.next, err)
 	}
 	if len(rest) > 0 {
+		// Which halt is the same question the loop asks of every entry it reaches,
+		// and it has to be asked here too: the successor that fenced this cycle
+		// away can append between the loop's last read and this one.
+		if fenced := c.fencedAway(rest[0]); fenced != nil {
+			c.halt(s, StateHaltedLost, fenced)
+			return c.halted(s)
+		}
 		c.strand(s, rest[0], fmt.Errorf(
 			"the tail read ended below seqno %d and the log still holds seqno %d",
 			s.next, rest[0].Seqno))
@@ -123,15 +130,30 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 // constant rather than copying the string.
 const FencedAway = "the shard has been fenced away"
 
+// fencedAway reports an entry written above this cycle's epoch, which means this
+// cycle is the zombie: epochs are non-decreasing along a log and a fence cuts off
+// every lower one, so somebody took the shard. Nil when the entry is one this
+// cycle may account for.
+//
+// Two sites ask it, and they must not answer it differently: what it decides is
+// halted-lost against halted-invariant, and reading a failover as a divergence
+// this process owns puts a shard that changed hands under an operator's nose as
+// a bug.
+func (c *Cycle) fencedAway(e wal.Entry) error {
+	if e.Epoch <= c.epoch {
+		return nil
+	}
+	return fmt.Errorf("the log holds seqno %d at epoch %d, above this cycle's %d: %s",
+		e.Seqno, e.Epoch, c.epoch, FencedAway)
+}
+
 // replayEntry folds one entry of the tail, drains around it when it is
 // provisional, and lets the ordinary size watermarks cut the rest.
 func (c *Cycle) replayEntry(
 	ctx context.Context, s *state, e wal.Entry, marks window.Watermarks,
 ) error {
-	if e.Epoch > c.epoch {
-		err := fmt.Errorf("the log holds seqno %d at epoch %d, above this cycle's %d: %s",
-			e.Seqno, e.Epoch, c.epoch, FencedAway)
-		c.halt(s, StateHaltedLost, err)
+	if fenced := c.fencedAway(e); fenced != nil {
+		c.halt(s, StateHaltedLost, fenced)
 		return c.halted(s)
 	}
 	if e.Seqno != s.next {
