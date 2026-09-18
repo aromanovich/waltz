@@ -379,6 +379,42 @@ func TestARetiredShardStillReportsWhatItHolds(t *testing.T) {
 	require.Equal(t, 1, layer.Totals().TailEntries)
 }
 
+// unreadableCold is a store whose watermark cannot be read, which is what one
+// that is down looks like to a cycle that has never started: it has no floor to
+// replay from, so it cannot say what its shard holds.
+type unreadableCold struct{ *coldtest.Cold }
+
+func (unreadableCold) Watermark(context.Context, wal.ShardID) (wal.Seqno, bool, error) {
+	return 0, false, errors.New("unreadableCold: the watermark cannot be read")
+}
+
+// TestAShutdownThatCouldNotLookSaysSo is the other half of the rule that a
+// shutdown does not call a shard clean it never looked at: the looking can fail.
+// A start that cannot read the watermark leaves the tail at its floor, which is
+// zero — the same zero a shard that drained everything reports — so a count is
+// not what makes this a residue. The cause is.
+func TestAShutdownThatCouldNotLookSaysSo(t *testing.T) {
+	ctx := context.Background()
+	const shard, epoch = wal.ShardID(7), wal.Epoch(2)
+
+	layer, err := Compose(
+		Backends{Log: memwal.New(), Cold: unreadableCold{Cold: coldtest.New()}},
+		cycle.Fixed(cycle.Defaults()),
+		DefaultTaskCategories(),
+		log.NewNoopLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, epoch))
+
+	err = layer.Shutdown(ctx, time.Minute)
+	var undrained *UndrainedError
+	require.ErrorAs(t, err, &undrained, "the shutdown could not establish what the shard holds and called it clean")
+	require.Len(t, undrained.Shards, 1)
+	require.Equal(t, shard, undrained.Shards[0].Shard)
+	require.Zero(t, undrained.Shards[0].Entries,
+		"nothing was acked through this cycle: what is missing is the answer, not the entries")
+	require.Error(t, undrained.Shards[0].Cause, "which is the whole of what makes it a residue")
+}
+
 // TestAResidueForAShardTakenAwayNamesTheFence: the shutdown looks at a shard
 // nothing asked it about, and what it finds there may be a successor's. It
 // reports a residue — this node cannot establish what the shard holds, and
