@@ -246,12 +246,6 @@ a store whose execution state omits the request ids gives a retried start nothin
 to deduplicate against. Stated on `baserow.Rows.Current`; no test can hold a store
 that is not in this repository.
 
-**Event history stays outside the log.** An intercepted write puts its own new
-events down through the base store before the mutation is acked, so a crash
-between the two leaves events no mutable state points at — garbage rather than
-loss, and [ADR 0008](docs/adr/0008-the-log-carries-history-tasks-and-not-shard-or-event-writes.md)
-holds the boundary.
-
 **A windowed write whose drain loses the shard is told it definitely did not
 commit.** In a windowed mode the entry is appended and acked into the log before
 the watermark trips the drain, so when that drain's `Apply` answers
@@ -363,12 +357,10 @@ what a green run here does not claim.
 
 ## Unknown
 
-**Whether any acked stream produces an unpaired `DeleteWorkflowExecution`.** The
-fold collapses a deletion into a tombstone on the assumption that Temporal's
-deletion flow always pairs it with `DeleteCurrentWorkflowExecution`; an unpaired
-one would leave the current row holding pre-window content where the sequential
-path updated it. A differential run against the sequential path is what would
-judge it.
+Nothing today. That is a statement about this list and not about the layer: an
+entry arrives here whenever a pass cannot establish which side of the line
+something falls on, and the section being empty means only that none of the
+entries above is in that state right now.
 
 ---
 
@@ -399,6 +391,22 @@ through one `ExecutionStore.write`, which calls `appendEvents` before
 `layer.Write`; a kind with no interception row is refused rather than transited.
 There is no second door to keep in step.
 
+**Event history staying outside the log is not a loss** (read). It was on the
+open list on its own terms — a crash between the events and the ack leaves events
+no mutable state points at — and the entry above is why that is the only order it
+can happen in: the events are down *first*, so what a crash strands is unreachable
+history nodes and never a mutable state pointing at events nobody wrote. Nothing
+acked is missing, and the class of garbage produced is one upstream produces
+itself and has a collector for: its own deletion path leaves a history branch
+behind whenever stage 3 commits and stage 4 fails, "won't be accessible (because
+mutable state is deleted) and special garbage collection workflow will delete it
+eventually" (`service/history/shard/context_impl.go`, v1.29.6). So this is a
+storage leak on a path upstream already leaks on, and
+[ADR 0008](docs/adr/0008-the-log-carries-history-tasks-and-not-shard-or-event-writes.md)
+holds the boundary. It stays worth knowing, which is what
+[chapter 15](docs/handbook/15-the-limits-of-the-evidence.md)'s bound on the
+saving is about — it is not a durability entry.
+
 **No error is swallowed on the layer's write paths** (measured, by sweep). One
 discarded error exists — the age tick's drain, which has no caller to answer and
 whose outcome is on the state already.
@@ -421,6 +429,30 @@ live cycle and "a window of one by construction" holds wherever it is relied on.
 v1.29.6). `renewRangeLocked` drains in-flight task requests, bumps the range id,
 updates the task key manager and unloads nothing. This is a premise rather than a
 hazard: it is what makes the task-page routing entry above reachable.
+
+**An unpaired `DeleteWorkflowExecution` occurs, and the fold does not depend on
+the pair** (read, against upstream v1.29.6). Two facts, and the first is what was
+unknown. The unpaired shape *is* reachable: `ContextImpl.DeleteWorkflowExecution`
+runs the deletion in four stages, marks each processed on the task itself
+(`DeleteExecutionTask.ProcessStage`) and returns at the first failure — so a task
+whose stage 3 failed is retried with stages 1 and 2 already marked and issues
+`DeleteWorkflowExecution` with no `DeleteCurrentWorkflowExecution` beside it. What
+makes that harmless is the order: stage 2 is marked only after it *succeeded*, so
+a lone stage 3 is always preceded in the same stream by an acked delete of the
+current row — in an earlier window, perhaps, which is all this layer needs.
+
+And it needs less than that. `Accumulator.addDelete` collapses the run and
+touches the current row not at all: what a window says about that row is derived
+from `workflowAcc.cur`, which no tombstone drops (`drop` removes a pending request
+and nothing else), so a lone delete can neither remove a row the sequential path
+keeps nor discard a current-row write an earlier mutation of the same window
+recorded. A second delete of a run already tombstoned is an explicit idempotent
+no-op.
+
+What is not established is the same conclusion by measurement:
+`mutgen.emitDeletePair` always emits the pair, deliberately, so no differential
+run has ever driven the lone shape. A knob there, off by default, plus one oracle
+arm, is what would move this from read to measured.
 
 ---
 
