@@ -289,6 +289,30 @@ func TestTheResumeTokenCarriesTheBasesOwnBytes(t *testing.T) {
 		"the base is resumed with its own bytes and nothing else")
 }
 
+// TestABaseThatAnswersWithMoreRowsThanItWasAskedForIsRefused: the cut rests on
+// the ask being a cap. Where the window alone overflows the page the base is
+// asked for one row and exactly one is emitted, which is what lets that page's
+// cursor advance — so a second row sent unasked is one the cursor moves past
+// having emitted neither it nor anything above it. Measured before this was
+// refused: an ask of one answered with keys 40, 41 and 42 emitted 40 alone and
+// handed back a token resuming the base past 42, so 41 and 42 were returned by
+// no page of that pagination and deleted by the range its reader completed.
+func TestABaseThatAnswersWithMoreRowsThanItWasAskedForIsRefused(t *testing.T) {
+	a := fold.New(shard)
+	add(t, a, mkAddTasks(keyed(50, "a"), keyed(60, "b"), keyed(70, "c")))
+
+	minKey, maxKey := immediateRange()
+	req := taskReq(tasks.CategoryTransfer, minKey, maxKey, 2)
+
+	overfilled := func(int, []byte) ([]p.InternalHistoryTask, []byte, error) {
+		return []p.InternalHistoryTask{keyed(40, "x"), keyed(41, "y"), keyed(42, "z")},
+			coldtasks.EncodeInt(42), nil
+	}
+
+	_, _, err := a.TaskPage(req, overfilled)
+	require.ErrorIs(t, err, fold.ErrBasePageTooLarge)
+}
+
 // TestAForeignPageTokenIsRefused: the two token spaces never meet, because a
 // task page is answered by a running cycle or not at all and every such page
 // carries a token this layer wrote. So a token that is not one of ours is not a

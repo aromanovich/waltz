@@ -43,11 +43,12 @@ import (
 // bytes, passed through unparsed, which keeps the merge backend-independent. A
 // zero-length returned token means the base is exhausted.
 //
-// Three things are required of it, all three because this merge builds a page's
-// reach out of what the base last returned rather than out of a cursor of its
-// own. Temporal's SQL and Cassandra plugins satisfy every one, so no run here has
-// had to; a store that pages differently breaks a queue rather than this package,
-// which is why they are written down.
+// Four things are required of it, the first three because this merge builds a
+// page's reach out of what the base last returned rather than out of a cursor of
+// its own. Temporal's SQL and Cassandra plugins satisfy every one, so no run here
+// has had to; a store that pages differently breaks a queue rather than this
+// package, which is why they are written down. Only the fourth is checked, that
+// being the one whose breach this package would otherwise carry out itself.
 //
 //  1. Every row is inside the range the request names. What comes back is
 //     filtered against the window's undrained deletes and by nothing else, so a
@@ -62,6 +63,12 @@ import (
 //  3. No rows means the range is exhausted. A token beside an empty page is read
 //     here as the end of one: the merge stops calling the base and hands back a
 //     pagination that is over, so rows the store still held are never read.
+//  4. A page holds at most the batch it was asked for. Where the window alone
+//     overflows a page the ask is one row, and the cut emits that row to move the
+//     base's cursor off it; a row sent unasked is one the cursor passes
+//     unemitted, and the range the reader completes at the end of the pagination
+//     deletes it. This one is refused ([ErrBasePageTooLarge]) rather than
+//     written down and trusted, a page being where the merge would do the losing.
 type BasePage func(batch int, token []byte) ([]p.InternalHistoryTask, []byte, error)
 
 // TaskPageStats is an instrument rather than a contract.
@@ -239,6 +246,9 @@ func mergePage(
 		rawPage, nextBase, err = base(ask, carried)
 		if err != nil {
 			return nil, nil, c, err
+		}
+		if len(rawPage) > ask {
+			return nil, nil, c, fmt.Errorf("%w: asked for %d, got %d", ErrBasePageTooLarge, ask, len(rawPage))
 		}
 		c.BaseCalls, c.BaseRows = 1, len(rawPage)
 		// The undrained deletes are subtracted here and nowhere else.

@@ -53,6 +53,14 @@ var ErrRefused = errors.New("fold: window not foldable into merged requests")
 // completes at the end deletes the acked task rows that were in it.
 var ErrForeignPageToken = errors.New("fold: task-page token was not written by this layer")
 
+// ErrBasePageTooLarge reports a cold store that answered a page with more rows
+// than it was asked for, which is [BasePage]'s fourth requirement. The cut rests
+// on the count: where the window alone overflows the page the base is asked for
+// one row, and emitting one row is what lets that page's cursor advance. A
+// second row the store sent unasked is one the cursor moves past unemitted, and
+// the reader that completes the range at the end of the pagination deletes it.
+var ErrBasePageTooLarge = errors.New("fold: the cold store answered with more rows than the page asked for")
+
 // RunAssertion is what the head of the window asserted about one run's row in
 // the cold store.
 type RunAssertion struct {
