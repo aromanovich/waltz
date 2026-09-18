@@ -34,10 +34,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	enumsspb "go.temporal.io/server/api/enums/v1"
-	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/mock"
 	"go.temporal.io/server/service/history/tasks"
@@ -47,6 +44,7 @@ import (
 	"github.com/aromanovich/waltz/cycle"
 	"github.com/aromanovich/waltz/internal/verify/basetest"
 	"github.com/aromanovich/waltz/internal/verify/coldtest"
+	"github.com/aromanovich/waltz/internal/verify/mutbuild"
 	"github.com/aromanovich/waltz/mutation"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/memwal"
@@ -270,22 +268,11 @@ func noDrain() *coldtest.Cold {
 	return coldtest.Refusing(errors.New("no drain should have run: the window watermark is out of reach"))
 }
 
+// aMutation is a brand-new workflow, built through mutbuild because the encoder
+// refuses a request whose parsed state has no blob behind it
+// ([mutation.ErrUncarriedProto]) — and this one reaches the encoder, the whole
+// point here being what the append did or did not do.
 func aMutation(shard wal.ShardID) mutation.Mutation {
-	run := uuid.NewString()
-	return mutation.Mutation{Create: &p.InternalCreateWorkflowExecutionRequest{
-		ShardID: int32(shard),
-		Mode:    p.CreateWorkflowModeBrandNew,
-		NewWorkflowSnapshot: p.InternalWorkflowSnapshot{
-			NamespaceID: uuid.NewString(),
-			WorkflowID:  "backpressure",
-			RunID:       run,
-			ExecutionState: &persistencespb.WorkflowExecutionState{
-				CreateRequestId: uuid.NewString(),
-				RunId:           run,
-				State:           enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING,
-				Status:          enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
-			},
-			DBRecordVersion: 1,
-		},
-	}}
+	return mutbuild.For(int32(shard)).
+		Create(uuid.NewString(), "backpressure", uuid.NewString())
 }

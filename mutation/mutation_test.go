@@ -597,3 +597,96 @@ func sampleState(now time.Time) (
 	}
 	return info, infoBlob, state, stateBlob
 }
+
+// A request the write path folds and the replay path cannot. Only the blob is
+// carried, so a parsed proto with no blob behind it decodes back as nothing:
+// the state's absence panics the fold on every owner that replays the entry,
+// and the info's is a row committed without one. Both are past the ack by then,
+// so [Encode] is the last place that can refuse, and it refuses rather than
+// writing an entry nobody can fold.
+func TestARequestThatCannotRoundTripIsRefused(t *testing.T) {
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	info, infoBlob, state, stateBlob := sampleState(now)
+
+	// Each case drops exactly one blob from an otherwise well-formed request, so
+	// what is being refused is the missing blob and not the fixture.
+	for _, tt := range []struct {
+		name  string
+		drop  func(*p.InternalWorkflowMutation, *p.InternalWorkflowSnapshot)
+		field string
+	}{
+		{"execution info", func(m *p.InternalWorkflowMutation, s *p.InternalWorkflowSnapshot) {
+			m.ExecutionInfoBlob, s.ExecutionInfoBlob = nil, nil
+		}, "execution info"},
+		{"execution state", func(m *p.InternalWorkflowMutation, s *p.InternalWorkflowSnapshot) {
+			m.ExecutionStateBlob, s.ExecutionStateBlob = nil, nil
+		}, "execution state"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pair := func() (p.InternalWorkflowMutation, p.InternalWorkflowSnapshot) {
+				m := p.InternalWorkflowMutation{
+					RunID:              "run-1",
+					ExecutionInfo:      info,
+					ExecutionInfoBlob:  infoBlob,
+					ExecutionState:     state,
+					ExecutionStateBlob: stateBlob,
+				}
+				s := p.InternalWorkflowSnapshot{
+					RunID:              "run-1",
+					ExecutionInfo:      info,
+					ExecutionInfoBlob:  infoBlob,
+					ExecutionState:     state,
+					ExecutionStateBlob: stateBlob,
+				}
+				tt.drop(&m, &s)
+				return m, s
+			}
+
+			// Every kind that carries either a mutation or a snapshot, since the
+			// two encoders are separate functions and a check on one says nothing
+			// about the other.
+			mut, snap := pair()
+			kinds := map[string]Mutation{
+				"update": {Update: &p.InternalUpdateWorkflowExecutionRequest{
+					ShardID: 1, UpdateWorkflowMutation: mut,
+				}},
+				"create": {Create: &p.InternalCreateWorkflowExecutionRequest{
+					ShardID: 1, NewWorkflowSnapshot: snap,
+				}},
+				"conflict resolve": {ConflictResolve: &p.InternalConflictResolveWorkflowExecutionRequest{
+					ShardID: 1, ResetWorkflowSnapshot: snap,
+				}},
+				"set": {Set: &p.InternalSetWorkflowExecutionRequest{
+					ShardID: 1, SetWorkflowSnapshot: snap,
+				}},
+			}
+			for name, m := range kinds {
+				t.Run(name, func(t *testing.T) {
+					_, err := Encode(m)
+					require.ErrorIs(t, err, ErrUncarriedProto,
+						"a %s carrying a parsed %s with no blob must be refused at the write: "+
+							"encoded, it is acked into the log and every owner inherits an entry "+
+							"that decodes back without it", name, tt.field)
+					require.ErrorContains(t, err, tt.field, "the refusal must name which of the two is missing")
+				})
+			}
+		})
+	}
+}
+
+// The other direction is the ordinary case: bytes with no parsed proto beside
+// them is what Decode produces, and re-encoding one must not be refused.
+func TestABlobWithNoParsedProtoIsNotRefused(t *testing.T) {
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	_, infoBlob, _, stateBlob := sampleState(now)
+
+	_, err := Encode(Mutation{Update: &p.InternalUpdateWorkflowExecutionRequest{
+		ShardID: 1,
+		UpdateWorkflowMutation: p.InternalWorkflowMutation{
+			RunID:              "run-1",
+			ExecutionInfoBlob:  infoBlob,
+			ExecutionStateBlob: stateBlob,
+		},
+	}})
+	require.NoError(t, err)
+}

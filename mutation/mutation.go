@@ -226,6 +226,19 @@ var ErrUnknownCategory = errors.New("mutation: unknown task category id")
 // state.
 var ErrCassandraBlob = errors.New("mutation: CHASM node carries a Cassandra blob")
 
+// ErrUncarriedProto is what [Encode] returns for a request whose parsed
+// execution info or state is set while the blob that proto is derived from is
+// absent. Only the blob is carried, so such a request encodes to one [Decode]
+// answers with a nil struct — which is not a record of what the caller handed
+// over, in either of two ways: the fold dereferences the state, and the applier
+// writes the info's blob, so one shape panics every owner that replays the entry
+// and the other commits a row with the field missing.
+//
+// It is refused here because this is the last place that can refuse. Past the
+// append the entry is acked and every owner inherits it, so the choice after
+// that is a crash loop or a silent hole; before it, refusing writes nothing.
+var ErrUncarriedProto = errors.New("mutation: parsed execution info or state with no blob carrying it")
+
 // Encode turns a mutation into the bytes of a WAL entry's payload. The same
 // mutation always encodes to the same bytes, across processes as well.
 func Encode(m Mutation) ([]byte, error) { return encode(m, false) }

@@ -10,10 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	enumsspb "go.temporal.io/server/api/enums/v1"
-	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
@@ -204,29 +201,13 @@ func TestOneCompositionEmitsToOneHandler(t *testing.T) {
 }
 
 // aCreate is the smallest brand-new workflow the write path folds and encodes.
-// Smallest in the literal sense: it carries no execution-state blob, so it does
-// not survive a round trip through the codec, which rebuilds the state from that
-// blob and hands back a nil one for a fold to dereference. Fine for a write
-// driven through the layer, which folds the request as given; a test that wants
-// an entry *in a log* builds one with `internal/verify/mutbuild` instead.
+// Built through mutbuild rather than by hand because the state and the blob it
+// is derived from are one thing: a request holding the first without the second
+// is refused at the encoder ([mutation.ErrUncarriedProto]), there being no entry
+// it could become that anybody could fold back.
 func aCreate(shard wal.ShardID) *p.InternalCreateWorkflowExecutionRequest {
-	run := uuid.NewString()
-	return &p.InternalCreateWorkflowExecutionRequest{
-		ShardID: int32(shard),
-		Mode:    p.CreateWorkflowModeBrandNew,
-		NewWorkflowSnapshot: p.InternalWorkflowSnapshot{
-			NamespaceID: uuid.NewString(),
-			WorkflowID:  "one-emitter",
-			RunID:       run,
-			ExecutionState: &persistencespb.WorkflowExecutionState{
-				CreateRequestId: uuid.NewString(),
-				RunId:           run,
-				State:           enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING,
-				Status:          enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
-			},
-			DBRecordVersion: 1,
-		},
-	}
+	return mutbuild.For(int32(shard)).
+		Create(uuid.NewString(), "one-emitter", uuid.NewString()).Create
 }
 
 // baseFactory stands in for the abstract factory of the plugin holding the cold

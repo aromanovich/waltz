@@ -116,6 +116,22 @@ catches it: dropping two lines left the whole of `go test ./...` green.
 produce an empty batch, and leaving those entries unsettled strands them.
 `TestADrainOfAnEmptyWindowSettlesNothing` (`cycle/tail_test.go`).
 
+**A request the write path accepts and the replay path cannot fold** (rung 4).
+The record carries a run's execution info and state as blobs and rebuilds the
+structs from them, deriving nil where a blob is absent — so a request holding a
+struct *without* its blob folds where it is written, is acked, and comes back out
+of the log as neither. The two halves fail differently and neither is visible
+from above: the fold dereferences the state, which panics every owner that
+replays the entry rather than halting one, and the applier writes the info's
+blob, which commits a row with the field simply missing. `Encode` refuses both
+(`mutation.ErrUncarriedProto`), and it is the last place that can — past the
+append every owner inherits the entry, while the refusal sits before the append
+and before the fold, so it consumes no seqno and leaves the accumulator exactly
+as it was. `TestARequestThatCannotRoundTripIsRefused`
+(`mutation/mutation_test.go`), red in all eight of its cases with the two calls
+removed. Not hypothetical: two fixtures in this repository were building the
+shape, and both are now built through `internal/verify/mutbuild`.
+
 **A trim past what the cold store holds.** The trim goes to `applied`, which only
 a committed drain moves — never to what the window acked.
 
@@ -238,18 +254,6 @@ which discards the tracker and the cache it would have misled. Closing it means
 answering the caller something in upstream's possibly-succeeded set while still
 telling the server to re-acquire, which is a change to the failover signal and
 not a local fix.
-
-**The write path accepts a request the replay path cannot fold.** The record
-format carries a run's execution state as a blob and rebuilds the struct from it,
-deriving nil where the blob is absent — while the fold dereferences that struct.
-A request carrying the struct and not the blob therefore folds where it is
-written, is acked into the log, and panics every owner that replays it: not a
-loss, and worse than a halt, since no owner escapes it and the entry is stuck.
-Temporal builds the two together, so nothing reachable through a server produces
-one; what does is a hand-written fixture, which is why the fold deliberately
-dereferences rather than checks ([fold.md](.claude/rules/fold.md): fix the
-fixture). Closing it properly means the *encoder* refusing a state it cannot
-round-trip, which turns an unreachable crash loop into an unreachable refusal.
 
 ---
 

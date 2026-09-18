@@ -2,10 +2,12 @@ package mutation
 
 import (
 	"cmp"
+	"fmt"
 	"maps"
 	"slices"
 
 	commonpb "go.temporal.io/api/common/v1"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/service/history/tasks"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -82,6 +84,9 @@ func encodeSet(r *p.InternalSetWorkflowExecutionRequest) (*SetRequest, error) {
 }
 
 func encodeMutation(m *p.InternalWorkflowMutation) (*WorkflowMutation, error) {
+	if err := refuseUncarried(m.ExecutionInfo, m.ExecutionInfoBlob, m.ExecutionState, m.ExecutionStateBlob); err != nil {
+		return nil, err
+	}
 	chasm, err := encodeChasmNodes(m.UpsertChasmNodes)
 	if err != nil {
 		return nil, err
@@ -92,12 +97,9 @@ func encodeMutation(m *p.InternalWorkflowMutation) (*WorkflowMutation, error) {
 		RunId:       m.RunID,
 
 		// Only the blob is carried; [Decode] derives the parsed proto back from
-		// it, and derives nil from a blob that is not there. So a request that
-		// sets the struct and not the blob folds where it is written and cannot
-		// be folded again out of the log: the fold dereferences the state, which
-		// is a panic on every owner that replays that entry rather than a halt on
-		// one. Temporal builds the two together, so what reaches this is a
-		// fixture; build one with internal/verify/mutbuild rather than by hand.
+		// it, and derives nil from a blob that is not there — which is why a
+		// request holding the struct without the blob is refused above rather
+		// than encoded to something that decodes back as neither.
 		ExecutionInfo:  encodeBlob(m.ExecutionInfoBlob),
 		ExecutionState: encodeBlob(m.ExecutionStateBlob),
 
@@ -131,6 +133,9 @@ func encodeMutation(m *p.InternalWorkflowMutation) (*WorkflowMutation, error) {
 }
 
 func encodeSnapshot(s *p.InternalWorkflowSnapshot) (*WorkflowSnapshot, error) {
+	if err := refuseUncarried(s.ExecutionInfo, s.ExecutionInfoBlob, s.ExecutionState, s.ExecutionStateBlob); err != nil {
+		return nil, err
+	}
 	chasm, err := encodeChasmNodes(s.ChasmNodes)
 	if err != nil {
 		return nil, err
@@ -163,6 +168,29 @@ func encodeSnapshot(s *p.InternalWorkflowSnapshot) (*WorkflowSnapshot, error) {
 }
 
 // ---------------------------------------------------------------- pieces
+
+// refuseUncarried holds the blob-is-authoritative rule to what the record can
+// actually carry: a parsed proto whose blob is absent has no home here, and
+// encoding it anyway hands the log an entry that decodes back to neither the
+// struct nor the bytes. Both pairs are checked, because the two failures differ
+// and neither is visible from above — a missing state panics the fold on replay,
+// a missing info commits a row without one.
+//
+// The other direction is the ordinary case and not an error: a blob with no
+// parsed proto beside it is exactly what [Decode] produces before the derive,
+// and what a caller holding only bytes legitimately has.
+func refuseUncarried(
+	info *persistencespb.WorkflowExecutionInfo, infoBlob *commonpb.DataBlob,
+	state *persistencespb.WorkflowExecutionState, stateBlob *commonpb.DataBlob,
+) error {
+	switch {
+	case info != nil && infoBlob == nil:
+		return fmt.Errorf("%w: execution info", ErrUncarriedProto)
+	case state != nil && stateBlob == nil:
+		return fmt.Errorf("%w: execution state", ErrUncarriedProto)
+	}
+	return nil
+}
 
 func encodeBlob(b *commonpb.DataBlob) *Blob {
 	if b == nil {
