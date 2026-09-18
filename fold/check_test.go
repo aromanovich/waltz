@@ -157,6 +157,36 @@ func TestTheCurrentRowConflictCarriesThePluginsPayload(t *testing.T) {
 		"the request ids come out of the window's own blob: the start path deduplicates on them")
 }
 
+// The same claim for the other evaluator, and it is a different test rather
+// than a case of the one above: the window builds its payload out of a blob it
+// wrote, while this one has only what the store's read returned.
+// [p.InternalGetCurrentExecutionResponse] carries the run id beside the
+// execution state rather than inside it, and upstream's own read fills the field
+// and leaves the state's copy empty — so a conflict taking the run from the
+// state names nobody, and the start path skips its whole conflict-resolution
+// branch on an empty run id.
+func TestTheDelegatedCurrentRowConflictNamesTheRunItCollidedWith(t *testing.T) {
+	del, err := fold.New(shard).Check(mkCreate(runY))
+	require.NoError(t, err)
+	require.NotNil(t, del.Current)
+
+	err = del.Current.Verify(&p.InternalGetCurrentExecutionResponse{
+		RunID: runX,
+		ExecutionState: &persistencespb.WorkflowExecutionState{
+			State:      enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING,
+			RequestIds: map[string]*persistencespb.RequestIDInfo{"request-" + runX: {}},
+		},
+	}, 11)
+
+	failed, ok := err.(*p.CurrentWorkflowConditionFailedError) //nolint:errorlint // the concrete type is the assertion
+	require.True(t, ok, "a brand-new create over a row the store holds is a current-row conflict, got %T: %v", err, err)
+	require.Equal(t, runX, failed.RunID)
+	require.Equal(t, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING, failed.State)
+	require.EqualValues(t, 11, failed.LastWriteVersion)
+	require.Contains(t, failed.RequestIDs, "request-"+runX,
+		"the start path deduplicates a retried start on them")
+}
+
 // rowContent is one current-execution row, stated as content rather than as a
 // value: the two sites below realise the same row differently, one by writing
 // it into the window and one by reading it back off the store.
@@ -289,9 +319,11 @@ func delegatedAnswers(t *testing.T, c currentCase) error {
 	if c.row == nil {
 		return del.Current.Verify(nil, 0)
 	}
+	// The state carries no run id, which is the shape upstream's own read hands
+	// back: the run is the field beside it.
 	return del.Current.Verify(&p.InternalGetCurrentExecutionResponse{
 		RunID:          c.row.run,
-		ExecutionState: &persistencespb.WorkflowExecutionState{RunId: c.row.run, State: c.row.state},
+		ExecutionState: &persistencespb.WorkflowExecutionState{State: c.row.state},
 	}, c.row.version)
 }
 

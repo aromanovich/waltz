@@ -79,7 +79,10 @@ cold/memcold/current.go
     literal, and both of its error strings verbatim, "GetCurrentExecution
     operation failed. Error: %v" and the bare text of sql.ErrNoRows. What is
     added is the last_write_version column, which upstream's response type has
-    nowhere to carry.
+    nowhere to carry. executionStateOf is execution_util.go's
+    workflowExecutionStateFromCurrentExecutionsRow: the blob where the row
+    carries one, and the same scalar-column fallback, request-id map included,
+    where it does not.
 
 cold/memcold/apply.go
     One literal and its two statements: the sqlplugin.CurrentExecutionsRow that

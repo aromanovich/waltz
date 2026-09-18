@@ -60,6 +60,21 @@ func TestAbsentCurrentRowIsNotFound(t *testing.T) {
 	require.Zero(t, version)
 }
 
+// The scalar columns are not the whole row: a conflict the layer refuses is
+// only actionable if it names the run it collided with and the request ids that
+// reached it, and both live in the serialised state rather than beside it. The
+// start path skips its conflict-resolution branch on an empty run id and
+// deduplicates a retried start on the request ids.
+func TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs(t *testing.T) {
+	f := newWorkflow(t)
+	snapshot := f.create(t, 41)
+
+	row, _, err := f.store.GetCurrentExecutionWithLastWriteVersion(f.ctx, f.request())
+	require.NoError(t, err)
+	require.Equal(t, f.runID, row.ExecutionState.RunId)
+	require.Contains(t, row.ExecutionState.RequestIds, snapshot.ExecutionState.CreateRequestId)
+}
+
 func TestVersionMovesWithTheWrite(t *testing.T) {
 	f := newWorkflow(t)
 	snapshot := f.create(t, 41)

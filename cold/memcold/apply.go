@@ -320,7 +320,10 @@ func applyCurrentRow(
 		// this store's versioned read returns it: what the layer confirmed
 		// before the ack and what the drain asserts have to be the same
 		// question asked twice.
-		base, version := currentRowResponse(row)
+		base, version, err := currentRowResponse(row)
+		if err != nil {
+			return err
+		}
 		if err := cur.VerifyRow(base, version); err != nil {
 			return err
 		}

@@ -367,6 +367,12 @@ the store's own: the start time is never carried, and the request ids are empty 
 last current-row write came from a conflict-resolve. A refusal of the right type with empty fields
 would create a second run where a start should have deduplicated.
 
+A delegated assertion is refused the same way, out of the row the cold store returned rather than
+out of a blob the window wrote — and the run id there comes from the response's own `RunID` field,
+not from the execution state beside it, because upstream's read fills the field and leaves the
+state's copy empty. That is also what the store below owes: the state it answers with has to carry
+the request ids, or a retried start deduplicates against nothing.
+
 In the windowed modes, then, `wal_answered_condition_failures` stays at **zero**: no failed
 condition ever reaches a drain there. A non-zero value means one of two things — the check let a
 condition through, or a drain answered for a batch whose caller it did not have. In sync mode the

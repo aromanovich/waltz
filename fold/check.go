@@ -477,12 +477,18 @@ func currentConflict(msg string, cw *CurrentWrite) error {
 // currentRowConflict is currentConflict for a row that was read rather than
 // written by the window: the same error, built from the response's
 // already-deserialised execution state instead of from a blob.
+//
+// The run id comes off the response rather than out of that state, which is
+// where the store below puts it and where [readRow] compares it: upstream's own
+// read fills the field and leaves the state's copy empty, so a conflict built
+// from the state alone names nobody — and the history service skips the whole of
+// its conflict resolution, request-id dedup included, when the run id is empty.
 func currentRowConflict(msg string, base *p.InternalGetCurrentExecutionResponse, lastWriteVersion int64) error {
 	st := base.ExecutionState
 	return &p.CurrentWorkflowConditionFailedError{
 		Msg:              msg,
 		RequestIDs:       st.GetRequestIds(),
-		RunID:            st.GetRunId(),
+		RunID:            base.RunID,
 		State:            st.GetState(),
 		Status:           st.GetStatus(),
 		LastWriteVersion: lastWriteVersion,

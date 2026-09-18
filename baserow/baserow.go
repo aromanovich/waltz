@@ -91,6 +91,14 @@ func (r *Rows) Run(
 
 // Current reads a workflow's current-execution row and its last_write_version,
 // or nil and zero if there is none.
+//
+// Where the store puts what it answers with is load-bearing past the read: the
+// conflict error a refused write carries is built out of this value, so the run
+// belongs in RunID — upstream's own read fills that field and leaves the
+// execution state's copy empty — and the state must carry the request ids. A
+// conflict naming no run is one the history service declines to resolve, and
+// one carrying no request ids is a retried start that deduplicates against
+// nothing.
 func (r *Rows) Current(
 	ctx context.Context, shard int32, namespaceID, workflowID string,
 ) (*p.InternalGetCurrentExecutionResponse, int64, error) {
