@@ -653,14 +653,55 @@ func TestEveryCollectionsDeletesReachTheDatabase(t *testing.T) {
 	})
 	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(emptied)))
 
-	state := h.runState(wf, run)
+	requireEveryCollectionEmptied(t, h.runState(wf, run),
+		"the collection is missing from the applier's deletions literal, so that delete was "+
+			"acknowledged and never applied and the row the sequential path removed is still there")
+}
+
+// requireEveryCollectionEmptied is requireEveryCollectionHeld's inverse, over the
+// same enumeration: every collection upsertOf names must have come back empty.
+func requireEveryCollectionEmptied(t *testing.T, state *p.InternalWorkflowMutableState, why string) {
+	t.Helper()
 	for upsert := range upsertOf {
 		field := wholeStateField(upsert)
 		held := reflect.ValueOf(state).Elem().FieldByName(field)
 		require.Truef(t, held.IsValid(), "the mutable state has no %s", field)
-		require.Zerof(t, held.Len(), "the run's %s still holds %v after a drain carrying its "+
-			"delete: the collection is missing from the applier's deletions literal, so that "+
-			"delete was acknowledged and never applied and the row the sequential path removed "+
-			"is still there", field, held.Interface())
+		require.Zerof(t, held.Len(), "the run's %s still holds %v: %s", field, held.Interface(), why)
 	}
+}
+
+// TestASnapshotClearsWhatTheRunHeldBefore is the third literal of seven, after
+// the applier's upserts and its deletes: the clears a snapshot-bearing write runs
+// before it writes whole state. A snapshot replaces a run's tables rather than
+// amending them, so a collection missing from that literal leaves rows from before
+// the snapshot in place — state the sequential path does not have, answered to the
+// next reader and written back by the next snapshot-bearing write.
+//
+// Five of the seven had no guard: dropping the child-execution, request-cancel,
+// signal, signals-requested or CHASM clear left the whole of `go test ./...` green,
+// while activities and timers were caught by the differential oracle, whose two
+// arms present the applier different requests once the fold has resolved an upsert
+// against a delete. The corpus removes sub-entity keys from those two collections
+// only, which is what bounds the oracle's reach here.
+func TestASnapshotClearsWhatTheRunHeldBefore(t *testing.T) {
+	h := newDrains(t)
+	wf, run := uuid.NewString(), uuid.NewString()
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, run))))
+
+	filled := h.update(wf, run, 2, func(m *p.InternalWorkflowMutation) {
+		fillEveryCollection(t, m, func(name string) string { return name })
+	})
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(filled)))
+	requireEveryCollectionHeld(t, h.runState(wf, run))
+
+	// A Set carries whole state and names no collection, so every row above is one
+	// the store owes the clear. In its own window: folded with the update it would
+	// be the update that disappeared, which is fold's rule rather than this one.
+	set := h.build.Set(h.namespaceID, wf, run, 3, mutbuild.WithInfoBlob(blob("info")))
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(set)))
+
+	requireEveryCollectionEmptied(t, h.runState(wf, run),
+		"a snapshot-bearing write replaced the run's whole state and this collection is missing "+
+			"from the applier's clears, so rows from before it survived a write that does not "+
+			"carry them")
 }

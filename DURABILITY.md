@@ -133,6 +133,24 @@ acknowledged. `TestEveryCollectionsDeletesReachTheDatabase`
 (`cold/memcold/apply_test.go`), enumerated off the type in both directions so a
 collection added later fails by name, and red for all seven lines.
 
+**A snapshot-bearing write that does not clear what the run held before it**
+(rung 4). The third literal of seven, after the applier's upserts and its deletes:
+the clears a snapshot runs before writing whole state. A snapshot *replaces* a
+run's tables rather than amending them, so a collection missing from
+`clearCollections` leaves rows from before it in place — state the sequential path
+does not have, answered to the next reader and written back by the next
+snapshot-bearing write. The same five were unguarded here as in the deletes above,
+for the same reason, and the same two were caught by the oracle.
+`TestASnapshotClearsWhatTheRunHeldBefore` (`cold/memcold/apply_test.go`), red for
+all seven clears.
+
+That literal has a second caller, `deleteRun`, and its five unguarded clears stay
+unguarded deliberately: a run's leaked collection rows are unreachable once its
+execution row is gone, run ids being uuids that are never handed out twice, so what
+survives is a storage leak of the kind [ADR 0008](docs/adr/0008-the-log-carries-history-tasks-and-not-shard-or-event-writes.md)'s
+orphaned history nodes already are. Reaching them needs a table read rather than
+the store's own, which is a bigger instrument than the leak is worth.
+
 **A buffered-event batch the drain acknowledged and never wrote** (rung 4). The
 entry above covers the seven collections named in two literals, and a buffered
 batch is none of them: batches never merge, so the fold strips each onto
@@ -582,13 +600,22 @@ that holds it.
 **The cheapest way to find one is to delete a write and see what fails.** Every
 entry here is a claim that some acked thing reaches storage, and a guard for it is
 worth exactly what its absence costs: comment out the line that writes, run
-`go test ./...`, and a green run names an unguarded path. Twelve such deletions
-found **six** unguarded lines in one sitting — the buffered batches and five of
-the seven collections' deletes — in a file whose neighbouring entry already
-existed for exactly that failure. The sweep also confirmed the orphaned tasks, the
-buffered clear and both upsert controls were held. It is not a suite and should
-not become one: a mutation run is a thing a session does, and a target that had to
-stay green would be a second copy of the applier.
+`go test ./...`, and a green run names an unguarded path. Nineteen such deletions
+found **eleven** unguarded lines in one sitting — the buffered batches, five of the
+seven collections' deletes, and five of the same seven's clears — in a file whose
+neighbouring entry already existed for exactly that failure. The same sweep
+confirmed the orphaned tasks, the buffered clear, both upsert controls and all
+twenty-four of `fold/merge.go`'s field carries were held, which is what makes the
+negative results worth as much as the positive: the unguarded surface was the
+**applier**, and the reason is structural. Both arms of the differential oracle
+run through `cold/memcold`, so a defect in the applier shows up only where the
+fold has made the two arms present it *different requests* — which is why the two
+collections the corpus deletes from were caught and the five it does not touch
+were not. An oracle cannot guard the completeness of a component both its arms
+share; only a read-back can.
+
+It is not a suite and should not become one: a mutation run is a thing a session
+does, and a target that had to stay green would be a second copy of the applier.
 
 It is also not a substitute for the reasoning. Each entry is a pointer: the
 mechanisms live in `.claude/rules/`, beside the code, and the argument for each
