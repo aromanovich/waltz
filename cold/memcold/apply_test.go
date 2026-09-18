@@ -584,3 +584,83 @@ func TestEveryBufferedBatchReachesTheDatabase(t *testing.T) {
 		"another workflow's batches reached this run, so the row's workflow and run are not the "+
 			"batch's own")
 }
+
+// deleteOf is upsertOf's mirror: the key each collection upserts, as the set a
+// delta removes it with. One entry per Delete* field of a delta, held to the type
+// by the test below exactly as the upserts are.
+var deleteOf = map[string]any{
+	"DeleteActivityInfos":       map[int64]struct{}{1: {}},
+	"DeleteTimerInfos":          map[string]struct{}{"timer": {}},
+	"DeleteChildExecutionInfos": map[int64]struct{}{2: {}},
+	"DeleteRequestCancelInfos":  map[int64]struct{}{3: {}},
+	"DeleteSignalInfos":         map[int64]struct{}{4: {}},
+	"DeleteSignalRequestedIDs":  map[string]struct{}{"signal-id": {}},
+	"DeleteChasmNodes":          map[string]struct{}{"node": {}},
+}
+
+// TestEveryCollectionsDeletesReachTheDatabase is the guard above in the
+// direction it did not cover. Its enumeration is over Upsert* fields, so the
+// delete half of the same seven collections was driven by nothing here — and by
+// nothing anywhere: the corpus deletes sub-entity keys from activities and timers
+// only (mutgen's `DeleteAfterUpsert`), so the differential oracle exercises two of
+// the seven and the other five had no guard at all. Dropping any of those five
+// lines from the applier's deletions literal left the whole of `go test ./...`
+// green.
+//
+// A dropped delete is not the mirror image of a dropped upsert in what it costs,
+// which is why it is worth its own guard rather than a footnote. The row stays,
+// and a row that stays is state the sequential path does not have: a signal id
+// still in the requested set is a signal the next one deduplicates against and
+// drops, and a child or a cancel still present is a run tracking something it
+// already finished with. The write that removed it was acknowledged.
+func TestEveryCollectionsDeletesReachTheDatabase(t *testing.T) {
+	deletes := 0
+	for f := range reflect.TypeFor[p.InternalWorkflowMutation]().Fields() {
+		if !strings.HasPrefix(f.Name, "Delete") {
+			continue
+		}
+		deletes++
+		require.Containsf(t, deleteOf, f.Name, "a delta carries %s and nothing here drives it "+
+			"through a drain: a collection missing from the applier's deletions literal is a "+
+			"delete acknowledged and never applied, leaving a row the sequential path removed", f.Name)
+	}
+	require.NotZero(t, deletes, "no field of a delta is named Delete*: this has judged nothing")
+	require.Len(t, deleteOf, deletes,
+		"an entry here for a collection a delta no longer has")
+
+	h := newDrains(t)
+	wf, run := uuid.NewString(), uuid.NewString()
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, run))))
+
+	// Upserted and deleted in two windows, never one: a key an accumulator sees
+	// both ways in one window is resolved by the fold, so a single window would be
+	// judging that rule instead of this one.
+	filled := h.update(wf, run, 2, func(m *p.InternalWorkflowMutation) {
+		fillEveryCollection(t, m, func(name string) string { return name })
+	})
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(filled)))
+	requireEveryCollectionHeld(t, h.runState(wf, run))
+
+	emptied := h.update(wf, run, 3, func(m *p.InternalWorkflowMutation) {
+		for name, keys := range deleteOf {
+			into := reflect.ValueOf(m).Elem().FieldByName(name)
+			require.Truef(t, into.IsValid(), "a delta has no %s", name)
+			want := reflect.ValueOf(keys)
+			require.Equalf(t, into.Type(), want.Type(), "%s is %s and the fixture carries %s",
+				name, into.Type(), want.Type())
+			into.Set(want)
+		}
+	})
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(emptied)))
+
+	state := h.runState(wf, run)
+	for upsert := range upsertOf {
+		field := wholeStateField(upsert)
+		held := reflect.ValueOf(state).Elem().FieldByName(field)
+		require.Truef(t, held.IsValid(), "the mutable state has no %s", field)
+		require.Zerof(t, held.Len(), "the run's %s still holds %v after a drain carrying its "+
+			"delete: the collection is missing from the applier's deletions literal, so that "+
+			"delete was acknowledged and never applied and the row the sequential path removed "+
+			"is still there", field, held.Interface())
+	}
+}

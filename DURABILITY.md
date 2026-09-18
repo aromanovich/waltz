@@ -116,6 +116,23 @@ catches it: dropping two lines left the whole of `go test ./...` green.
 produce an empty batch, and leaving those entries unsettled strands them.
 `TestADrainOfAnEmptyWindowSettlesNothing` (`cycle/tail_test.go`).
 
+**A delete of a run's collection the drain acknowledged and never applied**
+(rung 4). The entry above enumerates the `Upsert*` fields of a delta, so the
+delete half of the same seven collections was driven by nothing here — and by
+almost nothing anywhere: `mutgen` removes sub-entity keys from **activities and
+timers only**, so the differential oracle exercises two of the seven and the other
+five had no guard at all. Dropping `children`, `requestCancels`, `signals`,
+`signalsWanted` or `chasm` from the applier's `deletions` literal left the whole
+of `go test ./...` green; dropping `activities` or `timers` was caught by the
+oracle. What it costs is not the mirror of a dropped upsert, which is why it has
+its own guard: the row *stays*, and a row that stays is state the sequential path
+does not have — a signal id still in the requested set is a signal the next one
+deduplicates against and drops, and a child or a cancel still present is a run
+tracking something it has finished with. The write that removed it was
+acknowledged. `TestEveryCollectionsDeletesReachTheDatabase`
+(`cold/memcold/apply_test.go`), enumerated off the type in both directions so a
+collection added later fails by name, and red for all seven lines.
+
 **A buffered-event batch the drain acknowledged and never wrote** (rung 4). The
 entry above covers the seven collections named in two literals, and a buffered
 batch is none of them: batches never merge, so the fold strips each onto
@@ -259,11 +276,20 @@ see. What it needs is a request carrying two runs at once — a continue-as-new 
 a conflict-resolve with a new snapshot — which `internal/verify/mutbuild` cannot
 build today. Closing it is that fixture plus one read-back per run.
 
-*The list was empty here for one pass, and stopped being empty the moment
-somebody looked for a scenario instead of working the named ones.* That is worth
-more than the entry: an empty Open means the queue is worked, never that the tree
-is clean, and this one was found by deleting a write and watching nothing fail.
-The method is cheap and is not a suite — see "What this file is not".
+**The corpus deletes from two of the seven collections.** `mutgen` removes
+sub-entity keys from activities and timers only, so the differential oracle — the
+one run that compares a folded stream against a sequential one — never sees a
+delete of a child, a request cancel, a signal, a signal-requested id or a CHASM
+node. The two guards above cover the *applier* for all seven now, which is the
+loss path; what stays unexercised is the **fold's** own upsert-versus-delete
+resolution for those five, whose failure is an acked write deleted rather than an
+acked delete skipped. Closing it is a corpus knob, and it costs an oracle run.
+
+*The list was empty here for one pass, and stopped being empty the moment somebody
+looked for a scenario instead of working the named ones.* That is worth more than
+any of the three entries: an empty Open means the queue is worked, never that the
+tree is clean. All three came out of deleting a write and watching nothing fail —
+see "What this file is not".
 
 ---
 
@@ -556,12 +582,13 @@ that holds it.
 **The cheapest way to find one is to delete a write and see what fails.** Every
 entry here is a claim that some acked thing reaches storage, and a guard for it is
 worth exactly what its absence costs: comment out the line that writes, run
-`go test ./...`, and a green run names an unguarded path. That is how the
-buffered-batch entry was found, in the one collection an enumeration off the
-request shapes could never have reached, and the same sweep found the orphaned
-tasks and the buffered clear already guarded. It is not a suite and should not
-become one — a mutation run is a thing a session does, not a target that must stay
-green.
+`go test ./...`, and a green run names an unguarded path. Twelve such deletions
+found **six** unguarded lines in one sitting — the buffered batches and five of
+the seven collections' deletes — in a file whose neighbouring entry already
+existed for exactly that failure. The sweep also confirmed the orphaned tasks, the
+buffered clear and both upsert controls were held. It is not a suite and should
+not become one: a mutation run is a thing a session does, and a target that had to
+stay green would be a second copy of the applier.
 
 It is also not a substitute for the reasoning. Each entry is a pointer: the
 mechanisms live in `.claude/rules/`, beside the code, and the argument for each
