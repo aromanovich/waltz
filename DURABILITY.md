@@ -130,7 +130,11 @@ answered alone carries that store's own token, which a merging cycle cannot read
 continuing on the base alone drops the window out of every remaining page, and
 the range the reader completes at the end deletes the acked rows that were in it.
 No route hands out a foreign token any more, and one that arrives is refused
-(`fold.ErrForeignPageToken`).
+(`fold.ErrForeignPageToken`). The premise is not hypothetical: upstream's
+`renewRangeLocked` (v1.29.6) drains in-flight task requests, bumps the range id
+and updates the task key manager, and unloads nothing — the shard context and its
+queue readers carry on, while `UpdateShard` with a moved range id is exactly what
+hands this layer a new epoch.
 
 **A cold store page larger than the batch it was asked for.** Where the window
 alone overflows a page the ask is one row, and emitting that row is what advances
@@ -214,13 +218,6 @@ is the long form of what a green run does not claim.
 ---
 
 ## Unknown
-
-**Whether a queue reader survives a range id renewal holding a page token.** The
-task-page routing above was closed on the reachable premise that it can — a range
-id renewal fences the log and installs a fresh cycle without unloading the shard,
-so a reader mid-pagination would meet a cycle that merges. Whether Temporal's
-readers in fact keep their pagination across that renewal in every version was
-not established; the route is refused either way, so nothing rests on the answer.
 
 **Whether any acked stream produces an unpaired `DeleteWorkflowExecution`.** The
 fold collapses a deletion into a tombstone on the assumption that Temporal's
