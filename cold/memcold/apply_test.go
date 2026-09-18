@@ -526,3 +526,61 @@ func TestACreateOfARunThatExistsFailsAtItsAssertion(t *testing.T) {
 	require.NotEmpty(t, violation.Diverged, "the assertion names the row it found")
 	require.Equal(t, run, violation.Diverged[0].RunID)
 }
+
+// TestEveryBufferedBatchReachesTheDatabase is the guard above for the one
+// collection it cannot see. A buffered batch travels on neither a delta nor a
+// snapshot: batches never merge, so the fold strips each into
+// fold.Emitted.BufferedBatches with the run it belongs to and the applier writes
+// one row per batch. Nothing enumerated off a request shape therefore reaches
+// them, and deleting the applier's loop over them leaves the whole of
+// `go test ./...` green — rows acked, folded and dropped, with the watermark
+// committed beside them and the log trimmed past them.
+//
+// What is lost is worse than a stale answer: a buffered batch is the event a
+// signal became after the caller was told it had landed, and the run's history
+// flushes without it.
+//
+// Payloads are compared as a set: which order the table hands them back in is
+// the store's business, and what this is about is whether any of them is missing.
+//
+// The second workflow holds what this does *not* reach. A row's run comes off the
+// batch and its workflow off the emitted request, so this catches a batch that
+// leaked across workflows and not one filed under the wrong run of the same
+// workflow — two workflows being two emitted requests, each carrying one run's
+// batches. The unguarded half needs a request that carries two runs at once, a
+// continue-as-new or a conflict-resolve, which mutbuild does not build.
+func TestEveryBufferedBatchReachesTheDatabase(t *testing.T) {
+	h := newDrains(t)
+	first, second := uuid.NewString(), uuid.NewString()
+	firstRun, secondRun := uuid.NewString(), uuid.NewString()
+
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch,
+		h.fold(h.create(first, firstRun), h.create(second, secondRun))))
+
+	// Two batches for one run, in one window: they must arrive as two rows, which
+	// is the half a merged slot would silently lose.
+	buffered := func(name string) mutbuild.MutationOpt {
+		return func(m *p.InternalWorkflowMutation) { m.NewBufferedEvents = blob(name) }
+	}
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(
+		h.update(first, firstRun, 2, buffered("signal-one")),
+		h.update(first, firstRun, 3, buffered("signal-two")),
+		h.update(second, secondRun, 2, buffered("other-workflows-signal")),
+	)))
+
+	payloads := func(workflowID, runID string) []string {
+		t.Helper()
+		var out []string
+		for _, b := range h.runState(workflowID, runID).BufferedEvents {
+			out = append(out, string(b.Data))
+		}
+		slices.Sort(out)
+		return out
+	}
+	require.Equal(t, []string{"signal-one", "signal-two"}, payloads(first, firstRun),
+		"a batch the window acked is not in the run's buffered events: batches never merge, so "+
+			"each is a row of its own and a missing one is an acked signal the history flushes without")
+	require.Equal(t, []string{"other-workflows-signal"}, payloads(second, secondRun),
+		"another workflow's batches reached this run, so the row's workflow and run are not the "+
+			"batch's own")
+}

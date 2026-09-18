@@ -116,6 +116,23 @@ catches it: dropping two lines left the whole of `go test ./...` green.
 produce an empty batch, and leaving those entries unsettled strands them.
 `TestADrainOfAnEmptyWindowSettlesNothing` (`cycle/tail_test.go`).
 
+**A buffered-event batch the drain acknowledged and never wrote** (rung 4). The
+entry above covers the seven collections named in two literals, and a buffered
+batch is none of them: batches never merge, so the fold strips each onto
+`fold.Emitted.BufferedBatches` with its run and the applier writes one row per
+batch. Nothing enumerated off a request shape reaches them, so the guard above
+was blind to the same failure it exists for — deleting the applier's loop over
+them left the whole of `go test ./...` green, 22 packages, the differential oracle
+and the e2e server included. What is lost is not a stale answer: a buffered batch
+is what a signal became after its caller was told it had landed, and the run's
+history flushes without it.
+`TestEveryBufferedBatchReachesTheDatabase` (`cold/memcold/apply_test.go`), which
+drives two batches of one run through a real drain and reads them back through
+the store's own read. Its residue is named at the test: a batch filed under the
+wrong run *of the same workflow* is still unguarded, that needing a request which
+carries two runs at once — a continue-as-new or a conflict-resolve — which
+`internal/verify/mutbuild` does not build.
+
 **A request the write path accepts and the replay path cannot fold** (rung 4).
 The record carries a run's execution info and state as blobs and rebuilds the
 structs from them, deriving nil where a blob is absent — so a request holding a
@@ -234,10 +251,19 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-Nothing today. Every way anybody has written down is closed, refuted or accepted
-below, which is the state the procedure at the end of this file calls for before
-the two adversarial passes — and is emphatically **not** a claim that the list is
-complete. See "What this file is not".
+**A batch filed under the wrong run of the same workflow.** The half the
+buffered-batch guard above does not reach, and it is stated here rather than only
+at the test because the shape is general: a row whose run comes off one value and
+whose workflow comes off another is wrong in a way a single-run fixture cannot
+see. What it needs is a request carrying two runs at once — a continue-as-new or
+a conflict-resolve with a new snapshot — which `internal/verify/mutbuild` cannot
+build today. Closing it is that fixture plus one read-back per run.
+
+*The list was empty here for one pass, and stopped being empty the moment
+somebody looked for a scenario instead of working the named ones.* That is worth
+more than the entry: an empty Open means the queue is worked, never that the tree
+is clean, and this one was found by deleting a write and watching nothing fail.
+The method is cheap and is not a suite — see "What this file is not".
 
 ---
 
@@ -526,6 +552,16 @@ nobody has written down, not one that cannot happen — which is why **unknown i
 treated as open**. When a new way is found, it belongs here whether or not it is
 closed the same day, and a fix that closes one belongs beside it with the test
 that holds it.
+
+**The cheapest way to find one is to delete a write and see what fails.** Every
+entry here is a claim that some acked thing reaches storage, and a guard for it is
+worth exactly what its absence costs: comment out the line that writes, run
+`go test ./...`, and a green run names an unguarded path. That is how the
+buffered-batch entry was found, in the one collection an enumeration off the
+request shapes could never have reached, and the same sweep found the orphaned
+tasks and the buffered clear already guarded. It is not a suite and should not
+become one — a mutation run is a thing a session does, not a target that must stay
+green.
 
 It is also not a substitute for the reasoning. Each entry is a pointer: the
 mechanisms live in `.claude/rules/`, beside the code, and the argument for each
