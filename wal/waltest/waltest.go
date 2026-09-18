@@ -55,6 +55,7 @@ func RunContractSuite(t *testing.T, log wal.Log) {
 		{"FenceAtTheSameEpochIsIdempotent", testFenceAtTheSameEpochIsIdempotent},
 		{"FenceAtALowerEpochIsRefused", testFenceAtALowerEpochIsRefused},
 		{"EpochGrowsWithoutChangingOwner", testEpochGrowsWithoutChangingOwner},
+		{"APageEndsAtItsLimitAndNotAtAByteBudget", testAPageEndsAtItsLimitAndNotAtAByteBudget},
 		{"TrimRunsBesideAppends", testTrimRunsBesideAppends},
 		{"TwoWritersContendForOneShard", testTwoWritersContendForOneShard},
 	}
@@ -609,6 +610,48 @@ func testTwoWritersContendForOneShard(f *fixture) {
 	require.Equal(f.t, acked, got, "the log is not what the claimants were told it is")
 }
 
+// A page ends at the limit it was given and at the end of the log, and at
+// nothing else — [wal.Log.ReadFrom]'s "fewer than limit entries means the log
+// ends there" is what a caller reading the whole log stops on ([wal.Entries]),
+// and the replay that rebuilds a shard's tail is that caller.
+//
+// [testReadFromAnyPosition] holds the same clause over six entries of a sentence
+// each, which no transport budget reaches. That is the gap this closes: a
+// backend that pages by rows and by a response size — a gRPC message, a query
+// response, a driver's row buffer — answers short for the size, and every other
+// case here passes because none of them weighs anything. A replay told the log
+// ends there rebuilds a prefix of the tail, comes up, and serves reads and task
+// pages missing everything above the cut, which its callers then ack past.
+//
+// The layer's own bound admits exactly this: a tail is capped at 8 MB rather
+// than by a count, so one workflow near the server's own mutable-state limit
+// fills a replay page on its own.
+func testAPageEndsAtItsLimitAndNotAtAByteBudget(f *fixture) {
+	const (
+		entries = 24
+		// Over a 4 MB message and well over a 1 MB page, at an entry size a
+		// deployment's own writes reach.
+		size = 256 << 10
+	)
+	shard, epoch := f.newShard(), wal.Epoch(9)
+	f.fence(shard, epoch)
+
+	for i := range wal.Seqno(entries) {
+		seqno := wal.FirstSeqno + i
+		f.append(shard, epoch, seqno, bigPayloadFor(seqno, size))
+	}
+
+	got, err := f.readErr(shard, wal.FirstSeqno, entries)
+	require.NoError(f.t, err)
+	require.Len(f.t, got, entries,
+		"a page short of its limit is the end of the log to every caller, so a read that stops at a byte budget truncates a replay in silence")
+	for i, e := range got {
+		seqno := wal.FirstSeqno + wal.Seqno(i)
+		require.Equal(f.t, seqno, e.Seqno)
+		require.Equalf(f.t, bigPayloadFor(seqno, size), e.Payload, "entry %d came back changed", seqno)
+	}
+}
+
 // Every method of the contract is safe for concurrent use, and [wal.Log.Trim] is
 // the one a caller always issues from a goroutine of its own: a trim runs on a
 // cadence beside the loop that goes on appending, so that a slow one cannot stop
@@ -951,6 +994,17 @@ func (f *fixture) expectTrimmedTo(shard wal.ShardID, tail wal.Seqno) {
 // recognisable rather than merely unequal.
 func payloadFor(seqno wal.Seqno) []byte {
 	return []byte(fmt.Sprintf("payload of entry %d", seqno))
+}
+
+// bigPayloadFor is payloadFor padded to size, the padding a byte derived from
+// the seqno so that two entries never share a prefix a truncation could hide.
+func bigPayloadFor(seqno wal.Seqno, size int) []byte {
+	payload := make([]byte, size)
+	for i := range payload {
+		payload[i] = byte(seqno)
+	}
+	copy(payload, payloadFor(seqno))
+	return payload
 }
 
 // payloadFrom is payloadFor with the writing epoch in it.

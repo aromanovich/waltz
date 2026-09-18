@@ -54,12 +54,12 @@ what the process owned is still there afterwards, and both backends here die wit
 ## The log contract suite
 
 `waltest.RunContractSuite(t, log)` is where the five guarantees of
-[`wal.Log`](04-contracts.md#the-five-guarantees) stop being prose. Nineteen cases, one `wal.Log`
+[`wal.Log`](04-contracts.md#the-five-guarantees) stop being prose. Twenty-one cases, one `wal.Log`
 value, no cluster:
 
 | what it holds | the cases |
 |---|---|
-| order and readback | `AppendsComeBackInOrder`, `ReadFromAnyPosition`, `ShardsAreIndependent` |
+| order and readback | `AppendsComeBackInOrder`, `ReadFromAnyPosition`, `APageEndsAtItsLimitAndNotAtAByteBudget`, `ShardsAreIndependent` |
 | gap-freedom | `GapIsRefused`, `DuplicateSeqnoIsAlreadyWritten`, `AppendBelowATrimIsRefused` |
 | trim | `TrimRemovesUpToAndNothingElse`, `TrimOfALogWithNothingInIt`, `TrimRunsBesideAppends` |
 | fencing | `AppendNeedsAFenceAtItsEpoch`, `FenceCutsOffLowerEpochs`, `FenceAtALowerEpochIsRefused`, `FenceAtTheSameEpochIsIdempotent`, `FencedOutranksAMissingPredecessor`, `EpochGrowsWithoutChangingOwner`, `TwoWritersContendForOneShard`, `ZeroEpochIsRefused` |
@@ -85,8 +85,22 @@ stop a shard from acking — so a trim in flight while the log is being appended
 a deployment ever trims in, and the other two trim cases are sequential over a quiescent log. A
 backend whose trim is a read-modify-write over the region the appends are landing in passes both of
 them. That is measured rather than argued: given `memwal` a trim built from a snapshot taken before
-a yield, the other nineteen cases stay green and this one alone goes red, saying the entry acked
+a yield, every other case stays green and this one alone goes red, saying the entry acked
 last is gone from the log.
+
+`APageEndsAtItsLimitAndNotAtAByteBudget` is the same argument about weight. `ReadFrom`'s "fewer than
+limit entries means the log ends there" is what a caller reading a whole log stops on, and
+`ReadFromAnyPosition` holds it over six entries of a sentence each — which no transport budget
+reaches. A backend that pages by rows *and* by a response size answers short for the size, and every
+other case passes because none of them weighs anything. So this one appends 24 entries of 256 KiB and
+requires all 24 back in one page: over a 4 MB message, and at an entry size a deployment's own writes
+reach, since the tail's bound is 8 MB rather than a count. Measured the same way — given `memwal` a
+4 MB response budget, every other case stays green and this one alone goes red.
+
+The layer does not leave that to the suite, because a suite case can only probe one budget and a
+backend with a larger one would pass it and still truncate a production tail. A replay therefore
+**confirms** the end of the log with a one-entry read rather than inferring it from a short page, and
+what that read finds is charged to the tail: [chapter 06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail) has it.
 
 Refusal *order* is a rule of the same kind, and it sits in the fencing row.
 `FencedOutranksAMissingPredecessor` puts an ex-owner's append two seqnos above the tail, where both
@@ -117,7 +131,7 @@ whether the fence reaches another machine. Whoever supplies the log owes that te
 `ReadFrom` returns every entry a completed append acked *and no trim has removed*, so a trim is the
 only removal the contract excuses: a retention policy, a TTL on the table, a compaction that drops
 old records are each a violation of it. The suite cannot see any of them. Every case runs to
-completion in milliseconds, so a log that deletes entries after an hour passes all twenty and
+completion in milliseconds, so a log that deletes entries after an hour passes every case and
 loses an acked entry the first time a shard's tail outlives the policy — acked data with no second
 copy, since the cold store not holding it is the whole reason it is in the log.
 
@@ -832,7 +846,7 @@ suites above and are stated where they are:
 
 ## Where this lives in the code
 
-* [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its twenty
+* [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its twenty-one
   cases, and the guarantee each is stated under;
   [`fault.go`](../../wal/waltest/fault.go) is `Faulty`.
 * [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)

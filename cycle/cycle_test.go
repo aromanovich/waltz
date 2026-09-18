@@ -645,10 +645,11 @@ func TestAnAmbiguousAppend(t *testing.T) {
 	t.Run("nobody could read the outcome of halts the shard", func(t *testing.T) {
 		e := newEnv(t, nil)
 		ns, wf, run := ids()
-		// The first write reads the log once, replaying a tail that is not
-		// there; the readback is the call after it.
+		// The first write replays a tail that is not there, which is two reads:
+		// the page, and the confirmation that the log ends where the page did.
+		// The readback is the call after those.
 		e.log.OnRead(func(call int) error {
-			if call == 1 {
+			if call <= 2 {
 				return nil
 			}
 			return unreachable

@@ -7,7 +7,7 @@ package waltest
 // append acked stays readable until a trim takes it, and a retention window, a
 // TTL on the table, or a compaction that drops old records each break that —
 // each silently. The suite runs in milliseconds and cannot age an entry, so a
-// backend whose storage expires rows passes all nineteen cases and loses the
+// backend whose storage expires rows passes every case of it and loses the
 // first tail that outlives its policy. That tail is acked data with no second
 // copy: the cold store does not hold it, which is the whole reason it is in the
 // log.

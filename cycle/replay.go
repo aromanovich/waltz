@@ -82,6 +82,24 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 			return err
 		}
 	}
+	// The loop above ends on a page shorter than the one it asked for, which the
+	// contract says is the end of the log. A backend whose real limit is a
+	// response size answers short for the size instead, and taking that for the
+	// end brings the shard up serving reads and task pages that are missing
+	// everything above the cut — which their callers then ack past. So the end is
+	// confirmed rather than inferred, one entry, once per acquire. A conformance
+	// case can only probe one size; this holds whatever the budget is.
+	rest, err := c.deps.Log.ReadFrom(ctx, c.shard, s.next, 1)
+	if err != nil {
+		return fmt.Errorf("cycle: shard %d: confirming the tail ends below seqno %d: %w", c.shard, s.next, err)
+	}
+	if len(rest) > 0 {
+		c.strand(s, rest[0], fmt.Errorf(
+			"the tail read ended below seqno %d and the log still holds seqno %d",
+			s.next, rest[0].Seqno))
+		return c.halted(s)
+	}
+
 	if s.counted().Replayed == 0 {
 		return nil
 	}

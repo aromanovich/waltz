@@ -389,6 +389,41 @@ func TestAFailedTailReadIsRetriedFromTheWatermark(t *testing.T) {
 	require.Len(t, second.ap.drains[0], 1, "two mutations of one workflow, collapsed once")
 }
 
+// TestAReplayDoesNotTakeAShortPageForTheEndOfTheLog: the read loop stops on a
+// page shorter than the one it asked for, which the contract says is the end of
+// the log. A backend whose real limit is a response size rather than a row count
+// answers short for the size, and a replay that believed it would bring the
+// shard up having folded a prefix of the tail — then serve reads and task pages
+// missing everything above the cut, which their callers ack past. So the end is
+// confirmed with one entry rather than inferred, and what the confirmation finds
+// is charged to the tail: an acked entry nobody folded is a shard that answers
+// nothing until an operator looks.
+//
+// A suite case can only probe one budget, and a backend with a larger one would
+// pass it and still truncate a production tail. This holds whatever the budget
+// is.
+func TestAReplayDoesNotTakeAShortPageForTheEndOfTheLog(t *testing.T) {
+	ctx := context.Background()
+	log := newLog()
+
+	first := takeShard(t, log, 7, nil)
+	for range 6 {
+		ns, wf, run := ids()
+		require.NoError(t, first.c.write(ctx, mkCreate(ns, wf, run), coldRows()))
+	}
+	first.c.Retire()
+
+	// Two entries a read, where the replay asks for a window's worth.
+	second := takeShard(t, waltest.Truncating{Log: log, Cap: 2}, 8, nil)
+	ns, wf, run := ids()
+
+	err := second.c.write(ctx, mkCreate(ns, wf, run), coldRows())
+	require.ErrorIs(t, err, ErrHalted)
+	require.Equal(t, StateHaltedInvariant, second.c.State(),
+		"the log holds acked entries this cycle did not fold, so the shard may not serve")
+	require.Empty(t, second.ap.drains, "nothing may be applied over a tail that was read short")
+}
+
 // TestReplayCutsItsTransactionsWhereTheWatermarksSay: a replayed transaction is
 // the size of an ordinary one. The tail may be at I10's bound, and one
 // transaction of that size is one no steady-state run ever executes.

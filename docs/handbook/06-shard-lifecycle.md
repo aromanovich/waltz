@@ -299,6 +299,16 @@ correctness requirement rather than an optimisation. A read answered from a cold
 ahead of would be stale with nothing to say so, and a task page short a key is worse than stale:
 its one caller completes the range it read and acks past whatever was missing.
 
+**Where the loop stops is confirmed rather than inferred.** `ReadFrom` returning fewer entries than
+the page asked for is the contract's way of saying the log ends there, and a backend whose real
+limit is a response size — a message size, a query response, a driver's row buffer — answers short
+for the size instead. A replay that took that for the end would come up having folded a prefix of
+the tail, then serve reads and task pages missing everything above the cut, whose callers ack past
+it; the shard halts eventually, when the first append finds its seqno taken, but by then the
+pagination has been completed over rows nobody was shown. So the loop ends with one more read of a
+single entry at the seqno it stopped below, and an entry found there is charged to the tail and
+halts the shard before it serves anything. It costs one round trip per acquire.
+
 Seven rules the loop applies, entry by entry:
 
 * **an entry above this cycle's epoch means this cycle is the zombie.** A successful fence cuts off

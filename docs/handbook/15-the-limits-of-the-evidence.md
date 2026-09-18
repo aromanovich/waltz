@@ -131,7 +131,7 @@ statement with no cost in it at all.
 ## The only log here is an in-memory one
 
 `wal/memwal` is a real implementation and not a stub: it fences, it keeps seqnos gapless, it survives
-a trim the way a durable log has to, and it passes the same twenty contract cases any other
+a trim the way a durable log has to, and it passes the same twenty-one contract cases any other
 implementation runs. It is also **in one process's memory**, so:
 
 * **no fsync, no network, no quorum has ever been in the path** of anything in this repository. Every
