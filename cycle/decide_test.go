@@ -121,7 +121,7 @@ func TestEveryMomentAReadCanArriveInRoutesBothReaders(t *testing.T) {
 			// the whole rule and both readers get the same answer.
 			{"invariant, mutable-state read, empty tail", StateHaltedInvariant, true, 0, mutableStateRead, passThrough},
 			{"invariant, mutable-state read, held tail", StateHaltedInvariant, false, 0, mutableStateRead, refuseAsHalt},
-			{"invariant, task read, empty tail", StateHaltedInvariant, true, 0, taskRead, passThrough},
+			{"invariant, task read, empty tail", StateHaltedInvariant, true, 0, taskRead, refuseAsHalt},
 			{"invariant, task read, held tail", StateHaltedInvariant, false, 0, taskRead, refuseAsHalt},
 
 			// A watermark that answered below the stalled seqno halts and leaves

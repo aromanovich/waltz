@@ -137,8 +137,8 @@ flowchart TD
     D --> E{"cycle state and tail"}
     E -->|"running, drain outcome unreadable"| R["refuse: ResourceExhausted"]
     E -->|"halted-lost: a task read, or a non-empty tail"| L
-    E -->|"halted, empty tail"| Z
-    E -->|"halted-invariant, non-empty tail"| H["refuse: the halt's own error"]
+    E -->|"halted-invariant: a task read, or a non-empty tail"| H["refuse: the halt's own error"]
+    E -->|"halted, empty tail, mutable-state read"| Z
     E -->|"running"| F{"DrainOnRead?"}
     F -->|"on"| G["drain the window, trigger tag read"]
     G --> Z
@@ -151,13 +151,22 @@ type-switch on the concrete error value.
 The two readers part deliberately, and always the same way: a mutable-state read has callers that
 legitimately do not own the shard, so it falls through to the cold store, while a task read has
 exactly one caller, whose page — if short a tail — would be completed and acked past, so it is
-refused. Three moments in the diagram are that difference:
+refused. Four moments in the diagram are that difference, and together they are one rule: **a task
+page is answered by a running cycle or not at all.**
 
 | The cycle | Mutable-state read | Task read |
 |---|---|---|
 | the registry holds none for this shard (`noCycleRoute`) | the base store answers | `ShardOwnershipLost` |
 | halted-lost (`loopRoute`) | the base store answers if the tail is empty, else `ShardOwnershipLost` | `ShardOwnershipLost`, whatever the tail holds |
+| halted-invariant (`loopRoute`) | the base store answers if the tail is empty, else the halt's own error | the halt's own error, whatever the tail holds |
 | retired, its goroutine gone (`stoppedRoute`) | the same tail rule | `ShardOwnershipLost`, re-issued on the successor by `Manager.taskPage` |
+
+An empty tail does not soften the task read's half of any of them, and the last row is why it cannot:
+a page the cold store answers carries **that store's own page token**. A shard re-acquired mid
+pagination — a range id renewal is one, and it unloads nothing, so the caller's reader keeps
+paginating — answers the next page from a cycle that merges, which cannot read a token this layer did
+not write and so finishes the pagination on the base alone. The window dropping out of it is acked
+task rows, and the range the reader completes on reaching the end deletes them.
 
 Each rule is a function of plain values — a state, a tail, which reader is asking — in
 [`../../cycle/decide.go`](../../cycle/decide.go), so its whole domain can be enumerated in a test

@@ -55,13 +55,20 @@ What to know before changing it:
   question "who may answer this read while the shard changes hands" lives;
 * the cold store is reached through a **thunk the wrapper passes**, never named
   here — the store is the caller's, behind `cold.Applier`, and `wrapper` still
-  may not name one. The routing rule for reads turns on the
+  may not name one. The routing rule for a **mutable-state** read turns on the
   *tail* and not on the state — an empty tail is passthrough in either halt
   (which is what keeps sync mode exactly as it was), a non-empty one on
   halted-lost is `ShardOwnershipLost` **unwrapped**, and on halted-invariant it
-  stays deliberately unrecognised — **except that a task read on halted-lost is
-  refused whatever the tail says** (#155, and passing it through was a real
-  bug: another owner's acks are in neither this tail nor the cold store). A
+  stays deliberately unrecognised. **A task read never reaches that rule**: it is
+  refused at either halt whatever the tail says, as `ShardOwnershipLost` on
+  halted-lost and as the halt itself on halted-invariant, which may not be
+  converted. Both halves were real bugs. On halted-lost (#155) the page is short
+  another owner's acks, which are in neither this tail nor the cold store. On
+  halted-invariant an empty tail makes the page *correct* and the token it
+  carries is still the base store's, so a shard re-acquired mid pagination — a
+  range id renewal unloads nothing — meets that token at a cycle that merges,
+  cannot read it, and finishes the pagination on the base alone; the window that
+  drops out is acked task rows, which the range the reader completes deletes. A
   retired cycle has no loop left to ask, so it reads the tail off the mirrored
   atomic `write` already consults — **for the two mutable-state reads only**,
   since #160: a task page is answered by the shard's *current* cycle or not at

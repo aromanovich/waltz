@@ -100,13 +100,24 @@ func noCycleRoute(who reader, shard wal.ShardID) (readRoute, error) {
 // Halted, it turns on the tail, which a halt leaves alone, and under
 // [StateHaltedLost] on which read is asking:
 //
-//   - lost + task read: refused whatever the tail says, since halted-lost means
-//     another owner whose acks this cycle can neither see nor merge;
-//   - lost + mutable-state read: the cold store on an empty tail, else
-//     ShardOwnershipLost;
-//   - halted-invariant: the tail rule alone for both readers, and a non-empty
-//     tail gets halt unconverted. Converting a divergence this process owns
-//     would hand it to the next owner as an ordinary failover.
+//   - task read, either halt: refused whatever the tail says. On halted-lost
+//     that is another owner, whose acks this cycle can neither see nor merge.
+//     On halted-invariant an empty tail does say this cycle applied everything
+//     it acked, and the page would still be refused: what it hands back is the
+//     base store's own page token, and a shard re-acquired mid pagination — a
+//     range id renewal is one, with no unload and the caller's reader still
+//     holding that token — answers the next page from a cycle that merges,
+//     which cannot read a token this layer did not write and finishes the
+//     pagination on the base alone. The window dropping out of it is acked task
+//     rows the range the reader completes then deletes. So a task page is
+//     answered by a running cycle or not at all;
+//   - mutable-state read: the tail rule, so the cold store on an empty tail and
+//     ShardOwnershipLost or the halt on a held one.
+//
+// Which refusal a task read gets still turns on the halt: ShardOwnershipLost
+// where the shard is lost, and the halt unconverted where the divergence is this
+// process's, since converting that would hand it to the next owner as an
+// ordinary failover.
 //
 // A halted cycle stalled at a drain is refused as halted and not as unresolved,
 // the two being reached in that order: the halt is where this shard stopped for
@@ -123,9 +134,12 @@ func loopRoute(
 		}
 		return merge, nil
 	}
-	if st == StateHaltedLost && who == taskRead {
-		return refuseAsLost, lost(shard,
-			"its cycle is halted, so this node is no longer the owner whose tail a task page would merge")
+	if who == taskRead {
+		if st == StateHaltedLost {
+			return refuseAsLost, lost(shard,
+				"its cycle is halted, so this node is no longer the owner whose tail a task page would merge")
+		}
+		return refuseAsHalt, halt
 	}
 	return tailRoute(st, tailEmpty, shard, "it is halted holding an unapplied tail", halt)
 }

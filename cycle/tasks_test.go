@@ -221,13 +221,14 @@ func TestATaskReadOnAShardThisNodeDoesNotOwnIsRefused(t *testing.T) {
 	require.Zero(t, cold.Calls, "a refused read must not reach the store below either")
 }
 
-// TestAHaltedShardAnswersATaskReadByTheHaltAndThenTheTail: on halted-lost the
-// state decides and the tail is not consulted; only on halted-invariant does
-// the tail decide. An empty tail speaks for this cycle's completeness, which is
-// the wrong question: halted-lost means another owner, whose acks are in
-// neither this tail nor the cold store. The halted-invariant half with an empty
-// tail is not buildable through a drain and lives in read_halt_test.go.
-func TestAHaltedShardAnswersATaskReadByTheHaltAndThenTheTail(t *testing.T) {
+// TestAHaltedShardRefusesATaskReadWithTheHaltItHolds: at either halt the state
+// decides a task read and the tail is not consulted. Which refusal it is does
+// turn on the halt — ShardOwnershipLost where the shard is another owner's, the
+// halt unconverted where the divergence is this process's — and an empty tail
+// moves neither, which is what the test below this one is about. What an empty
+// tail does speak for is this cycle's completeness, and that is the wrong
+// question at both halts.
+func TestAHaltedShardRefusesATaskReadWithTheHaltItHolds(t *testing.T) {
 	minKey, maxKey := immediateRange()
 
 	t.Run("an empty tail on halted-lost is still refused", func(t *testing.T) {
@@ -283,6 +284,51 @@ func TestAHaltedShardAnswersATaskReadByTheHaltAndThenTheTail(t *testing.T) {
 			"a divergence this process owns must not be handed on as an ordinary failover")
 		require.Zero(t, cold.Calls)
 	})
+}
+
+// TestATaskPageIsAnsweredByARunningCycleOrNotAtAll is the halted-invariant half
+// with an empty tail. A drain cannot reach it and a failed append can: the
+// append fails with something the contract does not name, the readback that
+// would settle it fails too, and nothing is acked, so the tail stays empty.
+//
+// The cold store could answer this page correctly — everything this cycle acked
+// is in it — and answering would still cost the shard rows, because the token
+// that page carries is the store's own. A range id renewal installs a fresh
+// cycle without unloading the shard, so the next page of that same pagination
+// reaches a cycle that merges, and a token this layer did not write puts the
+// rest of the pagination on the base alone: the window drops out of it, and the
+// range the reader then completes deletes the acked task rows that were in it.
+//
+// So the rule is the one the other three routes already keep, and this was the
+// last way out of it: a task page is answered by a running cycle or not at all.
+func TestATaskPageIsAnsweredByARunningCycleOrNotAtAll(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, func(c *Config) { c.Mutations = 1 })
+	require.NoError(t, e.add(t, mkCreate("ns", "wf", "run")))
+
+	e.log.OnAppend(waltest.Once(errUnreachable))
+	e.log.OnRead(waltest.Once(errUnreachable))
+	require.Error(t, e.add(t, mkUpdate("ns", "wf", "run", 2)))
+	require.Equal(t, StateHaltedInvariant, e.c.State())
+
+	minKey, maxKey := immediateRange()
+	cold := coldtasks.New()
+	cold.Hold(tasks.CategoryTransfer, immediate(10))
+
+	_, err := e.c.getHistoryTasks(ctx, taskReq(tasks.CategoryTransfer, minKey, maxKey, 100), cold.Read)
+	require.ErrorIs(t, err, ErrHalted)
+	require.False(t, errors.As(err, new(*p.ShardOwnershipLostError)),
+		"a divergence this process owns must not be handed on as an ordinary failover")
+	require.Zero(t, cold.Calls, "a refused page must not reach the store below either")
+
+	// That the tail is empty is what the mutable-state read answers by passing
+	// through, and it is where the two readers part: the same cycle, the same
+	// tail, one answer each.
+	_, exec := e.c.getWorkflowExecution(ctx, getExec("ns", "wf", "run"),
+		func(context.Context) (*p.InternalGetWorkflowExecutionResponse, error) {
+			return &p.InternalGetWorkflowExecutionResponse{}, nil
+		})
+	require.NoError(t, exec)
 }
 
 // TestATaskReadIsAnsweredByTheLoop: a read cannot be issued past a drain it

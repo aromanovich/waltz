@@ -154,14 +154,15 @@ func TestACycleFencedAwayHoldingATailRefusesAllThree(t *testing.T) {
 // the tail rule alone applies here, and converting this to ShardOwnershipLost
 // would hand the divergence on as an ordinary failover.
 //
-// The tail is what makes that rule safe, and an entry this build cannot decode
-// is charged to it by [Cycle.strand] before the halt. Without that charge the
-// tail reads empty — the entry never reached [Cycle.accept] — and an empty tail
-// is exactly what [tailRoute] passes through, so all three reads would be
-// answered from a cold store that does not hold this entry. For the task read
-// that is loss rather than staleness: the queue completes the range it asked
-// for and acks past keys the entry carries, and no owner running this build can
-// ever decode it to write them.
+// The tail is what makes that rule safe for the two mutable-state reads, and an
+// entry this build cannot decode is charged to it by [Cycle.strand] before the
+// halt. Without that charge the tail reads empty — the entry never reached
+// [Cycle.accept] — and an empty tail is exactly what [tailRoute] passes through,
+// so both would be answered from a cold store that does not hold this entry.
+// The task read no longer rests on the charge: [loopRoute] refuses it at either
+// halt whatever the tail says, since a page answered out of the cold store hands
+// back that store's own token. What the charge still buys it is the refusal's
+// reach — every read on the shard rather than this one class.
 func TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree(t *testing.T) {
 	ctx := context.Background()
 	log := memwal.New()
