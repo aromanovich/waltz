@@ -339,6 +339,11 @@ import ban in [03-components.md](03-components.md) exist to allow.
   nobody enumerated. The metrics cannot narrow it further:
   none of the series here carry a shard tag ([chapter 10](10-metrics.md#2-three-shape-decisions-because-they-change-how-you-read-the-numbers)),
   so one shard's state comes from the log lines and from `waltz.Layer.ShardStats(shard)`.
+  **A zero tail there is not by itself a clean shard.** A cycle replays on the first request that
+  reaches it, so one nothing has asked anything reports zeros because it has not looked, not because
+  the log is empty — and a cycle whose goroutine is gone reports the tail off its mirror and no
+  counters at all. `Layer.Shutdown` is the reading that establishes rather than reports, and it is
+  the one to act on.
 * **What to do.** `halted-lost`: nothing. `halted-invariant`: capture the shard's log before
   anything trims it (a halted cycle's log is not its own to shorten, so it will still be there), and
   treat it as a correctness incident.
