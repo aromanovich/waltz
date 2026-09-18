@@ -305,9 +305,9 @@ acked delete skipped. Closing it is a corpus knob, and it costs an oracle run.
 
 *The list was empty here for one pass, and stopped being empty the moment somebody
 looked for a scenario instead of working the named ones.* That is worth more than
-any of the three entries: an empty Open means the queue is worked, never that the
-tree is clean. All three came out of deleting a write and watching nothing fail —
-see "What this file is not".
+either entry above: an empty Open means the queue is worked, never that the tree is
+clean. Both are residues of three entries now Closed, all three of which came out
+of deleting a write and watching nothing fail — see "What this file is not".
 
 ---
 
