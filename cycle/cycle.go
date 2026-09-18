@@ -416,11 +416,25 @@ func (c *Cycle) Stats() Stats {
 // keeps reporting the state its goroutine stopped in.
 func (c *Cycle) State() State { return State(c.mirroredState.Load()) }
 
-// Close drains what the window holds, waits for any trim in flight and stops
-// the goroutine. A halted cycle drains nothing (its tail is not its to apply)
-// and returns the halt.
+// Close starts the cycle if nothing has yet, drains what the window holds, waits
+// for any trim in flight and stops the goroutine. A halted cycle drains nothing
+// (its tail is not its to apply) and returns the halt.
+//
+// The start is what makes the answer about the *shard* rather than about this
+// cycle's own window. A cycle replays lazily, on the first request to reach it,
+// so one installed by an acquire that nothing then asked about has never read
+// its watermark and never looked at the log — and what it inherited is a dead
+// owner's acked entries, which is what the recovery path exists for. Draining
+// its empty window and reporting nothing held is how a shutdown says "clean"
+// about a shard it never looked at, and a nil here is what an operator removes
+// the layer on.
 func (c *Cycle) Close(ctx context.Context) error {
-	err := c.drainNow(ctx)
+	err := tell(ctx, c, func(s *state) error {
+		if err := c.start(ctx, s); err != nil {
+			return err
+		}
+		return c.drain(ctx, s, drainExplicit)
+	})
 	c.Retire()
 	return err
 }

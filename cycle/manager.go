@@ -208,9 +208,15 @@ func (m *Manager) Close(ctx context.Context) []Residue {
 // because there is no loop left to ask. cause is what its shutdown drain
 // answered, carried so that a halt's tail and a budget that ran out are
 // distinguishable by whoever reads the list.
+// An empty tail is a residue too when cause is non-nil, and that is the half
+// that is not arithmetic: the counters say what this cycle acked, and a close
+// that failed is one that could not establish what the shard holds — a failed
+// watermark read leaves the tail at its floor, which reads as zero exactly like
+// a shard that is clean. The caller's question is whether removing the layer
+// strands anything, and the only safe answer to "nobody looked" is to say so.
 func (c *Cycle) residue(cause error) (Residue, bool) {
 	entries, _ := c.mirror.Size()
-	if entries == 0 {
+	if entries == 0 && cause == nil {
 		return Residue{}, false
 	}
 	return Residue{Shard: c.shard, Epoch: c.epoch, Entries: int(entries), Cause: cause}, true

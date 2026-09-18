@@ -111,6 +111,17 @@ produce an empty batch, and leaving those entries unsettled strands them.
 **A trim past what the cold store holds.** The trim goes to `applied`, which only
 a committed drain moves — never to what the window acked.
 
+**A shutdown calling a shard clean that it never looked at.** A cycle replays
+lazily, on the first request to reach it, so one installed by an acquire and then
+left alone has never read its watermark and never seen the log — and what it
+inherited is a dead owner's acked entries. Draining its empty window reported
+nothing held, and `Layer.Shutdown` answered **nil**, which the operations runbook
+reads as permission to remove the `wal` section: passthrough composes no log, so
+those entries are never replayed by anyone. A shutdown now starts a cycle that
+has not started before draining it, and a close that could not establish what its
+shard holds is a residue of its own rather than a zero.
+`TestAShutdownSeesATailNoRequestEverMadeItLookAt` (`waltz_test.go`).
+
 ### The read
 
 **A task page answered out of neither source.** The window empties when a drain

@@ -147,4 +147,17 @@ and the policy it hands `Compose`. What to know before changing any of it:
   next owner replays, which no log line reports.
   `TestTheShutdownDrainOutlivesTheContextThatAsksForIt` drives it with the
   caller's context already cancelled, and fails if the detach goes. The log is
-  closed *after* the drain, since a drain still trims through it.
+  closed *after* the drain, since a drain still trims through it;
+* **a shutdown starts a cycle that has not started, and an empty tail is not by
+  itself a clean shard.** Both halves close the same hole and neither is
+  arithmetic. A cycle replays lazily, on the first request, so one installed by
+  an acquire that nothing then asked about has never read its watermark and never
+  looked at the log — and what it inherited is a dead owner's acked entries.
+  Draining its empty window and reporting nothing held is a shutdown saying
+  "clean" about a shard it never looked at, which is the answer
+  `UndrainedError`'s doc calls the only evidence that removing the layer is safe.
+  The second half is the failure of the first: a close that could not establish
+  what its shard holds leaves the tail at its floor, which reads as zero exactly
+  like a shard that is clean, so `Cycle.residue` reports a non-nil cause as a
+  residue whatever the count says.
+  `TestAShutdownSeesATailNoRequestEverMadeItLookAt` is red without either.

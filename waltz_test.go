@@ -27,6 +27,7 @@ import (
 	"github.com/aromanovich/waltz/cycle"
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/internal/verify/coldtest"
+	"github.com/aromanovich/waltz/internal/verify/mutbuild"
 	"github.com/aromanovich/waltz/mutation"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/wal/memwal"
@@ -303,6 +304,49 @@ func TestAShutdownThatLeavesATailSaysWhichShardsHoldIt(t *testing.T) {
 	require.Equal(t, 1, left.Entries)
 	require.Error(t, left.Cause, "the drain's own answer is what tells a halt from a budget that ran out")
 	require.ErrorContains(t, err, "will not replay them")
+}
+
+// TestAShutdownSeesATailNoRequestEverMadeItLookAt is the same report for the
+// shard nothing asked about. A cycle replays lazily, on the first request that
+// reaches it, so one installed by an acquire and then left alone has never read
+// its watermark and never seen the log — and what it inherited is a dead owner's
+// acked entries, which is the case the whole recovery path exists for.
+//
+// A shutdown that answered nil there is the dangerous answer rather than a
+// merely incomplete one: the operations runbook removes the `wal` section once
+// every node's shutdown has answered nil, and passthrough composes no log, so
+// those entries are never replayed by anyone.
+func TestAShutdownSeesATailNoRequestEverMadeItLookAt(t *testing.T) {
+	ctx := context.Background()
+	const shard, dead, epoch = wal.ShardID(5), wal.Epoch(1), wal.Epoch(2)
+
+	// A previous owner's acked entry, left in the log by a node that died. Built
+	// rather than hand-written: it has to survive the codec, which carries the
+	// execution state as a blob and rebuilds it on the way out.
+	wal1 := memwal.New()
+	require.NoError(t, wal1.Fence(ctx, shard, dead))
+	payload, err := mutation.Encode(
+		mutbuild.For(int32(shard)).Create(uuid.NewString(), "one-emitter", uuid.NewString()))
+	require.NoError(t, err)
+	require.NoError(t, wal1.Append(ctx, shard, dead, wal.FirstSeqno, payload))
+
+	layer, err := Compose(
+		Backends{Log: wal1, Cold: refusingCold{Cold: coldtest.New()}},
+		cycle.Fixed(cycle.Defaults()),
+		DefaultTaskCategories(),
+		log.NewNoopLogger(), nil)
+	require.NoError(t, err)
+
+	// The shard is taken and then nothing asks it anything.
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, epoch))
+
+	err = layer.Shutdown(ctx, time.Minute)
+	require.Error(t, err, "the log holds an acked entry no drain applied, and the shutdown called that clean")
+
+	var undrained *UndrainedError
+	require.ErrorAs(t, err, &undrained)
+	require.Len(t, undrained.Shards, 1)
+	require.Equal(t, shard, undrained.Shards[0].Shard)
 }
 
 // TestAShutdownWithoutABudgetIsRefused: zero is a deadline already past, so a
