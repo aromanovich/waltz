@@ -49,8 +49,8 @@ type minimalBase struct {
 
 	// The three requirements, each with a way to break it. Off, this base keeps
 	// all three; on, one of them is broken and everything else is still kept, so
-	// what the reader then sees is that requirement's own cost
-	// ([TestWhatABaseThatBreaksTheRequirementsCosts]).
+	// the merge's refusal is about that requirement alone
+	// ([TestABaseThatBreaksTheRequirementsIsRefused]).
 	ignoresRange bool
 	// repeatsOnce resumes one row back, exactly once, so the pagination still
 	// terminates and one key comes back twice.
@@ -210,16 +210,19 @@ func sortedTaskIDs(base, window []int64) []int64 {
 	return ids
 }
 
-// TestWhatABaseThatBreaksTheRequirementsCosts turns [fold.BasePage]'s three
-// requirements from prose into the failure each is there to prevent. The base
-// above keeps all three; each base here keeps the other two and breaks one, so
-// what reaches the reader is that requirement's own cost and nothing else's.
+// TestABaseThatBreaksTheRequirementsIsRefused turns [fold.BasePage]'s first
+// three requirements from prose into a refusal each. Every base here keeps the
+// other two, so what is refused is that requirement alone.
 //
-// The merge does not defend against any of them, and the alternatives are worse
-// than the panic upstream already raises: dropping a row the store returned
-// loses a task, and refusing the page turns a store's defect into a read that
-// fails. So the requirement is stated and this is what it is worth.
-func TestWhatABaseThatBreaksTheRequirementsCosts(t *testing.T) {
+// Refusing them reverses what this file used to say, and the third one is the
+// reason. Judged in general a failing read does look worse than a store that
+// pages oddly — but the third breach does not cost a failing read. The merge
+// reads the empty page as the end, stops calling the base, and hands back a
+// pagination that is over, so the queue completes the range over rows it was
+// never shown and deletes acked task rows. Against that a refusal is the cheap
+// outcome, and once the page is walked at all the other two cost nothing further
+// and name the store instead of panicking in somebody else's reader.
+func TestABaseThatBreaksTheRequirementsIsRefused(t *testing.T) {
 	rows := func(ids ...int64) []p.InternalHistoryTask {
 		var out []p.InternalHistoryTask
 		for _, id := range ids {
@@ -229,47 +232,64 @@ func TestWhatABaseThatBreaksTheRequirementsCosts(t *testing.T) {
 	}
 	minKey, maxKey := immediateRange()
 
-	t.Run("a row outside the range reaches the reader", func(t *testing.T) {
-		base := &minimalBase{rows: rows(1, 2, 3, 20, 21), page: 1, ignoresRange: true}
-		// A range that ends below what the base holds, which is every range a
-		// queue actually asks for: it reads up to its own checkpoint.
-		req := taskReq(tasks.CategoryTransfer, minKey, tasks.NewImmediateKey(10), 2)
-		var got []int64
-		for _, page := range paginateOver(t, fold.New(shard), base, req) {
-			for _, task := range page {
-				got = append(got, task.Key.TaskID)
-			}
-		}
-		require.Contains(t, got, int64(20),
-			"the merge filtered the base's page by the range after all, and this requirement is not one")
-	})
+	for _, tt := range []struct {
+		name   string
+		base   *minimalBase
+		maxKey tasks.Key
+		want   error
+		cost   string
+	}{
+		{
+			name: "a row outside the range",
+			base: &minimalBase{rows: rows(1, 2, 3, 20, 21), page: 1, ignoresRange: true},
+			// A range ending below what the base holds, which is every range a
+			// queue actually asks for: it reads up to its own checkpoint.
+			maxKey: tasks.NewImmediateKey(10),
+			want:   fold.ErrBaseRowOutsideRange,
+			cost:   "the row reaches the reader, where the queue panics on it with no recover in the loop",
+		},
+		{
+			name:   "a page repeating a key the pagination has passed",
+			base:   &minimalBase{rows: rows(1, 2, 3, 4, 5), page: 1, repeatsOnce: true},
+			maxKey: maxKey,
+			want:   fold.ErrBasePageNotAscending,
+			cost:   "the reader's iterator skips what does not ascend without saying so, and that task is never asked for again",
+		},
+		{
+			name:   "a token beside an empty page",
+			base:   &minimalBase{rows: rows(1, 2, 3, 4, 5), page: 1, emptyAfter: 2},
+			maxKey: maxKey,
+			want:   fold.ErrBasePageEmptyBesideAToken,
+			cost:   "the pagination ends three rows early and the queue completes the range over rows it was never shown",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := taskReq(tasks.CategoryTransfer, minKey, tt.maxKey, 2)
+			err := paginateToRefusal(t, fold.New(shard), tt.base, req)
+			require.ErrorIs(t, err, tt.want, "unrefused, %s", tt.cost)
+		})
+	}
+}
 
-	t.Run("a page repeating an earlier key breaks the ascent", func(t *testing.T) {
-		base := &minimalBase{rows: rows(1, 2, 3, 4, 5), page: 1, repeatsOnce: true}
-		req := taskReq(tasks.CategoryTransfer, minKey, maxKey, 2)
-		var got []int64
-		for _, page := range paginateOver(t, fold.New(shard), base, req) {
-			for _, task := range page {
-				got = append(got, task.Key.TaskID)
-			}
+// paginateToRefusal drives a merged read until the merge refuses the base it is
+// reading, and fails the test if the pagination runs to exhaustion instead.
+func paginateToRefusal(
+	t *testing.T, a *fold.Accumulator, base *minimalBase, req *p.GetHistoryTasksRequest,
+) error {
+	t.Helper()
+	ask := *req
+	for range 1000 {
+		resp, _, err := a.TaskPage(&ask, base.get(&ask))
+		if err != nil {
+			return err
 		}
-		require.False(t, slices.IsSorted(got) && len(slices.Compact(slices.Clone(got))) == len(got),
-			"the keys still ascend strictly, so this requirement is not one: %v", got)
-	})
-
-	t.Run("a token beside an empty page ends the pagination early", func(t *testing.T) {
-		base := &minimalBase{rows: rows(1, 2, 3, 4, 5), page: 1, emptyAfter: 2}
-		req := taskReq(tasks.CategoryTransfer, minKey, maxKey, 2)
-		var got []int64
-		for _, page := range paginateOver(t, fold.New(shard), base, req) {
-			for _, task := range page {
-				got = append(got, task.Key.TaskID)
-			}
+		if len(resp.NextPageToken) == 0 {
+			t.Fatal("the pagination ran to exhaustion, so the base's breach was not refused")
 		}
-		// Which is a queue completing a range over three rows it was never shown.
-		require.Equal(t, []int64{1, 2}, got,
-			"the pagination went on past the empty page, so this requirement is not one")
-	})
+		ask.NextPageToken = resp.NextPageToken
+	}
+	t.Fatal("the pagination did not terminate in 1000 pages")
+	return nil
 }
 
 // TestATieAtTheCutIsEmittedOnce drives the one shape the tie-break at the cut

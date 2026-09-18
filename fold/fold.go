@@ -61,6 +61,31 @@ var ErrForeignPageToken = errors.New("fold: task-page token was not written by t
 // the reader that completes the range at the end of the pagination deletes it.
 var ErrBasePageTooLarge = errors.New("fold: the cold store answered with more rows than the page asked for")
 
+// ErrBaseRowOutsideRange reports a row outside the range the request named,
+// which is [BasePage]'s first requirement. What comes back is filtered against
+// the window's undrained deletes and against nothing else, so such a row reaches
+// the reader — where the queue panics on one, in a loop with no recover.
+var ErrBaseRowOutsideRange = errors.New("fold: the cold store answered with a row outside the range asked for")
+
+// ErrBasePageNotAscending reports a page whose rows do not ascend, or one
+// starting at or below a key this pagination has already passed — [BasePage]'s
+// second requirement, whose two halves fail the same way. The last key of a page
+// is what bounds the window's half of it and what goes into the token, so a base
+// row under that bound breaks the ascent across the page boundary, and the
+// reader's iterator skips what does not ascend without saying so: a task nobody
+// asks for again.
+var ErrBasePageNotAscending = errors.New("fold: the cold store answered a page that does not ascend")
+
+// ErrBasePageEmptyBesideAToken reports a store answering no rows and a token at
+// once, against [BasePage]'s third requirement that no rows means the range is
+// exhausted. The merge would otherwise read it as the end of the pagination,
+// stop calling the base, and hand back a pagination that is over — so rows the
+// store still held are never read, and the range its reader completes at the end
+// deletes them. A store that pages by filtering a chunk and can answer an empty
+// page with more behind it does not satisfy this contract, and is told so here
+// rather than silently losing the remainder.
+var ErrBasePageEmptyBesideAToken = errors.New("fold: the cold store answered no rows beside a token saying it holds more")
+
 // RunAssertion is what the head of the window asserted about one run's row in
 // the cold store.
 type RunAssertion struct {

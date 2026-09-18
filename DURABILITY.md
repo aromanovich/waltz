@@ -185,6 +185,25 @@ the base's cursor — so a row sent unasked is one the cursor passes unemitted.
 Refused (`fold.ErrBasePageTooLarge`), rather than written down and trusted,
 because this is the obligation whose breach the merge would carry out itself.
 
+**A cold store that pages differently from `fold.BasePage`'s first three
+requirements** (rung 4) — a row outside the range asked for, a page that does not
+ascend or that descends below what the pagination has passed, an empty page beside
+a token claiming more. All three were stated and trusted, on the ground that their
+cost lands in a queue rather than in this package and that refusing would turn a
+store's defect into a read that fails. The third is what reverses that: the merge
+reads an empty page as the end of the pagination, so the queue completes its range
+over rows it was never shown and **deletes acked task rows** — against which a
+failing read is the cheap outcome. The other two are then free, the page being
+walked anyway, and they name the store instead of panicking in `queues/slice.go`
+or being skipped in silence by `queues/iterator.go`. Refused at the merge
+(`fold.ErrBaseRowOutsideRange`, `fold.ErrBasePageNotAscending`,
+`fold.ErrBasePageEmptyBesideAToken`), each against bounds the merge already holds
+— the request's range, and the key this pagination last emitted, which no
+conforming store can answer below.
+`TestABaseThatBreaksTheRequirementsIsRefused` (`fold/taskpage_minimal_test.go`),
+red in all three cases without the check; it is the test that used to assert what
+each breach *cost*, over the same three staged breaches.
+
 **A range delete that sweeps a row its reader was never shown.** The merge
 subtracts the window's undrained ranges from the cold store's page and from
 nothing else, at the store's own per-category predicate and resolution.
@@ -220,13 +239,6 @@ else, so a retention window, a TTL on a table or a compaction that drops old
 records each break it silently, and the suite runs in milliseconds.
 `waltest.CheckRetention` is that obligation as a function a deployment runs
 against its own storage, pointed at a deliberately shortened policy.
-
-**Three of `fold.BasePage`'s four requirements are stated and not checked** — every
-row inside the range, keys ascending within and across pages, an empty page
-meaning exhausted. The fourth is refused because its breach is one the merge would
-carry out itself; the other three break a queue rather than this package, which is
-why they are written down instead. A store that pages differently is a deployment's
-to catch.
 
 **The store's obligation to carry request ids is stated and not checked.** The
 conflict a refused write carries is built from what `baserow.Current` answered, so

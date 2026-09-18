@@ -46,29 +46,32 @@ import (
 // Four things are required of it, the first three because this merge builds a
 // page's reach out of what the base last returned rather than out of a cursor of
 // its own. Temporal's SQL and Cassandra plugins satisfy every one, so no run here
-// has had to; a store that pages differently breaks a queue rather than this
-// package, which is why they are written down. Only the fourth is checked, that
-// being the one whose breach this package would otherwise carry out itself.
+// has had to. All four are checked, each against bounds the merge already
+// holds, and a breach is refused rather than carried: what these cost is spent in
+// somebody else's reader — a queue that panics, an iterator that skips in
+// silence, a range completed over rows nobody was shown — and none of those can
+// name the store that caused it.
 //
 //  1. Every row is inside the range the request names. What comes back is
 //     filtered against the window's undrained deletes and by nothing else, so a
 //     row outside the range reaches the reader — where queues/slice.go panics on
-//     one, with no recover in the loop.
+//     one, with no recover in the loop. [ErrBaseRowOutsideRange].
 //  2. Rows ascend within a page, and no later page holds a key at or below the
 //     last key of an earlier one. That last key is what bounds the window's half
 //     of the page and what goes into the token, so a base row arriving under it
 //     breaks the ascent across the page boundary — and queues/iterator.go skips
 //     what does not ascend without saying so, which is a task nobody asks for
-//     again.
-//  3. No rows means the range is exhausted. A token beside an empty page is read
-//     here as the end of one: the merge stops calling the base and hands back a
-//     pagination that is over, so rows the store still held are never read.
+//     again. [ErrBasePageNotAscending], for both halves.
+//  3. No rows means the range is exhausted. A token beside an empty page would be
+//     read here as the end of one: the merge would stop calling the base and hand
+//     back a pagination that is over, so rows the store still held are never read
+//     and the range its reader completes deletes them.
+//     [ErrBasePageEmptyBesideAToken].
 //  4. A page holds at most the batch it was asked for. Where the window alone
 //     overflows a page the ask is one row, and the cut emits that row to move the
 //     base's cursor off it; a row sent unasked is one the cursor passes
 //     unemitted, and the range the reader completes at the end of the pagination
-//     deletes it. This one is refused ([ErrBasePageTooLarge]) rather than
-//     written down and trusted, a page being where the merge would do the losing.
+//     deletes it. [ErrBasePageTooLarge].
 type BasePage func(batch int, token []byte) ([]p.InternalHistoryTask, []byte, error)
 
 // TaskPageStats is an instrument rather than a contract.
@@ -251,6 +254,9 @@ func mergePage(
 		if len(rawPage) > ask {
 			return nil, nil, c, fmt.Errorf("%w: asked for %d, got %d", ErrBasePageTooLarge, ask, len(rawPage))
 		}
+		if err := refuseBasePage(rawPage, nextBase, minKey, from, maxKey); err != nil {
+			return nil, nil, c, err
+		}
 		c.BaseCalls, c.BaseRows = 1, len(rawPage)
 		// The undrained deletes are subtracted here and nowhere else.
 		var hiddenRows int
@@ -329,6 +335,42 @@ func mergePage(
 	}
 	next.setAfter(only[len(only)-1].Key)
 	return only, next, c, nil
+}
+
+// refuseBasePage holds the store to [BasePage]'s first three requirements, each
+// of which is one walk of the page just answered against bounds the merge
+// already has. They were written down rather than checked because the loss lands
+// in the reader rather than here — and that is exactly why the check belongs
+// here: the reader is a queue that panics, or an iterator that skips a
+// descending key in silence, and neither can name the store that did it.
+//
+// from is where this pagination resumes, inclusive: minKey on the first page and
+// the key after the last one emitted on every later one. No conforming store can
+// answer below it. Its own token resumes after its last row, and the two
+// branches that leave that token untouched emit only window keys strictly below
+// the base page's first — so the rows it repeats are the ones it has not had
+// emitted yet.
+func refuseBasePage(page []p.InternalHistoryTask, token []byte, minKey, from, maxKey tasks.Key) error {
+	if len(page) == 0 {
+		if len(token) > 0 {
+			return fmt.Errorf("%w: a token of %d bytes", ErrBasePageEmptyBesideAToken, len(token))
+		}
+		return nil
+	}
+	for i, row := range page {
+		switch {
+		case row.Key.CompareTo(minKey) < 0 || row.Key.CompareTo(maxKey) >= 0:
+			return fmt.Errorf("%w: row %d at %v, for the range [%v, %v)",
+				ErrBaseRowOutsideRange, i, row.Key, minKey, maxKey)
+		case row.Key.CompareTo(from) < 0:
+			return fmt.Errorf("%w: row %d at %v, which this pagination passed at %v",
+				ErrBasePageNotAscending, i, row.Key, from)
+		case i > 0 && row.Key.CompareTo(page[i-1].Key) <= 0:
+			return fmt.Errorf("%w: row %d at %v does not ascend from %v",
+				ErrBasePageNotAscending, i, row.Key, page[i-1].Key)
+		}
+	}
+	return nil
 }
 
 // mergeSorted merges two ascending runs, dropping a key the two share; the
