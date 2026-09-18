@@ -125,6 +125,14 @@ has not started before draining it, and a close that could not establish what it
 shard holds is a residue of its own rather than a zero.
 `TestAShutdownSeesATailNoRequestEverMadeItLookAt` (`waltz_test.go`).
 
+**The same zero, in the two reads a caller has.** `RetireShard` is how a harness
+stages what a killed process leaves behind, and the cycle it stops stays the
+shard's — so `ShardStats` and `Totals` answer for it with no loop left to count,
+and answered a zero tail while the entries sat in the log. The counters do die
+with the goroutine; the tail does not, and both now read it off the mirror, as
+the residue already did.
+`TestARetiredShardStillReportsWhatItHolds` (`waltz_test.go`).
+
 ### The read
 
 **A task page answered out of neither source.** The window empties when a drain
