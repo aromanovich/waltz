@@ -24,6 +24,9 @@ Each entry is marked:
 * **closed** — a mechanism in this repository prevents it, and the entry names
   the mechanism and a test that fails when it is removed;
 * **open** — it can happen today, and the entry says what would close it;
+* **accepted** — it can happen, nobody here will close it, and the entry says
+  what is being accepted, why, and what a deployment owes in its place. A
+  finished entry rather than a deferred one;
 * **unknown** — nobody has established which. Treat these as open.
 
 Severity is what the caller sees: **silent** (gone, no error), **loud** (gone,
@@ -34,7 +37,9 @@ with a named error), **unavailable** (present, unreadable).
 Temporal server boot over this library in `go test` with nothing installed, and
 they are not a durability claim of any kind. Everything below that is closed is
 closed *in the layer*; a deployment's durability is the durability of the log and
-the store it supplies.
+the store it supplies. It is the first of the three **accepted** entries, which
+are where this page's floor is: what cannot be established from inside this
+repository, signed rather than left open.
 
 ---
 
@@ -194,20 +199,6 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-**Both shipped implementations die with the process.** `wal/memwal` and
-`cold/memcold` hold everything in memory, so nothing here survives a restart.
-This is deliberate — [ADR 0011](docs/adr/0011-each-seam-ships-one-implementation.md) —
-and it means no suite in this repository judges storage that outlives a process.
-What closes it is a deployment supplying a durable log and store, and running the
-conformance suite and `waltest.CheckRetention` against them.
-
-**A backend whose `Fence` never reaches storage.** `RunContractSuite` drives one
-`wal.Log` value in one process, so a displaced owner is refused by the same
-in-process object its successor has just fenced. A backend that records the epoch
-in memory alone passes every fencing case here. Only a failover between two
-processes shows it, and this repository has no second process to run. Severity:
-silent, and the worst kind — two writers at one seqno.
-
 **A log whose storage expires entries.** Guarantee 5 excuses a trim and nothing
 else, so a retention window, a TTL on a table or a compaction that drops old
 records each break it silently, and the suite runs in milliseconds.
@@ -260,9 +251,97 @@ dereferences rather than checks ([fold.md](.claude/rules/fold.md): fix the
 fixture). Closing it properly means the *encoder* refusing a state it cannot
 round-trip, which turns an unreachable crash loop into an unreachable refusal.
 
-**Nothing is staged between two layer nodes, or between clusters.** No partition,
-no kill, no failover. [Chapter 15](docs/handbook/15-the-limits-of-the-evidence.md)
-is the long form of what a green run does not claim.
+---
+
+## Accepted
+
+**Nothing in this section is held by a mechanism — that is what accepted means —
+so every entry here stands at rung 5, and the bottom row of the rung table is the
+whole of what carries it.** The three are one shortage seen from three sides:
+nothing here has storage outside one process's memory, so there is nothing to
+restart, nothing two writers can share, and nothing a killed run could be judged
+from afterwards. Accepting them is what gives this list a floor, and a later pass
+that derives one again is finding the signature rather than a gap.
+
+**Both shipped implementations die with the process.** `wal/memwal` holds every
+shard's log in a map; `cold/memcold` is Temporal's own SQL persistence over a
+SQLite database opened `mode=memory`, one per store. Neither has a file, an
+fsync or a second reader, so nothing here has ever been restarted and no suite
+judges storage that outlives a process.
+
+*What is accepted* is not only that a restart loses everything — it is that
+**every entry under Closed above is closed in the layer and nowhere else.** Each
+one holds *given* a log and a cold store that keep their contracts, and this page
+establishes neither. A deployment's durability is the durability of the two it
+supplies.
+
+*Why it stays accepted:* closing it means shipping durable storage, which is the
+decision [ADR 0011](docs/adr/0011-each-seam-ships-one-implementation.md) took the
+other way — one implementation per seam, in this process, so a Temporal server
+boots over the library in `go test` with nothing installed. A second
+implementation a deployment could run would be a different library, and a suite
+over it would judge that library's storage rather than this layer.
+
+*What a deployment owes in its place:* `waltest.RunContractSuite` and
+`waltest.CheckRetention` against its own log, Temporal's four persistence suites
+against its own store, and the folded-against-sequential comparison rebuilt over
+that store rather than over `cold/memcold`.
+
+**A backend whose `Fence` never reaches storage.** `RunContractSuite` drives one
+`wal.Log` value in one process, so a displaced owner is refused by the same
+in-process object its successor has just fenced, and a backend that records the
+owning epoch in a process-local field passes every fencing case here — the
+contention test included. Severity: silent, and the worst shape on this page —
+two writers at one seqno, each told its append is durable.
+
+*What is accepted* is that a green contract suite is a statement about a log's
+**logic** and not about whether its fence reaches another machine, and that
+nothing here instruments the difference — where the suite's other blind spot,
+time, has `waltest.CheckRetention`.
+
+*Why it stays accepted:* it needs two writers that share no memory. Two processes
+is the honest form and there is none here. The narrower form — one process, two
+independently constructed handles over one storage — would catch a process-local
+epoch, and cannot be had either: `memwal.New` makes its own map, so the only
+backend in this tree cannot supply the second handle, and a case added for it
+would be skipped by the one backend that could ever watch it go red. A case no
+implementation here can fail is the shape this file's procedure exists to refuse.
+
+*What a deployment owes in its place:* stage the displaced owner against the
+storage the log actually runs on — fence at a higher epoch from a second process,
+then append from the first — and read the outcome off the log rather than off
+either writer. Said at the instrument, on `waltest.RunContractSuite`, because the
+carrier of this one is whoever writes the backend.
+
+**Nothing is staged between two layer *processes*, and nothing at all between
+clusters.** Two *owners* are staged, and the distinction is narrower than it
+sounds: nothing in this layer speaks to another node, so two `cycle.Manager`s
+over one log and one store are two nodes.
+`TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark` parks one inside its
+applier while the other takes the shard, replays its entry and drains over it,
+and `TestARecoveredShardHoldsWhatAnUninterruptedOneDoes` supersedes an owner five
+times without a drain and requires the successor's database to match an
+uninterrupted run's. A partition is not unstaged either: there is no channel to
+cut, every interaction between two owners going through the log and the epoch.
+
+*What is accepted* is the four things genuinely absent — a transport that hangs,
+a `kill -9` between a call and its outcome, storage that survives either, and a
+judge that reads a killed run's record back from outside the layer. The last is
+the one that cannot be worked around from inside: an assertion compiled into the
+layer sees what the layer *believes* and dies with it, which is why the recovery
+runs above establish the replay and never the kill.
+`internal/verify/checker` is half of what such a run needs and says so — a call
+line fsynced before the store is touched, an outcome line after, and no judgement
+of either.
+
+*Why it stays accepted:* the other half is a harness, and its subject is a
+deployment rather than this library, which runs in process by decision
+([ADR 0003](docs/adr/0003-wal-layer-runs-in-process.md)).
+
+*What a deployment owes in its place:* that harness over its own log and store,
+with `checker` as the record and the log as the arbiter.
+[Chapter 15](docs/handbook/15-the-limits-of-the-evidence.md) is the long form of
+what a green run here does not claim.
 
 ---
 
@@ -385,10 +464,16 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**Three open entries above cannot be closed from inside this repository**, and no
-amount of reading can change that — both shipped implementations die with the
-process, no failover between two processes is staged, and a backend whose `Fence`
-never reaches storage passes every fencing case in the suite. They need a durable
-log, two processes and a kill. That is one harness and a decision, not an open
-research question, and until it is either built or those entries are **accepted**,
-this list has a floor it cannot go below.
+**The floor is signed.** The three entries that cannot be closed from inside this
+repository are in Accepted rather than Open: both shipped implementations die with
+the process, a backend whose `Fence` never reaches storage passes every fencing
+case in the suite, and no failover between two processes is staged. They were one
+harness and a decision — a durable log, two processes, a kill, and a judge outside
+all three — and the decision taken is that this library does not build it. So
+they are finished entries, and what is left in Open is what this repository can
+still act on.
+
+The one change that would reopen all three at once is durable storage shipping
+here, which [ADR 0011](docs/adr/0011-each-seam-ships-one-implementation.md)
+refuses. Nothing short of that moves them, so a pass that rediscovers any of them
+should add nothing but a pointer to this section.
