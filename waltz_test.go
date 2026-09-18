@@ -384,6 +384,35 @@ func TestARetiredShardStillReportsWhatItHolds(t *testing.T) {
 	require.Equal(t, 1, layer.Totals().TailEntries)
 }
 
+// TestAShutdownDrainsWhatASupersededCycleLeft is the same rule in the shape a
+// running node actually reaches it: the shard is not idle, it changed epochs.
+// An acquire retires the cycle holding the tail and installs a fresh one, and
+// the fresh one replays lazily — so if nothing asks it anything before the node
+// stops, the entries its predecessor acked are in the log and in no window. A
+// shutdown that drained that empty window answered nil over them.
+func TestAShutdownDrainsWhatASupersededCycleLeft(t *testing.T) {
+	ctx := context.Background()
+	const shard, first, second = wal.ShardID(8), wal.Epoch(2), wal.Epoch(3)
+
+	layer, cold := composed(t, cycle.Defaults())
+
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, first))
+	// Built rather than hand-written: this entry is replayed out of the log by
+	// the cycle that replaces the one acking it, so it has to survive the codec.
+	require.NoError(t, layer.Options().Layer.Write(ctx,
+		mutbuild.For(int32(shard)).Create(uuid.NewString(), "one-emitter", uuid.NewString()),
+		first, baserow.New(emptyStore{})))
+	require.Zero(t, cold.Drains(), "a windowed write of one mutation reaches no watermark")
+
+	// The shard changes hands on this same node, and nothing asks the successor
+	// anything before the process stops.
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, second))
+
+	require.NoError(t, layer.Shutdown(ctx, time.Minute))
+	require.Equal(t, 1, cold.Drains(),
+		"the predecessor's acked entry was replayed by the cycle that replaced it and applied")
+}
+
 // unreadableCold is a store whose watermark cannot be read, which is what one
 // that is down looks like to a cycle that has never started: it has no floor to
 // replay from, so it cannot say what its shard holds.

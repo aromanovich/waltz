@@ -248,6 +248,18 @@ answering the caller something in upstream's possibly-succeeded set while still
 telling the server to re-acquire, which is a change to the failover signal and
 not a local fix.
 
+**The write path accepts a request the replay path cannot fold.** The record
+format carries a run's execution state as a blob and rebuilds the struct from it,
+deriving nil where the blob is absent — while the fold dereferences that struct.
+A request carrying the struct and not the blob therefore folds where it is
+written, is acked into the log, and panics every owner that replays it: not a
+loss, and worse than a halt, since no owner escapes it and the entry is stuck.
+Temporal builds the two together, so nothing reachable through a server produces
+one; what does is a hand-written fixture, which is why the fold deliberately
+dereferences rather than checks ([fold.md](.claude/rules/fold.md): fix the
+fixture). Closing it properly means the *encoder* refusing a state it cannot
+round-trip, which turns an unreachable crash loop into an unreachable refusal.
+
 **Nothing is staged between two layer nodes, or between clusters.** No partition,
 no kill, no failover. [Chapter 15](docs/handbook/15-the-limits-of-the-evidence.md)
 is the long form of what a green run does not claim.

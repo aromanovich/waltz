@@ -92,8 +92,12 @@ func encodeMutation(m *p.InternalWorkflowMutation) (*WorkflowMutation, error) {
 		RunId:       m.RunID,
 
 		// Only the blob is carried; [Decode] derives the parsed proto back from
-		// it. A fixture that sets the struct and not the blob vanishes on
-		// replay.
+		// it, and derives nil from a blob that is not there. So a request that
+		// sets the struct and not the blob folds where it is written and cannot
+		// be folded again out of the log: the fold dereferences the state, which
+		// is a panic on every owner that replays that entry rather than a halt on
+		// one. Temporal builds the two together, so what reaches this is a
+		// fixture; build one with internal/verify/mutbuild rather than by hand.
 		ExecutionInfo:  encodeBlob(m.ExecutionInfoBlob),
 		ExecutionState: encodeBlob(m.ExecutionStateBlob),
 
