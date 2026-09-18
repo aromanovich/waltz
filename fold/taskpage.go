@@ -96,16 +96,7 @@ func (a *Accumulator) TaskPage(
 ) (*p.InternalGetHistoryTasksResponse, TaskPageStats, error) {
 	token, ours := decodeTaskToken(req.NextPageToken)
 	if !ours {
-		// A token this layer did not write: an earlier page was answered by the
-		// base alone, on a shard whose cycle was retired mid pagination. Carry on
-		// with the base alone, since the window cursor the merge needs was never
-		// handed out and inventing one would re-emit keys the caller has.
-		page, next, err := base(req.BatchSize, req.NextPageToken)
-		if err != nil {
-			return nil, TaskPageStats{}, err
-		}
-		return &p.InternalGetHistoryTasksResponse{Tasks: page, NextPageToken: next},
-			TaskPageStats{BaseCalls: 1, BaseRows: len(page)}, nil
+		return nil, TaskPageStats{}, ErrForeignPageToken
 	}
 
 	page, next, stats, err := mergePage(

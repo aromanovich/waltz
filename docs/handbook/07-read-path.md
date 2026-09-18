@@ -406,6 +406,12 @@ The token this layer hands back is its own (`taskPageToken`), framed with a four
 
 No state is kept between calls: those fields are the whole cursor.
 
+A token without that magic is **refused** (`fold.ErrForeignPageToken`), not continued on the base
+alone. It is the same rule as the routing table above, held from the other end: no route hands a
+caller the base store's token, so a token this layer did not write is not a pagination of its own to
+resume. Answering it from the base would read correctly and drop the window out of every remaining
+page of it.
+
 Three facts leave the cut no freedom: a page may not exceed `BatchSize`; the base's token is in the
 base store's own format, which this layer may neither parse nor synthesise; and a scheduled range
 can name only a fire time as a resume point. Therefore **the cut is at the end of a base page or

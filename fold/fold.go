@@ -45,6 +45,14 @@ var ErrInvalidStream = errors.New("fold: mutation cannot follow the window's mut
 // by draining and starting the refused mutation on a fresh window.
 var ErrRefused = errors.New("fold: window not foldable into merged requests")
 
+// ErrForeignPageToken reports a task-page token this layer did not write.
+// Nothing can hand one back: a task page is answered by a running cycle or not
+// at all, so every token a caller has of this layer's is one [Accumulator.TaskPage]
+// minted. Continuing on the base alone would be readable and wrong — the window
+// would drop out of the rest of that pagination, and the range its reader
+// completes at the end deletes the acked task rows that were in it.
+var ErrForeignPageToken = errors.New("fold: task-page token was not written by this layer")
+
 // RunAssertion is what the head of the window asserted about one run's row in
 // the cold store.
 type RunAssertion struct {

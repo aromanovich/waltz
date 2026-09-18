@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/apply"
+	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/internal/verify/coldtasks"
 	"github.com/aromanovich/waltz/internal/verify/mutbuild"
 	"github.com/aromanovich/waltz/mutation"
@@ -444,12 +445,13 @@ func TestTheCutIsNeverInsideABasePage(t *testing.T) {
 	}
 }
 
-// TestAForeignPageTokenTransits: a pagination that began while the shard's
-// cycle was retired was answered by the base alone and handed back the base's
-// own token, which can then arrive at a running cycle. Continuing with the base
-// alone is the consistent reading — the window cursor the merge needs was never
-// handed out, and inventing one would re-emit keys the caller already has.
-func TestAForeignPageTokenTransits(t *testing.T) {
+// TestAForeignPageTokenIsRefused is the rule above held from the other end. No
+// route hands a caller the base store's token any more, so a token this layer
+// did not write cannot be one of ours — and continuing on the base alone, which
+// is what a merge could do with it, would read correctly while the window
+// dropped out of the rest of that pagination, whose reader completes the range
+// and deletes the acked rows that were in it.
+func TestAForeignPageTokenIsRefused(t *testing.T) {
 	e := taskEnv(t, func(c *Config) { c.Mutations = 1 << 20 })
 	cold := coldtasks.New()
 	cold.Hold(tasks.CategoryTransfer, immediate(10), immediate(11))
@@ -459,13 +461,11 @@ func TestAForeignPageTokenTransits(t *testing.T) {
 
 	minKey, maxKey := immediateRange()
 	req := taskReq(tasks.CategoryTransfer, minKey, maxKey, 1)
-	req.NextPageToken = coldtasks.EncodeInt(11) // the base's own, from a page this layer never saw
+	req.NextPageToken = coldtasks.EncodeInt(11) // the base's own, which no page of this layer's carries
 
-	resp, err := e.c.getHistoryTasks(context.Background(), req, cold.Read)
-	require.NoError(t, err)
-	require.Equal(t, []int64{11}, taskIDs([][]p.InternalHistoryTask{resp.Tasks}),
-		"a token this layer did not write is the base's, and the page continues from where the base was")
-	require.Equal(t, 1, e.c.Stats().TaskReads)
+	_, err := e.c.getHistoryTasks(context.Background(), req, cold.Read)
+	require.ErrorIs(t, err, fold.ErrForeignPageToken)
+	require.Equal(t, 1, e.c.Stats().TaskReads, "a refused page is still one this shard was asked for")
 	require.Zero(t, e.c.Stats().TaskReadsMerged)
 }
 

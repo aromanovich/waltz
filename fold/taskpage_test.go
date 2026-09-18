@@ -289,13 +289,13 @@ func TestTheResumeTokenCarriesTheBasesOwnBytes(t *testing.T) {
 		"the base is resumed with its own bytes and nothing else")
 }
 
-// TestAForeignPageTokenTransits: the one moment this layer's token and the
-// store's can meet. A pagination begun while the shard's cycle was retired was
-// answered by the base alone, and its token arrives at a running cycle if the
-// shard is re-acquired. The page continues with the base alone: the window
-// cursor the merge needs was never handed out, and inventing one would re-emit
-// keys the caller has.
-func TestAForeignPageTokenTransits(t *testing.T) {
+// TestAForeignPageTokenIsRefused: the two token spaces never meet, because a
+// task page is answered by a running cycle or not at all and every such page
+// carries a token this layer wrote. So a token that is not one of ours is not a
+// pagination to continue. Answering it from the base alone is the readable
+// wrong answer — the window drops out of every remaining page, and the reader
+// that reaches the end completes the range over rows it was never shown.
+func TestAForeignPageTokenIsRefused(t *testing.T) {
 	a := fold.New(shard)
 	cold := coldtasks.New()
 	cold.Hold(tasks.CategoryTransfer, keyed(10, "a"), keyed(11, "b"))
@@ -303,14 +303,11 @@ func TestAForeignPageTokenTransits(t *testing.T) {
 
 	minKey, maxKey := immediateRange()
 	req := taskReq(tasks.CategoryTransfer, minKey, maxKey, 1)
-	req.NextPageToken = coldtasks.EncodeInt(11) // the base's own, from a page this layer never saw
+	req.NextPageToken = coldtasks.EncodeInt(11) // the base's own, which no page of this layer's carries
 
-	resp, stats, err := a.TaskPage(req, basePage(cold, req))
-	require.NoError(t, err)
-	require.Equal(t, []int64{11}, taskIDs([][]p.InternalHistoryTask{resp.Tasks}),
-		"a token this layer did not write is the base's, and the page continues from where the base was")
-	require.Zero(t, stats.FromWindow,
-		"a transiting page carries nothing out of the window, and the counter that says so is what a witness reads")
+	_, _, err := a.TaskPage(req, basePage(cold, req))
+	require.ErrorIs(t, err, fold.ErrForeignPageToken)
+	require.Zero(t, cold.Calls, "a refused page must not reach the store below either")
 }
 
 // TestABaseErrorFailsThePageUnwrapped: a base that cannot be read fails the
