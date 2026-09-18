@@ -6,6 +6,10 @@
 // is about is time; a deployment runs it against its own storage, and
 // [Expiring] is the log it is proved against.
 //
+// The suite's other blind spot has no instrument and cannot be given one here,
+// because what it is about is a second process. [RunContractSuite] states it
+// where the green result is claimed.
+//
 // It asserts external behaviour of [wal.Log] only, and imports the contract
 // and an assertion library but never a backend.
 package waltest
@@ -30,6 +34,18 @@ import (
 // RunContractSuite runs the contract tests against a backend. The backend must
 // start with no shards in it: the suite picks fresh shard names but cannot
 // empty a backend still holding another run's logs.
+//
+// What a green run does not say. Every case drives this one value, so a displaced
+// owner is refused by the same in-process object its successor has just fenced,
+// and a backend that records the owning epoch in a process-local field — never
+// getting it into storage — passes every fencing case here, the contention test
+// included. In a deployment that is two writers acking at one seqno, each told
+// its entries are durable, with no error anywhere. Only a failover between two
+// writers that share no memory can see it, and this suite is one process.
+//
+// So whoever supplies the log owes that test to themselves, against the storage
+// the log runs on: fence at a higher epoch from a second process, append from the
+// first, and read the outcome off the log rather than off either writer.
 func RunContractSuite(t *testing.T, log wal.Log) {
 	t.Helper()
 
