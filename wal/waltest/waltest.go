@@ -722,7 +722,7 @@ func (f *fixture) newShard() wal.ShardID {
 
 func (f *fixture) fence(shard wal.ShardID, epoch wal.Epoch) {
 	f.t.Helper()
-	if err := f.log.Fence(f.ctx, shard, epoch); err != nil {
+	if err := f.fenceErr(shard, epoch); err != nil {
 		f.t.Fatalf("fencing shard %d at epoch %d: %v", shard, epoch, err)
 	}
 }
@@ -734,7 +734,7 @@ func (f *fixture) fenceErr(shard wal.ShardID, epoch wal.Epoch) error {
 
 func (f *fixture) append(shard wal.ShardID, epoch wal.Epoch, seqno wal.Seqno, payload []byte) {
 	f.t.Helper()
-	if err := f.log.Append(f.ctx, shard, epoch, seqno, payload); err != nil {
+	if err := f.appendErr(shard, epoch, seqno, payload); err != nil {
 		f.t.Fatalf("appending seqno %d of shard %d under epoch %d: %v", seqno, shard, epoch, err)
 	}
 }

@@ -348,19 +348,9 @@ type Generator struct {
 	emitted map[int32]*emittedTasks
 	cats    []tasks.Category
 
-	counters
-}
-
-type counters struct {
-	mutations                                      int
-	runs                                           int
-	upserts, distinctKeys, subDeletes, tasks       int
-	creates, updates, sets, deletes, deleteCurrent int
-	conflictResolves, continueAsNews               int
-	bufferedBatches, bufferedClears                int
-	recreations                                    int
-	tasksByCat                                     map[int32]int
-	taskAdds, taskRanges, tasksCovered             int
+	// rep accumulates the stream's counters in place; the config echoes and
+	// the two derived ratios stay zero until [Generator.Report] fills them.
+	rep Report
 }
 
 // workflowState is one workflow key's place in the stream. At most one of run
@@ -412,7 +402,7 @@ func New(cfg Config) (*Generator, error) {
 		serializer: serialization.NewSerializer(),
 		nextID:     1,
 	}
-	g.tasksByCat = map[int32]int{}
+	g.rep.TasksByCat = map[int32]int{}
 	g.emitted = map[int32]*emittedTasks{}
 	g.namespaceID = g.newUUID()
 	return g, nil
@@ -432,36 +422,36 @@ func (g *Generator) Next() (mutation.Mutation, error) {
 	// describes the stream the caller has actually seen. It matters for exactly
 	// one shape: a deletion is queued as a pair, so a caller that stops between
 	// the two would otherwise be told about a delete it was never handed.
-	g.mutations++
+	g.rep.Mutations++
 	switch m.Kind() {
 	case mutation.KindCreate:
-		g.creates++
+		g.rep.Creates++
 	case mutation.KindUpdate:
-		g.updates++
+		g.rep.Updates++
 		mut := m.Update.UpdateWorkflowMutation
 		// Read off the request rather than remembered from the step, so the
 		// report cannot drift from what the request actually says.
 		if m.Update.NewWorkflowSnapshot != nil {
-			g.continueAsNews++
+			g.rep.ContinueAsNews++
 		}
 		if mut.NewBufferedEvents != nil {
-			g.bufferedBatches++
+			g.rep.BufferedBatches++
 		}
 		if mut.ClearBufferedEvents {
-			g.bufferedClears++
+			g.rep.BufferedClears++
 		}
 	case mutation.KindConflictResolve:
-		g.conflictResolves++
+		g.rep.ConflictResolves++
 	case mutation.KindSet:
-		g.sets++
+		g.rep.Sets++
 	case mutation.KindDeleteCurrent:
-		g.deleteCurrent++
+		g.rep.DeleteCurrent++
 	case mutation.KindDelete:
-		g.deletes++
+		g.rep.Deletes++
 	case mutation.KindAddTasks:
-		g.taskAdds++
+		g.rep.TaskAdds++
 	case mutation.KindRangeCompleteTasks:
-		g.taskRanges++
+		g.rep.TaskRanges++
 	}
 	return m, nil
 }
@@ -481,37 +471,18 @@ func (g *Generator) Take(n int) ([]mutation.Mutation, error) {
 	return out, nil
 }
 
-// Report describes the stream produced so far.
+// Report describes the stream produced so far. The counters are already in
+// [Generator.rep]; this fills the config echoes and the two derived ratios
+// beside them, over a map of its own so the caller's copy stops moving.
 func (g *Generator) Report() Report {
-	r := Report{
-		cfg:              g.cfg,
-		Seed:             g.cfg.Seed,
-		Mutations:        g.mutations,
-		Workflows:        len(g.pool),
-		Runs:             g.runs,
-		WorkflowReuse:    g.cfg.WorkflowReuse,
-		Upserts:          g.upserts,
-		DistinctKeys:     g.distinctKeys,
-		KeyReuse:         g.cfg.KeyReuse,
-		BufferedRate:     g.cfg.BufferedRate,
-		SubDeletes:       g.subDeletes,
-		Tasks:            g.tasks,
-		TasksByCat:       make(map[int32]int, len(g.tasksByCat)),
-		Creates:          g.creates,
-		Updates:          g.updates,
-		ContinueAsNews:   g.continueAsNews,
-		ConflictResolves: g.conflictResolves,
-		BufferedBatches:  g.bufferedBatches,
-		BufferedClears:   g.bufferedClears,
-		Sets:             g.sets,
-		Deletes:          g.deletes,
-		DeleteCurrent:    g.deleteCurrent,
-		Recreations:      g.recreations,
-		TaskAdds:         g.taskAdds,
-		TaskRanges:       g.taskRanges,
-		TasksCovered:     g.tasksCovered,
-	}
-	maps.Copy(r.TasksByCat, g.tasksByCat)
+	r := g.rep
+	r.cfg = g.cfg
+	r.Seed = g.cfg.Seed
+	r.Workflows = len(g.pool)
+	r.WorkflowReuse = g.cfg.WorkflowReuse
+	r.KeyReuse = g.cfg.KeyReuse
+	r.BufferedRate = g.cfg.BufferedRate
+	r.TasksByCat = maps.Clone(g.rep.TasksByCat)
 	if r.Workflows > 0 {
 		r.CollapseRatio = float64(r.Mutations-r.TaskAdds-r.TaskRanges) / float64(r.Workflows)
 	}

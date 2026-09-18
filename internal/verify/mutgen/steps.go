@@ -135,11 +135,11 @@ func (g *Generator) emitCreate(w *workflowState, mode p.CreateWorkflowMode) erro
 	}
 
 	if w.created > 0 {
-		g.recreations++
+		g.rep.Recreations++
 	}
 	w.created++
 	w.run, w.closed = r, nil
-	g.runs++
+	g.rep.Runs++
 	g.queue = append(g.queue, mutation.Mutation{Create: req})
 	return nil
 }
@@ -216,7 +216,7 @@ func (g *Generator) emitUpdate(w *workflowState) error {
 		// would be a delete of a run the current row does not name, and the pair
 		// below is the only deletion shape this generator emits.
 		w.run, w.closed = next, nil
-		g.runs++
+		g.rep.Runs++
 	case closing:
 		w.run, w.closed = nil, r
 	}
@@ -235,17 +235,38 @@ func (g *Generator) emitSnapshotBarrier(w *workflowState) error {
 	return g.emitConflictResolve(w)
 }
 
+// barrierSnapshot is the shared half of the two barrier shapes: the run moves
+// to its next version and its whole state is snapshotted — every live key
+// rather than a delta, since the store deletes the run's state items and
+// writes these, buffered events included, which is why the unflushed count
+// resets here.
+//
+// The state pair is checked with the *update* validator for both shapes:
+// a store checks a reset snapshot with exactly that one (Cassandra's reset
+// path runs it), and a set is admitted under the same pair.
+func (g *Generator) barrierSnapshot(w *workflowState, kind string) (p.InternalWorkflowSnapshot, error) {
+	r := w.run
+	r.version++
+	r.nextEventID += 1 + g.rng.Int64N(3)
+
+	snapshot, err := g.snapshot(w, r, 0)
+	if err != nil {
+		return p.InternalWorkflowSnapshot{}, err
+	}
+	if err := p.ValidateUpdateWorkflowStateStatus(r.state, r.status); err != nil {
+		return p.InternalWorkflowSnapshot{}, fmt.Errorf("mutgen: generated an invalid %s: %w", kind, err)
+	}
+	r.buffered = 0
+	return snapshot, nil
+}
+
 // emitConflictResolve is the other snapshot barrier: a reset of the current run
 // at the next version, with no new run and no current mutation. The multi-part
 // shapes — reset + new, reset + current — are deliberately not generated; what
 // this is for is a reset arriving inside a chain rather than at the head of
 // one.
 func (g *Generator) emitConflictResolve(w *workflowState) error {
-	r := w.run
-	r.version++
-	r.nextEventID += 1 + g.rng.Int64N(3)
-
-	snapshot, err := g.snapshot(w, r, 0)
+	snapshot, err := g.barrierSnapshot(w, "conflict-resolve")
 	if err != nil {
 		return err
 	}
@@ -257,20 +278,12 @@ func (g *Generator) emitConflictResolve(w *workflowState) error {
 		ResetWorkflowSnapshot: snapshot,
 	}
 
-	// A store checks the reset snapshot with the *update* validator — Cassandra's
-	// reset path runs exactly that one — and Temporal's mode validator has a rule
-	// of its own for the three parts.
-	if err := p.ValidateUpdateWorkflowStateStatus(r.state, r.status); err != nil {
-		return fmt.Errorf("mutgen: generated an invalid conflict-resolve: %w", err)
-	}
+	// Temporal's mode validator has a rule of its own for the three parts.
 	if err := p.ValidateConflictResolveWorkflowModeState(req.Mode,
 		p.WorkflowSnapshot{ExecutionState: snapshot.ExecutionState}, nil, nil); err != nil {
 		return fmt.Errorf("mutgen: generated an invalid conflict-resolve: %w", err)
 	}
 
-	// A snapshot-bearing request replaces the run's state items, buffered events
-	// included: the store deletes them and writes the snapshot's.
-	r.buffered = 0
 	g.queue = append(g.queue, mutation.Mutation{ConflictResolve: req})
 	return nil
 }
@@ -279,29 +292,14 @@ func (g *Generator) emitConflictResolve(w *workflowState) error {
 // the run's whole state at the next version, asserting the previous one, and
 // asserts nothing about the current-execution row.
 func (g *Generator) emitSet(w *workflowState) error {
-	r := w.run
-	r.version++
-	r.nextEventID += 1 + g.rng.Int64N(3)
-
-	// A snapshot is the run's whole state, so it carries every live key rather
-	// than a delta. The store deletes the run's state items and writes these.
-	snapshot, err := g.snapshot(w, r, 0)
+	snapshot, err := g.barrierSnapshot(w, "set")
 	if err != nil {
 		return err
 	}
-	req := &p.InternalSetWorkflowExecutionRequest{
+	g.queue = append(g.queue, mutation.Mutation{Set: &p.InternalSetWorkflowExecutionRequest{
 		ShardID:             g.cfg.ShardID,
 		SetWorkflowSnapshot: snapshot,
-	}
-
-	if err := p.ValidateUpdateWorkflowStateStatus(r.state, r.status); err != nil {
-		return fmt.Errorf("mutgen: generated an invalid set: %w", err)
-	}
-
-	// As for a conflict-resolve: the store replaces the run's state items, so
-	// whatever was buffered is gone.
-	r.buffered = 0
-	g.queue = append(g.queue, mutation.Mutation{Set: req})
+	}})
 	return nil
 }
 
@@ -388,7 +386,7 @@ func (g *Generator) mutation(w *workflowState, r *runState) (p.InternalWorkflowM
 			mut.UpsertTimerInfos[key] = blob
 			upsertedTimers = append(upsertedTimers, key)
 		}
-		g.upserts++
+		g.rep.Upserts++
 	}
 
 	if g.chance(g.cfg.DeleteAfterUpsert) {
@@ -396,13 +394,13 @@ func (g *Generator) mutation(w *workflowState, r *runState) (p.InternalWorkflowM
 			mut.DeleteActivityInfos = map[int64]struct{}{key: {}}
 			r.liveActivities = remove(r.liveActivities, key)
 			r.goneActivities = append(r.goneActivities, key)
-			g.subDeletes++
+			g.rep.SubDeletes++
 		}
 		if key, ok := pickDeletable(g.rng, r.liveTimers, upsertedTimers); ok {
 			mut.DeleteTimerInfos = map[string]struct{}{key: {}}
 			r.liveTimers = remove(r.liveTimers, key)
 			r.goneTimers = append(r.goneTimers, key)
-			g.subDeletes++
+			g.rep.SubDeletes++
 		}
 	}
 
@@ -445,8 +443,8 @@ func (g *Generator) snapshot(w *workflowState, r *runState, extraKeys int) (p.In
 			r.nextTimer++
 			r.liveTimers = append(r.liveTimers, key)
 		}
-		g.distinctKeys++
-		g.upserts++
+		g.rep.DistinctKeys++
+		g.rep.Upserts++
 	}
 
 	infoBlob, stateBlob, checksumBlob, err := g.rowBlobs(w, r)
@@ -547,8 +545,8 @@ func (g *Generator) historyTasks(w *workflowState, r *runState) (map[tasks.Categ
 		}
 		out[category] = append(out[category], p.InternalHistoryTask{Key: task.GetKey(), Blob: blob})
 		g.recordEmitted(category, task.GetKey())
-		g.tasks++
-		g.tasksByCat[int32(category.ID())]++
+		g.rep.Tasks++
+		g.rep.TasksByCat[int32(category.ID())]++
 	}
 	return out, nil
 }
@@ -577,7 +575,7 @@ func pickKey[K comparable](g *Generator, live, gone *[]K, fresh func() K) K {
 	}
 	key := fresh()
 	*live = append(*live, key)
-	g.distinctKeys++
+	g.rep.DistinctKeys++
 	return key
 }
 
@@ -757,12 +755,10 @@ func (g *Generator) newUUID() string {
 type emittedTasks struct {
 	category tasks.Category
 	keys     []tasks.Key
-	// covered is how many of keys the stream's own deletes already cover, and
-	// completedTo the exclusive maximum the last of them named. Together they
-	// are what makes the next range butt-joined to the last, which is the shape
-	// a queue's checkpoints have.
-	covered     int
-	completedTo tasks.Key
+	// covered is how many of keys the stream's own deletes already cover. It is
+	// also where the next range starts — butt-joined to the last, which is the
+	// shape a queue's checkpoints have.
+	covered int
 }
 
 // recordEmitted adds one written task to the ledger.
@@ -776,7 +772,7 @@ func (g *Generator) recordEmitted(category tasks.Category, key tasks.Key) {
 	id := int32(category.ID())
 	e := g.emitted[id]
 	if e == nil {
-		e = &emittedTasks{category: category, completedTo: taskFloor(category)}
+		e = &emittedTasks{category: category}
 		g.emitted[id] = e
 		g.cats = append(g.cats, category)
 	}
@@ -835,13 +831,14 @@ func (g *Generator) emitRangeComplete() {
 		return
 	}
 	take := 1 + g.rng.IntN(left)
-	last := e.keys[e.covered+take-1]
 
-	from := e.completedTo
-	upTo := nextAbove(e.category, last)
+	from := taskFloor(e.category)
+	if e.covered > 0 {
+		from = nextAbove(e.category, e.keys[e.covered-1])
+	}
+	upTo := nextAbove(e.category, e.keys[e.covered+take-1])
 	e.covered += take
-	e.completedTo = upTo
-	g.tasksCovered += take
+	g.rep.TasksCovered += take
 
 	g.queue = append(g.queue, mutation.Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
 		ShardID:             g.cfg.ShardID,
