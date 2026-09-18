@@ -37,9 +37,9 @@ with a named error), **unavailable** (present, unreadable).
 Temporal server boot over this library in `go test` with nothing installed, and
 they are not a durability claim of any kind. Everything below that is closed is
 closed *in the layer*; a deployment's durability is the durability of the log and
-the store it supplies. That is the first of the three **accepted** entries below,
-which are this page's floor: what cannot be established from inside this
-repository, signed rather than left open.
+the store it supplies. That is the first of the **accepted** entries below, which
+are this page's floor: what cannot be established from inside this repository,
+signed rather than left open.
 
 ---
 
@@ -234,32 +234,10 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-**A log whose storage expires entries.** Guarantee 5 excuses a trim and nothing
-else, so a retention window, a TTL on a table or a compaction that drops old
-records each break it silently, and the suite runs in milliseconds.
-`waltest.CheckRetention` is that obligation as a function a deployment runs
-against its own storage, pointed at a deliberately shortened policy.
-
-**The store's obligation to carry request ids is stated and not checked.** The
-conflict a refused write carries is built from what `baserow.Current` answered, so
-a store whose execution state omits the request ids gives a retried start nothing
-to deduplicate against. Stated on `baserow.Rows.Current`; no test can hold a store
-that is not in this repository.
-
-**A windowed write whose drain loses the shard is told it definitely did not
-commit.** In a windowed mode the entry is appended and acked into the log before
-the watermark trips the drain, so when that drain's `Apply` answers
-`*p.ShardOwnershipLostError` the error travels out to the writer whose mutation
-tripped it — and upstream reads that class as *guaranteed to have failed*,
-dropping the request's task keys from its tracker and skipping its
-notifications. The entry is in the log, above the watermark, and the successor
-applies it. No acked entry is lost, and the caller's own claim is still false in
-the direction that matters: it is told nothing happened about a mutation that
-will. The blast radius is bounded because that class also unloads the shard,
-which discards the tracker and the cache it would have misled. Closing it means
-answering the caller something in upstream's possibly-succeeded set while still
-telling the server to re-acquire, which is a change to the failover signal and
-not a local fix.
+Nothing today. Every way anybody has written down is closed, refuted or accepted
+below, which is the state the procedure at the end of this file calls for before
+the two adversarial passes — and is emphatically **not** a claim that the list is
+complete. See "What this file is not".
 
 ---
 
@@ -267,11 +245,19 @@ not a local fix.
 
 **Nothing in this section is held by a mechanism — that is what accepted means —
 so every entry here stands at rung 5, and the bottom row of the rung table is the
-whole of what carries it.** The three are one shortage seen from three sides:
-nothing here has storage outside one process's memory, so there is nothing to
-restart, nothing two writers can share, and nothing a killed run could be judged
-from afterwards. Accepting them is what gives this list a floor, and a later pass
-that derives one again is finding the signature rather than a gap.
+whole of what carries it.** Accepting them is what gives this list a floor, and a
+later pass that derives one again is finding the signature rather than a gap.
+
+They fall into two kinds, and the difference is what a deployment can do about
+them. The first three are one shortage seen from three sides: nothing here has
+storage outside one process's memory, so there is nothing to restart, nothing two
+writers can share, and nothing a killed run could be judged from afterwards. The
+next two are obligations that live at a seam this repository cannot reach across —
+an instrument exists for one of them and nothing but a sentence for the other, and
+in both cases what is missing is a deployment's own storage rather than a
+mechanism. The last is neither: it can be closed, and every way of closing it
+changes what this layer tells a server about a failover, which is the one thing
+the first three make unjudgeable here.
 
 **Both shipped implementations die with the process.** `wal/memwal` holds every
 shard's log in a map; `cold/memcold` is Temporal's own SQL persistence over a
@@ -352,6 +338,83 @@ deployment rather than this library, which runs in process by decision
 with `checker` as the record and the log as the arbiter.
 [Chapter 15](docs/handbook/15-the-limits-of-the-evidence.md) is the long form of
 what a green run here does not claim.
+
+**A log whose storage expires entries.** Guarantee 5 excuses a trim and nothing
+else, so a retention window, a TTL on the log's table or a compaction that drops
+old records each break it — and each breaks it silently, taking acked entries the
+cold store does not hold, which is the whole reason they were in the log.
+
+*What is accepted* is that no run in this repository can see it. The conformance
+suite finishes in milliseconds and cannot age an entry, so a backend whose storage
+expires rows passes every case of it. This one differs from the three above in
+having an instrument rather than only a boundary, and the instrument is not a
+suite case for a reason no design can remove: the check costs the window it is
+given in wall-clock time, and the length worth testing is the deployment's own.
+
+*Why it stays accepted:* `waltest.CheckRetention` is as far as a library can take
+it. It is proved non-vacuous here — `TestTheRetentionCheckIsNotVacuous` runs it
+green against `memwal` and red against `waltest.Expiring` — so what remains is
+somebody running it, which is not something this repository can do on another
+deployment's storage.
+
+*What a deployment owes in its place:* run it against a **deliberately shortened**
+policy, because a pass says the entries outlived *that* window and never that the
+backend has no retention. What is worth establishing is whether expiry exists as a
+mechanism at all: a policy nobody applied to this table today is one somebody
+applies to it next quarter.
+
+**A store whose execution state omits the request ids.** The conflict a refused
+write carries is built from what `baserow.Current` answered, so such a store gives
+a retried start nothing to deduplicate against — an opaque failure where the layer
+could have named the run it collided with. Not a loss of acked data; it is here
+for the reason the delegated-conflict entry above is, that the effect on a caller
+is the same.
+
+*What is accepted* is that the obligation is checked for the one store in this
+repository and unverifiable for any other. `memcold` is held to it
+(`TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs`), and the rule is stated
+where an implementer meets it, on `baserow.Rows.Current`.
+
+*Why it stays accepted:* the layer cannot detect the breach, and this is the
+uncommon case where that is provable rather than merely hard. An execution state
+carrying no request ids is legitimate — upstream back-fills them for records
+written before the field existed — so "no request ids" cannot be told apart from
+"a row old enough not to have any". A check here would refuse valid rows.
+
+*What a deployment owes in its place:* one read-back assertion over its own store,
+that a current row's execution state carries the ids the create was issued with.
+
+**A windowed write whose drain loses the shard is told it definitely did not
+commit.** In a windowed mode the entry is appended and acked into the log before
+the watermark trips the drain, so when that drain's `Apply` answers
+`*p.ShardOwnershipLostError` the error travels out to the writer whose mutation
+tripped it — and upstream reads that class as *guaranteed to have failed*,
+dropping the request's task keys from its tracker and skipping its notifications.
+The entry is in the log, above the watermark, and the successor applies it.
+
+*What is accepted* is a false claim in the direction that matters, with no acked
+entry behind it: the caller is told nothing happened about a mutation that will.
+The blast radius is bounded by the same error class that causes it — ownership-lost
+unloads the shard, which discards the tracker and the cache the claim would
+otherwise have misled.
+
+*Why it stays accepted:* every way out is a change to the failover signal, and
+this repository cannot judge one. Two were worked out and neither is a local fix.
+Answering something in upstream's **possibly-succeeded** set means answering an
+error the shard's switch does not recognise, which reaches the default arm and a
+background re-acquire — possibly-succeeded and a re-acquire at once, which is what
+is wanted, but it gives up the unload that bounds the blast radius today.
+Answering **nil** is defensible on this layer's own terms, the entry being durable
+and the mutation certain to be applied, and it is the more honest of the two: what
+failed is the drain, not the write. It also tells a node that has lost its shard
+that its write succeeded, and leaves the ownership loss to be discovered by the
+next call. Choosing between them needs a failover between two processes to judge
+the result, which is the accepted entry three above this one.
+
+*What a deployment owes in its place:* nothing it can do in configuration. What
+it can do is know that on a windowed node, an ownership-lost answer to a write is
+not evidence that the write did not happen — the log is, and the successor's
+replay settles it.
 
 ---
 
@@ -512,16 +575,21 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**The floor is signed.** The three entries that cannot be closed from inside this
-repository are in Accepted rather than Open: both shipped implementations die with
-the process, a backend whose `Fence` never reaches storage passes every fencing
-case in the suite, and no failover between two processes is staged. They were one
-harness and a decision — a durable log, two processes, a kill, and a judge outside
-all three — and the decision taken is that this library does not build it. So
-they are finished entries, and what is left in Open is what this repository can
-still act on.
+**The floor is signed, and Open is empty.** Every entry anybody has written down
+is now closed, refuted or accepted. Three of the acceptances are the harness this
+library does not build — a durable log, two processes, a kill, and a judge outside
+all three — and the change that would reopen all three at once is durable storage
+shipping here, which
+[ADR 0011](docs/adr/0011-each-seam-ships-one-implementation.md) refuses. Two more
+are obligations at a seam, one with an instrument and one with a sentence. The
+sixth is the only one that can be closed from inside and has not been, because
+every way of closing it changes the failover signal and the first three are why
+that cannot be judged here.
 
-The one change that would reopen all three at once is durable storage shipping
-here, which [ADR 0011](docs/adr/0011-each-seam-ships-one-implementation.md)
-refuses. Nothing short of that moves them, so a pass that rediscovers any of them
-should add nothing but a pointer to this section.
+**That is the convergence condition and not the end.** What it buys is that a pass
+opening this file has nothing to pick up — which is exactly when the two
+adversarial passes are worth running, each on a context that does not remember the
+last. A pass that finds a named entry again should add nothing but a pointer; a
+pass that finds something *not* named here has found the thing this file admits it
+cannot rule out, and that entry goes in Open whether or not it is closed the same
+day.
