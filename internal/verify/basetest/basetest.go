@@ -189,8 +189,13 @@ func (s *Store) GetCurrentExecutionWithLastWriteVersion(
 	if !ok {
 		return nil, 0, serviceerror.NewNotFoundf("no current execution for workflow %s", req.WorkflowID)
 	}
+	// The run is the field beside the state and not a copy inside it, which is
+	// the shape upstream's own read hands back and therefore the least a
+	// conforming store answers with. A double that filled both would keep a
+	// consumer that reads the state's copy green against every store that does
+	// not.
 	return &p.InternalGetCurrentExecutionResponse{
 		RunID:          cur.runID,
-		ExecutionState: &persistencespb.WorkflowExecutionState{RunId: cur.runID, State: cur.state},
+		ExecutionState: &persistencespb.WorkflowExecutionState{State: cur.state},
 	}, cur.lastWriteVersion, nil
 }

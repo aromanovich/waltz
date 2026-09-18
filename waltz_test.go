@@ -204,6 +204,11 @@ func TestOneCompositionEmitsToOneHandler(t *testing.T) {
 }
 
 // aCreate is the smallest brand-new workflow the write path folds and encodes.
+// Smallest in the literal sense: it carries no execution-state blob, so it does
+// not survive a round trip through the codec, which rebuilds the state from that
+// blob and hands back a nil one for a fold to dereference. Fine for a write
+// driven through the layer, which folds the request as given; a test that wants
+// an entry *in a log* builds one with `internal/verify/mutbuild` instead.
 func aCreate(shard wal.ShardID) *p.InternalCreateWorkflowExecutionRequest {
 	run := uuid.NewString()
 	return &p.InternalCreateWorkflowExecutionRequest{
