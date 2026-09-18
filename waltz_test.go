@@ -379,6 +379,44 @@ func TestARetiredShardStillReportsWhatItHolds(t *testing.T) {
 	require.Equal(t, 1, layer.Totals().TailEntries)
 }
 
+// TestAResidueForAShardTakenAwayNamesTheFence: the shutdown looks at a shard
+// nothing asked it about, and what it finds there may be a successor's. It
+// reports a residue — this node cannot establish what the shard holds, and
+// nothing that reports zero entries may be read as a clean one — and the cause
+// is what makes the report actionable rather than a loop: no restart of this
+// node will ever drain a shard it does not own, and the entries are the new
+// owner's, whose own shutdown is where they appear.
+func TestAResidueForAShardTakenAwayNamesTheFence(t *testing.T) {
+	ctx := context.Background()
+	const shard, mine, theirs = wal.ShardID(6), wal.Epoch(2), wal.Epoch(3)
+
+	logs := memwal.New()
+	layer, err := Compose(
+		Backends{Log: logs, Cold: coldtest.New()},
+		cycle.Fixed(cycle.Defaults()),
+		DefaultTaskCategories(),
+		log.NewNoopLogger(), nil)
+	require.NoError(t, err)
+
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, mine))
+
+	// Another node takes the shard and writes, while nothing has asked this one
+	// anything — so its cycle has never looked at the log.
+	require.NoError(t, logs.Fence(ctx, shard, theirs))
+	payload, err := mutation.Encode(
+		mutbuild.For(int32(shard)).Create(uuid.NewString(), "one-emitter", uuid.NewString()))
+	require.NoError(t, err)
+	require.NoError(t, logs.Append(ctx, shard, theirs, wal.FirstSeqno, payload))
+
+	err = layer.Shutdown(ctx, time.Minute)
+	var undrained *UndrainedError
+	require.ErrorAs(t, err, &undrained)
+	require.Len(t, undrained.Shards, 1)
+	require.Equal(t, shard, undrained.Shards[0].Shard)
+	require.ErrorContains(t, undrained.Shards[0].Cause, cycle.FencedAway,
+		"the cause is what tells an operator to finish the new owner's shutdown rather than restart this one")
+}
+
 // TestAShutdownAfterACleanRetireIsQuiet is the other side of the rule above: a
 // close that could not establish what its shard holds is a residue, and a cycle
 // that was already retired is not that case. Its mirror is the established

@@ -129,7 +129,13 @@ So the order is:
 3. if it returned a `*UndrainedError`, the shards it names still hold acked entries. Do not remove the
    section. Bring the node back in intercept mode and let it drain — a shard whose cold store is
    reachable empties on the next shutdown, and one whose cycle halted needs the halt cleared first
-   ([runbook (b)](#b-a-shard-halted--and-which-of-the-two-classes));
+   ([runbook (b)](#b-a-shard-halted--and-which-of-the-two-classes)).
+   **Read the cause before acting on the count.** A residue carrying zero entries is this node saying
+   it could not establish what that shard holds, and the cause says which kind. One naming
+   `the shard has been fenced away` is a shard another node took: nothing on this node will ever
+   drain it, restarting in intercept mode will report it again, and the entries — if any — are the
+   new owner's, whose own shutdown is where they appear. Finish that node's step 2 instead. Any
+   other cause is this node's own failure to look, and a restart is the remedy;
 4. only once every node's `Shutdown` has answered nil, remove the section and restart.
 
 A node killed rather than stopped skips steps 2 and 3 entirely, which is why a decommission starts
