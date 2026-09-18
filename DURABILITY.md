@@ -225,6 +225,21 @@ between the two leaves events no mutable state points at — garbage rather than
 loss, and [ADR 0008](docs/adr/0008-the-log-carries-history-tasks-and-not-shard-or-event-writes.md)
 holds the boundary.
 
+**A windowed write whose drain loses the shard is told it definitely did not
+commit.** In a windowed mode the entry is appended and acked into the log before
+the watermark trips the drain, so when that drain's `Apply` answers
+`*p.ShardOwnershipLostError` the error travels out to the writer whose mutation
+tripped it — and upstream reads that class as *guaranteed to have failed*,
+dropping the request's task keys from its tracker and skipping its
+notifications. The entry is in the log, above the watermark, and the successor
+applies it. No acked entry is lost, and the caller's own claim is still false in
+the direction that matters: it is told nothing happened about a mutation that
+will. The blast radius is bounded because that class also unloads the shard,
+which discards the tracker and the cache it would have misled. Closing it means
+answering the caller something in upstream's possibly-succeeded set while still
+telling the server to re-acquire, which is a change to the failover signal and
+not a local fix.
+
 **Nothing is staged between two layer nodes, or between clusters.** No partition,
 no kill, no failover. [Chapter 15](docs/handbook/15-the-limits-of-the-evidence.md)
 is the long form of what a green run does not claim.

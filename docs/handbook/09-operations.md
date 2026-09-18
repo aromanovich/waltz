@@ -100,6 +100,16 @@ still held, and what that shard's drain answered, which is what tells a halted c
 that ran out. Nil means every tail emptied. Log it: it is the only moment those entries are nameable,
 and the next section is the one procedure that needs the answer.
 
+**Size the budget for every shard the node holds, not for the ones it wrote to.** A cycle replays
+lazily, on the first request that reaches it, so one installed by an acquire that nothing then asked
+about has never read its watermark and never looked at the log — and what it may be sitting on is a
+dead owner's acked entries. The shutdown therefore starts such a cycle before draining it, which
+costs a watermark read and a log read per held shard even where there is nothing to apply, and a
+replay and a transaction where there is. A shard the budget never reached is reported rather than
+assumed clean: a residue whose count is zero and whose cause names the failure is the layer saying it
+could not establish what that shard holds, which for the procedure below counts exactly as a
+non-empty tail does.
+
 ### Taking the layer out
 
 Turning the layer *off* is not the turn-on checklist run backwards, and it has one ordering

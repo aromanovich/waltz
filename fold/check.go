@@ -26,8 +26,10 @@ package fold
 
 import (
 	"fmt"
+	"time"
 
 	enumsspb "go.temporal.io/server/api/enums/v1"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/serialization"
 
@@ -492,7 +494,20 @@ func currentRowConflict(msg string, base *p.InternalGetCurrentExecutionResponse,
 		State:            st.GetState(),
 		Status:           st.GetStatus(),
 		LastWriteVersion: lastWriteVersion,
+		StartTime:        startTimeOf(st),
 	}
+}
+
+// startTimeOf is the state's start time as the store's error carries it, nil
+// where the state has none. The reuse check the start path runs against it reads
+// an absent one as a run that began at the zero time, so every interval it
+// measures is enormous and the minimal-interval refusal never fires.
+func startTimeOf(st *persistencespb.WorkflowExecutionState) *time.Time {
+	if st.GetStartTime() == nil {
+		return nil
+	}
+	t := st.GetStartTime().AsTime()
+	return &t
 }
 
 // writtenVersion is the db_record_version the window's state for a run will
