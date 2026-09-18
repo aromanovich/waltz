@@ -18,6 +18,13 @@ established it, which is to be treated as open. A closed entry names the
 mechanism and a test that fails without it. A new way found belongs there whether
 or not it is closed the same day.
 
+**It is the queue, not the report**, and its last section says how it is worked:
+a session takes named entries and ends each one closed, refuted or accepted, and
+changes nothing else. Read that section before starting a hardening pass — going
+looking for something to fix instead is what keeps the list from converging,
+since every edit is new surface. What has already been established as impossible
+is recorded there too, so that a later pass does not derive it again.
+
 ## What this is
 
 waltz puts a write-ahead log in front of a Temporal history shard's cold store.

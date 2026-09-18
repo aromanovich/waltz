@@ -277,6 +277,58 @@ judge it.
 
 ---
 
+## Refuted
+
+Established as impossible, or as not a loss, with the argument — so that a later
+pass does not derive it again. This section is what makes the list converge:
+without it every sweep re-checks what the last one cleared, and the re-checking
+is most of the cost.
+
+An entry here carries **how** it was established, because that is what a reader
+has to weigh: `read` is one reader's derivation from the code, `measured` is a
+staged defect or a probe, `structural` is a mechanism that makes the shape
+unrepresentable.
+
+**The trim never passes what the cold store holds** (read). `Trimmer.Drained` is
+reached only on the settle-forward path, after `Tail.Settle(..., MoveWatermark)`,
+so the watermark it is handed is the seqno the committing transaction wrote. A
+halted cycle does not trim at all: the log is the next owner's evidence.
+
+**The write path cannot ack into a cycle that has not replayed** (read).
+`Cycle.add` calls `Cycle.start` before it reads the policy, takes a seqno or
+appends anything. `Cycle.Close` was the one door that skipped it, and that is the
+shutdown entry above.
+
+**No intercepted write acks before its events are down** (read). All eight go
+through one `ExecutionStore.write`, which calls `appendEvents` before
+`layer.Write`; a kind with no interception row is refused rather than transited.
+There is no second door to keep in step.
+
+**No error is swallowed on the layer's write paths** (measured, by sweep). One
+discarded error exists — the age tick's drain, which has no caller to answer and
+whose outcome is on the state already.
+
+**The registry cannot deadlock a node through a cycle's loop** (read). Every
+`held` method finishes its map arithmetic and returns without calling into a
+`*Cycle`, so no lock is held across the goroutine that a stuck cold store would
+block.
+
+**A sparse record cannot lose a field silently** (structural). `mutation`'s
+field-set guard walks every request struct of every kind and fails by name on a
+field that is neither carried nor recorded as deliberately dropped, and
+`TestTheGuardCatchesAnUpgrade` is what says the guard is not vacuous.
+
+**Sync mode's window really is one** (read). `Sync` is a section key read once
+when the policy is built, not a dynamic setting, so no shard changes mode under a
+live cycle and "a window of one by construction" holds wherever it is relied on.
+
+**A queue reader does survive a range id renewal** (read, against upstream
+v1.29.6). `renewRangeLocked` drains in-flight task requests, bumps the range id,
+updates the task key manager and unloads nothing. This is a premise rather than a
+hazard: it is what makes the task-page routing entry above reachable.
+
+---
+
 ## What this file is not
 
 It is not a proof that the list is complete. An entry absent from it is one
@@ -288,3 +340,55 @@ that holds it.
 It is also not a substitute for the reasoning. Each entry is a pointer: the
 mechanisms live in `.claude/rules/`, beside the code, and the argument for each
 lives in [the handbook](docs/handbook/README.md).
+
+---
+
+## How this file is worked
+
+This list is the **queue**, not the report. A session that opens it takes named
+entries and closes them; one that goes looking for something to fix instead is
+how the list stops converging, because every edit is new surface and roughly one
+defect in three found this way is the previous session's own.
+
+**Each entry ends in exactly one of three states, and nothing else counts as
+progress.**
+
+1. **Closed** — a mechanism prevents it, with a test that fails when the
+   mechanism is removed. Not a test that passes: one watched to go red.
+2. **Refuted** — established as impossible or as not a loss, recorded above with
+   the argument and how it was established.
+3. **Accepted** — it can happen, nobody will close it, and the owner has said so
+   in the entry with the reason. An accepted risk is a finished entry.
+
+**Say which rung a closure stands on.** They are not equal, and "there is a test"
+hides the difference:
+
+| rung | what it is | what it rules out |
+|---|---|---|
+| 1 | a compile error — unexported fields of an exported type in a package of its own | the shape, structurally |
+| 2 | exhaustive enumeration of a finite domain (`cycle/decide_test.go`'s tables) | everything in that domain |
+| 3 | a differential or property run over a generated stream | what the generator reaches |
+| 4 | one test, proved by staging the defect it exists for | that scenario |
+| 5 | prose in `.claude/rules/` | nothing mechanically |
+
+Rung 4 is where most of this file sits. Convergence means moving what can move to
+1–3 and knowing, entry by entry, what is only held by 4 and 5.
+
+**Two session shapes, never mixed.** A *hardening* session may change nothing
+that does not close a named entry — no refactors, no simplifications, no
+opportunistic tidying, however obviously right. Anything else is an *ordinary*
+session, and its diff is worked as hardening afterwards, because a change that
+improves the code still moves what every claim here was written against.
+
+**The list is done when two consecutive adversarial passes, each on a context
+that does not remember the last, produce nothing but stale documentation.** The
+fresh context is not ceremony: a reader who remembers concluding something is
+checking their own answer.
+
+**Three open entries above cannot be closed from inside this repository**, and no
+amount of reading can change that — both shipped implementations die with the
+process, no failover between two processes is staged, and a backend whose `Fence`
+never reaches storage passes every fencing case in the suite. They need a durable
+log, two processes and a kill. That is one harness and a decision, not an open
+research question, and until it is either built or those entries are **accepted**,
+this list has a floor it cannot go below.
