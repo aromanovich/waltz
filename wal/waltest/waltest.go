@@ -55,6 +55,7 @@ func RunContractSuite(t *testing.T, log wal.Log) {
 		{"FenceAtTheSameEpochIsIdempotent", testFenceAtTheSameEpochIsIdempotent},
 		{"FenceAtALowerEpochIsRefused", testFenceAtALowerEpochIsRefused},
 		{"EpochGrowsWithoutChangingOwner", testEpochGrowsWithoutChangingOwner},
+		{"TrimRunsBesideAppends", testTrimRunsBesideAppends},
 		{"TwoWritersContendForOneShard", testTwoWritersContendForOneShard},
 	}
 	for _, tt := range tests {
@@ -606,6 +607,118 @@ func testTwoWritersContendForOneShard(f *fixture) {
 	got, err := f.readLog(shard)
 	require.NoError(f.t, err)
 	require.Equal(f.t, acked, got, "the log is not what the claimants were told it is")
+}
+
+// Every method of the contract is safe for concurrent use, and [wal.Log.Trim] is
+// the one a caller always issues from a goroutine of its own: a trim runs on a
+// cadence beside the loop that goes on appending, so that a slow one cannot stop
+// a shard from acking. The other three trim cases here are sequential over a
+// quiescent log, which is the shape no deployment ever trims in — so a backend
+// whose trim is a read-modify-write over the region the appends are landing in
+// passes every one of them and loses the entry that was acked while it ran.
+//
+// What that loses is the worst-shaped thing in this suite: the trim rewrites the
+// tail without the entry appended under it, the appender was told that entry is
+// durable, and a replay after the process dies reads a log that simply ends
+// lower. No error anywhere, and the seqno is handed out a second time.
+func testTrimRunsBesideAppends(f *fixture) {
+	const (
+		entries = 200
+		// How far a trim stays behind what is acked. A trim goes to what a drain
+		// applied, which is always below the log's tail, so a trim at the very
+		// tail is not the shape to test.
+		behind = wal.Seqno(8)
+	)
+	shard, epoch := f.newShard(), wal.Epoch(5)
+	f.fence(shard, epoch)
+
+	var (
+		mu        sync.Mutex
+		acked     wal.Seqno
+		trimmed   wal.Seqno
+		trims     int
+		appending = true
+		failed    error
+	)
+	// Recorded rather than asserted: require outside the test's own goroutine
+	// stops that goroutine alone, and the run would go on with one half of the
+	// pair and fail for having never overlapped.
+	fail := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failed == nil {
+			failed = err
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer func() {
+			mu.Lock()
+			appending = false
+			mu.Unlock()
+		}()
+		for i := range entries {
+			seqno := wal.FirstSeqno + wal.Seqno(i)
+			if err := f.appendErr(shard, epoch, seqno, payloadFor(seqno)); err != nil {
+				fail(fmt.Errorf("appending seqno %d beside a trim: %w", seqno, err))
+				return
+			}
+			mu.Lock()
+			acked = seqno
+			mu.Unlock()
+			// Both halves yield for the reason the contention test's do: a backend
+			// over a network parks on every round trip and one in memory parks on
+			// nothing, so without this the two never overlap on a one-P runtime.
+			runtime.Gosched()
+		}
+	})
+	wg.Go(func() {
+		for {
+			mu.Lock()
+			upTo, last, live := acked, trimmed, appending
+			mu.Unlock()
+
+			if upTo > behind && upTo-behind > last {
+				upTo -= behind
+				if err := f.log.Trim(f.ctx, shard, upTo); err != nil {
+					fail(fmt.Errorf("trimming up to %d beside an append: %w", upTo, err))
+					return
+				}
+				mu.Lock()
+				trimmed, trims = upTo, trims+1
+				mu.Unlock()
+			}
+			if !live {
+				return
+			}
+			runtime.Gosched()
+		}
+	})
+	wg.Wait()
+
+	require.NoError(f.t, failed)
+	require.Positive(f.t, trims,
+		"no trim ran while the appends were going, so the run says nothing about the two together")
+	require.Equal(f.t, wal.FirstSeqno+wal.Seqno(entries)-1, acked)
+
+	got, err := f.readLog(shard)
+	require.NoError(f.t, err)
+	require.NotEmpty(f.t, got, "every trim stayed below what was acked, so the log cannot be empty")
+
+	require.Equal(f.t, acked, got[len(got)-1].Seqno,
+		"the entry acked last is gone from the log, which is what a trim that is not isolated from a concurrent append takes")
+	require.LessOrEqual(f.t, got[0].Seqno, trimmed+1,
+		"entries above the last trim are missing: a trim removed more than it was given")
+	for i, e := range got {
+		require.Equalf(f.t, got[0].Seqno+wal.Seqno(i), e.Seqno, "the log has a hole below seqno %d", e.Seqno)
+		require.Equalf(f.t, payloadFor(e.Seqno), e.Payload, "seqno %d came back with another entry's payload", e.Seqno)
+	}
+
+	// And what the trims left is still a log a writer continues rather than one
+	// whose next seqno moved under it.
+	next := acked + 1
+	f.append(shard, epoch, next, payloadFor(next))
 }
 
 // claimant is one contender of [testTwoWritersContendForOneShard]. It records

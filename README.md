@@ -181,7 +181,7 @@ waltz sits between two things it does not own, and a deployment replaces both.
 
 | | the contract | shipped here | what judges your implementation |
 |---|---|---|---|
-| the log | [`wal.Log`](wal/wal.go#L148) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: nineteen cases, one call |
+| the log | [`wal.Log`](wal/wal.go#L148) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: twenty cases, one call |
 | the database | [`cold.Store`](cold/cold.go#L67) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
 
 `wal.Log` is an append-only, fenced, gap-free sequence of entries per shard — five methods, opaque

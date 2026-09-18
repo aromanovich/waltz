@@ -85,7 +85,7 @@ What to know before changing any of it:
   none of the three — those helpers are the argument rules and the diagnosis
   order — so a backend author had three obligations no green run mentioned. That
   the case is the whole of the coverage is measured rather than assumed: deleting
-  every `ctx.Err()` check from `memwal` leaves the other eighteen green and fails
+  every `ctx.Err()` check from `memwal` leaves the other nineteen green and fails
   this one alone;
 * **a refusal the contract has no name for is settled by reading the log, not by
   a fourth sentinel.** An append can fail with an error the contract does not
@@ -110,17 +110,28 @@ What to know before changing any of it:
   reading "an error I do not recognise" as "wrote nothing".
   `waltest.Faulty.AfterAppend` is what stages one — a fault asked *after* the
   append has landed, the ambiguity no `OnAppend` can express;
+* **`Trim` is driven concurrently, because that is the only way it is ever
+  called** (`TrimRunsBesideAppends`). The trimmer runs on a goroutine of its own
+  so a slow trim cannot stop a shard from acking, so in every deployment a trim
+  is in flight while the loop appends and replays. The other three trim cases are
+  sequential over a quiescent log, which no deployment is ever in, and a backend
+  whose trim is a read-modify-write over the region the appends land in passes
+  all three — measured, by giving `memwal`'s trim a snapshot taken before a
+  yield: the other nineteen cases stayed green and this one alone went red,
+  saying the entry acked last was gone. What it loses is the worst-shaped thing
+  the contract has: no error, a log that simply ends lower, and the seqno handed
+  out twice;
 * **the suite's blind spot on time has an instrument, and it is deliberately not
   a case in the suite.** Guarantee 5 excuses a trim and nothing else, so a
   retention window, a TTL on the log's table or a compaction that drops old
   records each break it silently — and the suite runs in milliseconds, so a
-  backend that expires entries passes all nineteen and loses the first tail that
+  backend that expires entries passes all twenty and loses the first tail that
   outlives its policy. `waltest.CheckRetention` is that obligation as a function
   a deployment calls: append a run, wait out a window the caller names, require
   every entry back with the log still appendable above them. It returns an error
   rather than taking a `*testing.T` for the reason `internal/verify/drive` does —
   a deployment runs it from whatever harness it has — and it costs its window in
-  wall-clock time, which is why it cannot be a twentieth case. Point it at a
+  wall-clock time, which is why it cannot be a case in the suite at all. Point it at a
   **deliberately shortened policy**: a pass says the entries outlived that
   window, never that the backend has no retention. `waltest.Expiring` is the
   backend it is proved against and the one decorator here that is not a log a

@@ -61,7 +61,7 @@ value, no cluster:
 |---|---|
 | order and readback | `AppendsComeBackInOrder`, `ReadFromAnyPosition`, `ShardsAreIndependent` |
 | gap-freedom | `GapIsRefused`, `DuplicateSeqnoIsAlreadyWritten`, `AppendBelowATrimIsRefused` |
-| trim | `TrimRemovesUpToAndNothingElse`, `TrimOfALogWithNothingInIt` |
+| trim | `TrimRemovesUpToAndNothingElse`, `TrimOfALogWithNothingInIt`, `TrimRunsBesideAppends` |
 | fencing | `AppendNeedsAFenceAtItsEpoch`, `FenceCutsOffLowerEpochs`, `FenceAtALowerEpochIsRefused`, `FenceAtTheSameEpochIsIdempotent`, `FencedOutranksAMissingPredecessor`, `EpochGrowsWithoutChangingOwner`, `TwoWritersContendForOneShard`, `ZeroEpochIsRefused` |
 | what every method owes its context | `ACancelledContextChangesNothing` |
 | the obligations that belong to no one backend | `PayloadsAreNobodyElsesMemory`, `ArgumentsTheContractRefuses` |
@@ -77,6 +77,16 @@ change. `ArgumentsTheContractRefuses` pins what the log must refuse rather than 
 payload, a seqno below `wal.FirstSeqno`, a read of zero entries, a read with a negative limit — and
 the one out-of-range argument that is clamped instead, a read starting below `wal.FirstSeqno`, which
 is where a caller that wants the whole log begins.
+
+Concurrency is an obligation of that kind too, and `TrimRunsBesideAppends` is the only case that
+drives it. Every method of the contract is safe for concurrent use, and `Trim` is the one a caller
+always issues from a goroutine of its own — the trimmer runs beside the loop so a slow trim cannot
+stop a shard from acking — so a trim in flight while the log is being appended to is the only shape
+a deployment ever trims in, and the other two trim cases are sequential over a quiescent log. A
+backend whose trim is a read-modify-write over the region the appends are landing in passes both of
+them. That is measured rather than argued: given `memwal` a trim built from a snapshot taken before
+a yield, the other nineteen cases stay green and this one alone goes red, saying the entry acked
+last is gone from the log.
 
 Refusal *order* is a rule of the same kind, and it sits in the fencing row.
 `FencedOutranksAMissingPredecessor` puts an ex-owner's append two seqnos above the tail, where both
@@ -107,14 +117,14 @@ whether the fence reaches another machine. Whoever supplies the log owes that te
 `ReadFrom` returns every entry a completed append acked *and no trim has removed*, so a trim is the
 only removal the contract excuses: a retention policy, a TTL on the table, a compaction that drops
 old records are each a violation of it. The suite cannot see any of them. Every case runs to
-completion in milliseconds, so a log that deletes entries after an hour passes all nineteen and
+completion in milliseconds, so a log that deletes entries after an hour passes all twenty and
 loses an acked entry the first time a shard's tail outlives the policy — acked data with no second
 copy, since the cold store not holding it is the whole reason it is in the log.
 
 **That one has an instrument now, and it is not a suite case.** `waltest.CheckRetention` appends a
 short run, waits out a window the caller names, and requires every entry to still be there — same
 seqnos, same payloads, same order, and the log still appendable above them. It is a function
-returning an error rather than a twentieth case for two reasons: it costs its window in wall-clock
+returning an error rather than a suite case for two reasons: it costs its window in wall-clock
 time, and a deployment runs it from whatever harness it has rather than only from `go test`.
 
 Two things about how to run it. **Point it at a deliberately shortened policy** — set the log's
@@ -822,7 +832,7 @@ suites above and are stated where they are:
 
 ## Where this lives in the code
 
-* [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its nineteen
+* [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its twenty
   cases, and the guarantee each is stated under;
   [`fault.go`](../../wal/waltest/fault.go) is `Faulty`.
 * [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)
