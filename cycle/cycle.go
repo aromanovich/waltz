@@ -438,14 +438,23 @@ func (c *Cycle) State() State { return State(c.mirroredState.Load()) }
 // its empty window and reporting nothing held is how a shutdown says "clean"
 // about a shard it never looked at, and a nil here is what an operator removes
 // the layer on.
+// A cycle whose loop is already gone answers nil rather than the stopped
+// refusal: it was retired, so there is no window left to drain and nothing left
+// open — the mirror holds what it stopped holding, which is the answer
+// [Cycle.residue] reads. Passing the refusal on would make every shard a harness
+// retired into a residue, which tells an operator that removing the layer
+// strands something over a shard that drained.
 func (c *Cycle) Close(ctx context.Context) error {
-	err := tell(ctx, c, func(s *state) error {
+	_, stopped, err := ask(ctx, c, func(s *state) (struct{}, error) {
 		if err := c.start(ctx, s); err != nil {
-			return err
+			return struct{}{}, err
 		}
-		return c.drain(ctx, s, drainExplicit)
+		return struct{}{}, c.drain(ctx, s, drainExplicit)
 	})
 	c.Retire()
+	if stopped {
+		return nil
+	}
 	return err
 }
 

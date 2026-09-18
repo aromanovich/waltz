@@ -379,6 +379,30 @@ func TestARetiredShardStillReportsWhatItHolds(t *testing.T) {
 	require.Equal(t, 1, layer.Totals().TailEntries)
 }
 
+// TestAShutdownAfterACleanRetireIsQuiet is the other side of the rule above: a
+// close that could not establish what its shard holds is a residue, and a cycle
+// that was already retired is not that case. Its mirror is the established
+// answer — which is why a residue reads it there — so a shutdown finding no loop
+// left to ask has nothing open to report. Reporting it would tell an operator
+// that removing the layer strands something, over a shard that drained.
+func TestAShutdownAfterACleanRetireIsQuiet(t *testing.T) {
+	ctx := context.Background()
+	const shard, epoch = wal.ShardID(4), wal.Epoch(3)
+
+	// Sync, so the write drains inside itself and the tail is empty after it.
+	cfg := cycle.Defaults()
+	cfg.Sync = true
+	layer, cold := composed(t, cfg)
+
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, epoch))
+	require.NoError(t, layer.Options().Layer.Write(ctx,
+		mutation.Mutation{Create: aCreate(shard)}, epoch, baserow.New(emptyStore{})))
+	require.Equal(t, 1, cold.Drains(), "the entry is in the cold store, so the shard holds nothing")
+
+	require.True(t, layer.RetireShard(shard))
+	require.NoError(t, layer.Shutdown(ctx, time.Minute))
+}
+
 // TestAShutdownWithoutABudgetIsRefused: zero is a deadline already past, so a
 // caller reading it the way most of Go does would drain nothing and be handed
 // every shard back as a residue — a report indistinguishable from a cold store
