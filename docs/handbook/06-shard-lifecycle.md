@@ -306,8 +306,11 @@ for the size instead. A replay that took that for the end would come up having f
 the tail, then serve reads and task pages missing everything above the cut, whose callers ack past
 it; the shard halts eventually, when the first append finds its seqno taken, but by then the
 pagination has been completed over rows nobody was shown. So the loop ends with one more read of a
-single entry at the seqno it stopped below, and an entry found there is charged to the tail and
-halts the shard before it serves anything. It costs one round trip per acquire.
+single entry at the seqno it stopped below, and an entry found there halts the shard before it
+serves anything. Which halt is the same question the loop asks of every entry it reaches: above this
+cycle's epoch means somebody took the shard, so it is `halted-lost` and the entry is not this
+cycle's to account for; otherwise it is charged to the tail and the halt is `halted-invariant`. It
+costs one round trip per acquire.
 
 Seven rules the loop applies, entry by entry:
 
@@ -328,11 +331,10 @@ Seven rules the loop applies, entry by entry:
 * **an entry those two rules stop on is charged to the tail first** (`Cycle.strand`). All three of
   them — the seqno gap, the decode failure and the foreign shard — halt before `Cycle.accept`, so
   nothing else would put the entry there, and a tail left empty is read exactly one way:
-  [§5](#5-halts-the-two-classes)'s rule passes both readers through to the cold store on it. That
-  store does not hold this entry, and for the task read a page short of
-  its rows is [not staleness but loss](07-read-path.md#why-a-read-served-anywhere-else-is-not-merely-stale)
-  — the queue completes the range it asked for and acks past keys no owner running this build can
-  decode to write. What the tail then *counts* is not a number to read: the entries above the one it
+  [§5](#5-halts-the-two-classes)'s rule passes a mutable-state read through to the cold store on it,
+  which does not hold this entry. The task read no longer rests on the charge — it is refused at
+  either halt whatever the tail holds — so what the charge still buys is the refusal's *reach*:
+  every read on the shard rather than that one class. What the tail then *counts* is not a number to read: the entries above the one it
   stopped on were never looked at. Non-empty is the whole of what it is for.
 * **the ack is the answer — with one exception the writer records.** Normally every assertion is
   verified before the entry becomes durable, so a condition failure at apply time is a genuine
@@ -429,9 +431,11 @@ log promptly rather than assuming the halted cycle will keep it indefinitely.
 What a halted shard answers a *reader* is [chapter
 07](07-read-path.md#2-routing-a-read-and-drainonread). Briefly: an empty tail passes through to the
 cold store in either halt, and a non-empty one refuses. The refusal is `ShardOwnershipLost` under
-`halted-lost`, and the halt's own error, cause included, under `halted-invariant`. The one exception
-is a task read under `halted-lost`, which is refused whatever the tail holds, because its one caller
-would complete a range it was handed short.
+`halted-lost`, and the halt's own error, cause included, under `halted-invariant`. That is the rule
+for a **mutable-state** read. A task read never reaches it: it is refused at either halt whatever
+the tail holds, because its one caller would complete a range it was handed short — and because a
+page the cold store answers carries that store's own token, which the cycle that replaces this one
+cannot read.
 
 Every transition in this chapter is instrumented. The table below is the whole of it in one place —
 a reference to come back to once the transitions above are familiar, not a way of learning them:

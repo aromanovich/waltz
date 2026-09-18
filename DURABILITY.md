@@ -56,8 +56,11 @@ for is the contract's "the log ends here", and a backend whose real limit is a
 response size answers short for the size. A replay that believed it would come up
 having folded a prefix of the tail and then serve reads and task pages missing
 everything above the cut. The end is confirmed with a one-entry read rather than
-inferred, and an entry found there is charged to the tail and halts the shard.
-`TestAReplayDoesNotTakeAShortPageForTheEndOfTheLog` (`cycle/replay_test.go`); the
+inferred, and an entry found there halts the shard — charged to the tail where it
+is this cycle's to account for, and reported as a failover where its epoch says a
+successor wrote it.
+`TestAReplayDoesNotTakeAShortPageForTheEndOfTheLog` and
+`TestAConfirmationThatMeetsASuccessorReportsAFailover` (`cycle/replay_test.go`); the
 backend-side obligation is `APageEndsAtItsLimitAndNotAtAByteBudget` in the
 conformance suite.
 

@@ -328,8 +328,10 @@ import ban in [03-components.md](03-components.md) exist to allow.
   treat it as a correctness incident.
 * **There is no path back.** No tool, no supported edit and no documented procedure returns a
   `halted-invariant` shard to service. `Cycle.State` is terminal: for as long as that cycle exists
-  it refuses every write. A cycle that halted this way with an empty tail still passes both
-  mutable-state and task reads through to the cold store; one that halted holding a tail refuses
+  it refuses every write. A cycle that halted this way with an empty tail still passes
+  **mutable-state** reads through to the cold store; a task read it refuses whatever the tail holds,
+  so the shard's queues stop draining too — judge the blast radius on that, not on the writes alone.
+  One that halted holding a tail refuses
   every routed read, and it will never drain that tail — a halted cycle does not drain, so only a
   fresh cycle at a higher epoch clears it. The layer asks nobody to take the shard over, because the
   halt is deliberately not an ownership loss — which is not the same as pinning ownership: the

@@ -78,15 +78,15 @@ payload, a seqno below `wal.FirstSeqno`, a read of zero entries, a read with a n
 the one out-of-range argument that is clamped instead, a read starting below `wal.FirstSeqno`, which
 is where a caller that wants the whole log begins.
 
-Concurrency is an obligation of that kind too, and `TrimRunsBesideAppends` is the only case that
-drives it. Every method of the contract is safe for concurrent use, and `Trim` is the one a caller
-always issues from a goroutine of its own — the trimmer runs beside the loop so a slow trim cannot
-stop a shard from acking — so a trim in flight while the log is being appended to is the only shape
-a deployment ever trims in, and the other two trim cases are sequential over a quiescent log. A
-backend whose trim is a read-modify-write over the region the appends are landing in passes both of
-them. That is measured rather than argued: given `memwal` a trim built from a snapshot taken before
-a yield, every other case stays green and this one alone goes red, saying the entry acked
-last is gone from the log.
+Concurrency is an obligation of that kind too, and two cases drive it — `TwoWritersContendForOneShard`
+for fencing, and `TrimRunsBesideAppends` for the trim. Every method of the contract is safe for
+concurrent use, and `Trim` is the one a caller always issues from a goroutine of its own — the
+trimmer runs beside the loop so a slow trim cannot stop a shard from acking — so a trim in flight
+while the log is being appended to is the only shape a deployment ever trims in, while the other
+three trim cases are sequential over a quiescent log. A backend whose trim is a read-modify-write
+over the region the appends are landing in passes all three. That is measured rather than argued:
+given `memwal` a trim built from a snapshot taken before a yield, every other case stays green and
+this one alone goes red, saying the entry acked last is gone from the log.
 
 `APageEndsAtItsLimitAndNotAtAByteBudget` is the same argument about weight. `ReadFrom`'s "fewer than
 limit entries means the log ends there" is what a caller reading a whole log stops on, and
@@ -100,7 +100,7 @@ reach, since the tail's bound is 8 MB rather than a count. Measured the same way
 The layer does not leave that to the suite, because a suite case can only probe one budget and a
 backend with a larger one would pass it and still truncate a production tail. A replay therefore
 **confirms** the end of the log with a one-entry read rather than inferring it from a short page, and
-what that read finds is charged to the tail: [chapter 06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail) has it.
+what that read finds halts the shard before it serves: [chapter 06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail) has it.
 
 Refusal *order* is a rule of the same kind, and it sits in the fencing row.
 `FencedOutranksAMissingPredecessor` puts an ex-owner's append two seqnos above the tail, where both

@@ -146,9 +146,10 @@ func (t *taskPageToken) setAfter(k tasks.Key) {
 }
 
 // taskTokenMagic frames this layer's token so a store's own can be told apart
-// from it. The two meet when a pagination began while this shard's cycle was
-// retired; mistaking one for the other fails the read or resumes the window
-// from the wrong place.
+// from it. Nothing hands a caller a store's own any more, so what the frame
+// answers is not which of two paginations this is but whether the token is one
+// of ours at all — and one that is not is refused ([ErrForeignPageToken]) rather
+// than resumed against a window cursor nobody handed out.
 var taskTokenMagic = [4]byte{'w', 'a', 'l', '1'}
 
 func encodeTaskToken(t *taskPageToken) []byte {

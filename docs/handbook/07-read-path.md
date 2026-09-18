@@ -446,9 +446,9 @@ first, nothing is strictly below it, and cutting there would emit an empty page 
 merge emits that single deduplicated entry instead — which is emitting the base page whole, and
 therefore allowed by the cut rule.
 
-A token this layer did not write is handled too: it means an earlier page was answered by the base
-alone, on a shard whose cycle was retired mid-pagination. The merge carries on with the base alone
-rather than inventing a window cursor that was never handed out.
+A token this layer did not write is refused rather than carried — the rule stated above with the
+token's framing, and the reason it can be: no route hands a caller the base store's token, so such a
+token is not a pagination of this layer's to resume.
 
 ### The collision counter
 
