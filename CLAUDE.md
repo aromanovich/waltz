@@ -13,10 +13,12 @@ cold-store transaction — is an optimisation bought against that rule, so any
 change that trades it away has misunderstood what is being optimised.
 
 [`DURABILITY.md`](DURABILITY.md) is the standing list of every known way the rule
-can break, each marked closed, open or **unknown** — and unknown means nobody
-established it, which is to be treated as open. A closed entry names the
-mechanism and a test that fails without it. A new way found belongs there whether
-or not it is closed the same day.
+can break, each marked closed, open, accepted or **unknown** — and unknown means
+nobody established it, which is to be treated as open. A closed entry names the
+mechanism and a test that fails without it; an accepted one names what is being
+accepted and what a deployment owes in its place, and the three of those are the
+page's floor. A new way found belongs there whether or not it is closed the same
+day.
 
 **It is the queue, not the report**, and its last section says how it is worked:
 a session takes named entries and ends each one closed, refuted or accepted, and
