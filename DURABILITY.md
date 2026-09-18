@@ -37,8 +37,8 @@ with a named error), **unavailable** (present, unreadable).
 Temporal server boot over this library in `go test` with nothing installed, and
 they are not a durability claim of any kind. Everything below that is closed is
 closed *in the layer*; a deployment's durability is the durability of the log and
-the store it supplies. It is the first of the three **accepted** entries, which
-are where this page's floor is: what cannot be established from inside this
+the store it supplies. That is the first of the three **accepted** entries below,
+which are this page's floor: what cannot be established from inside this
 repository, signed rather than left open.
 
 ---
@@ -324,12 +324,12 @@ times without a drain and requires the successor's database to match an
 uninterrupted run's. A partition is not unstaged either: there is no channel to
 cut, every interaction between two owners going through the log and the epoch.
 
-*What is accepted* is the four things genuinely absent — a transport that hangs,
-a `kill -9` between a call and its outcome, storage that survives either, and a
+*What is accepted* is the absence of four things: a transport that hangs, a
+`kill -9` between a call and its outcome, storage that survives either, and a
 judge that reads a killed run's record back from outside the layer. The last is
-the one that cannot be worked around from inside: an assertion compiled into the
-layer sees what the layer *believes* and dies with it, which is why the recovery
-runs above establish the replay and never the kill.
+the one no amount of care inside the layer substitutes for — an assertion
+compiled into it sees what the layer *believes* and dies with it, which is why
+the two runs named above establish the replay and never the kill.
 `internal/verify/checker` is half of what such a run needs and says so — a call
 line fsynced before the store is touched, an outcome line after, and no judgement
 of either.
