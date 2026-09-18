@@ -406,8 +406,18 @@ func (c *Cycle) drainNow(ctx context.Context) error {
 func (c *Cycle) Stats() Stats {
 	st, stopped, _ := ask(context.Background(), c, func(s *state) (Stats, error) { return c.stats(s), nil })
 	if stopped {
-		// No loop left to count: the state it stopped in, its epoch, no counters.
-		return Stats{State: c.State(), Epoch: c.epoch}
+		// No loop left to count, so the counters are gone with it — but the tail
+		// is not, and answering zero for it is the one number here that would be
+		// read as a fact. A cycle stopped by [Manager.RetireShard] stays the
+		// shard's, so this is what a caller staging what a dead owner left asks,
+		// and the entries are in the log whether or not a goroutine is left to
+		// say so. Read off the mirror, as [Cycle.residue] and [Cycle.stoppedRead]
+		// already do.
+		entries, bytes := c.mirror.Size()
+		return Stats{
+			State: c.State(), Epoch: c.epoch,
+			TailEntries: int(entries), TailBytes: int(bytes),
+		}
 	}
 	return st
 }

@@ -17,6 +17,7 @@ package cycle
 
 import (
 	"context"
+	"fmt"
 
 	p "go.temporal.io/server/common/persistence"
 
@@ -128,7 +129,16 @@ func (c *Cycle) readTasks(
 	case err != nil:
 		return nil, err
 	case pass:
-		return base(ctx, req)
+		// No route answers a task read this way — every one of them merges or
+		// refuses — and this arm is here to keep it that way rather than to run.
+		// What it would do is hand the caller the cold store's own page *token*,
+		// which the cycle that replaces this one cannot read: the pagination
+		// finishes on the base alone with the window dropped out of it, and the
+		// range its reader completes deletes the acked rows that were in it. A
+		// rule held by three functions in decide.go and nothing at the site that
+		// would carry out the loss is a rule one edit away from being gone.
+		return nil, fmt.Errorf(
+			"cycle: shard %d: a task page may not be answered by the cold store alone", c.shard)
 	}
 
 	// A copy of the caller's request with the two fields the merge decides

@@ -349,6 +349,36 @@ func TestAShutdownSeesATailNoRequestEverMadeItLookAt(t *testing.T) {
 	require.Equal(t, shard, undrained.Shards[0].Shard)
 }
 
+// TestARetiredShardStillReportsWhatItHolds: RetireShard is the verb for staging
+// what a process that died leaves behind, and the question straight after it is
+// what the shard was holding. The cycle stays the shard's — nothing removes it
+// from the registry — so the two narrow reads a caller has answer for it, and a
+// stopped cycle has no loop to count with. Answering zero for the tail is the
+// one number there that reads as a fact rather than as an absence, and it is
+// exactly the fact that is false: the entries are in the log.
+func TestARetiredShardStillReportsWhatItHolds(t *testing.T) {
+	ctx := context.Background()
+	const shard, epoch = wal.ShardID(9), wal.Epoch(2)
+
+	layer, _ := composed(t, cycle.Defaults())
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, epoch))
+	require.NoError(t, layer.Options().Layer.Write(ctx,
+		mutation.Mutation{Create: aCreate(shard)}, epoch, baserow.New(emptyStore{})))
+
+	before, ok := layer.ShardStats(shard)
+	require.True(t, ok)
+	require.Equal(t, 1, before.TailEntries)
+	require.Equal(t, 1, layer.Totals().TailEntries)
+
+	require.True(t, layer.RetireShard(shard))
+
+	after, ok := layer.ShardStats(shard)
+	require.True(t, ok, "the cycle is still the shard's")
+	require.Equal(t, 1, after.TailEntries,
+		"the acked entry is in the log whether or not a goroutine is left to say so")
+	require.Equal(t, 1, layer.Totals().TailEntries)
+}
+
 // TestAShutdownWithoutABudgetIsRefused: zero is a deadline already past, so a
 // caller reading it the way most of Go does would drain nothing and be handed
 // every shard back as a residue — a report indistinguishable from a cold store
