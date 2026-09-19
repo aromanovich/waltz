@@ -91,4 +91,17 @@ files, into `cold/memcold`;
   are judged, and a witness over a composed run is the only place the whole path
   runs at once. Two breaks were tried: a constant drain trigger (caught), and
   emitting the tail for both tail series (**not** caught until a sync-mode
-  condition failure was added, which is the one moment the two numbers differ).
+  condition failure was added, which is the one moment the two numbers differ);
+* **the emitter has a test of its own now, and the reason is the shape of that
+  second break.** Everything above drives a component and reads what came out,
+  so it judges the combinations that component happens to produce — and both
+  count pairs here exist to be read in the combinations it does *not*. Gating
+  `wal_dropped_tasks` on the written count, or `wal_replayed_entries` on the
+  dropped one, is invisible to every run in the tree: the case it silences is
+  the drain whose ranges took every task it held and wrote none, which no
+  generated stream produces. `walmetrics_test.go` drives all four combinations
+  of each pair against a capture handler, plus the two rules a composed run
+  cannot state either — that a zero collision count records nothing, and that
+  `Use` keeps the **first** handler, which is what stops a binary running
+  several services from sending the layer's numbers to the last one's. Six
+  distinct breaks were tried against it and all six are caught.
