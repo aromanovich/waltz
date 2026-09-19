@@ -162,6 +162,10 @@ func (s *Store) drain(
 ) error {
 	shardID := int32(shard)
 
+	// The epoch's boundary is the request loop, not the deletes: moving it past
+	// these is an equivalence — nothing between them asserts, and a rolled-back
+	// transaction writes no rows either way — while moving it past the loop is
+	// red, which is what `TestAStaleEpochShadowsTheVersionFailureUnderIt` holds.
 	if err := assertEpoch(ctx, tx, shardID, int64(epoch)); err != nil {
 		return err
 	}

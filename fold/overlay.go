@@ -123,6 +123,11 @@ func (v RunView) Render(base *p.InternalGetWorkflowExecutionResponse) (*p.Intern
 		return responseOf(mutableStateOf(snap, concatBlobs(nil, v.rs.buffered))), true
 
 	case RunDelta:
+		// Deliberately untested, and a sweep has looked: negating this leaves the
+		// tree green because no caller here reaches it. The layer's own read takes
+		// the base through a store whose absence is an *error*, so the route out
+		// returns before this, and a nil arrives only from a direct caller of this
+		// exported method or from a store answering a row with no state.
 		if base == nil || base.State == nil {
 			return nil, false
 		}
