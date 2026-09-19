@@ -329,6 +329,18 @@ as a collection the run does not have, and a snapshot-bearing write then clears
 the run's tables — an acked write deleted rather than an answer merely stale.
 `TestEveryFieldOfAReadAnswerIsFilled` (`fold/overlay_test.go`).
 
+**A delegated conflict that invents a start time** (rung 4). A current-row
+conflict carries the row's start time so the start path above can run its
+workflow-id reuse check, and a state with none must come back with none: upstream
+reads an absent start time as a run that began at the zero time, so every interval
+measured against it is enormous and the minimal-interval refusal never fires. A
+start the namespace's policy forbids is then admitted — by this layer, where the
+sequential path reading the same row would have refused it. The nil check in
+`startTimeOf` was deletable with everything green, and what it would answer instead
+is a pointer to 1970. `TestACurrentRowConflictCarriesTheStartTimeOrNothing`
+(`fold/check_test.go`). Found by a sweep that deletes a guard clause rather than a
+write — the mutation for an assertion being to make its condition always pass.
+
 **A refusal the caller cannot act on.** Not a loss of data, and in this file
 because the effect on a caller is the same: a current-row conflict carrying no run
 id is one the history service declines to resolve, so a retried start that

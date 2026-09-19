@@ -12,6 +12,7 @@ package fold_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -19,6 +20,7 @@ import (
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/serialization"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/mutation"
@@ -612,4 +614,56 @@ func TestEveryKindIsDecidedAndAnUnknownOneIsRefused(t *testing.T) {
 	_, err := fold.New(shard).Check(mutation.Mutation{})
 	require.ErrorIs(t, err, mutation.ErrNotExactlyOneRequest,
 		"a mutation the switch does not recognise must be refused, not admitted by silence")
+}
+
+// TestACurrentRowConflictCarriesTheStartTimeOrNothing pins the one field of a
+// delegated conflict whose *absence* is the answer. A current-row conflict
+// carries the row's start time so that the start path above can run its
+// workflow-id reuse check, and a state that has none must come back with none:
+// upstream reads an absent start time as a run that began at the zero time, so
+// every interval it measures against it is enormous and the minimal-interval
+// refusal never fires. A start that policy forbids is then admitted — by this
+// layer, where the sequential path reading the same row would have refused it.
+//
+// Nothing drove the distinction: the nil check could be deleted with the whole of
+// `go test ./...` green, and what it would answer instead is a pointer to 1970.
+func TestACurrentRowConflictCarriesTheStartTimeOrNothing(t *testing.T) {
+	const held, wanted = "run-held", "run-wanted"
+	began := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+
+	row := func(startTime *timestamppb.Timestamp) *p.InternalGetCurrentExecutionResponse {
+		return &p.InternalGetCurrentExecutionResponse{
+			RunID: held,
+			ExecutionState: &persistencespb.WorkflowExecutionState{
+				RunId:     held,
+				State:     enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING,
+				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+				StartTime: startTime,
+			},
+		}
+	}
+	// An assertion the row cannot satisfy, so that the conflict is built at all.
+	want := fold.CurrentAssertion{Kind: fold.CurrentEquals, RunID: wanted}
+
+	conflictOf := func(t *testing.T, r *p.InternalGetCurrentExecutionResponse) *p.CurrentWorkflowConditionFailedError {
+		t.Helper()
+		err := want.VerifyRow(r, 0)
+		var conflict *p.CurrentWorkflowConditionFailedError
+		require.ErrorAs(t, err, &conflict, "the row names another run, so the assertion must fail")
+		return conflict
+	}
+
+	t.Run("a state that has one carries it", func(t *testing.T) {
+		got := conflictOf(t, row(timestamppb.New(began)))
+		require.NotNil(t, got.StartTime)
+		require.True(t, got.StartTime.Equal(began), "got %v", got.StartTime)
+	})
+
+	t.Run("a state with none carries none", func(t *testing.T) {
+		got := conflictOf(t, row(nil))
+		require.Nil(t, got.StartTime,
+			"a conflict must not invent a start time: an absent one read as the zero time makes "+
+				"every reuse interval enormous, so the minimal-interval refusal never fires and a "+
+				"start this policy forbids is admitted")
+	})
 }

@@ -210,6 +210,9 @@ func (a *Accumulator) decide(m mutation.Mutation) verdict {
 		v.err = fmt.Errorf("fold: check: %w", mutation.ErrNotExactlyOneRequest)
 		return v
 	}
+	// A fast path and not a guard: empty means no current assertion and no runs,
+	// so the two walks below would visit nothing. Deleting it fails no test,
+	// which is the answer a sweep should get.
 	if want.empty() {
 		return v
 	}
