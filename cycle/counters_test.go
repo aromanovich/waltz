@@ -217,3 +217,31 @@ func TestTheCountersAreNotAControlSurface(t *testing.T) {
 		}
 	}
 }
+
+// TestAckedRangesCountsRangeDeletesAndNothingElse pins what the counter means
+// rather than that it is summed. It is the input to the witness's "a queue
+// completed a range", which no run here gates on — an e2e run is too short to
+// checkpoint one, and says so — so the counter reaches no judge at all: it can
+// be made to move on every other kind, or on none, with the whole of
+// go test ./... green either way. What a deployment's longer run would then be
+// told is that half the history-task path was exercised when it was not.
+func TestAckedRangesCountsRangeDeletesAndNothingElse(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.Sync = true })
+
+	// The adjacent kind on the same path: also a task mutation, also folded.
+	require.NoError(t, e.add(t, mutation.Mutation{AddTasks: &p.InternalAddHistoryTasksRequest{
+		ShardID:     int32(testShard),
+		NamespaceID: "ns",
+		WorkflowID:  "wf",
+		Tasks:       map[tasks.Category][]p.InternalHistoryTask{tasks.CategoryTransfer: {immediate(20)}},
+	}}))
+	require.Zero(t, e.c.Stats().AckedRanges, "an AddHistoryTasks completes no range")
+
+	require.NoError(t, e.add(t, mutation.Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
+		ShardID:             int32(testShard),
+		TaskCategory:        tasks.CategoryTransfer,
+		InclusiveMinTaskKey: tasks.NewImmediateKey(0),
+		ExclusiveMaxTaskKey: tasks.NewImmediateKey(100),
+	}}))
+	require.Equal(t, 1, e.c.Stats().AckedRanges, "and a RangeCompleteHistoryTasks completes exactly one")
+}
