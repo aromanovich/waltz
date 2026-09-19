@@ -689,7 +689,10 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 	}
 	// The condition authority, also before the append: the ack is the answer,
 	// so an assertion this layer means to answer must be evaluated while the
-	// caller is still on the line.
+	// caller is still on the line. Behind the refusal above rather than in front
+	// of it, which nothing drives — both precede the append, so either order
+	// acks nothing — and what the order buys is that a shard already past the
+	// bound refuses without the delegated read into the cold store first.
 	if err := c.check(ctx, s, m, rows, cfg.Sync); err != nil {
 		return err
 	}

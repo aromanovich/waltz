@@ -81,7 +81,15 @@ from` while refusing `last < from`, and nothing drove that boundary: the compari
 could be moved and sync mode's whole recovery would stop at the first entry with
 "the reads are not advancing". A shard that cannot come up, on a mode this
 repository ships and defaults away from rather than forbids.
-`TestATailIsReplayedAPageAtATime` (`cycle/replay_test.go`).
+`TestATailIsReplayedAPageAtATime` (`cycle/replay_test.go`), and — since a later
+pass found that closure standing on a coincidence —
+`TestAFullPageThatEndsWhereItBeganStillAdvances` (`wal/read_test.go`). The
+coincidence is worth keeping: every case in the package that *owns* the guard
+pages at 64, where a full page always ends far above its start, so the boundary
+was reached only through a caller whose page size happened to equal a window of
+one. Raising `max(cfg.Mutations, 1)` to a floor of 2 left the whole of
+`go test ./...` green with the comparison still movable. It is held at the owner
+now, and the cycle's case is what says sync mode reaches it.
 
 **A replay that stops short of the log's end.** A page shorter than the one asked
 for is the contract's "the log ends here", and a backend whose real limit is a
@@ -183,6 +191,22 @@ reads its own table and finds nothing. An acked timer that never fires has nothi
 behind it: no retry, and the workflow waits for ever. Invisible to the oracle for
 the usual reason — both arms send the row to the same wrong table.
 `TestATimerTaskLandsInTheTimerTable` (`cold/memcold/apply_test.go`).
+
+**A range delete that sweeps the task rows the same drain's requests carried**
+(rung 4). The applier's second ordering rule — the range deletes before any task
+row this drain writes — was held by a case staging its task through
+`AddHistoryTasks`, which lands in the shard-level home written *last*. That is
+not where most task rows are: a mutable-state write carries its own, they are
+written inside the request loop, and `fold`'s `taskRows()` names that home first
+for exactly that reason. So the deletes could be moved to after the request loop
+with the whole of `go test ./...` green, and every task a drain's own requests
+carried was swept by a range the same drain applied — for a scheduled category a
+timer that never fires, with nothing behind it. The existing case stays green
+under that move, which is what makes this a boundary rather than a duplicate:
+each guard was proved red against a defect far from the boundary it claims.
+`TestARangeDeleteActsBeforeTheTaskRowsItsRequestsCarry`
+(`cold/memcold/apply_test.go`). Found by moving a statement rather than deleting
+one, which is the class that reaches an ordering at all.
 
 **A watermark written beside the transaction rather than inside it.** A shard
 that either replays what it applied or trims what it did not. `SetWatermark` takes
@@ -313,6 +337,22 @@ as it was. `TestARequestThatCannotRoundTripIsRefused`
 (`mutation/mutation_test.go`), red in all eight of its cases with the two calls
 removed. Not hypothetical: two fixtures in this repository were building the
 shape, and both are now built through `internal/verify/mutbuild`.
+
+**Every event batch of a slot but the first, acked and never written** (rung 4).
+An intercepted write puts its own new history events down through the base store
+before the mutation naming them is acked, and the refuted entry below says the
+order cannot be got wrong. The *completeness* of that walk was a different
+matter: a slot is a list — upstream's `ExecutionManager` serialises one
+`InternalAppendHistoryNodesRequest` per `WorkflowEvents` it was handed, so a
+transaction writing several batches to one run is an ordinary shape — and
+`TestTheEventsGoDownBeforeTheMutation` drives every kind and every slot with
+exactly one batch in each. It therefore pins which slots a shape has and never
+that a slot is walked to its end, so stopping the inner loop after the first
+append left the whole of `go test ./...` green, all eight of its own kinds
+included. What that costs is the failure that case exists for, one dimension
+over: a mutable state acked pointing at history nodes nobody wrote, durable and
+correct-looking, which no functional suite sees.
+`TestEverySlotsEventsGoDownAndNotJustItsFirst` (`wrapper/intercept_test.go`).
 
 **A trim past what the cold store holds.** The trim goes to `applied`, which only
 a committed drain moves — never to what the window acked.
@@ -670,20 +710,24 @@ has to weigh: `read` is one reader's derivation from the code, `measured` is a
 staged defect or a probe, `structural` is a mechanism that makes the shape
 unrepresentable.
 
-**The trim never passes what the cold store holds** (read). `Trimmer.Drained` is
-reached only on the settle-forward path, after `Tail.Settle(..., MoveWatermark)`,
+**The trim never passes what the cold store holds** (measured). `Trimmer.Drained`
+is reached only on the settle-forward path, after `Tail.Settle(..., MoveWatermark)`,
 so the watermark it is handed is the seqno the committing transaction wrote. A
-halted cycle does not trim at all: the log is the next owner's evidence.
+halted cycle does not trim at all: the log is the next owner's evidence. Handing
+that call `Tail.Commit()` — the acked position — instead of `Tail.Applied()` is
+red, so the derivation is no longer the only thing holding it.
 
-**The write path cannot ack into a cycle that has not replayed** (read).
+**The write path cannot ack into a cycle that has not replayed** (measured).
 `Cycle.add` calls `Cycle.start` before it reads the policy, takes a seqno or
 appends anything. `Cycle.Close` was the one door that skipped it, and that is the
-shutdown entry above.
+shutdown entry above. Moving the `start` call past the append is red.
 
-**No intercepted write acks before its events are down** (read). All eight go
+**No intercepted write acks before its events are down** (measured). All eight go
 through one `ExecutionStore.write`, which calls `appendEvents` before
 `layer.Write`; a kind with no interception row is refused rather than transited.
-There is no second door to keep in step.
+There is no second door to keep in step. Swapping the two calls is red — which
+says only that the *order* is held: how much of each slot goes down was a
+separate question, and is the closed entry above about a slot's second batch.
 
 **Event history staying outside the log is not a loss** (read). It was on the
 open list on its own terms — a crash between the events and the ack leaves events
@@ -835,6 +879,39 @@ fold has made the two arms present it *different requests* — which is why the 
 collections the corpus deletes from were caught and the five it does not touch
 were not. An oracle cannot guard the completeness of a component both its arms
 share; only a read-back can.
+
+**Two more blind spots, measured rather than argued.** Fourteen mutations the
+whole of `go test ./...` catches were re-run with the oracle as the only judge,
+and it caught **seven**. The five it missed that matter name two limits beside
+the one above.
+
+The first is the **generator's reachable shapes**. One shape `mutgen` cannot
+produce is the one fold's history-task keep-rule exists for: every task key comes
+off a single monotonic counter — `taskID`, with a scheduled task's fire time
+derived from it — so all keys ascend, while `emitRangeComplete` cuts each range
+at `nextAbove` the last key *already written*. No generated task can fall inside
+a range emitted before it, so "a task arriving after a range that covers it" has
+never occurred in a stream either arm was driven with. That is how the
+range-delete ordering entry under *The drain* above sat unguarded at one of its
+three homes with every run green: moving the deletes past the request loop
+leaves the oracle alone green, where the buffered-batch ordering and the reset's
+clear beside it turn it red. The same measurement confirms what the collections
+entry below says by reading — swapping the applier's signal and request-cancel
+*deletes* is invisible to it, those being two of the five the corpus never
+deletes from.
+
+The second is that **the oracle compares what was written and never what is read
+back**. Both arms are read through the store's own reads at the end, so a defect
+in the merged task page — its cut, its token, its cursor — reaches no
+comparison at all: setting a page's next cursor from its first key instead of
+its last leaves the oracle green, and is caught only by `fold`'s own tests.
+
+What would close the first is a knob in `mutgen` cutting a range above the last
+written key, off by default, plus one oracle arm — the same shape the
+unpaired-delete entry above is waiting for. **The rule to take from all three: an
+oracle is bounded by what its generator reaches, by what its arms share, and by
+what it reads back, and those are worth enumerating separately from the code's
+branches.**
 
 **A third class: move a comparison to its adjacent form.** Deleting a write finds
 what never reaches storage; deleting a guard finds a condition that always passes;

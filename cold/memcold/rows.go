@@ -84,6 +84,12 @@ func applyMutation(
 			return err
 		}
 	}
+	// The slot is always nil on a folded request — fold strips it into
+	// Emitted.BufferedBatches, which applyRequest writes after this — so neither
+	// this call nor its order against the clear above is observable here, and a
+	// sweep deleting or reordering either gets a green run. The order is the one
+	// a delta carrying its own slot needs: a clear takes the store's rows and
+	// this batch stays.
 	return insertBufferedEvents(ctx, tx, shardID, ns, m.WorkflowID, run, m.NewBufferedEvents)
 }
 
