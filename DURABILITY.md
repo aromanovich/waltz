@@ -614,6 +614,23 @@ v1.29.6). `renewRangeLocked` drains in-flight task requests, bumps the range id,
 updates the task key manager and unloads nothing. This is a premise rather than a
 hazard: it is what makes the task-page routing entry above reachable.
 
+**The two `last_write_version` columns cannot drift** (read). The layer's condition
+authority reads `current_executions.last_write_version` where upstream joins and
+reads the executions row's, so the two copies must agree or every later condition
+is judged against a stale one — the shape of an inconsistency that compounds rather
+than surfaces. They cannot: each shape's current-row write takes the version from
+the same struct that supplies the run row it names — `currentWriteOfSnapshot` from
+the snapshot being written, `currentWriteOfUpdate` from the mutation or, on a
+continue-as-new, from the new run's snapshot, `currentWriteOfConflictResolve` from
+the new run's when there is one and the reset's otherwise — and a window records
+the *last* writer, which is the mutation whose values the merged request carries.
+
+Worth knowing about this one: it has no behavioural test and cannot have one from
+outside the store. `p.InternalWorkflowMutableState` carries no `LastWriteVersion`,
+so the executions row's copy is not readable through `p.ExecutionStore` at all, and
+an assertion over it would need a table read. That is why this is recorded here
+rather than closed.
+
 **An unpaired `DeleteWorkflowExecution` occurs, and the fold does not depend on
 the pair** (read, against upstream v1.29.6). Two facts, and the first is what was
 unknown. The unpaired shape *is* reachable: `ContextImpl.DeleteWorkflowExecution`
