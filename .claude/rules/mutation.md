@@ -20,7 +20,13 @@ reflective codec. What to know before changing any of it:
   than upgrading it. A tail written by the previous binary is replayed by this
   one (#98), so a field whose meaning moved is a tail that decodes into
   something the writer did not mean. Adding a field at the end is safe,
-  renumbering or repurposing one is not;
+  renumbering or repurposing one is not. **What holds that is a recorded
+  entry**, not the round trip: the round trip drives both halves of one build,
+  so a slot swapped on both sides of the mirror passes it — measured, on the
+  scalars and on the collections. `record_format_test.go` decodes bytes an
+  earlier build wrote and names every slot two same-typed fields could have
+  swapped; its constant is not to be re-recorded from a changed encoder, and
+  the second arm beside it is what says which side moved;
 
 * **the mirror is filled field by field, and the cost is paid by a guard rather
   than by attention.** A field Temporal adds is a field this package silently

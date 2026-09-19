@@ -362,6 +362,25 @@ lands without asserting what it was written against. Closed by giving the fixtur
 non-zero condition, which `TestRoundTripUpdate` and `TestRoundTripEveryKind` then
 hold (`mutation/mutation_test.go`).
 
+**A field whose meaning moved between two binaries** (rung 4). `Payload.format`
+is the only version there is and there is no migration path, so a node that
+restarts on a new build replays a tail the old one wrote — an ordinary rolling
+restart. The codec is a mirror with a second copy facing it, and the round-trip
+cases drive both halves of one build: a slot swapped on **both** sides
+round-trips perfectly. Swapping next-event-id with db-record-version in the
+encoder and the decoder together left the whole of `go test ./...` green, and so
+did swapping the child executions with the request cancels — five of the
+mutation's scalars are `int64`, four of its upsert collections are
+`map[int64]*DataBlob` and its delete sets share two key types, so each line can
+be crossed with its neighbours and still compile. The blind spot is the
+oracle's, one component over: both arms share the defect, so it cancels.
+Only a record this build did not write can tell.
+`TestARecordedEntryStillMeansWhatItsWriterMeant` (`mutation/record_format_test.go`)
+decodes bytes recorded from a build that read them the way it asserts, and names
+every slot two same-typed fields could have swapped. Red for three symmetric
+crossings. The bytes are not a golden of what this build writes — re-recording
+them from a changed encoder would assert nothing.
+
 **A request the write path accepts and the replay path cannot fold** (rung 4).
 The record carries a run's execution info and state as blobs and rebuilds the
 structs from them, deriving nil where a blob is absent — so a request holding a
