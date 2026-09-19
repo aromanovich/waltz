@@ -991,6 +991,39 @@ func TestADrainAssertsACurrentRowItWillNotWrite(t *testing.T) {
 	})
 }
 
+// TestARetriedStartIsRefusedWithTheConflictItCanActOn pins the order one
+// request's two assertions are placed in. It is invisible in the rows — the
+// write is refused either way — and it decides what the caller is told, since
+// the store reports the first assertion that fails.
+//
+// A retried start fails both: the workflow's current row is no longer absent,
+// and the run's own row is not either. The current-row conflict is the one a
+// caller can act on, carrying the run it collided with and the request ids a
+// retried start deduplicates against; the run row's answer is a bare condition
+// failure the history service declines to resolve. Placing the run assertions
+// first swaps one for the other with every row identical.
+func TestARetriedStartIsRefusedWithTheConflictItCanActOn(t *testing.T) {
+	h := newDrains(t)
+	wf, run := uuid.NewString(), uuid.NewString()
+
+	first := h.create(wf, run)
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(first)))
+
+	// The same create again, folded on its own so the window has nothing to
+	// decide and both assertions reach the drain.
+	err := h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, run)))
+	require.Equal(t, apply.ClassInvariantViolated, apply.Classify(err), "got %v", err)
+
+	var conflict *p.CurrentWorkflowConditionFailedError
+	require.ErrorAs(t, err, &conflict,
+		"a retried start must be refused with the current-row conflict and not with the run row's "+
+			"condition failure: what the caller deduplicates on is what the current row names")
+	require.Equal(t, run, conflict.RunID, "the conflict names the run it collided with")
+	require.Contains(t, conflict.RequestIDs,
+		first.Create.NewWorkflowSnapshot.ExecutionState.CreateRequestId,
+		"and carries the request ids the start is deduplicated against")
+}
+
 // TestATimerTaskLandsInTheTimerTable is the one place a task's *category*
 // decides which table it goes to, and nothing drove it. A scheduled category is
 // written by fire time, and the timer category has a table of its own

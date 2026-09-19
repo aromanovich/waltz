@@ -474,6 +474,18 @@ ids out of the row's serialised state.
 (`fold/check_test.go`) and `TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs`
 (`cold/memcold/current_test.go`).
 
+Both hold what the conflict *carries*; a later pass found that whether the
+caller gets that conflict at all rests on an ordering nothing drove. One
+request's two assertions are placed in one order — the workflow's current row,
+then the run rows — and the store reports the first that fails. A retried start
+fails both, so putting the run assertions first answers a bare
+`WorkflowConditionFailedError` where the caller needed the current-row conflict,
+with every row in the database identical and the write refused either way.
+Swapping the two statements left the whole of `go test ./...` green.
+`TestARetriedStartIsRefusedWithTheConflictItCanActOn`
+(`cold/memcold/apply_test.go`). Found by moving a statement rather than
+deleting one.
+
 **A condition read that fails, answered as anything but a refusal** (rung 4). An
 assertion the window does not determine is settled against the pre-window row, so
 an unreachable cold store leaves the layer unable to answer — and there are three
