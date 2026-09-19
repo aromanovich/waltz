@@ -56,9 +56,14 @@ type fakeApplier struct {
 	// store, when set, is the cold store this applier commits into
 	// ([commitToColdStore]).
 	store *basetest.Store
+	// ctxErrs is each call's view of the context it was driven on, which is how
+	// a drain that kept its caller's clock is told from one that was detached
+	// from it. A cold store is where that difference lands.
+	ctxErrs []error
 }
 
-func (a *fakeApplier) Apply(_ context.Context, _ wal.ShardID, _ wal.Epoch, batch fold.Batch) error {
+func (a *fakeApplier) Apply(ctx context.Context, _ wal.ShardID, _ wal.Epoch, batch fold.Batch) error {
+	a.ctxErrs = append(a.ctxErrs, ctx.Err())
 	i := len(a.drains)
 	requests := slices.Collect(batch.Each())
 	a.drains = append(a.drains, requests)
@@ -243,6 +248,13 @@ func (e *env) advance(t *testing.T, d time.Duration) {
 func (e *env) add(t *testing.T, m mutation.Mutation) error {
 	t.Helper()
 	return e.c.write(context.Background(), m, e.rows)
+}
+
+// addOn is add on a caller's own context, for the cases about whose clock
+// decides what.
+func (e *env) addOn(ctx context.Context, t *testing.T, m mutation.Mutation) error {
+	t.Helper()
+	return e.c.write(ctx, m, e.rows)
 }
 
 // Mutations the codec and the accumulator both accept, built with no cluster by
@@ -606,6 +618,115 @@ func TestATakenSeqnoHalts(t *testing.T) {
 // seqno, since with the first attempt possibly still in flight, which of the two
 // ends up there is the backend's race to settle and a caller was told each of
 // the two answers.
+// TestACallersClockCannotDecideADurableEntrysFate is the production sequence
+// this layer meets most often and had no case for: a request deadline expiring
+// while the log is being written to. It is not an exotic failure — a slow log,
+// a GC pause and a busy node all produce it — and by the time it happens the
+// entry may already be durable.
+//
+// Three lines exist for it, each detaching a read or a transaction from the
+// caller's context, and each was judged by nothing: removing the first left the
+// whole of `go test ./...` green, and so did flipping either of the two drain
+// causes that carry other callers' acked work.
+//
+// What they buy is the difference between a blip and an incident. The entry is
+// in the log; the only question is whether this process can still find out. On
+// the caller's own clock it cannot — the clock has already stopped — so the
+// answer becomes "an outcome nobody could read", which halts the shard.
+func TestACallersClockCannotDecideADurableEntrysFate(t *testing.T) {
+	t.Run("the append's witness outlives the deadline that made it necessary", func(t *testing.T) {
+		e := newEnv(t, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// The entry reaches the log and the caller's deadline expires before the
+		// append can say so: the commonest way an outcome becomes unreadable,
+		// and the one the readback exists to settle.
+		e.log.AfterAppend(func(call int) error {
+			if call != 1 {
+				return nil
+			}
+			cancel()
+			return errors.New("the connection went away mid-append")
+		})
+		ns, wf, run := ids()
+
+		_ = e.addOn(ctx, t, mkCreate(ns, wf, run))
+
+		// A second write on a live context queues behind the first job, so its
+		// answer is proof the settle has already run.
+		ns2, wf2, run2 := ids()
+		require.NoError(t, e.add(t, mkCreate(ns2, wf2, run2)),
+			"the shard took another write, so the first one's outcome was settled")
+		require.Equal(t, StateRunning, e.c.State(),
+			"a deadline expiring inside an append may not turn a durable entry into a halted shard: "+
+				"the log holds it either way, and the readback is the only thing that can say so")
+
+		entries := e.entries(t)
+		require.Len(t, entries, 2, "the settled entry stayed, and the second took the seqno above it")
+		require.Equal(t, wal.FirstSeqno, entries[0].Seqno)
+	})
+
+	t.Run("the drain a refused mutation forces outlives that mutation's caller", func(t *testing.T) {
+		// The accumulator cannot express a continue-as-new folded into somebody
+		// else's envelope, so it drains the window and lets the refused mutation
+		// head a fresh one. That drain carries the *first* write, whose caller was
+		// acked and has gone.
+		e := newEnv(t, nil)
+		ns, wf, run := ids()
+		require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		e.log.AfterAppend(func(call int) error {
+			if call == 1 {
+				cancel()
+			}
+			return nil
+		})
+		_ = e.addOn(ctx, t, mkContinueAsNew(ns, wf, run, uuid.NewString(), 2))
+		// A cancelled caller stops waiting while its job is still on the loop, so
+		// the barrier is a write on a live context: it queues behind that job and
+		// its answer is proof the drain has finished.
+		require.NoError(t, e.add(t, mkCreate(ids())))
+
+		require.NotEmpty(t, e.apply.ctxErrs, "no drain ran, so this case judged nothing")
+		require.NoError(t, e.apply.ctxErrs[0],
+			"the drain-and-retry reached the cold store on the refused caller's cancelled context, "+
+				"and what it carries is the window that caller never wrote to")
+		require.Equal(t, StateRunning, e.c.State())
+	})
+
+	t.Run("a drain carrying other callers' work outlives the caller that tripped it", func(t *testing.T) {
+		// A window of one, so the write below trips a size watermark: that drain
+		// is [drainWatermarkMutations], whose window holds work whose callers
+		// were already told it succeeded.
+		e := newEnv(t, func(c *Config) { c.Mutations = 1 })
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// The append lands and the caller's clock stops immediately after it,
+		// which is where the drain it triggered begins.
+		e.log.AfterAppend(func(call int) error {
+			if call == 1 {
+				cancel()
+			}
+			return nil
+		})
+		ns, wf, run := ids()
+
+		_ = e.addOn(ctx, t, mkCreate(ns, wf, run))
+		require.NoError(t, e.add(t, mkCreate(ids())), "the barrier: this write queues behind that job")
+
+		require.NotEmpty(t, e.apply.ctxErrs, "no drain ran, so this case judged nothing")
+		require.NoError(t, e.apply.ctxErrs[0],
+			"the drain reached the cold store on a context that had already been cancelled: "+
+				"its window holds entries whose callers were acked, and a transaction abandoned "+
+				"on one writer's deadline strands every one of them")
+		require.Equal(t, StateRunning, e.c.State())
+	})
+}
+
 func TestAnAmbiguousAppend(t *testing.T) {
 	unreachable := errors.New("the connection went away mid-append")
 

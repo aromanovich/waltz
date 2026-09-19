@@ -394,6 +394,28 @@ over: a mutable state acked pointing at history nodes nobody wrote, durable and
 correct-looking, which no functional suite sees.
 `TestEverySlotsEventsGoDownAndNotJustItsFirst` (`wrapper/intercept_test.go`).
 
+**A caller's deadline deciding the fate of an entry that is already durable**
+(rung 4). The commonest thing that goes wrong in production is not a crash: it
+is a request deadline expiring while the log is being written to, which a slow
+log, a GC pause or a busy node all produce, and by then the entry may be down.
+Three lines exist for it and **none was judged**. `Cycle.settleAppend` reads the
+seqno back on a detached context, because the deadline is the commonest reason
+the outcome became unreadable and a read on that clock could not answer in the
+one case it exists for — without the detach the read fails, and a failed read
+there is "an outcome nobody could read", which **halts the shard**. So every
+expiring deadline would stop a shard. `Cycle.drain` detaches for the causes
+whose window holds work whose callers were acked and have gone
+([`drainCause.detached`]), and flipping the mutations watermark or the
+drain-and-retry to keep the caller's clock strands exactly those entries in a
+transaction abandoned on one writer's deadline. All four moves left the whole of
+`go test ./...` green.
+`TestACallersClockCannotDecideADurableEntrysFate` (`cycle/cycle_test.go`)
+stages the deadline *inside* the append, through the log's own fault seam, and
+reads the drain's view of its context off the applier. The third cause,
+`drainWatermarkAge`, is the one that cannot be judged: its only call site is the
+timer, which drains on a context of its own, so its flag is inert and a case
+over it passes with the flag flipped — said at the cause.
+
 **A trim past what the cold store holds.** The trim goes to `applied`, which only
 a committed drain moves — never to what the window acked.
 
@@ -980,6 +1002,30 @@ unpaired-delete entry above is waiting for. **The rule to take from all three: a
 oracle is bounded by what its generator reaches, by what its arms share, and by
 what it reads back, and those are worth enumerating separately from the code's
 branches.**
+
+**A fourth class: cross two same-typed things.** The three above all remove
+something — a write, a condition, a bound. This one leaves everything present
+and doing the wrong job: a field assigned from its neighbour, a case label on
+the arm beside it, an argument handed to the parameter next to it. It is what
+finds a **hand-filled mirror**, and this tree is full of them — the read
+answer's three, the fold's two merge functions, the applier's delta literals,
+the codec's two facing each other. The reason the other three classes walk past
+it is the reason a guard does: a crossed field is *present* and *non-zero*, so
+every check of the form "is this filled" passes. Nine crossings in the read
+answer's mirrors left the whole of `go test ./...` green, against a guard
+written to enumerate that very answer off Temporal's type.
+
+Two things sharpen it. **Look for the repeated type**: four of the six
+collections are `map[int64]*DataBlob` and five of the merge's scalars are
+`int64`, and those counts are exactly how many ways each line can be wrong while
+compiling. And **cross a fan-out's arms, not only its fields** — routing a
+category to the table beside it is the same defect one level up, which is how
+the task fan-out turned out to be driven at one category of six.
+
+Its own blind spot is worth naming, because it is the oracle's: a crossing
+applied to *both* halves of a mirror pair cancels. The codec's encoder and
+decoder face each other, so swapping two fields' slots in both round-trips
+perfectly — and nothing else in the tree reads a record it did not just write.
 
 **A third class: move a comparison to its adjacent form.** Deleting a write finds
 what never reaches storage; deleting a guard finds a condition that always passes;

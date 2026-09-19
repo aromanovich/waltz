@@ -1023,7 +1023,9 @@ var (
 	// failure is nobody's answer and neither is a deadline.
 	drainWatermarkMutations = drainCause{walmetrics.TriggerMutations, noCaller, true}
 	drainWatermarkBytes     = drainCause{walmetrics.TriggerBytes, noCaller, true}
-	drainWatermarkAge       = drainCause{walmetrics.TriggerAge, noCaller, true}
+	// The age one is the timer's alone and drains on a context of its own, so
+	// its detached is inert: a case over it passes with the flag flipped.
+	drainWatermarkAge = drainCause{walmetrics.TriggerAge, noCaller, true}
 
 	// drainRefusal empties the window so a refused mutation can head a fresh
 	// one. That mutation is not in what this drains, and neither is its writer
