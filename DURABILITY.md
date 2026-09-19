@@ -56,6 +56,23 @@ an entry that is this cycle's own payload is a **success** the caller is told
 about, nothing there is a seqno still free, and anything else halts the shard
 holding the log as evidence. `TestAnAmbiguousAppend` (`cycle/cycle_test.go`).
 
+**A log whose first entry is above where the replay resumes** (rung 4). Not a
+backend breaking gap-freedom, but the shape a **cold store restored on its own**
+leaves behind: a watermark that moved backwards — a database restored from a
+backup, a replica promoted behind the leader, a watermark row rebuilt by hand —
+below a trim that was legal when it ran. The entries in between are acked and gone.
+Folding the log's first available entry as the next one applies a tail with a hole
+in it, and the drain behind it commits a watermark saying the missing entries
+arrived, after which the trim takes the rest. Replay confirms every entry's seqno
+is the one it is waiting for and halts on a gap, which is all that is left to do.
+`TestAReplayRefusesALogTrimmedPastItsWatermark` (`cycle/replay_test.go`).
+
+Its isolation is the part worth keeping: on a tail that trips no watermark
+mid-loop, the end-of-log confirmation catches the same hole one seqno later, so a
+test with a short tail passes with the check deleted and judges nothing. It drains
+per entry for that reason — measured, the first version of it was green against the
+mutation it exists for.
+
 **A replay that stops short of the log's end.** A page shorter than the one asked
 for is the contract's "the log ends here", and a backend whose real limit is a
 response size answers short for the size. A replay that believed it would come up

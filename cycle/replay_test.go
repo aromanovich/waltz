@@ -612,3 +612,57 @@ func mustEncode(t *testing.T, m mutation.Mutation) []byte {
 	require.NoError(t, err)
 	return payload
 }
+
+// TestAReplayRefusesALogTrimmedPastItsWatermark is the shape a cold store
+// restored on its own leaves behind, and the one hole in a log this layer can
+// meet without any backend having broken guarantee 4. A trim goes to the
+// watermark, so a watermark that moves *backwards* — a database restored from a
+// backup, a replica promoted behind the leader, a watermark row rebuilt by hand —
+// leaves the log starting above where the replay resumes. The entries in between
+// were acked, the cold store no longer holds them, and the trim that took them was
+// legal when it ran.
+//
+// Folding the log's first available entry as though it were the next one applies
+// a tail with a hole in it: those mutations fold onto a state the missing ones
+// would have moved, and the drain behind them commits a watermark that says they
+// all arrived. So each entry's seqno is confirmed to be the one the replay is
+// waiting for, and a gap halts the shard — which is all that is left to do, the
+// mutations being gone.
+//
+// A drain per entry, because that is what isolates this check from the
+// confirmation at the end of the replay. On a tail that never reaches a watermark
+// mid-loop, the end confirmation catches the same hole one seqno later, by finding
+// an entry where the miscounted replay thinks the log ends — so a test with a
+// short tail passes with this check deleted and judges nothing.
+func TestAReplayRefusesALogTrimmedPastItsWatermark(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, func(c *Config) { c.Mutations = 1 })
+	// What a restored store answers: a watermark below what the log still holds.
+	e.mark.answers = []wmAnswer{{seqno: wal.FirstSeqno, found: true}}
+
+	// Four acked entries, then a trim that takes the first two. Both are legal: the
+	// trim is what a committed watermark of 2 licensed before the store was rolled
+	// back under it.
+	for i := range 4 {
+		ns, wf, run := ids()
+		payload, err := mutation.Encode(mkCreate(ns, wf, run))
+		require.NoError(t, err)
+		require.NoError(t, e.log.Append(ctx, testShard, testEpoch, wal.FirstSeqno+wal.Seqno(i), payload))
+	}
+	require.NoError(t, e.log.Trim(ctx, testShard, wal.FirstSeqno+1))
+
+	ns, wf, run := ids()
+	err := e.add(t, mkCreate(ns, wf, run))
+	require.ErrorIs(t, err, ErrHalted,
+		"the replay resumes at seqno 2 and the log's first entry is 3: an acked mutation is gone, "+
+			"and a cycle that folded the tail anyway would serve reads over runs rebuilt from part "+
+			"of their history")
+	require.Equal(t, StateHaltedInvariant, e.c.State(),
+		"a hole below the tail is this deployment's own divergence and not a failover: "+
+			"halted-lost hands it to the next owner as an ordinary change of hands, and every "+
+			"owner meets the same hole")
+	require.Empty(t, e.apply.drains,
+		"an entry folded at a seqno that is not its own was drained: the transaction commits a "+
+			"watermark saying the missing entries arrived, and the trim behind it takes the rest "+
+			"of the tail")
+}
