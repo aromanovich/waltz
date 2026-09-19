@@ -100,6 +100,20 @@ above reads as gap-free. `AppendBelowATrimIsRefused` in the conformance suite.
 **A payload that aliases the log's memory, or the caller's.**
 `PayloadsAreNobodyElsesMemory` in the conformance suite.
 
+**A stale acquire replacing the owner that holds the shard** (rung 4). The server
+hands out a strictly greater rangeID per acquire, so an acquire *below* the epoch a
+cycle already holds is two observations delivered out of order. Installing the stale
+cycle would retire the live one, and what the live one was holding is acked entries
+no drain of the stale cycle can carry — fenced below the log's own epoch, every
+write and every drain of it is refused, and the shard needs a third acquire before
+anybody can apply them. Refused, and by two mechanisms: the registry compares the
+epochs, and behind that the log's own `Fence` refuses it too, which is why deleting
+the comparison leaves the test green. The comparison stays for the answer without a
+round trip and for naming both epochs, the only evidence that the acquires arrived
+out of order rather than that this node lost the shard.
+`TestAnAcquireBelowTheHeldEpochIsRefused` (`cycle/cycle_test.go`) pins the
+behaviour rather than either mechanism, and says so.
+
 **A zombie writer appending after a fence.** `Fence` atomically cuts off every
 lower epoch, and the drain asserts the epoch again as a compare-and-set before it
 writes a row. `FenceCutsOffLowerEpochs` and `TwoWritersContendForOneShard` in the

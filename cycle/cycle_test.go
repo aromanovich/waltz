@@ -956,3 +956,49 @@ func TestAWriteBringingNoBaseRowsIsRefused(t *testing.T) {
 		require.Empty(t, e.entries(t), "a refused write may not have appended")
 	})
 }
+
+// TestAnAcquireBelowTheHeldEpochIsRefused: the server hands out a strictly
+// greater rangeID per acquire, so an acquire *below* the epoch a cycle already
+// holds is two observations delivered out of order. Refusing it is what keeps the
+// live owner's window: installing the stale cycle retires the newer one, and what
+// the newer one was holding is acked entries no drain of the stale cycle can carry
+// — it is fenced at a lower epoch than the log, so every write and every drain of
+// it is refused, and the shard needs a third acquire before anybody can apply
+// them.
+//
+// The behaviour was driven by nothing: every other case acquires upward. What this
+// pins is the behaviour and not one mechanism, and the distinction is worth stating
+// because a sweep will find it: deleting the registry's own epoch comparison leaves
+// this green, since the acquire then reaches [wal.Log.Fence] and the log — already
+// fenced at the higher epoch — refuses it there. Two mechanisms, one outcome. The
+// comparison stays because it answers without a round trip and names both epochs,
+// which is the only evidence that the acquires arrived out of order rather than
+// that this node lost the shard.
+func TestAnAcquireBelowTheHeldEpochIsRefused(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, nil)
+	m, err := NewManager(Deps{
+		Log:       e.log,
+		Writer:    e.apply,
+		Recoverer: e.mark,
+		Registry:  testRegistry(),
+		Metrics:   walmetrics.New(e.handler),
+	}, Fixed(e.cfg))
+	require.NoError(t, err)
+	t.Cleanup(func() { m.Close(ctx) })
+
+	const shard = wal.ShardID(11)
+	require.NoError(t, m.ShardAcquired(ctx, shard, 9))
+	held := m.Shard(shard)
+	require.NotNil(t, held)
+
+	err = m.ShardAcquired(ctx, shard, 8)
+	require.ErrorIs(t, err, wal.ErrFenced,
+		"an acquire below the held epoch is a stale observation, not a change of ownership")
+	require.ErrorContains(t, err, "9", "the refusal names the epoch that holds the shard")
+
+	require.Same(t, held, m.Shard(shard),
+		"the stale acquire replaced the live cycle: its window is acked entries the stale "+
+			"cycle cannot drain, being fenced below the log's own epoch")
+	require.Equal(t, wal.Epoch(9), m.Shard(shard).Epoch())
+}
