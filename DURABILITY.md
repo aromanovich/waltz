@@ -419,6 +419,20 @@ ids out of the row's serialised state.
 (`fold/check_test.go`) and `TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs`
 (`cold/memcold/current_test.go`).
 
+**A condition read that fails, answered as anything but a refusal** (rung 4). An
+assertion the window does not determine is settled against the pre-window row, so
+an unreachable cold store leaves the layer unable to answer — and there are three
+wrong answers. Acking is the first rule's own violation: the caller is told a
+conditional write happened with the condition never evaluated. Halting is the
+second, a read that failed being no answer and a shard lost to a blip healing
+nowhere. Reading it as a *condition failure* is the third, that being a divergence
+this process owns and the next owner inherits. The write is refused with the
+store's own error, the shard keeps running, and nothing is appended.
+`TestAConditionReadThatFailsRefusesAndKeepsTheShard` (`cycle/cycle_test.go`), red
+with either arm's error swallowed. `basetest.Store.FailAll` exists for this and was
+called by nothing — the double could answer every read successfully with the whole
+tree green.
+
 **A write whose delegated assertion nobody could settle** (rung 4). An assertion
 the window does not determine is settled against the pre-window row, so the caller
 hands the write path the store's own two reads; a caller that brings none has
@@ -735,6 +749,24 @@ repository has — while for a deployment it is the value upstream's workflow-id
 reuse check measures against, the same hazard the delegated-conflict entry above is
 closed for. Both columns are therefore prose here by necessity, not by choice: an
 assertion over either needs a reader this store does not expose.
+
+**The oracle comparing the current row by its run alone was hiding nothing**
+(measured). It diffs run rows and task rows whole and compared the current row by
+the run it names, which leaves the row's own content — state, status,
+last-write-version — outside every comparison the layer makes. That content is what
+later conditions on the workflow are judged against, so a drift in it compounds
+rather than surfaces, and the gap looked real. It is not, for a reason worth
+recording: both arms derive that content through the same `currentWriteOf*`, so the
+only part that can differ with the window is *which* mutation's write wins, and a
+window that keeps the wrong one breaks the next assertion standing on the row. Made
+to keep the first write instead of the last, the folded arm fails its own drain
+("state 1 must be equal to 3") long before any comparison runs.
+
+The comparison is widened to the whole row anyway, across all four places that make
+it — the oracle, both recovery runs and the handover. It costs nothing and covers
+the residue the argument leaves: a stream in which nothing ever asserts on that row
+again. Recorded as measured rather than closed, because no defect available to stage
+reaches it.
 
 **The corpus reaching two of the seven collections costs no unguarded mechanism**
 (read). `mutgen` upserts and deletes sub-entity keys for **activities and timers

@@ -1002,3 +1002,38 @@ func TestAnAcquireBelowTheHeldEpochIsRefused(t *testing.T) {
 			"cycle cannot drain, being fenced below the log's own epoch")
 	require.Equal(t, wal.Epoch(9), m.Shard(shard).Epoch())
 }
+
+// TestAConditionReadThatFailsRefusesAndKeepsTheShard: an assertion the window
+// does not determine is settled against the pre-window row, so an unreachable
+// cold store leaves the layer unable to answer — and there are three wrong
+// answers and one right one. Acking is the first rule's own violation: the
+// caller would be told a conditional write happened with the condition never
+// evaluated. Halting is the second: a read that failed is not an answer, and a
+// shard lost to a blip heals nowhere. Reading the failure as a *condition
+// failure* is the third, since that is a divergence this process owns and the
+// next owner inherits.
+//
+// So the write is refused, the shard keeps running, and nothing is appended.
+// basetest.Store.FailAll exists for exactly this and was called by nothing: the
+// double could answer every read successfully with the whole tree green.
+func TestAConditionReadThatFailsRefusesAndKeepsTheShard(t *testing.T) {
+	unreachable := errors.New("the cold store is not answering")
+
+	e := newEnv(t, nil)
+	store := basetest.New()
+	store.FailAll(unreachable)
+	e.useStore(store)
+
+	ns, wf, run := ids()
+	err := e.add(t, build.Set(ns, wf, run, 2))
+
+	require.ErrorIs(t, err, unreachable,
+		"the store's own error is the answer: the layer cannot settle the assertion and may not "+
+			"invent an outcome for it")
+	require.Equal(t, StateRunning, e.c.State(),
+		"a read that failed is not an answer, so the shard may not be halted over it: the next "+
+			"request retries and an unreachable store heals")
+	require.Empty(t, e.entries(t),
+		"nothing may be appended: the caller is owed a refusal that provably acked nothing, not "+
+			"an entry whose condition nobody evaluated")
+}

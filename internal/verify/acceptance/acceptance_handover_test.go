@@ -171,7 +171,7 @@ func TestTheShutdownDrainOfALostShardCommitsNothing(t *testing.T) {
 		}
 	}
 	for _, key := range union(expected.current, s.ledger.current, byWorkflow) {
-		require.Equal(t, control.currentRun(t, key), s.currentRun(t, key),
+		require.Equal(t, control.currentRowOf(t, key), s.currentRowOf(t, key),
 			"workflow %s names a different run after the handover", key.workflowID)
 	}
 	t.Logf("%d entries replayed by the successor, %d drains refused, watermark %d over %d runs",

@@ -31,6 +31,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
+	enumspb "go.temporal.io/api/enums/v1"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	p "go.temporal.io/server/common/persistence"
 	"google.golang.org/protobuf/testing/protocmp"
 
@@ -100,7 +102,7 @@ func TestARecoveredShardHoldsWhatAnUninterruptedOneDoes(t *testing.T) {
 	}
 	current := union(expected.current, crashed.ledger.current, byWorkflow)
 	for _, key := range current {
-		require.Equal(t, control.currentRun(t, key), crashed.currentRun(t, key),
+		require.Equal(t, control.currentRowOf(t, key), crashed.currentRowOf(t, key),
 			"workflow %s names a different run after recovery", key.workflowID)
 	}
 	t.Logf("%d entries replayed across %d crashes, %d runs and %d current rows identical, watermark %d",
@@ -192,7 +194,7 @@ func TestACrashOnTopOfADrainNobodyCouldReadRecoversEitherWay(t *testing.T) {
 				}
 			}
 			for _, key := range union(expected.current, crashed.ledger.current, byWorkflow) {
-				require.Equal(t, control.currentRun(t, key), crashed.currentRun(t, key),
+				require.Equal(t, control.currentRowOf(t, key), crashed.currentRowOf(t, key),
 					"workflow %s names a different run after recovery", key.workflowID)
 			}
 			t.Logf("%d entries replayed, watermark %d", recovered.Replayed, seqno)
@@ -254,16 +256,35 @@ func (s *seams) runRow(t *testing.T, key runKey) *p.InternalGetWorkflowExecution
 	return row
 }
 
-// currentRun is the run a workflow's current-execution row names, and
-// [noCurrentRow] where there is no such row.
-func (s *seams) currentRun(t *testing.T, key wfKey) string {
+// currentRowOf is the workflow's current-execution row as a comparison sees it:
+// the run it names *and the content the window left there*. Comparing the run
+// alone leaves a whole class of divergence invisible — the row naming the right
+// run with the wrong state or the wrong last-write-version — and that content is
+// what every later condition on the workflow is judged against, so a drift in it
+// is not a stale answer but a condition decided against the wrong value from then
+// on. [noCurrentRow] where there is no such row.
+func (s *seams) currentRowOf(t *testing.T, key wfKey) currentRowState {
 	t.Helper()
-	row, _, err := s.rows.Current(s.ctx, seamsShard, key.namespaceID, key.workflowID)
+	row, version, err := s.rows.Current(s.ctx, seamsShard, key.namespaceID, key.workflowID)
 	require.NoError(t, err)
 	if row == nil {
-		return noCurrentRow
+		return currentRowState{RunID: noCurrentRow}
 	}
-	return row.RunID
+	return currentRowState{
+		RunID:            row.RunID,
+		State:            row.ExecutionState.GetState(),
+		Status:           row.ExecutionState.GetStatus(),
+		LastWriteVersion: version,
+	}
+}
+
+// currentRowState is the comparable shape of that row. A struct rather than the
+// response, so a divergence names the field.
+type currentRowState struct {
+	RunID            string
+	State            enumsspb.WorkflowExecutionState
+	Status           enumspb.WorkflowExecutionStatus
+	LastWriteVersion int64
 }
 
 // union is the keys of both ledgers in one order, so a divergence names the same

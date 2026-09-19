@@ -85,8 +85,10 @@ func TestFoldingChangesNothingButTheNumberOfTransactions(t *testing.T) {
 	}
 	current := union(folded.ledger.current, one.ledger.current, byWorkflow)
 	for _, key := range current {
-		require.Equal(t, one.currentRun(t, key), folded.currentRun(t, key),
-			"workflow %s names a different run once its mutations are folded", key.workflowID)
+		require.Equal(t, one.currentRowOf(t, key), folded.currentRowOf(t, key),
+			"workflow %s's current row came out of the fold different: the run it names, or the "+
+				"state and version every later condition on this workflow is judged against",
+			key.workflowID)
 	}
 
 	// The queue rows, which the two comparisons above do not reach and which are
