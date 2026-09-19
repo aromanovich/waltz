@@ -814,10 +814,28 @@ replay settles it.
 
 ## Unknown
 
-Nothing today. That is a statement about this list and not about the layer: an
-entry arrives here whenever a pass cannot establish which side of the line
-something falls on, and the section being empty means only that none of the
-entries above is in that state right now.
+**The assertion a create behind a tombstone registers.** `adopt` keeps a run's
+existing head assertion and drops the fallback it is handed, so the fallback is
+`nil` at the sites whose branch already has one — and the create-behind-a-
+tombstone site is written as one of them. It is not: a `Delete` registers
+`asserted{}`, so a window whose only touches of a run are a delete and the
+create behind it leaves that run with **no** head, and the fallback there is
+live. Handing it `want.forRun(...)` — must-not-exist — instead of `nil` left the
+whole of `go test ./...` green.
+
+What was not established is which side of the line that lands on. At the drain
+it plausibly passes: the emitted requests are driven in tail-seqno order, so the
+delete has already removed the row when the create's assertion is placed. At the
+**pre-append** check it plausibly refuses, because the condition authority
+judges the head assertion against the *pre-window* row, which is still there —
+and that is what `fold`'s own notes say the `nil` is for. A refusal there is a
+legitimate delete-then-create stream rejected before it is ever appended, which
+is workflow-id reuse traffic.
+
+Settling it needs one case driving a delete and a create of the same run in one
+window through the condition authority and then through a real drain, with the
+pre-window row present. Until then this is open, which is what this section
+means.
 
 ---
 
