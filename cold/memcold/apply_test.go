@@ -931,6 +931,66 @@ func TestADrainAssertsTheCurrentRowInsideItsTransaction(t *testing.T) {
 	require.False(t, h.runExists(wf, intruder), "and it wrote the intruder's own row too")
 }
 
+// TestADrainAssertsACurrentRowItWillNotWrite is the case above one shape over,
+// and the shape is the one every other case in this file misses. A workflow
+// record carries two independent facts about the current row — the
+// head-of-window assertion and the window's own write — and the drain's work on
+// that row is skipped only when it has *neither*. Every fixture here drives a
+// kind that has both, so the skip could be widened to "either is missing" with
+// the whole of `go test ./...` green.
+//
+// What that costs is the bypass-current write: it asserts the current row names
+// some other run and writes nothing, so a skip keyed on the write skips the
+// assertion with it. Unasserted, a write that claims its run is not current
+// lands while that run is exactly what the row names — a conditional write
+// acknowledged with the condition never evaluated, which is the first rule's
+// own violation rather than a stale answer.
+//
+// Both sides are driven, because a case that only refuses is green with the
+// evaluation deleted as long as something else refuses too.
+func TestADrainAssertsACurrentRowItWillNotWrite(t *testing.T) {
+	h := newDrains(t)
+	wf := uuid.NewString()
+	previous, current := uuid.NewString(), uuid.NewString()
+
+	// Two runs of one workflow, the second holding the row: the first is the
+	// run a bypassing write legitimately reaches, the second is the one it may
+	// not claim to be bypassing. The row is moved by removing it and starting
+	// again rather than by closing the first run, so that what this case stages
+	// is the two runs and not a state transition.
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, previous))))
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch,
+		h.fold(h.build.DeleteCurrent(h.namespaceID, wf, previous))))
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, current))))
+	require.Equal(t, current, h.mustCurrent(wf).RunID)
+
+	t.Run("the run it bypasses is not the current one", func(t *testing.T) {
+		bypass := h.build.UpdateBypassingCurrent(h.namespaceID, wf, previous, 2,
+			func(m *p.InternalWorkflowMutation) { m.ExecutionInfoBlob = blob("bypassed") })
+		require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(bypass)),
+			"a write around the current row is what the mode is for, and must land")
+		require.EqualValues(t, 2, h.runVersion(wf, previous))
+		require.Equal(t, current, h.mustCurrent(wf).RunID,
+			"and it must leave the row it bypassed exactly where it was")
+	})
+
+	t.Run("the run it bypasses is the current one", func(t *testing.T) {
+		// Folded on its own, so the window never saw the row move and the
+		// assertion reaches the drain undecided — the only way it arrives false.
+		bypass := h.build.UpdateBypassingCurrent(h.namespaceID, wf, current, 2,
+			func(m *p.InternalWorkflowMutation) { m.ExecutionInfoBlob = blob("must not land") })
+		err := h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(bypass))
+		require.Equal(t, apply.ClassInvariantViolated, apply.Classify(err), "got %v", err)
+
+		require.EqualValues(t, 1, h.runVersion(wf, current),
+			"the drain wrote the run around a current row it never looked at: the write claimed "+
+				"this run was not current, the row says it is, and nobody checked")
+		require.Equal(t, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING,
+			h.mustCurrent(wf).ExecutionState.State,
+			"and the current row still names it as the running run")
+	})
+}
+
 // TestATimerTaskLandsInTheTimerTable is the one place a task's *category*
 // decides which table it goes to, and nothing drove it. A scheduled category is
 // written by fire time, and the timer category has a table of its own

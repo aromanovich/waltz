@@ -182,6 +182,21 @@ run it named, and nothing above learns the workflow's pointer moved.
 `TestADrainAssertsTheCurrentRowInsideItsTransaction` (`cold/memcold/apply_test.go`),
 which answers `nil` with the evaluation deleted.
 
+Its boundary was a shape away, and a later pass found it by negating the guard
+rather than deleting it. The drain's work on that row is skipped when the record
+carries **neither** the assertion nor the window's write, and those two facts are
+independent: widening the skip to "either is missing" left the whole of
+`go test ./...` green. What that reaches is the one kind that asserts the row
+and writes it not at all — a **bypass-current** update or conflict-resolve,
+whose whole meaning is "the current row names some other run". Every fixture in
+the tree drove a kind that does both, `mutbuild` had no builder for the mode,
+and the case above is a create, so the guard was proved against a defect that
+cannot touch the shape it matters for. Unasserted, a write claiming its run is
+not current lands while the row names exactly that run, acked.
+`TestADrainAssertsACurrentRowItWillNotWrite` (`cold/memcold/apply_test.go`),
+over `mutbuild.Builder.UpdateBypassingCurrent` — added for it — and driving both
+sides, since a case that only refuses is green wherever something else refuses too.
+
 **A timer written to the wrong table** (rung 4). Category is the one property of a
 task that decides which table it goes to: a scheduled category is written by fire
 time, and the timer category has `timer_tasks`, which the timer queue is the only

@@ -143,6 +143,47 @@ func (b Builder) Update(ns, wf, run string, version int64, opts ...MutationOpt) 
 	return mutation.Mutation{Update: req}
 }
 
+// UpdateBypassingCurrent writes a run that is not the workflow's current one:
+// `UpdateWorkflowModeBypassCurrent`, which asserts the current row names some
+// other run and writes that row not at all. The state is zombie because the
+// mode's validator refuses a created or running one — a run still current
+// cannot be written around the row that names it.
+//
+// It is the one shape that asserts the current row without writing it, which is
+// what makes it worth a constructor: every other kind either does both or
+// neither, so a guard proved on one of those says nothing about this one.
+// It is built here rather than through [Builder.Update] because that one
+// validates at `UpdateWorkflowModeUpdateCurrent`, which refuses the zombie
+// state this mode requires: the two modes disagree about the same field, so
+// neither can be reached by moving the other's.
+func (b Builder) UpdateBypassingCurrent(
+	ns, wf, run string, version int64, opts ...MutationOpt,
+) mutation.Mutation {
+	state := runningState(run)
+	state.State = enumsspb.WORKFLOW_EXECUTION_STATE_ZOMBIE
+	m := p.InternalWorkflowMutation{
+		NamespaceID:        ns,
+		WorkflowID:         wf,
+		RunID:              run,
+		ExecutionState:     state,
+		ExecutionStateBlob: stateBlob(state),
+		DBRecordVersion:    version,
+	}
+	for _, opt := range opts {
+		opt(&m)
+	}
+	req := &p.InternalUpdateWorkflowExecutionRequest{
+		ShardID:                b.shard,
+		Mode:                   p.UpdateWorkflowModeBypassCurrent,
+		UpdateWorkflowMutation: m,
+	}
+	check("update", p.ValidateUpdateWorkflowStateStatus(
+		m.ExecutionState.State, m.ExecutionState.Status))
+	check("update", p.ValidateUpdateWorkflowModeState(req.Mode,
+		p.WorkflowMutation{ExecutionState: m.ExecutionState}, nil))
+	return mutation.Mutation{Update: req}
+}
+
 // Set is the snapshot-bearing write that asserts nothing about the current row —
 // a set repairs one run's state and claims nothing about which run is current.
 // The run itself it does assert, at the given version − 1, which is the row a
