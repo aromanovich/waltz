@@ -256,6 +256,29 @@ func TestABaseThatBreaksTheRequirementsIsRefused(t *testing.T) {
 			cost:   "the reader's iterator skips what does not ascend without saying so, and that task is never asked for again",
 		},
 		{
+			// The boundary of the same requirement, which the case above does not
+			// reach: a key repeated *within* one page rather than across two. The
+			// ascent is strict, so the comparison is at-or-below and not below.
+			name: "a page carrying one key twice",
+			// Both copies in the *first* page: with the duplicate split across two
+			// pages the cross-page rule catches it instead, and the within-page
+			// comparison stays unjudged.
+			base:   &minimalBase{rows: rows(1, 1, 2), page: 2},
+			maxKey: maxKey,
+			want:   fold.ErrBasePageNotAscending,
+			cost:   "the reader is handed the same task twice in one page",
+		},
+		{
+			// The boundary of the range requirement: the maximum is exclusive, so a
+			// row *at* it is already outside. A case that sends a row far outside
+			// passes with the comparison off by one.
+			name:   "a row at the range's exclusive maximum",
+			base:   &minimalBase{rows: rows(1, 2, 10), page: 1, ignoresRange: true},
+			maxKey: tasks.NewImmediateKey(10),
+			want:   fold.ErrBaseRowOutsideRange,
+			cost:   "a key the range excludes reaches the reader, where the queue panics on it",
+		},
+		{
 			name:   "a token beside an empty page",
 			base:   &minimalBase{rows: rows(1, 2, 3, 4, 5), page: 1, emptyAfter: 2},
 			maxKey: maxKey,
