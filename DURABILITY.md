@@ -383,6 +383,29 @@ ids out of the row's serialised state.
 (`fold/check_test.go`) and `TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs`
 (`cold/memcold/current_test.go`).
 
+**A write whose delegated assertion nobody could settle** (rung 4). An assertion
+the window does not determine is settled against the pre-window row, so the caller
+hands the write path the store's own two reads; a caller that brings none has
+nothing to settle it with. The only two answers are to refuse the write or to ack
+it with the condition unevaluated — a conditional write acknowledged by nobody
+having checked the condition — and both arms of the delegated walk therefore ask,
+so the refusal names the row the store would have judged first. Neither was driven:
+deleting either check left the whole tree green, and what each does instead is
+dereference the nil, which is the panic the refusal exists in place of.
+`TestAWriteBringingNoBaseRowsIsRefused` (`cycle/cycle_test.go`), which isolates the
+two arms with a `Set` for the run one — the current row is settled first wherever a
+request asserts one at all.
+
+**A shard-scoped read answered for a shard nobody holds** (rung 4). `ShardStats`
+and `RetireShard` both answer a shard this node does not hold, and the answer is
+the second return rather than a zero a caller could read as "held and empty". Every
+existing case asks about a shard it has just acquired, so both not-held arms were
+reachable from nothing, and without them each dereferences the nil the registry
+hands back. Not a durability entry on its own; it is here because the shutdown's
+residue is read through these, and a panic in the caller that is checking whether
+the layer is safe to remove is the wrong failure.
+`TestTheNarrowReadsAnswerForAShardNobodyHolds` (`waltz_test.go`).
+
 **Backpressure reported as a possibly-committed write.** A refusal checked before
 the append provably wrote nothing, and one `%w` around it turns that into a
 self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`

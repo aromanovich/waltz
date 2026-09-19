@@ -520,3 +520,21 @@ type refusingCold struct{ *coldtest.Cold }
 func (refusingCold) Apply(context.Context, wal.ShardID, wal.Epoch, fold.Batch) error {
 	return errors.New("refusingCold: this drain does not commit")
 }
+
+// TestTheNarrowReadsAnswerForAShardNobodyHolds: both of the layer's shard-scoped
+// methods answer a shard this node does not hold, and the answer is the second
+// return rather than a zero value a caller might read as "held and empty". Every
+// existing case asks about a shard it has just acquired, so the not-held arm of
+// each was reachable from nothing — and without it both dereference the nil the
+// registry hands back, turning a question about an unknown shard into a panic in
+// whatever goroutine asked.
+func TestTheNarrowReadsAnswerForAShardNobodyHolds(t *testing.T) {
+	layer, _ := composed(t, cycle.Defaults())
+	t.Cleanup(func() { require.NoError(t, layer.Shutdown(context.Background(), time.Minute)) })
+
+	const never = wal.ShardID(4242)
+	stats, ok := layer.ShardStats(never)
+	require.False(t, ok, "no acquire installed a cycle for this shard")
+	require.Equal(t, cycle.Stats{}, stats, "and the value beside a false must carry nothing")
+	require.False(t, layer.RetireShard(never), "there was no cycle to retire")
+}

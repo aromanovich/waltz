@@ -919,3 +919,40 @@ func commitToColdStore(store *basetest.Store, batch fold.Batch) {
 		}
 	}
 }
+
+// TestAWriteBringingNoBaseRowsIsRefused: an assertion the window cannot determine
+// is settled against the pre-window row, so the caller hands the write path the
+// store's own two reads. A caller that brings none has nothing to settle it with —
+// and the only two answers are to refuse the write or to ack it with the assertion
+// unevaluated, which is a conditional write acknowledged by nobody having checked
+// the condition.
+//
+// Both arms of the delegated walk ask it, because which row the store would have
+// judged first is what the refusal names, and neither was driven: deleting either
+// check left the whole tree green. Refusal rather than panic is deliberate — a
+// refused write provably acked nothing, and "unreachable" is a claim about today's
+// callers rather than about tomorrow's.
+func TestAWriteBringingNoBaseRowsIsRefused(t *testing.T) {
+	ctx := context.Background()
+	ns, wf, run := ids()
+
+	// A Set asserts the run's own row at the version below it and claims nothing
+	// about the current-execution row, which is what puts the walk on the run arm:
+	// the current row is settled first wherever a request asserts one at all.
+	t.Run("a run assertion the window does not hold", func(t *testing.T) {
+		e := newEnv(t, nil)
+		err := e.c.write(ctx, build.Set(ns, wf, run, 2), nil)
+		require.ErrorIs(t, err, ErrNoBaseRow)
+		require.ErrorContains(t, err, run, "the refusal names the row the store would have judged")
+		require.Empty(t, e.entries(t), "a refused write may not have appended")
+	})
+
+	t.Run("a current-row assertion the window does not hold", func(t *testing.T) {
+		e := newEnv(t, nil)
+		// A start over a workflow id whose previous run has finished: the current
+		// row's version is a column only the store can answer for.
+		err := e.c.write(ctx, mkReuseCreate(ns, wf, run, uuid.NewString(), 0), nil)
+		require.ErrorIs(t, err, ErrNoBaseRow)
+		require.Empty(t, e.entries(t), "a refused write may not have appended")
+	})
+}

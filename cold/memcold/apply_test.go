@@ -763,6 +763,13 @@ func TestEveryPartOfAResetReachesTheDatabase(t *testing.T) {
 // The shard one has no upper bound on what it costs: a batch folded for one shard
 // and written under another's id lands one shard's rows in another's tables, and
 // both are wrong afterwards with nothing in either that says so.
+//
+// Three of the five, not five: the remaining two — a request kind that reaches no
+// write path, and a current-row assertion kind nothing evaluates — are default arms
+// over values no fold can produce. Reaching them needs a batch built by hand, and
+// `fold.Batch` is deliberately `Drain`'s alone to build, so they are unreachable
+// from outside this package rather than untested. A sweep that finds them green has
+// found that, and there is nothing to write.
 func TestTheDrainRefusesWhatItCannotWrite(t *testing.T) {
 	t.Run("an epoch of zero", func(t *testing.T) {
 		h := newDrains(t)
