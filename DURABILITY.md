@@ -205,6 +205,18 @@ create behind a tombstone, which is the run's next life.
 produce an empty batch, and leaving those entries unsettled strands them.
 `TestADrainOfAnEmptyWindowSettlesNothing` (`cycle/tail_test.go`).
 
+**A buffered batch filed under the wrong run of the same workflow** (rung 4). The
+half the entry below could not reach: a row whose run comes off the batch and whose
+workflow comes off the emitted request is wrong in a way no single-run fixture sees.
+It needs one request owning two runs, which a continue-as-new is — the update
+carries the closing run's delta and the new run's whole snapshot, and each run
+accumulates the batches of its own mutations. Buffered events are what a signal
+became while a workflow task was in flight, so a misfiled batch is a signal that
+reaches the wrong incarnation's history: in the database, acked to its caller, and
+flushed into a run it was never sent to.
+`TestBufferedBatchesLandUnderTheirOwnRun` (`cold/memcold/apply_test.go`), red with
+every batch filed under the first one's run.
+
 **A delete of a run's collection the drain acknowledged and never applied**
 (rung 4). The entry above enumerates the `Upsert*` fields of a delta, so the
 delete half of the same seven collections was driven by nothing here — and by
@@ -429,28 +441,10 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-**A batch filed under the wrong run of the same workflow.** The half the
-buffered-batch guard above does not reach, and it is stated here rather than only
-at the test because the shape is general: a row whose run comes off one value and
-whose workflow comes off another is wrong in a way a single-run fixture cannot
-see. What it needs is a request carrying two runs at once — a continue-as-new or
-a conflict-resolve with a new snapshot — which `internal/verify/mutbuild` cannot
-build today. Closing it is that fixture plus one read-back per run.
-
-**The corpus deletes from two of the seven collections.** `mutgen` removes
-sub-entity keys from activities and timers only, so the differential oracle — the
-one run that compares a folded stream against a sequential one — never sees a
-delete of a child, a request cancel, a signal, a signal-requested id or a CHASM
-node. The two guards above cover the *applier* for all seven now, which is the
-loss path; what stays unexercised is the **fold's** own upsert-versus-delete
-resolution for those five, whose failure is an acked write deleted rather than an
-acked delete skipped. Closing it is a corpus knob, and it costs an oracle run.
-
-*The list was empty here for one pass, and stopped being empty the moment somebody
-looked for a scenario instead of working the named ones.* That is worth more than
-either entry above: an empty Open means the queue is worked, never that the tree is
-clean. Both are residues of three entries now Closed, all three of which came out
-of deleting a write and watching nothing fail — see "What this file is not".
+Nothing today, and the second time this page has been able to say so. Read it as
+"the queue is worked", never as "the tree is clean": the entries below were found by
+deleting a write, or a condition, and watching nothing fail, and the section that
+says what this file is not says how to find the next one.
 
 ---
 
@@ -731,6 +725,23 @@ repository has — while for a deployment it is the value upstream's workflow-id
 reuse check measures against, the same hazard the delegated-conflict entry above is
 closed for. Both columns are therefore prose here by necessity, not by choice: an
 assertion over either needs a reader this store does not expose.
+
+**The corpus reaching two of the seven collections costs no unguarded mechanism**
+(read). `mutgen` upserts and deletes sub-entity keys for **activities and timers
+only** — not their deletes alone, as an earlier pass wrote: it never touches
+children, request cancels, signals, signal-requested ids or CHASM nodes in a delta
+at all, so the differential oracle has never compared one. What that would add is
+nothing, and the reason is that the per-collection surface is now enumerated in both
+directions while the rest is generic. Every line that names a collection is held to
+the request type by a test that fails on a new one by name — the applier's upserts,
+its deletes and a snapshot's clears, and the seven `mergeItems` calls through
+`TestEveryCollectionReachesBothFolds` — and everything else those five would drive
+is `mergeItems` and `applyDelta`, one generic implementation each, which activities
+and timers already drive on every run.
+
+So the gap is real and its cost is coverage of shapes whose mechanisms are
+enumerated, not of mechanisms. What it would still buy is volume in those
+collections specifically, which no line distinguishes.
 
 **An unpaired `DeleteWorkflowExecution` occurs, and the fold does not depend on
 the pair** (read, against upstream v1.29.6). Two facts, and the first is what was

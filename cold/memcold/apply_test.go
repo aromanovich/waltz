@@ -942,3 +942,53 @@ func TestATimerTaskLandsInTheTimerTable(t *testing.T) {
 	require.Equal(t, "the timer that must fire", string(page.Tasks[0].Blob.Data))
 	require.Equal(t, int64(77), page.Tasks[0].Key.TaskID)
 }
+
+// TestBufferedBatchesLandUnderTheirOwnRun is the half
+// TestEveryBufferedBatchReachesTheDatabase could not reach: a row whose run comes
+// off the batch and whose workflow comes off the emitted request is wrong in a way
+// no single-run fixture sees. It needs one request owning two runs, which a
+// continue-as-new is — the update carries the closing run's own delta and the new
+// run's whole snapshot, and each run accumulates the batches of its own mutations.
+//
+// Buffered events are what a signal became while a workflow task was in flight, so
+// a batch filed under the wrong run of the same workflow is a signal that reaches
+// the wrong incarnation's history: present in the database, acked to its caller,
+// and flushed into a run it was never sent to.
+func TestBufferedBatchesLandUnderTheirOwnRun(t *testing.T) {
+	h := newDrains(t)
+	wf := uuid.NewString()
+	closing, next := uuid.NewString(), uuid.NewString()
+
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, closing))))
+
+	buffered := func(name string) mutbuild.MutationOpt {
+		return func(m *p.InternalWorkflowMutation) { m.NewBufferedEvents = blob(name) }
+	}
+	// The continue-as-new: assembled rather than asked for, mutbuild validating a
+	// plain update and the new run being set past it — the same concession its own
+	// doc names for the two fixtures that already do this.
+	continued := h.update(wf, closing, 3, buffered("closing run's signal"))
+	fresh := h.build.Create(h.namespaceID, wf, next, mutbuild.WithInfoBlob(blob("info")))
+	continued.Update.NewWorkflowSnapshot = &fresh.Create.NewWorkflowSnapshot
+
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(
+		h.update(wf, closing, 2, buffered("the first signal")),
+		continued,
+		h.update(wf, next, 4, buffered("the new run's own signal")),
+	)))
+
+	payloads := func(run string) []string {
+		t.Helper()
+		var out []string
+		for _, b := range h.runState(wf, run).BufferedEvents {
+			out = append(out, string(b.Data))
+		}
+		slices.Sort(out)
+		return out
+	}
+	require.Equal(t, []string{"closing run's signal", "the first signal"}, payloads(closing),
+		"the closing run's own batches are not both under it")
+	require.Equal(t, []string{"the new run's own signal"}, payloads(next),
+		"the run the workflow continues as holds another incarnation's buffered events: a signal "+
+			"acked to its caller will flush into a run it was never sent to")
+}
