@@ -162,9 +162,17 @@ thing to keep in mind below. What to know before changing the fold itself:
   `go test ./...` green — `ChildExecutionInfos`, `RequestCancelInfos`,
   `SignalInfos`, `ChasmNodes`, `Checksum` — and of the eight that were caught,
   two were caught only by the e2e server timing its workflow out. It claims a
-  field is *filled* and not what with, which source each comes from being judged
-  case by case in `overlay_test.go`: a field added upstream fails here and is
-  decided there. **The copy is a line per collection in both mirrors**, so the
+  field is *filled* and not what with, and **that half has its own test now**
+  (`TestEveryCollectionOfAReadAnswerComesFromItsOwnSource`), because "filled"
+  is exactly what a field crossed with its neighbour is: four of the six
+  collections are `map[int64]*DataBlob`, so assigning any of them from any
+  other compiles and passes, and nine such crossings — every collection but
+  the activities, in each of the three mirrors — left the whole of
+  `go test ./...` green. It costs what a zero costs and for the same reason:
+  the caller writes the run back from what it read, so a read answering the
+  signals as the activities has the next snapshot-bearing write put the
+  signals in the activity table and clear the activities, both acked. A field
+  added upstream fails both tests by name. **The copy is a line per collection in both mirrors**, so the
   same hazard has an aliasing half — a map added upstream is handed out shared
   until somebody writes the clone — and it was invisible too. The two read-only
   rules (`TestTheOverlayIsReadOnlyOnTheAccumulator` for the accumulator's maps,

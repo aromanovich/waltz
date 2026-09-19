@@ -4,7 +4,9 @@ package fold_test
 // has not seen — the shape table, the version rule, the current-row order.
 
 import (
+	"maps"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -232,6 +234,105 @@ func TestEveryFieldOfAReadAnswerIsFilled(t *testing.T) {
 		require.True(t, found)
 		require.Equal(t, fold.RunSnapshot, shape)
 		requireFilled(t, resp.State, "the window's own snapshot")
+	})
+}
+
+// answerSources is every collection of a read answer beside the one value
+// the fixtures put in it, so an assertion can say which *source* filled it and
+// not merely that something did. Held to the type by the subtest below, since
+// the whole point is that a collection nobody reads is a collection nobody
+// notices going missing or arriving crossed with its neighbour.
+var answerSources = []struct {
+	field        string
+	of           func(*p.InternalWorkflowMutableState) []string
+	base, window string
+}{
+	{"ActivityInfos", func(s *p.InternalWorkflowMutableState) []string { return blobsOf(s.ActivityInfos) },
+		"base-activity-1", "window-activity"},
+	{"TimerInfos", func(s *p.InternalWorkflowMutableState) []string { return blobsOf(s.TimerInfos) },
+		"base-timer", "window-timer"},
+	{"ChildExecutionInfos", func(s *p.InternalWorkflowMutableState) []string { return blobsOf(s.ChildExecutionInfos) },
+		"base-child", "window-child"},
+	{"RequestCancelInfos", func(s *p.InternalWorkflowMutableState) []string { return blobsOf(s.RequestCancelInfos) },
+		"base-cancel", "window-cancel"},
+	{"SignalInfos", func(s *p.InternalWorkflowMutableState) []string { return blobsOf(s.SignalInfos) },
+		"base-signal", "window-signal"},
+	{"ChasmNodes", func(s *p.InternalWorkflowMutableState) []string {
+		out := make([]string, 0, len(s.ChasmNodes))
+		for _, n := range s.ChasmNodes {
+			out = append(out, string(n.Data.Data))
+		}
+		slices.Sort(out)
+		return out
+	}, "base-chasm", "window-chasm"},
+}
+
+func blobsOf[K comparable](m map[K]*commonpb.DataBlob) []string {
+	out := make([]string, 0, len(m))
+	for _, b := range m {
+		out = append(out, string(b.Data))
+	}
+	slices.Sort(out)
+	return out
+}
+
+// TestEveryCollectionOfAReadAnswerComesFromItsOwnSource is the half
+// [TestEveryFieldOfAReadAnswerIsFilled] states it does not cover. That one
+// asserts a field is non-zero, which a field crossed with its neighbour
+// satisfies: four of the six collections are map[int64]*DataBlob, so assigning
+// any of them from any other compiles, fills both, and passes.
+//
+// The answer is assembled by three hand-filled mirrors — snapshotOfBase on the
+// way in, copySnapshot for a window's own state, mutableStateOf on the way out
+// — and each names all six by hand. Nine such crossings left the whole of
+// `go test ./...` green, every collection but the activities in every mirror.
+//
+// What it costs is not a stale answer. The caller writes the run back from
+// what it read, and a snapshot-bearing write clears the run's tables first —
+// so a read that answers the signals as the activities has the next write put
+// the signals in the activity table and delete the activities, both acked.
+func TestEveryCollectionOfAReadAnswerComesFromItsOwnSource(t *testing.T) {
+	t.Run("the table names every collection the answer carries", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkCreate(runX, fullSnapshot))
+		resp, _, _ := render(a, runX, nil)
+
+		named := make([]string, 0, len(answerSources))
+		for _, c := range answerSources {
+			named = append(named, c.field)
+		}
+		carried := slices.Sorted(maps.Keys(answerCollections(t, resp.State)))
+		slices.Sort(named)
+		require.Equal(t, carried, named,
+			"a collection of the answer with no row here is one nothing says the source of")
+	})
+
+	t.Run("a delta over the cold store's row", func(t *testing.T) {
+		a := fold.New(shard)
+		// No collection upserts, so every collection in the answer is the base's,
+		// carried across by snapshotOfBase.
+		add(t, a, mkUpdate(runX, 2))
+
+		resp, found, shape := render(a, runX, fullBaseRow(1))
+		require.True(t, found)
+		require.Equal(t, fold.RunDelta, shape)
+		for _, c := range answerSources {
+			require.Equalf(t, []string{c.base}, c.of(resp.State),
+				"%s in a delta's answer must be the base row's own %s", c.field, c.field)
+		}
+	})
+
+	t.Run("a snapshot the window holds", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkCreate(runX, fullSnapshot))
+
+		resp, found, shape := render(a, runX, nil)
+		require.True(t, found)
+		require.Equal(t, fold.RunSnapshot, shape)
+		for _, c := range answerSources {
+			require.Equalf(t, []string{c.window}, c.of(resp.State),
+				"%s in a snapshot's answer must be the window's own %s", c.field, c.field)
+		}
 	})
 }
 
