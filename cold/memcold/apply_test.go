@@ -705,3 +705,152 @@ func TestASnapshotClearsWhatTheRunHeldBefore(t *testing.T) {
 			"from the applier's clears, so rows from before it survived a write that does not "+
 			"carry them")
 }
+
+// TestEveryPartOfAResetReachesTheDatabase drives the shape whose second and third
+// arms were written by code no fixture reached. A conflict-resolve carries up to
+// three runs — the run being reset, the run that was current until now, and the
+// new run the reset starts — and the applier writes each in its own arm. Deleting
+// either of the last two left the whole of `go test ./...` green, the differential
+// oracle included: `mutgen.emitConflictResolve` emits the reset snapshot and nil
+// for the other two, so nothing in the tree ever built a reset that carried them,
+// and both arms of the oracle run through this same applier anyway.
+//
+// What a missing arm costs is a whole run's state, acked: the new run a reset
+// starts is the run the workflow continues as, so losing it leaves the current row
+// naming a run with no execution row at all.
+func TestEveryPartOfAResetReachesTheDatabase(t *testing.T) {
+	h := newDrains(t)
+	wf := uuid.NewString()
+	reset, current, added := uuid.NewString(), uuid.NewString(), uuid.NewString()
+
+	// The rows a reset stands on: the run it rewrites and the run that is current,
+	// both at version 1, the second having taken the current row from the first.
+	done := h.build.Create(h.namespaceID, wf, reset,
+		mutbuild.WithInfoBlob(blob("info")),
+		mutbuild.WithState(enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED,
+			enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED))
+	over := h.build.CreateOver(h.namespaceID, wf, current, reset, 0, mutbuild.WithInfoBlob(blob("info")))
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(done, over)))
+
+	// One request, three runs, at version 2 over the rows above.
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch,
+		h.fold(h.build.ConflictResolve(h.namespaceID, wf, reset, current, added, 2))))
+
+	require.EqualValues(t, 2, h.runVersion(wf, reset),
+		"the reset run's own row did not move: the first arm is the one every fixture already drove")
+	require.EqualValues(t, 2, h.runVersion(wf, current),
+		"the run that was current was not written: a reset's second arm carries its close, so "+
+			"the run stays open in the store with its caller told otherwise")
+	require.True(t, h.runExists(wf, added),
+		"the new run the reset starts has no execution row: the third arm is what creates it, and "+
+			"the current row below names it, so the workflow continues as a run the store does not have")
+	require.EqualValues(t, 1, h.runVersion(wf, added))
+
+	row, _ := h.current(wf)
+	require.NotNil(t, row)
+	require.Equal(t, added, row.RunID, "the current row names the run the reset started")
+}
+
+// TestTheDrainRefusesWhatItCannotWrite pins the applier's pre-flight refusals,
+// which nothing drove: deleting all five left the whole of `go test ./...` green.
+// Each stands between a batch this store cannot write and a transaction that
+// commits part of it, and they are worth a test each rather than a comment because
+// a refusal is the only outcome on this path with no recovery behind it —
+// [apply.ClassRefused] says there is an input to fix and no outcome to undo, so a
+// missing refusal is the batch going through instead.
+//
+// The shard one has no upper bound on what it costs: a batch folded for one shard
+// and written under another's id lands one shard's rows in another's tables, and
+// both are wrong afterwards with nothing in either that says so.
+func TestTheDrainRefusesWhatItCannotWrite(t *testing.T) {
+	t.Run("an epoch of zero", func(t *testing.T) {
+		h := newDrains(t)
+		wf, run := uuid.NewString(), uuid.NewString()
+		err := h.store.Apply(h.ctx, h.shard, 0, h.fold(h.create(wf, run)))
+		require.Equal(t, apply.ClassRefused, apply.Classify(err), "got %v", err)
+		require.False(t, h.runExists(wf, run),
+			"a refused drain may not have written a row: zero is the epoch an absent fence "+
+				"reports, so the CAS it would be written under is nobody's")
+		_, ok := h.watermark()
+		require.False(t, ok, "and it may not have left a position behind")
+	})
+
+	t.Run("a batch carrying nothing", func(t *testing.T) {
+		h := newDrains(t)
+		err := h.store.Apply(h.ctx, h.shard, h.epoch, fold.New(h.shard).Drain())
+		require.Equal(t, apply.ClassRefused, apply.Classify(err), "got %v", err)
+		_, ok := h.watermark()
+		require.False(t, ok, "an empty drain carries watermark zero, and committing that would "+
+			"tell the store every entry below it is applied")
+	})
+
+	t.Run("a batch folded for another shard", func(t *testing.T) {
+		h := newDrains(t)
+		wf, run := uuid.NewString(), uuid.NewString()
+		batch := h.fold(h.create(wf, run))
+
+		// The call names a shard the batch was not folded for, which is what a
+		// registry handing a cycle's batch to the wrong applier looks like from
+		// here.
+		err := h.store.Apply(h.ctx, h.shard+1, h.epoch, batch)
+		require.Equal(t, apply.ClassRefused, apply.Classify(err), "got %v", err)
+		require.ErrorContains(t, err, "folded shard",
+			"the refusal must name both shards: it is the only place the mix-up is visible")
+		require.False(t, h.runExists(wf, run),
+			"the row must not have been written under either shard's id")
+	})
+}
+
+// TestADeletedRunLeavesNoneOfItsRowsBehind pins the two writes a tombstone makes
+// beyond the execution row, both of which nothing drove: `deleteRun` clears the
+// run's seven collections and its buffered events before removing the row itself,
+// and dropping either left the whole of `go test ./...` green.
+//
+// What it costs is not a lost write — a deleted run's rows are unreachable through
+// the store once its execution row is gone, run ids being uuids that are never
+// handed out twice. It is unbounded growth: every workflow a namespace ever
+// completes leaves its activities, timers, signals and buffered batches in those
+// tables for good, and nothing in the cluster reads them again to notice.
+//
+// Reusing the run id is how that becomes observable and is not a shape Temporal
+// produces. What is being pinned is the store's obligation — a delete removes the
+// run's rows — and a probe that asks for the same run back is the only way to ask
+// the store what it kept, the tables not being reachable from outside the package.
+func TestADeletedRunLeavesNoneOfItsRowsBehind(t *testing.T) {
+	h := newDrains(t)
+	wf, run := uuid.NewString(), uuid.NewString()
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, run))))
+
+	filled := h.update(wf, run, 2, func(m *p.InternalWorkflowMutation) {
+		fillEveryCollection(t, m, func(name string) string { return name })
+		m.NewBufferedEvents = blob("a signal that arrived mid-task")
+		// Closed, because the probe below stands over a finished run: the current
+		// row takes its state from this mutation.
+		m.ExecutionState.State = enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED
+		m.ExecutionState.Status = enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED
+		stateBlob, err := serialization.WorkflowExecutionStateToBlob(m.ExecutionState)
+		require.NoError(t, err)
+		m.ExecutionStateBlob = stateBlob
+	})
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(filled)))
+	requireEveryCollectionHeld(t, h.runState(wf, run))
+
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch,
+		h.fold(h.build.Delete(h.namespaceID, wf, run))))
+	require.False(t, h.runExists(wf, run), "the tombstone took the execution row")
+
+	// The probe: the same run id written again. A delete leaves the current row
+	// alone, so the row still names this run at version 0, which is the assertion
+	// CreateOver stands on.
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch,
+		h.fold(h.build.CreateOver(h.namespaceID, wf, run, run, 0, mutbuild.WithInfoBlob(blob("info"))))))
+
+	state := h.runState(wf, run)
+	requireEveryCollectionEmptied(t, state,
+		"a run created where a deleted one stood holds the deleted one's rows: the tombstone did "+
+			"not clear the collection, so every completed workflow leaves its share of that table "+
+			"behind for good")
+	require.Empty(t, state.BufferedEvents,
+		"the deleted run's buffered events are still there: they outlive every workflow that ever "+
+			"buffered one, and the run they belonged to is gone")
+}

@@ -107,6 +107,32 @@ conformance suite; `assertEpoch` in `cold/memcold/apply.go`.
 
 ### The drain
 
+**A batch this store cannot write, written anyway** (rung 4). `memcold`'s drain
+opens with five refusals — a zero epoch, a batch carrying nothing, a batch folded
+for a different shard than the call writes, a request kind that reaches no write
+path, a current-row assertion kind nothing evaluates — and all five were driven by
+nothing: deleting the check left `go test ./...` green. Two of them are not
+hygiene. **An empty batch answers nil**, so the drain reports success and commits
+watermark zero, which tells the store every entry below it is applied and the trim
+behind it takes them out of the log. **A batch folded for another shard** lands one
+shard's rows under another's id, and both are wrong afterwards with nothing in
+either saying so. `TestTheDrainRefusesWhatItCannotWrite`
+(`cold/memcold/apply_test.go`), red in all three of its cases.
+
+**A reset's second and third runs, acked and never written** (rung 4). A
+conflict-resolve carries up to three runs — the run being reset, the run that was
+current until now, and the new run the reset starts — each written in its own arm
+of the applier. The last two were reachable from no fixture in the tree:
+`mutgen.emitConflictResolve` emits the reset snapshot and `nil` for the other two,
+`internal/verify/mutbuild` had no builder for the shape at all, and both arms of
+the differential oracle run through this same applier, so a dropped arm cancels.
+Deleting either left everything green. What it costs is a whole run's state: the
+new run a reset starts is the run the workflow continues as, so losing it leaves
+the current row naming a run with no execution row.
+`TestEveryPartOfAResetReachesTheDatabase` (`cold/memcold/apply_test.go`), red for
+each arm separately, over `mutbuild.Builder.ConflictResolve` — added for it, which
+is the caller that package's doc said the shape was waiting for.
+
 **A batch that lands half-applied.** One drain is one transaction, and a batch
 that landed in pieces would leave rows no replay can reconstruct — the mutations
 behind it were acked, folded and collapsed. `cold.Applier`'s first obligation;
@@ -161,12 +187,20 @@ for the same reason, and the same two were caught by the oracle.
 `TestASnapshotClearsWhatTheRunHeldBefore` (`cold/memcold/apply_test.go`), red for
 all seven clears.
 
-That literal has a second caller, `deleteRun`, and its five unguarded clears stay
-unguarded deliberately: a run's leaked collection rows are unreachable once its
-execution row is gone, run ids being uuids that are never handed out twice, so what
-survives is a storage leak of the kind [ADR 0008](docs/adr/0008-the-log-carries-history-tasks-and-not-shard-or-event-writes.md)'s
-orphaned history nodes already are. Reaching them needs a table read rather than
-the store's own, which is a bigger instrument than the leak is worth.
+**A deleted run's collections and buffered events, kept for ever** (rung 4). That
+literal's second caller is `deleteRun`, and a later sweep found its whole
+`clearCollections` call and its `deleteBufferedEvents` unguarded as well — both
+deletable with `go test ./...` green. This is accumulation rather than loss: the
+rows are unreachable once the execution row is gone, run ids being uuids that are
+never handed out twice, so nothing reads them again to notice. What it costs is
+that every workflow a namespace ever completes leaves its activities, timers,
+signals and buffered batches in those tables permanently.
+`TestADeletedRunLeavesNoneOfItsRowsBehind` (`cold/memcold/apply_test.go`) makes it
+observable by asking for the same run id back, which is a probe and not a shape
+Temporal produces — the tables are not reachable from outside the package, and
+what is being pinned is the store's obligation that a delete removes the run's
+rows. An earlier pass recorded this as deliberately unguarded on the grounds that
+a leak is not a loss; the leak is unbounded, which is enough.
 
 **A buffered-event batch the drain acknowledged and never wrote** (rung 4). The
 entry above covers the seven collections named in two literals, and a buffered

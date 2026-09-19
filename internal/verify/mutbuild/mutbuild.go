@@ -41,10 +41,13 @@
 //     rightly — fold merges, it does not admit. A builder with a
 //     "do not check" mode is a builder whose check nobody trusts, so there is
 //     none.
-//   - ConflictResolve. The one shape whose only fixtures are fold's.
-//     Adding it here with no caller would be a guess at what a caller wants; it
-//     belongs here the day a validating caller needs one. [Builder.Set] is the
-//     one exception, and a thin one: its only caller is this package's own test.
+//   - nothing, since [Builder.ConflictResolve] arrived. It was absent on the
+//     grounds that adding it with no caller would be a guess at what a caller
+//     wants, and it belonged here the day a validating caller needed one: that
+//     caller is the applier's guard for the two arms a reset's second and third
+//     parts are written by, which a mutation sweep found reachable from no
+//     fixture in the tree. [Builder.Set] is the one shape whose only caller is
+//     still this package's own test.
 package mutbuild
 
 import (
@@ -154,6 +157,69 @@ func (b Builder) Set(ns, wf, run string, version int64, opts ...SnapshotOpt) mut
 		ShardID:             b.shard,
 		SetWorkflowSnapshot: snap,
 	}}
+}
+
+// ConflictResolve is a reset, and the only shape here that carries more than one
+// run: the run being reset, the run that was current until now, and the new run
+// the reset starts. An empty currentRun or newRun leaves that part out, which is
+// how the four combinations Temporal's mode validator distinguishes are reached.
+//
+// The states are this method's rather than a caller's, because that validator has
+// a rule per combination — with all three parts the current and the reset run must
+// both be closed and the new run may not be a zombie — so a caller choosing them
+// would be choosing whether the request is one the store admits.
+//
+// It fills the execution-info blob on all three parts, which no other shape here
+// does. A reset is only worth building against a real store, the applier
+// dereferences that blob once per part, and leaving it to the caller would mean
+// three option lists for one request.
+func (b Builder) ConflictResolve(ns, wf, resetRun, currentRun, newRun string, version int64) mutation.Mutation {
+	closed := func(s *p.InternalWorkflowSnapshot) {
+		s.ExecutionState.State = enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED
+		s.ExecutionState.Status = enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED
+		s.ExecutionStateBlob = stateBlob(s.ExecutionState)
+	}
+	withInfo := func(s *p.InternalWorkflowSnapshot) { s.ExecutionInfoBlob = named("info") }
+
+	reset := b.snapshot(ns, wf, resetRun, version, []SnapshotOpt{closed, withInfo})
+	req := &p.InternalConflictResolveWorkflowExecutionRequest{
+		ShardID:               b.shard,
+		Mode:                  p.ConflictResolveWorkflowModeUpdateCurrent,
+		ResetWorkflowSnapshot: reset,
+	}
+	check("conflict resolve", p.ValidateUpdateWorkflowStateStatus(
+		reset.ExecutionState.State, reset.ExecutionState.Status))
+
+	var current *p.WorkflowMutation
+	if currentRun != "" {
+		state := runningState(currentRun)
+		state.State = enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED
+		state.Status = enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED
+		req.CurrentWorkflowMutation = &p.InternalWorkflowMutation{
+			NamespaceID:        ns,
+			WorkflowID:         wf,
+			RunID:              currentRun,
+			ExecutionState:     state,
+			ExecutionStateBlob: stateBlob(state),
+			ExecutionInfoBlob:  named("info"),
+			DBRecordVersion:    version,
+		}
+		check("conflict resolve", p.ValidateUpdateWorkflowStateStatus(state.State, state.Status))
+		current = &p.WorkflowMutation{ExecutionState: state}
+	}
+
+	var added *p.WorkflowSnapshot
+	if newRun != "" {
+		snap := b.snapshot(ns, wf, newRun, 1, []SnapshotOpt{withInfo})
+		req.NewWorkflowSnapshot = &snap
+		check("conflict resolve", p.ValidateCreateWorkflowStateStatus(
+			snap.ExecutionState.State, snap.ExecutionState.Status))
+		added = &p.WorkflowSnapshot{ExecutionState: snap.ExecutionState}
+	}
+
+	check("conflict resolve", p.ValidateConflictResolveWorkflowModeState(req.Mode,
+		p.WorkflowSnapshot{ExecutionState: reset.ExecutionState}, added, current))
+	return mutation.Mutation{ConflictResolve: req}
 }
 
 // Delete removes one run's rows. It names a run and asserts nothing, so there
