@@ -73,6 +73,16 @@ test with a short tail passes with the check deleted and judges nothing. It drai
 per entry for that reason — measured, the first version of it was green against the
 mutation it exists for.
 
+**A tail a sync-mode node cannot replay** (rung 4). The page a replay reads with is
+the window's own size, so a node in sync mode — window of one by construction —
+reads its inherited tail one entry per page, and every such page is *full* and ends
+exactly where the read began. `wal.Entries`' livelock guard has to admit `last ==
+from` while refusing `last < from`, and nothing drove that boundary: the comparison
+could be moved and sync mode's whole recovery would stop at the first entry with
+"the reads are not advancing". A shard that cannot come up, on a mode this
+repository ships and defaults away from rather than forbids.
+`TestATailIsReplayedAPageAtATime` (`cycle/replay_test.go`).
+
 **A replay that stops short of the log's end.** A page shorter than the one asked
 for is the contract's "the log ends here", and a backend whose real limit is a
 response size answers short for the size. A replay that believed it would come up
@@ -793,6 +803,20 @@ fold has made the two arms present it *different requests* — which is why the 
 collections the corpus deletes from were caught and the five it does not touch
 were not. An oracle cannot guard the completeness of a component both its arms
 share; only a read-back can.
+
+**A third class: move a comparison to its adjacent form.** Deleting a write finds
+what never reaches storage; deleting a guard finds a condition that always passes;
+flipping `<` to `<=` finds the off-by-one, which neither of the others can see — the
+line is present and does the wrong thing by one. For a layer whose correctness is
+ranges, seqnos, page cuts and watermarks that is where the defects live, and it is
+the class that caught **two of the guards written the day before**: each had been
+proved red against a defect far from its boundary, which says nothing about the
+boundary. A row at 20 in a range ending at 10 is not the same test as a row at 10.
+Fifty-one comparisons over the applier, the merge, the condition authority, the
+cycle, the decisions module and the log left three greens that mattered — those two
+and the sync-mode page above — and the rest were equivalences worth naming: an
+adjacent range that merges or does not cover the same keys either way, an assignment
+of an equal value, a switch arm the case above it already matched.
 
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence

@@ -666,3 +666,39 @@ func TestAReplayRefusesALogTrimmedPastItsWatermark(t *testing.T) {
 			"watermark saying the missing entries arrived, and the trim behind it takes the rest "+
 			"of the tail")
 }
+
+// TestATailIsReplayedAPageAtATime: the page a replay reads with is the window's
+// own size, so a node in sync mode — whose window is one by construction — reads
+// its inherited tail one entry per page. Every other case here replays at the
+// shipped window, where a full page ends far above where the read began, and the
+// one-entry page is the shape that makes `last == from` on every call.
+//
+// [wal.Entries]' livelock guard is what that boundary sits on: a full page whose
+// last seqno is *below* the read's start cannot advance, and a guard that refused
+// `last == from` as well would refuse every page of one. Nothing drove it, so the
+// comparison could be moved and sync mode's whole recovery path would stop at the
+// first entry with "the reads are not advancing" — a shard that cannot come up,
+// on a mode this repository ships.
+func TestATailIsReplayedAPageAtATime(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, func(c *Config) { c.Mutations = 1 })
+	e.mark.answers = []wmAnswer{{}}
+
+	const entries = 3
+	for i := range entries {
+		ns, wf, run := ids()
+		payload, err := mutation.Encode(mkCreate(ns, wf, run))
+		require.NoError(t, err)
+		require.NoError(t, e.log.Append(ctx, testShard, testEpoch, wal.FirstSeqno+wal.Seqno(i), payload))
+	}
+
+	// Any request starts the replay; a fresh write is the ordinary one.
+	ns, wf, run := ids()
+	require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
+
+	require.Equal(t, entries, e.c.Stats().Replayed,
+		"the replay stopped short of the tail: at a window of one every page is full and ends "+
+			"exactly where the read began, which is the shape the log's livelock guard has to admit")
+	require.EqualValues(t, entries+1, e.c.Stats().AppliedSeqno,
+		"the replayed entries and the fresh write are all applied")
+}
