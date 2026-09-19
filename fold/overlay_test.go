@@ -336,6 +336,55 @@ func TestEveryCollectionOfAReadAnswerComesFromItsOwnSource(t *testing.T) {
 	})
 }
 
+// TestEachRunOfAResetIsReadOutOfItsOwnPart is the three-run request's version
+// of the crossing above, and the shape is what makes it reachable: a
+// conflict-resolve names the run being reset, the run that was current, and the
+// new run the reset starts, and each is adopted into a part of the same pending
+// request. The part decides which snapshot a reader of that run is answered
+// from, so adopting the new run into the reset's own part answers every read of
+// it with the reset run's state — and folds a later delta of the new run onto
+// the reset's snapshot, which is the reset run's state destroyed and the new
+// run's write lost. Both acked.
+//
+// Nothing drove it: no fixture in the tree reads or folds the new run of a
+// reset inside the window that created it, so the adopt could be moved with the
+// whole of `go test ./...` green. A reset whose new run is written to again in
+// the same window is ordinary traffic — it is what the workflow continues as.
+func TestEachRunOfAResetIsReadOutOfItsOwnPart(t *testing.T) {
+	a := fold.New(shard)
+	m := mkConflictResolve(runX, 3)
+	m.ConflictResolve.ResetWorkflowSnapshot.ExecutionInfoBlob = blob("info-of-the-reset-run")
+	newRun := snapshot(runY, 1)
+	newRun.ExecutionInfoBlob = blob("info-of-the-new-run")
+	m.ConflictResolve.NewWorkflowSnapshot = &newRun
+	add(t, a, m)
+
+	reset, found, shape := render(a, runX, nil)
+	require.True(t, found)
+	require.Equal(t, fold.RunSnapshot, shape)
+	require.Equal(t, "info-of-the-reset-run", string(reset.State.ExecutionInfo.Data),
+		"the reset run must be answered out of the reset snapshot")
+
+	started, found, shape := render(a, runY, nil)
+	require.True(t, found)
+	require.Equal(t, fold.RunSnapshot, shape)
+	require.Equal(t, "info-of-the-new-run", string(started.State.ExecutionInfo.Data),
+		"the run the reset starts must be answered out of its own snapshot: answered out of the "+
+			"reset's, a reader is told this run holds state it never had")
+
+	// And a later write to the new run must reach the new run's snapshot, not
+	// the reset's — the half a read alone cannot see.
+	b := fold.New(shard)
+	add(t, b, m, mkUpdate(runY, 2, upsertActivity(9, "written-to-the-new-run")))
+	a = b
+
+	started, _, _ = render(a, runY, nil)
+	require.Equal(t, "written-to-the-new-run", activity(t, started, 9))
+	reset, _, _ = render(a, runX, nil)
+	require.NotContains(t, reset.State.ActivityInfos, int64(9),
+		"the new run's write landed in the reset run's state")
+}
+
 // TestOnlyADeltaAsksTheColdStore: only a delta and an unheld run need a base.
 func TestOnlyADeltaAsksTheColdStore(t *testing.T) {
 	a := fold.New(shard)

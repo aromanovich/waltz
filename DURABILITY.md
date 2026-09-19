@@ -265,6 +265,20 @@ acked, folded and dropped with the watermark committed beside them. Nothing abov
 catches it: dropping two lines left the whole of `go test ./...` green.
 `TestEveryCollectionOfARunReachesTheDatabase` (`cold/memcold/apply_test.go`).
 
+**A run of a three-run request read out of another run's state** (rung 4). A
+conflict-resolve names the run being reset, the run that was current and the new
+run the reset starts, and each is adopted into a *part* of one pending request —
+the part being what decides which snapshot a reader of that run is answered
+from. Adopting the new run into the reset's own part answers every read of it
+with the reset run's state, and folds a later delta of the new run onto the
+reset's snapshot: the reset run's state destroyed and the new run's write lost,
+both acked. Nothing drove it — no fixture reads or folds the new run of a reset
+inside the window that created it — so the adopt could be moved with the whole
+of `go test ./...` green, and so could the two arms that answer it.
+`TestEachRunOfAResetIsReadOutOfItsOwnPart` (`fold/overlay_test.go`), which
+asserts the read of each run and then that a write to the new run reaches the
+new run — the half a read alone cannot see. Red for four crossings.
+
 **A window folded out of a stream no single writer could have produced** (rung 4).
 Three refusals exist for a log that is already corrupt — a create of a run the
 window holds live, a continue-as-new into one, a mutation on a run it tombstoned —
