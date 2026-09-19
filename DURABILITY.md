@@ -177,6 +177,16 @@ acked, folded and dropped with the watermark committed beside them. Nothing abov
 catches it: dropping two lines left the whole of `go test ./...` green.
 `TestEveryCollectionOfARunReachesTheDatabase` (`cold/memcold/apply_test.go`).
 
+**A window folded out of a stream no single writer could have produced** (rung 4).
+Three refusals exist for a log that is already corrupt — a create of a run the
+window holds live, a continue-as-new into one, a mutation on a run it tombstoned —
+and folding such a stream is how a corrupt log becomes a corrupt store: two pending
+requests writing one run's rows, or a tombstoned run's state written back under it.
+Every existing case drives streams that are valid, so each guard was deletable with
+the tree green. `TestAStreamNoSingleWriterCouldHaveProducedIsRefused`
+(`fold/fold_test.go`), which also pins the one shape that is *not* refused — a
+create behind a tombstone, which is the run's next life.
+
 **A drain that folds to nothing settling nothing.** A window can ack entries and
 produce an empty batch, and leaving those entries unsettled strands them.
 `TestADrainOfAnEmptyWindowSettlesNothing` (`cycle/tail_test.go`).
@@ -675,6 +685,15 @@ outside the store. `p.InternalWorkflowMutableState` carries no `LastWriteVersion
 so the executions row's copy is not readable through `p.ExecutionStore` at all, and
 an assertion over it would need a table read. That is why this is recorded here
 rather than closed.
+
+**`memcold` writes two columns it never reads back**, and this is the second: the
+current row's `start_time`. `currentRowResponse` builds its answer from the row's
+state blob and `last_write_version` and touches the column not at all, so whether a
+state with no start time writes NULL or 1970 is invisible to every read this
+repository has — while for a deployment it is the value upstream's workflow-id
+reuse check measures against, the same hazard the delegated-conflict entry above is
+closed for. Both columns are therefore prose here by necessity, not by choice: an
+assertion over either needs a reader this store does not expose.
 
 **An unpaired `DeleteWorkflowExecution` occurs, and the fold does not depend on
 the pair** (read, against upstream v1.29.6). Two facts, and the first is what was

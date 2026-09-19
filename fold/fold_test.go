@@ -595,3 +595,47 @@ func TestAddValidation(t *testing.T) {
 	require.Error(t, a.Add(5, mkUpdate(runX, 3)), "the seqno floor survives the drain: one accumulator, one log")
 	require.NoError(t, a.Add(6, mkUpdate(runX, 3)))
 }
+
+// TestAStreamNoSingleWriterCouldHaveProducedIsRefused covers the refusals that
+// exist for a log which is already corrupt. Each shape here is one the single
+// writer would have seen fail before it was acked, so meeting it in a window means
+// the entries are not a stream any owner wrote — and folding it anyway is how a
+// corrupt log becomes a corrupt *store*: two pending requests for one run, or a
+// tombstoned run's state written back under it.
+//
+// Refusing is the whole mechanism and none of it was driven: each of these guard
+// clauses could be deleted with the entire tree green, because every existing case
+// drives streams that are valid. They are cheap to state and the shapes are exactly
+// the ones nobody will think to write by hand later.
+func TestAStreamNoSingleWriterCouldHaveProducedIsRefused(t *testing.T) {
+	const runZ = "run-z"
+	continueInto := func(run string) mutation.Mutation {
+		m := mkUpdate(runX, 2)
+		next := snapshot(run, 1)
+		m.Update.NewWorkflowSnapshot = &next
+		return m
+	}
+
+	t.Run("a create of a run the window already holds live", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkCreate(runX))
+		require.ErrorIs(t, a.Add(2, mkCreate(runX)), fold.ErrInvalidStream,
+			"folded, the second create adopts a run another pending request already owns, and "+
+				"the window emits two requests writing one run's rows")
+	})
+
+	t.Run("a create of a run the window tombstoned is its next life", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkCreate(runX), mkDelete(runX))
+		require.NoError(t, a.Add(3, mkCreate(runX)),
+			"a create behind a tombstone is the run's next life and is emitted after the delete")
+	})
+
+	t.Run("a continue-as-new into a run the window holds live", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkCreate(runZ))
+		require.ErrorIs(t, a.Add(2, continueInto(runZ)), fold.ErrInvalidStream,
+			"the run it closes into is already live in this window, so nothing could have "+
+				"created it twice")
+	})
+}
