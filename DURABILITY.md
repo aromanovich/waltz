@@ -942,6 +942,11 @@ meet them — otherwise every pass re-triages the same forty lines.
 
 It is not a suite and should not become one: a mutation run is a thing a session
 does, and a target that had to stay green would be a second copy of the applier.
+The mechanical half is `tools/mutation-run.py` — a runner, with no make target
+and no checked-in list of mutations, for that same reason: a committed manifest
+reads as coverage and leaves the next session re-running the last one's list
+instead of inventing the mutations it did not think of. What a run found belongs
+here; what it found and dismissed belongs beside the code.
 
 It is also not a substitute for the reasoning. Each entry is a pointer: the
 mechanisms live in `.claude/rules/`, beside the code, and the argument for each
