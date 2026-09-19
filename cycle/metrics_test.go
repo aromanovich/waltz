@@ -17,6 +17,7 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/internal/verify/coldtasks"
+	"github.com/aromanovich/waltz/mutation"
 	"github.com/aromanovich/waltz/wal/waltest"
 	"github.com/aromanovich/waltz/walmetrics"
 )
@@ -298,4 +299,40 @@ func TestADedupCollisionIsCountedAndNothingElseIs(t *testing.T) {
 	paginate(t, e.c, cold.Read, taskReq(tasks.CategoryTransfer, minKey, maxKey, 100))
 	require.Len(t, e.recorded("wal_merged_task_collisions"), 1)
 	require.Equal(t, 1, e.c.Stats().TaskCollisions)
+}
+
+// TestTheTaskDropGoesOutAsTwoCountersThatAreNotInterchangeable: I7's drop is
+// the rows a committed drain did not write because a queue had already deleted
+// the range they fall in, against the rows it did write, and the share an
+// operator reads is the first over their sum. The pair is two counters rather
+// than a share precisely so "everything was dropped" stays distinguishable from
+// "there was nothing to drop" — which is exactly the reading that inverts if
+// the two are recorded into each other's def, with every counter inside the
+// layer still right and no other test reading either series.
+func TestTheTaskDropGoesOutAsTwoCountersThatAreNotInterchangeable(t *testing.T) {
+	ns := uuid.NewString()
+	e := newEnv(t, func(c *Config) { c.Mutations = 1 << 20; c.Bytes = 1 << 30 })
+	e.coldWorkflow("wf", "run", 1)
+
+	// Two rows in, a range covering the lower one, then a row above the range:
+	// one dropped against two written, so neither number can stand in for the
+	// other and neither is zero.
+	require.NoError(t, e.add(t, mkTasks(ns, "wf", "run", 2, map[tasks.Category][]p.InternalHistoryTask{
+		tasks.CategoryTransfer: {immediate(10), immediate(20)},
+	})))
+	require.NoError(t, e.add(t, mutation.Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
+		ShardID:             int32(testShard),
+		TaskCategory:        tasks.CategoryTransfer,
+		InclusiveMinTaskKey: tasks.NewImmediateKey(0),
+		ExclusiveMaxTaskKey: tasks.NewImmediateKey(15),
+	}}))
+	require.NoError(t, e.add(t, mkTasks(ns, "wf", "run", 3, map[tasks.Category][]p.InternalHistoryTask{
+		tasks.CategoryTransfer: {immediate(30)},
+	})))
+	require.NoError(t, e.c.drainNow(t.Context()))
+
+	require.Equal(t, []any{int64(1)}, values(e.recorded("wal_dropped_tasks")),
+		"one row the range took out of the window before any drain wrote it")
+	require.Equal(t, []any{int64(2)}, values(e.recorded("wal_written_tasks")),
+		"and the two the drain did write")
 }
