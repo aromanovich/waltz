@@ -966,6 +966,11 @@ func (a *Accumulator) addDelete(seqno wal.Seqno, req *p.DeleteWorkflowExecutionR
 		old := rs.owner
 		pr.orphanedTasks = old.slotTasks(rs.part)
 		w.drop(old)
+		// The two nils are belt and braces and deleting them fails nothing:
+		// [workflowAcc.adopt] clears both when a create begins the run's next life
+		// behind this tombstone, and until one does, the owner names a request no
+		// longer in w.pending, which the drain therefore never reaches. They stay
+		// because the alternative is a run whose state points at a dropped request.
 		rs.owner = nil
 		rs.buffered = nil
 		rs.tombstoned = true

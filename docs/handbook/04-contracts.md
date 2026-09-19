@@ -498,7 +498,13 @@ of the page and what the token carries — and `queues/iterator.go` skips what d
 saying so, which is a task nobody asks for again. And **a page with no rows means the range is
 exhausted**: a token beside one is read here as the end, so the merge stops calling and returns a
 pagination that is over, leaving rows the store still held unread. Temporal's own SQL and Cassandra
-plugins satisfy all three, which is why no run here has had to.
+plugins satisfy all three, so no run here has ever needed them — and all three are checked anyway
+(`fold.ErrBaseRowOutsideRange`, `fold.ErrBasePageNotAscending`, `fold.ErrBasePageEmptyBesideAToken`),
+beside the fourth requirement below. They were written down and trusted until the third one's cost was
+looked at: an empty page read as the end of a pagination is a queue completing its range over rows it
+was never shown, which deletes acked task rows, and a failing read is the cheaper outcome. Once the
+page is being walked the other two are free, and they name the store instead of panicking in the
+reader.
 
 ## `wrapper` — the method tables
 

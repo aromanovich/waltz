@@ -338,11 +338,21 @@ cycle's, because the `fold` package may not name a store at all.
 Four things are required of that callback, and they are stated on the type: every row inside the
 range the request names, keys ascending within a page and across pages, an empty page meaning the
 range is exhausted, and **a page no larger than the batch it was asked for**. Temporal's own SQL and
-Cassandra plugins satisfy all four. Only the last is checked (`fold.ErrBasePageTooLarge`), because it
-is the one whose breach the merge would carry out itself rather than hand on: where the window alone
-overflows a page the base is asked for one row and one row is emitted, which is what moves that
-page's cursor, so a row sent unasked is one the cursor passes unemitted — and the range its reader
-completes at the end of the pagination deletes it.
+Cassandra plugins satisfy all four, and all four are checked — each against a bound the merge already
+holds, and each refused rather than carried.
+
+The last of them (`fold.ErrBasePageTooLarge`) is the one whose breach the merge would carry out itself
+rather than hand on: where the window alone overflows a page the base is asked for one row and one row
+is emitted, which is what moves that page's cursor, so a row sent unasked is one the cursor passes
+unemitted — and the range its reader completes at the end of the pagination deletes it. The other
+three were written down and trusted, on the ground that their cost lands in a queue rather than here.
+The third is what reversed that: an empty page beside a token is read as the end of the pagination, so
+the merge stops calling the base and the queue completes its range over rows it was never shown,
+deleting acked task rows — against which a failing read is the cheap outcome
+(`fold.ErrBasePageEmptyBesideAToken`). With the page being walked anyway the other two cost nothing
+further, and they name the store rather than panicking in `queues/slice.go`
+(`fold.ErrBaseRowOutsideRange`) or being skipped in silence by `queues/iterator.go`
+(`fold.ErrBasePageNotAscending`).
 
 The window half of a page is a linear scan and a sort, and nothing else. `fold.Accumulator.Tasks`
 walks every home `taskRows` names, sorts what it found by key, and `mergePage` then walks that slice
