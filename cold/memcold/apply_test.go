@@ -523,6 +523,120 @@ func immediateTask(id int64, name string) p.InternalHistoryTask {
 	return p.InternalHistoryTask{Key: tasks.NewImmediateKey(id), Blob: blob(name)}
 }
 
+// taskHomes is every table the drain's category fan-out can reach, named by a
+// category that reaches it. Two switches decide — one for the insert, one for
+// the range delete — and each has a special case per table plus a generic arm,
+// so a row here drives both halves of one home.
+//
+// The two generic rows are the point of the table rather than padding: those
+// arms serve every category upstream adds after this was written, and a
+// category with no case of its own is exactly the one no fixture names.
+var taskHomes = []struct {
+	table    string
+	category tasks.Category
+}{
+	{"transfer_tasks", tasks.CategoryTransfer},
+	{"visibility_tasks", tasks.CategoryVisibility},
+	{"replication_tasks", tasks.CategoryReplication},
+	{"history_immediate_tasks", tasks.CategoryOutbound},
+	{"timer_tasks", tasks.CategoryTimer},
+	{"history_scheduled_tasks", tasks.CategoryArchival},
+}
+
+// taskFires is the instant a scheduled fixture task fires at, and taskSpan is a
+// range around it wide enough to cover every key below.
+var taskFires = time.Date(2026, 9, 19, 3, 0, 0, 0, time.UTC)
+
+// keyIn is a task key of the shape the category's own queue uses: an immediate
+// one is a task id, a scheduled one a fire time with the id beside it.
+func keyIn(category tasks.Category, id int64) tasks.Key {
+	if category.Type() == tasks.CategoryTypeScheduled {
+		return tasks.NewKey(taskFires, id)
+	}
+	return tasks.NewImmediateKey(id)
+}
+
+func taskSpan(category tasks.Category) (tasks.Key, tasks.Key) {
+	if category.Type() == tasks.CategoryTypeScheduled {
+		return tasks.NewKey(taskFires.Add(-time.Hour), 0), tasks.NewKey(taskFires.Add(time.Hour), 0)
+	}
+	return tasks.NewImmediateKey(0), tasks.NewImmediateKey(1000)
+}
+
+// tasksOf names the rows one category's queue can read, through the store's own
+// read for that category — which is what makes a row in the wrong table
+// invisible here exactly as it is to the queue.
+func (h *drains) tasksOf(category tasks.Category) []string {
+	h.t.Helper()
+	low, high := taskSpan(category)
+	page, err := h.store.GetHistoryTasks(h.ctx, &p.GetHistoryTasksRequest{
+		ShardID:             int32(h.shard),
+		TaskCategory:        category,
+		InclusiveMinTaskKey: low,
+		ExclusiveMaxTaskKey: high,
+		BatchSize:           100,
+	})
+	require.NoError(h.t, err)
+	names := make([]string, 0, len(page.Tasks))
+	for _, task := range page.Tasks {
+		names = append(names, string(task.Blob.Data))
+	}
+	slices.Sort(names)
+	return names
+}
+
+// TestEveryCategorysTasksLandWhereItsQueueReads is the timer-table entry over
+// the whole fan-out. Category is the one property of a task that decides which
+// table it goes to, and a row in the wrong one is acked, committed, trimmed out
+// of the log, and then never read: nothing retries a task whose queue cannot
+// see it.
+//
+// Only the transfer rows were read back by anything before this, and only the
+// timer arm had a guard of its own — so sending replication rows to the generic
+// immediate table left the whole of `go test ./...` green, and so did inverting
+// the bounds of either generic range delete, which makes it match no row at all
+// while the drain reports the range applied.
+//
+// Each home is driven in both directions, because the two are separate
+// switches: a write that lands where its queue reads, and a range delete that
+// takes its own category's rows and no other category's.
+func TestEveryCategorysTasksLandWhereItsQueueReads(t *testing.T) {
+	for _, home := range taskHomes {
+		t.Run(home.table, func(t *testing.T) {
+			h := newDrains(t)
+			// A second category, to catch a delete that swept the wrong table.
+			other := taskHomes[0]
+			if other.category.ID() == home.category.ID() {
+				other = taskHomes[1]
+			}
+
+			require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(
+				h.build.AddTasks(home.category,
+					p.InternalHistoryTask{Key: keyIn(home.category, 11), Blob: blob("mine")}),
+				h.build.AddTasks(other.category,
+					p.InternalHistoryTask{Key: keyIn(other.category, 11), Blob: blob("other")}),
+			)))
+
+			require.Equal(t, []string{"mine"}, h.tasksOf(home.category),
+				"a %s task did not come back through the read its own queue makes: written to "+
+					"another category's table it is acked, committed and never delivered",
+				home.category.Name())
+			require.Equal(t, []string{"other"}, h.tasksOf(other.category),
+				"and it must not have landed in %s's table either", other.category.Name())
+
+			low, high := taskSpan(home.category)
+			require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch,
+				h.fold(h.build.RangeComplete(home.category, low, high))))
+
+			require.Empty(t, h.tasksOf(home.category),
+				"the %s range was applied and its rows are still there: the queue has acked past "+
+					"them and nothing will read them again", home.category.Name())
+			require.Equal(t, []string{"other"}, h.tasksOf(other.category),
+				"and the range took %s's rows with it", other.category.Name())
+		})
+	}
+}
+
 func blob(name string) *commonpb.DataBlob {
 	return &commonpb.DataBlob{Data: []byte(name), EncodingType: enumspb.ENCODING_TYPE_PROTO3}
 }

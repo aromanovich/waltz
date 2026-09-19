@@ -207,6 +207,31 @@ behind it: no retry, and the workflow waits for ever. Invisible to the oracle fo
 the usual reason — both arms send the row to the same wrong table.
 `TestATimerTaskLandsInTheTimerTable` (`cold/memcold/apply_test.go`).
 
+**The same failure at the other five homes, and at the delete as well as the
+write** (rung 4). The entry above is one arm of one of two switches. The fan-out
+is a table per category — `insertImmediateTasks` special-cases transfer,
+visibility and replication with a generic arm behind them, `insertScheduledTasks`
+special-cases the timer, and `rangeDeleteTasks` repeats the whole shape for the
+delete — and **transfer was the only category anything read back**. So
+replication rows could be sent to the generic immediate table with the tree
+green, and either *generic* range delete could have its bounds inverted, which
+makes the `DELETE` match no row while the drain reports the range applied: the
+queue that asked for it acks past rows that are still there, and nothing reads
+them again. The generic arms are the ones that matter longest, being where every
+category upstream adds next will land.
+`TestEveryCategorysTasksLandWhereItsQueueReads` (`cold/memcold/apply_test.go`)
+drives all six homes in both directions through the store's own per-category
+read — which is what makes a row in the wrong table as invisible to the test as
+it is to the queue — and asserts beside each that a second category's rows were
+neither written into nor swept. Red for seven staged defects.
+
+Its residue is named rather than left: `insertedAll`'s count check is an
+**untested error path**. It exists for a driver that inserts fewer rows than it
+was handed without saying so, and SQLite cannot be made to do that — a duplicate
+key errors rather than under-inserting — so relaxing the comparison is green,
+and staging the defect it exists for needs a fake transaction this store has no
+seam for.
+
 **A range delete that sweeps the task rows the same drain's requests carried**
 (rung 4). The applier's second ordering rule — the range deletes before any task
 row this drain writes — was held by a case staging its task through
