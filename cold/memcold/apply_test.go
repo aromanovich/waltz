@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -853,4 +854,84 @@ func TestADeletedRunLeavesNoneOfItsRowsBehind(t *testing.T) {
 	require.Empty(t, state.BufferedEvents,
 		"the deleted run's buffered events are still there: they outlive every workflow that ever "+
 			"buffered one, and the run they belonged to is gone")
+}
+
+// TestADrainAssertsTheCurrentRowInsideItsTransaction is the current row's half of
+// the condition authority, at the end where it is the last thing standing. What
+// the layer confirmed before the ack and what the drain asserts are the same
+// question asked twice, and the second asking is the one that runs inside the
+// transaction that writes: between the two the row can only have moved if this
+// shard changed hands, which is what makes a failure here a divergence rather
+// than contention.
+//
+// It was driven by nothing. Deleting the block that evaluates it left the whole of
+// `go test ./...` green — the run-row assertions have a test of their own, and
+// fold's predicate has its own table, but no run put a *current-row* assertion
+// through a real drain against a row that does not satisfy it. Unasserted, the
+// window's write lands anyway: the current row stops naming the run it named, and
+// nothing above ever learns the workflow's pointer moved.
+func TestADrainAssertsTheCurrentRowInsideItsTransaction(t *testing.T) {
+	h := newDrains(t)
+	wf := uuid.NewString()
+	held, intruder := uuid.NewString(), uuid.NewString()
+
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, held))))
+	current, _ := h.current(wf)
+	require.NotNil(t, current)
+	require.Equal(t, held, current.RunID)
+
+	// A brand-new create asserts the workflow has no current row at all, and this
+	// one does. The window cannot know: it was folded against a row that has since
+	// moved, which is the only way this assertion reaches the drain still false.
+	err := h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, intruder)))
+	require.Equal(t, apply.ClassInvariantViolated, apply.Classify(err), "got %v", err)
+	require.ErrorAs(t, err, new(*p.CurrentWorkflowConditionFailedError),
+		"the store's own current-row conflict must stay reachable under the attribution")
+
+	after, _ := h.current(wf)
+	require.NotNil(t, after)
+	require.Equal(t, held, after.RunID,
+		"the refused drain moved the workflow's current row: the run it named is no longer "+
+			"reachable through it, and the write that took it over was acknowledged")
+	require.False(t, h.runExists(wf, intruder), "and it wrote the intruder's own row too")
+}
+
+// TestATimerTaskLandsInTheTimerTable is the one place a task's *category*
+// decides which table it goes to, and nothing drove it. A scheduled category is
+// written by fire time, and the timer category has a table of its own
+// (`timer_tasks`) that the timer queue is the only reader of. Delete the branch
+// that picks it and the rows go to the generic scheduled table instead: the drain
+// commits, the watermark moves, the log is trimmed, and the timer queue reads its
+// own table and finds nothing. An acked timer that never fires is not a stale
+// answer — nothing retries it, and the workflow waits for ever.
+//
+// The differential oracle cannot see this: both of its arms run through this same
+// applier, so a row sent to the wrong table is sent there twice and the comparison
+// is empty. What catches it is reading the task back through the store's own read
+// for the category it was written under.
+func TestATimerTaskLandsInTheTimerTable(t *testing.T) {
+	h := newDrains(t)
+	fires := time.Date(2026, 9, 19, 3, 0, 0, 0, time.UTC)
+
+	timer := p.InternalHistoryTask{
+		Key:  tasks.NewKey(fires, 77),
+		Blob: blob("the timer that must fire"),
+	}
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch,
+		h.fold(h.build.AddTasks(tasks.CategoryTimer, timer))))
+
+	page, err := h.store.GetHistoryTasks(h.ctx, &p.GetHistoryTasksRequest{
+		ShardID:             int32(h.shard),
+		TaskCategory:        tasks.CategoryTimer,
+		InclusiveMinTaskKey: tasks.NewKey(fires.Add(-time.Hour), 0),
+		ExclusiveMaxTaskKey: tasks.NewKey(fires.Add(time.Hour), 0),
+		BatchSize:           100,
+	})
+	require.NoError(t, err)
+	require.Len(t, page.Tasks, 1,
+		"the timer queue reads timer_tasks and found nothing there: the row went to another "+
+			"table, so the drain committed, the watermark moved, the log was trimmed, and the "+
+			"timer will never fire")
+	require.Equal(t, "the timer that must fire", string(page.Tasks[0].Blob.Data))
+	require.Equal(t, int64(77), page.Tasks[0].Key.TaskID)
 }

@@ -138,6 +138,28 @@ that landed in pieces would leave rows no replay can reconstruct — the mutatio
 behind it were acked, folded and collapsed. `cold.Applier`'s first obligation;
 `cold/memcold/apply.go` opens one transaction and commits once.
 
+**A current-row assertion the drain never evaluates** (rung 4). What the layer
+confirmed before the ack and what the drain asserts are the same question asked
+twice, and the second asking runs inside the transaction that writes — between the
+two the row can only have moved if the shard changed hands, which is what makes a
+failure here a divergence rather than contention. Nothing drove it: the run-row
+assertions have a test, fold's predicate has its own table, and no run put a
+*current-row* assertion through a real drain against a row that does not satisfy
+it. Unasserted, the window's write lands anyway — the current row stops naming the
+run it named, and nothing above learns the workflow's pointer moved.
+`TestADrainAssertsTheCurrentRowInsideItsTransaction` (`cold/memcold/apply_test.go`),
+which answers `nil` with the evaluation deleted.
+
+**A timer written to the wrong table** (rung 4). Category is the one property of a
+task that decides which table it goes to: a scheduled category is written by fire
+time, and the timer category has `timer_tasks`, which the timer queue is the only
+reader of. With the branch that picks it gone the rows go to the generic scheduled
+table — the drain commits, the watermark moves, the log is trimmed, and the queue
+reads its own table and finds nothing. An acked timer that never fires has nothing
+behind it: no retry, and the workflow waits for ever. Invisible to the oracle for
+the usual reason — both arms send the row to the same wrong table.
+`TestATimerTaskLandsInTheTimerTable` (`cold/memcold/apply_test.go`).
+
 **A watermark written beside the transaction rather than inside it.** A shard
 that either replays what it applied or trims what it did not. `SetWatermark` takes
 the transaction rather than opening one.
@@ -704,6 +726,19 @@ fold has made the two arms present it *different requests* — which is why the 
 collections the corpus deletes from were caught and the five it does not touch
 were not. An oracle cannot guard the completeness of a component both its arms
 share; only a read-back can.
+
+**Not every green is a hole, and telling them apart is the work.** A sweep of the
+second kind returns three sorts of green. A *hole* is a condition whose absence
+changes what the store holds — the two entries above, and the conflict that invents
+a start time. An *equivalent* mutation changes nothing observable: a fast path
+whose guarded branch the following code would no-op through anyway
+(`fold`'s check on an empty assertion set, the tombstone's two state nils), or a
+refusal a second check downstream catches regardless (the codec's two, which the
+encoder's own comment already explains). An *untested error path* is a
+`if err != nil` whose call never fails in any fixture; that is coverage rather than
+a defect, and chasing it means writing a fault injector per deserialiser. Read each
+green before writing a test, and record the equivalents where the next sweep will
+meet them — otherwise every pass re-triages the same forty lines.
 
 It is not a suite and should not become one: a mutation run is a thing a session
 does, and a target that had to stay green would be a second copy of the applier.
