@@ -189,6 +189,34 @@ func TestARangeDeleteActsBeforeTheDrainsOwnInserts(t *testing.T) {
 		"the range removed what the store held and left the task written after it")
 }
 
+// TestARangeDeleteActsBeforeTheTaskRowsItsRequestsCarry is the same ordering at
+// the home the test above cannot reach. Most task rows ride a mutable-state
+// write rather than an AddHistoryTasks, and those are written inside the
+// request loop — so a drain whose range deletes run after that loop still
+// passes the test above and sweeps every task its own requests just inserted.
+func TestARangeDeleteActsBeforeTheTaskRowsItsRequestsCarry(t *testing.T) {
+	h := newDrains(t)
+	category := tasks.CategoryTransfer
+	wf, run := uuid.NewString(), uuid.NewString()
+
+	stale := h.fold(h.create(wf, run), h.build.AddTasks(category, immediateTask(10, "stale")))
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, stale))
+	require.Equal(t, []string{"stale"}, h.transferTasks())
+
+	// The range folds in ahead of the update, so the update's own task is one
+	// the window keeps: sequentially it is inserted after the delete has run.
+	fresh := h.fold(
+		h.build.RangeComplete(category, tasks.NewImmediateKey(0), tasks.NewImmediateKey(100)),
+		h.update(wf, run, 2, mutbuild.WithTaskMap(map[tasks.Category][]p.InternalHistoryTask{
+			category: {immediateTask(20, "fresh")},
+		})),
+	)
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, fresh))
+
+	require.Equal(t, []string{"fresh"}, h.transferTasks(),
+		"the range removed what the store held and left the task the request carried")
+}
+
 // TestARunTombstonedAndRecreatedInOneWindow is the sequential-statement
 // property the applier's doc claims, driven: the window's two requests touch
 // one workflow, the current row's assertion is the pre-window one and its write
