@@ -545,7 +545,10 @@ func sampleSnapshot() p.InternalWorkflowSnapshot {
 		LastWriteVersion: 7,
 		NextEventID:      3,
 		DBRecordVersion:  1,
-		Condition:        0,
+		// Non-zero, because a zero here cannot tell a field the codec carries
+		// from one it drops: the round trip below compares what came back, and
+		// this fixture held the only snapshot Condition in the tree.
+		Condition: 11,
 
 		ActivityInfos:       map[int64]*commonpb.DataBlob{1: blob("activity-1")},
 		TimerInfos:          map[string]*commonpb.DataBlob{"t": blob("timer-t")},

@@ -219,6 +219,17 @@ wrong run *of the same workflow* is still unguarded, that needing a request whic
 carries two runs at once — a continue-as-new or a conflict-resolve — which
 `internal/verify/mutbuild` does not build.
 
+**A snapshot's `Condition` dropped on replay** (rung 4). The codec carries it and
+the decoder reads it back, and for the snapshot shape that line was driven by
+nothing: the round-trip fixture set `Condition: 0`, and a zero cannot tell a field
+that is carried from one that is dropped. For this repository's store the field is
+inert — `memcold` asserts `DBRecordVersion` — but it is upstream's conditional-write
+guard on a Cassandra-shaped plugin, so a deployment on one would have every
+replayed create, set, reset and continue-as-new arrive **unconditional**: the write
+lands without asserting what it was written against. Closed by giving the fixture a
+non-zero condition, which `TestRoundTripUpdate` and `TestRoundTripEveryKind` then
+hold (`mutation/mutation_test.go`).
+
 **A request the write path accepts and the replay path cannot fold** (rung 4).
 The record carries a run's execution info and state as blobs and rebuilds the
 structs from them, deriving nil where a blob is absent — so a request holding a
