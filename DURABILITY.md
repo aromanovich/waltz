@@ -698,6 +698,22 @@ repository and unverifiable for any other. `memcold` is held to it
 (`TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs`), and the rule is stated
 where an implementer meets it, on `baserow.Rows.Current`.
 
+It was held on **one of the two arms**, which a later pass found by negating the
+guard that chooses between them. `executionStateOf` reads the state out of the
+row's blob where there is one and rebuilds it from the columns beside it where
+there is not — upstream's own order, and the row without a blob is exactly the
+record written before that column existed, which is the case the paragraph below
+says a check could not tell from a breach. Every fixture here writes the row
+through a real write, which always fills the blob, so the columns arm was
+reachable from nothing: dropping its run id, its status or its create request id,
+and forcing every read down it, each left the whole of `go test ./...` green —
+and so did trusting a blob with only one of its two columns present.
+`TestTheCurrentRowsStateIsReadBlobFirstThenColumns`
+(`cold/memcold/current_internal_test.go`), internal because no exported path can
+stage a blob-less row, and red for thirteen staged defects. It is the precedence
+that is the claim rather than either arm: the blob carries every request id the
+run has accumulated where the columns carry the create's alone.
+
 *Why it stays accepted:* the layer cannot detect the breach, and this is the
 uncommon case where that is provable rather than merely hard. An execution state
 carrying no request ids is legitimate — upstream back-fills them for records
