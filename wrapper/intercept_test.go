@@ -530,6 +530,44 @@ func TestTheEventsGoDownBeforeTheMutation(t *testing.T) {
 	}
 }
 
+// TestEverySlotsEventsGoDownAndNotJustItsFirst is the dimension the table above
+// does not reach: it gives every slot exactly one batch, so it pins which slots
+// a shape has and never that a slot is walked to its end.
+//
+// A slot is a list because upstream's ExecutionManager serialises one
+// InternalAppendHistoryNodesRequest per WorkflowEvents it was handed, so a
+// transaction writing several batches to one run is an ordinary shape. Stopping
+// after the first leaves every batch behind it unwritten and the mutation acked
+// anyway — a mutable state pointing at history nodes nobody wrote, which is the
+// failure the table above exists for, one dimension over.
+func TestEverySlotsEventsGoDownAndNotJustItsFirst(t *testing.T) {
+	ctx := context.Background()
+	first, second, fresh := events("first"), events("second"), events("new")
+
+	ctrl := gomock.NewController(t)
+	base := versioned(ctrl)
+	writes := &recordingLayer{}
+	store := newStore(t, base, Options{Layer: writes})
+
+	var appended []*p.InternalAppendHistoryNodesRequest
+	base.EXPECT().AppendHistoryNodes(gomock.Any(), gomock.Any()).Times(3).
+		DoAndReturn(func(_ context.Context, r *p.InternalAppendHistoryNodesRequest) error {
+			require.Empty(t, writes.got, "the mutation was acked before its events went down")
+			appended = append(appended, r)
+			return nil
+		})
+
+	require.NoError(t, store.UpdateWorkflowExecution(ctx, &p.InternalUpdateWorkflowExecutionRequest{
+		ShardID:                 3,
+		UpdateWorkflowNewEvents: []*p.InternalAppendHistoryNodesRequest{first, second},
+		NewWorkflowNewEvents:    []*p.InternalAppendHistoryNodesRequest{fresh},
+	}))
+
+	require.Equal(t, []*p.InternalAppendHistoryNodesRequest{first, second, fresh}, appended,
+		"both batches of the first slot, in order, and then the second slot's")
+	require.Len(t, writes.got, 1, "and then the mutation")
+}
+
 // TestAnUnwrittenEventIsAnUnackedMutation: if the events cannot be written the
 // mutation must not be acked. An entry whose events are missing is a state the
 // cold store can never be brought to, and replay would apply it forever.
