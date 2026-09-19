@@ -84,6 +84,59 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// TestClassifyPrefersTheShardOverEverythingUnderIt is the order of that chain,
+// which the table above cannot see: every case there matches exactly one arm,
+// so each is judged alone and the precedence between them is judged by nothing.
+// Reversing two arms left the whole of `go test ./...` green.
+//
+// The order is not arbitrary and this repository's own store cannot show it.
+// memcold asserts the epoch first and returns a lost shard by itself, so its
+// errors never match two arms. A [cold.Applier] a deployment writes is under no
+// such obligation — a driver that reports a condition failure and notices the
+// ownership change beside it, or anything joining two errors, produces exactly
+// the shape below.
+//
+// What rides on it is halt versus failover. A lost shard is the fence working:
+// the successor has been writing, every version this drain stands on is stale
+// for a reason that is not this shard's to halt over, and the entries stay in
+// the log for whoever holds it now. Called a divergence instead, the same
+// failure stops the shard as something nobody else can pick up.
+func TestClassifyPrefersTheShardOverEverythingUnderIt(t *testing.T) {
+	lost := &p.ShardOwnershipLostError{ShardID: 1, Msg: "the successor holds it"}
+	stale := &p.WorkflowConditionFailedError{Msg: "the successor moved the row"}
+	refused := Refuse(errors.New("nothing reached the store"))
+
+	cases := []struct {
+		name string
+		err  error
+		want Class
+	}{{
+		"a lost shard joined with the version failure under it",
+		errors.Join(lost, stale), ClassShardLost,
+	}, {
+		"the same pair the other way round",
+		errors.Join(stale, lost), ClassShardLost,
+	}, {
+		"a lost shard wrapped around a condition failure",
+		fmt.Errorf("drain: %w", errors.Join(stale, lost)), ClassShardLost,
+	}, {
+		"a refusal joined with a condition failure it never evaluated",
+		errors.Join(refused, stale), ClassRefused,
+	}, {
+		"a refusal joined with a lost shard, both saying nothing was written",
+		errors.Join(refused, lost), ClassRefused,
+	}, {
+		"an unnameable transport failure beside a condition failure",
+		errors.Join(errors.New("transport went dark"), stale), ClassInvariantViolated,
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, Classify(tc.err), "Classify(%v)", tc.err)
+		})
+	}
+}
+
 // TestAttributeNamesAVersionFailure: the store's error reports the first
 // failing assertion and names no workflow; the readback must name exactly the
 // diverged ones, and the cut point must sit one entry before the first of
