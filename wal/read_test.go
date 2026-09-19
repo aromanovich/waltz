@@ -94,6 +94,25 @@ func TestAWholeLogIsReadInPagesUntilAShortOne(t *testing.T) {
 		"each page resumes just above the last entry of the one before it")
 }
 
+// TestAFullPageThatEndsWhereItBeganStillAdvances is the livelock guard's own
+// boundary. At a page of one every page is full and its last seqno is exactly
+// the one the read began at, so a guard refusing `last == from` beside
+// `last < from` would refuse the first page — and with it every recovery a
+// sync-mode node makes, its window being one by construction. Every other case
+// in this file pages at 64, where a full page always ends far above its start,
+// and until this one the boundary was reached only through a caller whose page
+// size happened to equal that window.
+func TestAFullPageThatEndsWhereItBeganStillAdvances(t *testing.T) {
+	log := logOf(3)
+
+	seqnos, err := collect(t, log, wal.FirstSeqno, 1)
+
+	require.NoError(t, err)
+	require.Equal(t, []wal.Seqno{1, 2, 3}, seqnos, "every entry is yielded, one page each")
+	require.Equal(t, []wal.Seqno{1, 2, 3, 4}, log.asked,
+		"a page of one is full at every entry, so the read ends on the empty page above the log")
+}
+
 func TestALogThatEndsOnAPageBoundaryCostsOneMoreRead(t *testing.T) {
 	log := logOf(64)
 
