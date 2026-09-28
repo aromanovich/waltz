@@ -22,11 +22,6 @@ type Manager struct {
 	deps   Deps
 	policy Policy
 
-	// writesHistory is [Manager.WritesHistory]: taken off the applier once, at
-	// construction, because a capability of the store cannot change under a
-	// running node.
-	writesHistory bool
-
 	// held owns the shard map, the retired counters and the mutex over both.
 	// Manager has no lock of its own, which is what stops any code here holding
 	// one across a call into a cycle ([held]).
@@ -105,8 +100,7 @@ func NewManager(deps Deps, policy Policy) (*Manager, error) {
 		// before the server handed a handler over.
 		deps.Metrics = walmetrics.New(nil)
 	}
-	_, writesHistory := deps.Writer.(cold.HistoryApplier)
-	return &Manager{deps: deps, policy: policy, writesHistory: writesHistory, held: newHeld()}, nil
+	return &Manager{deps: deps, policy: policy, held: newHeld()}, nil
 }
 
 // WritesHistory reports whether an intercepted write's event batches ride the
@@ -115,10 +109,14 @@ func NewManager(deps Deps, policy Policy) (*Manager, error) {
 // the drain's own publication, and one that does not gets them through the base
 // store before the append, as every store did before that interface existed.
 //
-// There is no setting. A deployment's answer is which store it composed, so the
-// two halves of the question — who writes the batches, and who is told to — are
-// one value read in one place and cannot be configured apart.
-func (m *Manager) WritesHistory() bool { return m.writesHistory }
+// There is no setting. A deployment's answer is which store it composed, and the
+// deps are fixed at construction, so the two halves of the question — who writes
+// the batches, and who is told to — are one value derived in one place and
+// cannot be configured apart.
+func (m *Manager) WritesHistory() bool {
+	_, ok := m.deps.Writer.(cold.HistoryApplier)
+	return ok
+}
 
 // Use points this node's cycles at the server's metrics handler; it satisfies
 // wrapper.MetricsSink, which is how a handler built long after this registry

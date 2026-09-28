@@ -169,8 +169,8 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 		return fmt.Errorf("wrapper: %w: kind %s reaches no interception row", mutation.ErrNotExactlyOneRequest, m.Kind())
 	}
 	// Asked only where there is something to write: four of the eight kinds
-	// carry no batches at all, and a mode question on a write that has none is a
-	// question with one answer.
+	// carry no batches at all, and the question has one answer on a write with
+	// none.
 	if len(m.EventSlots()) != 0 && !s.layer.WritesHistory() {
 		if err := s.appendEvents(ctx, m); err != nil {
 			return err

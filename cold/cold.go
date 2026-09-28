@@ -109,20 +109,21 @@ type Applier interface {
 }
 
 // HistoryApplier is what an [Applier] declares to say it writes
-// [fold.Batch.History]. It is a marker and not a method, because the writing
-// happens inside Apply: what it exists for is the refusal.
+// [fold.Batch.History]. A claim rather than a method, because the writing
+// happens inside Apply and there is nothing for a second signature to add.
 //
-// Declaring it is what puts history in the batch: a layer composed over an
-// applier that does not gets the events written through the store below before
-// each append instead, and its batches carry none. So an applier that would
+// Declaring it is what puts history in the batch, and the batch carries history
+// only where the applier the layer holds declares it: a layer composed over one
+// that does not gets the events written through the store below before each
+// append instead, and its batches carry none. So an applier that would
 // ignore the field never meets one — the failure it would cause, a mutable state
 // committed over events nobody wrote, is acked and lost with every suite green,
 // and there is no configuration that can reach it.
 //
-// It is a claim and not a method because the writing happens inside Apply. What
-// makes the claim cheap to keep honest is that it is also the only way to be
-// asked: a store that declares it and then ignores [fold.Batch.History] loses
-// its own deployment's history on the first window that carries any.
+// The claim is cheap to keep honest because declaring it is also the only way to
+// be handed anything: a store that declares it and then ignores
+// [fold.Batch.History] loses its own deployment's history on the first window
+// that carries any.
 type HistoryApplier interface {
 	Applier
 

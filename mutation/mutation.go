@@ -207,7 +207,7 @@ func (m Mutation) TaskSlots() []*map[tasks.Category][]p.InternalHistoryTask {
 // order they must reach the store, and nil for a kind whose request carries
 // none.
 //
-// Which of the two writers puts them down is the mode's, and both keep the same
+// Which of the two writers puts them down is the cold store's, and both keep the same
 // rule: a mutation acked over history nodes nobody wrote is a mutable state the
 // cold store can never be brought to, and no functional suite sees it. The
 // writer that puts them down through the store strips them off once they are

@@ -65,7 +65,7 @@ type ShardWriter interface {
 	// A face rather than a field of [Options] for the reason [ShardLayer] is one
 	// interface: the two could otherwise be configured apart, and one of the two
 	// disagreements loses data. A store told the batches ride the record, over a
-	// layer whose policy says they do not, writes them nowhere — and acks a
+	// layer whose store does not write them, writes them nowhere — and acks a
 	// mutable state over history nobody wrote.
 	WritesHistory() bool
 
@@ -135,7 +135,8 @@ type ShardReader interface {
 	// parsed from the opaque branch token by the wrapper, which is where the
 	// store's own codec is reachable.
 	//
-	// It is asked in both modes and not only where the records carry history: a
+	// It is asked whatever the store below does with a write's batches, and not
+	// only where the records carry them: a
 	// tail written with that mode on is replayed by a node with it off, so
 	// whether the window holds nodes is a fact about the log rather than about
 	// this node's configuration.

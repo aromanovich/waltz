@@ -146,8 +146,8 @@ func (w *recordingLayer) GetHistoryTasks(
 	return nil, w.err
 }
 
-// WritesHistory is the mode face. It answers the field, which the fakes leave
-// false: the default mode is the one where the wrapper has work to do.
+// WritesHistory is the face the wrapper asks before writing events itself. The
+// fakes leave it false, which is the arm where the wrapper has work to do.
 func (w *recordingLayer) WritesHistory() bool { return w.writesHistory }
 
 func (w *recordingLayer) ReadHistoryBranch(
@@ -681,7 +681,7 @@ func events(id string) *p.InternalAppendHistoryNodesRequest {
 	}
 }
 
-// The mode's two branches at the store, which is the whole of what this store
+// The two branches at the store, which is the whole of what this store
 // does with it. False is the shipped one: the batches go down through the base
 // store and come off the mutation, so the record the layer appends carries none
 // and the drain writes them nowhere. True skips both, and the batches reach the
