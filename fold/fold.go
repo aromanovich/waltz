@@ -267,6 +267,11 @@ type Accumulator struct {
 	ranges       map[int32]*rangeAcc
 	taskTail     wal.Seqno
 	tasksDropped map[string]int
+
+	// The event batches this window carries, in two shapes: see history.go.
+	history       map[historyBranch][]p.InternalHistoryNode
+	historyWrites []*p.InternalAppendHistoryNodesRequest
+	historyTail   wal.Seqno
 }
 
 // New returns an empty accumulator for one shard's window.
@@ -275,6 +280,7 @@ func New(shard wal.ShardID) *Accumulator {
 		shard:     shard,
 		workflows: make(map[wfKey]*workflowAcc),
 		ranges:    make(map[int32]*rangeAcc),
+		history:   make(map[historyBranch][]p.InternalHistoryNode),
 	}
 }
 
@@ -441,6 +447,7 @@ func (a *Accumulator) Add(seqno wal.Seqno, m mutation.Mutation) error {
 	if err != nil {
 		return err
 	}
+	a.addHistory(seqno, m)
 
 	a.lastSeqno = seqno
 	a.mutationsIn++
@@ -466,13 +473,16 @@ type Batch struct {
 	shard     wal.ShardID
 	requests  []Emitted
 	tasks     TaskWork
+	history   []*p.InternalAppendHistoryNodesRequest
 	stats     Stats
 	watermark wal.Seqno
 }
 
-// Empty reports a batch no transaction need carry: no merged request and no
-// task work. The counters are not consulted.
-func (b Batch) Empty() bool { return len(b.requests) == 0 && b.tasks.Empty() }
+// Empty reports a batch no transaction need carry: no merged request, no task
+// work and no history. The counters are not consulted.
+func (b Batch) Empty() bool {
+	return len(b.requests) == 0 && b.tasks.Empty() && len(b.history) == 0
+}
 
 // Shard is the shard whose window this is: the accumulator's own. It is what a
 // caller pairs against the shard it was asked to write, which is the one thing
@@ -485,8 +495,8 @@ func (b Batch) Shard() wal.ShardID { return b.shard }
 func (b Batch) Len() int { return len(b.requests) }
 
 // Watermark is the seqno the drain's transaction acks: the maximum of the
-// requests' tail and the task work's, the two halves being in no shared
-// ordering. A batch carrying seqnos above the position it acks would leave
+// requests' tail, the task work's and the history's, the three being in no
+// shared ordering. A batch carrying seqnos above the position it acks would leave
 // applied rows above where a replay resumes.
 func (b Batch) Watermark() wal.Seqno { return b.watermark }
 
@@ -612,11 +622,15 @@ func (a *Accumulator) Drain() Batch {
 	if len(out) > 0 {
 		watermark = out[len(out)-1].TailSeqno
 	}
-	watermark = max(watermark, work.TailSeqno)
+	watermark = max(watermark, work.TailSeqno, a.historyTail)
 
+	history := a.historyWrites
+	a.history = make(map[historyBranch][]p.InternalHistoryNode)
+	a.historyWrites = nil
+	a.historyTail = 0
 	a.workflows = make(map[wfKey]*workflowAcc)
 	a.mutationsIn = 0
-	return Batch{shard: a.shard, requests: out, tasks: work, stats: stats, watermark: watermark}
+	return Batch{shard: a.shard, requests: out, tasks: work, history: history, stats: stats, watermark: watermark}
 }
 
 func (a *Accumulator) peek(namespaceID, workflowID string) *workflowAcc {

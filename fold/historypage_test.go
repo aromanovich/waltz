@@ -1,0 +1,279 @@
+package fold
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
+	p "go.temporal.io/server/common/persistence"
+)
+
+// The order the merge has to hold is the store's own, and it is not the obvious
+// one: the store keeps the transaction id negated and sorts ascending, so a
+// forward page is node ascending and transaction *descending*. Getting it
+// backwards puts two writes of one node the wrong way round, and the reader
+// takes the older one.
+func TestAForwardPageOrdersNodesUpAndTransactionsDown(t *testing.T) {
+	acc := New(7)
+	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{
+		node(5, 100), node(4, 200), node(5, 101),
+	}
+
+	page := readWholeBranch(t, acc, request(pageOf(20)), noBaseRows)
+	require.Equal(t, []historyKey{{4, 200}, {5, 101}, {5, 100}}, keysOf(page))
+}
+
+func TestAReversePageInvertsBothHalvesOfTheKey(t *testing.T) {
+	acc := New(7)
+	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{
+		node(5, 100), node(4, 200), node(5, 101),
+	}
+
+	req := request(pageOf(20))
+	req.ReverseOrder = true
+	page := readWholeBranch(t, acc, req, noBaseRows)
+	require.Equal(t, []historyKey{{5, 100}, {5, 101}, {4, 200}}, keysOf(page))
+}
+
+// The whole point of the overlay: a node acked into the window is a node the
+// cold store does not have yet, and a reader that missed it would rebuild a
+// workflow short the events its own caller was told were durable.
+func TestAPageInterleavesTheWindowWithTheColdStore(t *testing.T) {
+	acc := New(7)
+	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(2, 200), node(4, 400)}
+
+	page := readWholeBranch(t, acc, request(pageOf(20)), rows(node(1, 100), node(3, 300)))
+	require.Equal(t, []historyKey{{1, 100}, {2, 200}, {3, 300}, {4, 400}}, keysOf(page))
+}
+
+// A node the drain wrote between the window's take and the base read is in both
+// halves. The cold row is the one that stays, being the one the store keeps.
+func TestANodeInBothHalvesIsEmittedOnce(t *testing.T) {
+	acc := New(7)
+	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(1, 100), node(2, 200)}
+
+	page := readWholeBranch(t, acc, request(pageOf(20)), rows(node(1, 100)))
+	require.Equal(t, []historyKey{{1, 100}, {2, 200}}, keysOf(page))
+}
+
+// The pagination rule, which is taskpage.go's: a page is never larger than the
+// size asked for, and no base page is ever half-emitted — so the store is never
+// asked to answer one token twice, and a caller's own token is never parsed
+// here. Driven across every page size that cuts the stream somewhere different.
+func TestPagingNeverCutsInsideABasePageAndNeverOverruns(t *testing.T) {
+	for size := 1; size <= 9; size++ {
+		t.Run(pageName(size), func(t *testing.T) {
+			acc := New(7)
+			acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{
+				node(2, 200), node(4, 400), node(6, 600), node(8, 800),
+			}
+			base := countingBase(rows(node(1, 100), node(3, 300), node(5, 500), node(7, 700)))
+
+			req := request(pageOf(size))
+			var got []historyKey
+			var token []byte
+			for range 40 {
+				req.NextPageToken = token
+				resp, err := acc.HistoryPage(req, "tree", base.page)
+				require.NoError(t, err)
+				require.LessOrEqual(t, len(resp.Nodes), size, "a page may not exceed the size asked for")
+				got = append(got, keysOf(resp.Nodes)...)
+				if token = resp.NextPageToken; len(token) == 0 {
+					break
+				}
+			}
+			require.Equal(t, []historyKey{
+				{1, 100}, {2, 200}, {3, 300}, {4, 400}, {5, 500}, {6, 600}, {7, 700}, {8, 800},
+			}, got, "every node, once, in order, whichever page size cuts the stream")
+		})
+	}
+}
+
+// The cut rule's other half, which is what a base token handed back untouched
+// means: where the window alone fills the page, the base page just read is
+// emitted nowhere and its cursor stays exactly where it was. Half-emitting it
+// would lose rows on one side and duplicate them on the other.
+func TestAPageTheWindowFillsLeavesTheBasesCursorWhereItWas(t *testing.T) {
+	acc := New(7)
+	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{
+		node(2, 200), node(3, 300), node(4, 400),
+	}
+	base := countingBase(rows(node(5, 500), node(6, 600)))
+
+	req := request(pageOf(2))
+	req.NextPageToken = encodeHistoryToken(&historyPageToken{Base: []byte{0}})
+	resp, err := acc.HistoryPage(req, "tree", base.page)
+	require.NoError(t, err)
+	require.Equal(t, []historyKey{{2, 200}, {3, 300}}, keysOf(resp.Nodes))
+	require.Equal(t, []byte{0}, BaseHistoryToken(resp.NextPageToken),
+		"nothing of the base page was emitted, so its cursor may not move")
+}
+
+func TestAPageDropsWindowNodesOutsideTheRange(t *testing.T) {
+	acc := New(7)
+	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(1, 100), node(5, 500), node(9, 900)}
+
+	req := request(pageOf(20))
+	req.MinNodeID, req.MaxNodeID = 5, 9
+	page := readWholeBranch(t, acc, req, noBaseRows)
+	require.Equal(t, []historyKey{{5, 500}}, keysOf(page))
+}
+
+func TestMetadataOnlyStripsTheWindowsBlobsToo(t *testing.T) {
+	acc := New(7)
+	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(1, 100)}
+
+	req := request(pageOf(20))
+	req.MetadataOnly = true
+	page := readWholeBranch(t, acc, req, noBaseRows)
+	require.Len(t, page, 1)
+	require.Nil(t, page[0].Events, "a metadata-only read asked for no blobs, and the window's are blobs")
+}
+
+// The window is keyed by tree and branch, and a branch id is unique only inside
+// a tree: a page that keyed on the branch alone would hand one tree's nodes to
+// another's reader.
+func TestAPageSeesOnlyItsOwnBranchOfItsOwnTree(t *testing.T) {
+	acc := New(7)
+	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(1, 100)}
+	acc.history[historyBranch{"tree", "other"}] = []p.InternalHistoryNode{node(2, 200)}
+	acc.history[historyBranch{"other-tree", "b"}] = []p.InternalHistoryNode{node(3, 300)}
+
+	page := readWholeBranch(t, acc, request(pageOf(20)), noBaseRows)
+	require.Equal(t, []historyKey{{1, 100}}, keysOf(page))
+}
+
+// A store that breaks one of the three things this merge's arithmetic rests on
+// is refused rather than carried: what it costs is spent in somebody else's
+// reader, which cannot name the store that did it.
+func TestABasePageTheMergeCannotRestOnIsRefused(t *testing.T) {
+	cases := map[string]struct {
+		rows  []p.InternalHistoryNode
+		token []byte
+		want  error
+	}{
+		"empty beside a token": {nil, []byte("more"), ErrBasePageEmptyBesideAToken},
+		"not ascending":        {[]p.InternalHistoryNode{node(3, 300), node(1, 100)}, nil, ErrBasePageNotAscending},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			acc := New(7)
+			_, err := acc.HistoryPage(request(pageOf(20)), "tree",
+				func(int, []byte) ([]p.InternalHistoryNode, []byte, error) { return c.rows, c.token, nil })
+			require.ErrorIs(t, err, c.want)
+		})
+	}
+
+	t.Run("larger than asked for", func(t *testing.T) {
+		acc := New(7)
+		_, err := acc.HistoryPage(request(pageOf(1)), "tree",
+			func(int, []byte) ([]p.InternalHistoryNode, []byte, error) {
+				return []p.InternalHistoryNode{node(1, 100), node(2, 200)}, nil, nil
+			})
+		require.ErrorIs(t, err, ErrBasePageTooLarge)
+	})
+}
+
+// A token of ours reaching a plugin's own parser is a pagination that fails
+// mid-read, so every caller about to answer without this window unwraps first.
+func TestTheBaseTokenComesBackOutOfOneOfOurs(t *testing.T) {
+	require.Nil(t, BaseHistoryToken(nil))
+	require.Equal(t, []byte("theirs"), BaseHistoryToken([]byte("theirs")),
+		"a token we did not write is the base's own and travels unchanged")
+
+	ours := encodeHistoryToken(&historyPageToken{Base: []byte("theirs"), AfterNode: 4, After: true})
+	require.Equal(t, []byte("theirs"), BaseHistoryToken(ours))
+
+	done := encodeHistoryToken(&historyPageToken{Base: []byte("spent"), BaseDone: true, AfterNode: 4, After: true})
+	require.Nil(t, BaseHistoryToken(done),
+		"a cursor the base already said it was done with names rows behind the reader: handing it back "+
+			"would restart the pagination there, and an empty token repeats rows the caller has seen instead")
+}
+
+// ---------------------------------------------------------------- fixtures
+
+func node(nodeID, txnID int64) p.InternalHistoryNode {
+	return p.InternalHistoryNode{
+		NodeID:            nodeID,
+		TransactionID:     txnID,
+		PrevTransactionID: txnID - 1,
+		Events:            &commonpb.DataBlob{Data: []byte{byte(nodeID)}},
+	}
+}
+
+func request(pageSize int) *p.InternalReadHistoryBranchRequest {
+	return &p.InternalReadHistoryBranchRequest{
+		ShardID:   7,
+		BranchID:  "b",
+		MinNodeID: 1,
+		MaxNodeID: 1 << 30,
+		PageSize:  pageSize,
+	}
+}
+
+func pageOf(n int) int { return n }
+
+func pageName(n int) string { return "page size " + string(rune('0'+n)) }
+
+func keysOf(nodes []p.InternalHistoryNode) []historyKey {
+	out := make([]historyKey, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, keyOf(n))
+	}
+	return out
+}
+
+func noBaseRows(int, []byte) ([]p.InternalHistoryNode, []byte, error) { return nil, nil, nil }
+
+// rows answers the whole set in one page, which is what a base with fewer rows
+// than the ask does.
+func rows(ns ...p.InternalHistoryNode) HistoryBasePage {
+	return func(ask int, _ []byte) ([]p.InternalHistoryNode, []byte, error) {
+		return ns[:min(ask, len(ns))], nil, nil
+	}
+}
+
+// countingBase pages through its rows one ask at a time and records any token it
+// is handed twice, which is the obligation this merge is written not to need.
+type base struct {
+	all     []p.InternalHistoryNode
+	seen    map[string]int
+	repeats []string
+}
+
+func countingBase(one HistoryBasePage) *base {
+	all, _, _ := one(1<<30, nil)
+	return &base{all: all, seen: map[string]int{}}
+}
+
+func (b *base) page(ask int, token []byte) ([]p.InternalHistoryNode, []byte, error) {
+	if len(token) > 0 {
+		b.seen[string(token)]++
+		if b.seen[string(token)] > 1 {
+			b.repeats = append(b.repeats, string(token))
+		}
+	}
+	from := 0
+	if len(token) > 0 {
+		from = int(token[0])
+	}
+	to := min(from+ask, len(b.all))
+	if from >= len(b.all) {
+		return nil, nil, nil
+	}
+	var next []byte
+	if to < len(b.all) {
+		next = []byte{byte(to)}
+	}
+	return b.all[from:to], next, nil
+}
+
+func readWholeBranch(
+	t *testing.T, acc *Accumulator, req *p.InternalReadHistoryBranchRequest, base HistoryBasePage,
+) []p.InternalHistoryNode {
+	t.Helper()
+	resp, err := acc.HistoryPage(req, "tree", base)
+	require.NoError(t, err)
+	require.Empty(t, resp.NextPageToken, "the fixture's page holds everything")
+	return resp.Nodes
+}

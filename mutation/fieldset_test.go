@@ -42,8 +42,8 @@ type mirroredStruct struct {
 }
 
 const (
-	whyEpoch   = "RangeID is the epoch (I11); it travels with the WAL entry, and a copy could disagree with it"
-	whyBlob    = "derived from the blob, which is what the store writes verbatim; carrying the proto would make the stored bytes a re-marshal"
+	whyEpoch = "RangeID is the epoch (I11); it travels with the WAL entry, and a copy could disagree with it"
+	whyBlob  = "derived from the blob, which is what the store writes verbatim; carrying the proto would make the stored bytes a re-marshal"
 	// The map keyed by the same type is carried: its keys travel as ids beside
 	// the rows they key, so the map comes back whole. A bare category has no
 	// such row, and one payload decoding on one node and failing on another
