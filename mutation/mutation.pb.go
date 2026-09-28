@@ -259,15 +259,22 @@ func (*Payload_RangeCompleteTasks) isPayload_Request() {}
 //
 // RangeID is absent on purpose here and in every other request: it is the epoch
 // (invariant I11), it travels with the WAL entry, and a copy inside the payload
-// could disagree with it. So are the *NewEvents slices — event history stays out
-// of the WAL in v1 (decision D3).
+// could disagree with it.
+//
+// The *_new_events slices are carried or dropped by the codec rather than by
+// this file: Encode leaves them out and EncodeWithHistory puts them in, so the
+// bytes of a record written without history are the bytes the codec wrote before
+// these fields existed. An older build meeting one that has them refuses to
+// decode it (mutation.rejectUnknownFields), which is what stops a rollback from
+// replaying a record short its events.
 type CreateRequest struct {
-	state                    protoimpl.MessageState `protogen:"open.v1"`
-	ShardId                  int32                  `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	Mode                     int32                  `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
-	PreviousRunId            string                 `protobuf:"bytes,3,opt,name=previous_run_id,json=previousRunId,proto3" json:"previous_run_id,omitempty"`
-	PreviousLastWriteVersion int64                  `protobuf:"varint,4,opt,name=previous_last_write_version,json=previousLastWriteVersion,proto3" json:"previous_last_write_version,omitempty"`
-	Snapshot                 *WorkflowSnapshot      `protobuf:"bytes,5,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	state                    protoimpl.MessageState       `protogen:"open.v1"`
+	ShardId                  int32                        `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	Mode                     int32                        `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	PreviousRunId            string                       `protobuf:"bytes,3,opt,name=previous_run_id,json=previousRunId,proto3" json:"previous_run_id,omitempty"`
+	PreviousLastWriteVersion int64                        `protobuf:"varint,4,opt,name=previous_last_write_version,json=previousLastWriteVersion,proto3" json:"previous_last_write_version,omitempty"`
+	Snapshot                 *WorkflowSnapshot            `protobuf:"bytes,5,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	NewWorkflowNewEvents     []*AppendHistoryNodesRequest `protobuf:"bytes,6,rep,name=new_workflow_new_events,json=newWorkflowNewEvents,proto3" json:"new_workflow_new_events,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -337,15 +344,24 @@ func (x *CreateRequest) GetSnapshot() *WorkflowSnapshot {
 	return nil
 }
 
+func (x *CreateRequest) GetNewWorkflowNewEvents() []*AppendHistoryNodesRequest {
+	if x != nil {
+		return x.NewWorkflowNewEvents
+	}
+	return nil
+}
+
 // UpdateRequest mirrors persistence.InternalUpdateWorkflowExecutionRequest.
 type UpdateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ShardId       int32                  `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	Mode          int32                  `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
-	Mutation      *WorkflowMutation      `protobuf:"bytes,3,opt,name=mutation,proto3" json:"mutation,omitempty"`
-	NewSnapshot   *WorkflowSnapshot      `protobuf:"bytes,4,opt,name=new_snapshot,json=newSnapshot,proto3" json:"new_snapshot,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                   protoimpl.MessageState       `protogen:"open.v1"`
+	ShardId                 int32                        `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	Mode                    int32                        `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	Mutation                *WorkflowMutation            `protobuf:"bytes,3,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	NewSnapshot             *WorkflowSnapshot            `protobuf:"bytes,4,opt,name=new_snapshot,json=newSnapshot,proto3" json:"new_snapshot,omitempty"`
+	UpdateWorkflowNewEvents []*AppendHistoryNodesRequest `protobuf:"bytes,5,rep,name=update_workflow_new_events,json=updateWorkflowNewEvents,proto3" json:"update_workflow_new_events,omitempty"`
+	NewWorkflowNewEvents    []*AppendHistoryNodesRequest `protobuf:"bytes,6,rep,name=new_workflow_new_events,json=newWorkflowNewEvents,proto3" json:"new_workflow_new_events,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *UpdateRequest) Reset() {
@@ -406,17 +422,34 @@ func (x *UpdateRequest) GetNewSnapshot() *WorkflowSnapshot {
 	return nil
 }
 
+func (x *UpdateRequest) GetUpdateWorkflowNewEvents() []*AppendHistoryNodesRequest {
+	if x != nil {
+		return x.UpdateWorkflowNewEvents
+	}
+	return nil
+}
+
+func (x *UpdateRequest) GetNewWorkflowNewEvents() []*AppendHistoryNodesRequest {
+	if x != nil {
+		return x.NewWorkflowNewEvents
+	}
+	return nil
+}
+
 // ConflictResolveRequest mirrors
 // persistence.InternalConflictResolveWorkflowExecutionRequest.
 type ConflictResolveRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ShardId         int32                  `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	Mode            int32                  `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
-	ResetSnapshot   *WorkflowSnapshot      `protobuf:"bytes,3,opt,name=reset_snapshot,json=resetSnapshot,proto3" json:"reset_snapshot,omitempty"`
-	NewSnapshot     *WorkflowSnapshot      `protobuf:"bytes,4,opt,name=new_snapshot,json=newSnapshot,proto3" json:"new_snapshot,omitempty"`
-	CurrentMutation *WorkflowMutation      `protobuf:"bytes,5,opt,name=current_mutation,json=currentMutation,proto3" json:"current_mutation,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state                          protoimpl.MessageState       `protogen:"open.v1"`
+	ShardId                        int32                        `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	Mode                           int32                        `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	ResetSnapshot                  *WorkflowSnapshot            `protobuf:"bytes,3,opt,name=reset_snapshot,json=resetSnapshot,proto3" json:"reset_snapshot,omitempty"`
+	NewSnapshot                    *WorkflowSnapshot            `protobuf:"bytes,4,opt,name=new_snapshot,json=newSnapshot,proto3" json:"new_snapshot,omitempty"`
+	CurrentMutation                *WorkflowMutation            `protobuf:"bytes,5,opt,name=current_mutation,json=currentMutation,proto3" json:"current_mutation,omitempty"`
+	CurrentWorkflowEventsNewEvents []*AppendHistoryNodesRequest `protobuf:"bytes,6,rep,name=current_workflow_events_new_events,json=currentWorkflowEventsNewEvents,proto3" json:"current_workflow_events_new_events,omitempty"`
+	ResetWorkflowEventsNewEvents   []*AppendHistoryNodesRequest `protobuf:"bytes,7,rep,name=reset_workflow_events_new_events,json=resetWorkflowEventsNewEvents,proto3" json:"reset_workflow_events_new_events,omitempty"`
+	NewWorkflowEventsNewEvents     []*AppendHistoryNodesRequest `protobuf:"bytes,8,rep,name=new_workflow_events_new_events,json=newWorkflowEventsNewEvents,proto3" json:"new_workflow_events_new_events,omitempty"`
+	unknownFields                  protoimpl.UnknownFields
+	sizeCache                      protoimpl.SizeCache
 }
 
 func (x *ConflictResolveRequest) Reset() {
@@ -480,6 +513,27 @@ func (x *ConflictResolveRequest) GetNewSnapshot() *WorkflowSnapshot {
 func (x *ConflictResolveRequest) GetCurrentMutation() *WorkflowMutation {
 	if x != nil {
 		return x.CurrentMutation
+	}
+	return nil
+}
+
+func (x *ConflictResolveRequest) GetCurrentWorkflowEventsNewEvents() []*AppendHistoryNodesRequest {
+	if x != nil {
+		return x.CurrentWorkflowEventsNewEvents
+	}
+	return nil
+}
+
+func (x *ConflictResolveRequest) GetResetWorkflowEventsNewEvents() []*AppendHistoryNodesRequest {
+	if x != nil {
+		return x.ResetWorkflowEventsNewEvents
+	}
+	return nil
+}
+
+func (x *ConflictResolveRequest) GetNewWorkflowEventsNewEvents() []*AppendHistoryNodesRequest {
+	if x != nil {
+		return x.NewWorkflowEventsNewEvents
 	}
 	return nil
 }
@@ -1332,11 +1386,306 @@ func (x *Blob) GetEncoding() int32 {
 	return 0
 }
 
+// AppendHistoryNodesRequest mirrors
+// persistence.InternalAppendHistoryNodesRequest: one batch of events on its way
+// to the history tree, carried by the mutable-state request that produced it.
+//
+// It has no record kind of its own. A standalone AppendHistoryNodes has no
+// mutation whose condition, epoch and ack it could share, and giving it one is a
+// separate decision (ADR 0014).
+type AppendHistoryNodesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BranchToken   []byte                 `protobuf:"bytes,1,opt,name=branch_token,json=branchToken,proto3" json:"branch_token,omitempty"`
+	IsNewBranch   bool                   `protobuf:"varint,2,opt,name=is_new_branch,json=isNewBranch,proto3" json:"is_new_branch,omitempty"`
+	Info          string                 `protobuf:"bytes,3,opt,name=info,proto3" json:"info,omitempty"`
+	BranchInfo    *HistoryBranch         `protobuf:"bytes,4,opt,name=branch_info,json=branchInfo,proto3" json:"branch_info,omitempty"`
+	TreeInfo      *Blob                  `protobuf:"bytes,5,opt,name=tree_info,json=treeInfo,proto3" json:"tree_info,omitempty"`
+	Node          *HistoryNode           `protobuf:"bytes,6,opt,name=node,proto3" json:"node,omitempty"`
+	ShardId       int32                  `protobuf:"varint,7,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AppendHistoryNodesRequest) Reset() {
+	*x = AppendHistoryNodesRequest{}
+	mi := &file_mutation_mutation_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppendHistoryNodesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppendHistoryNodesRequest) ProtoMessage() {}
+
+func (x *AppendHistoryNodesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_mutation_mutation_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppendHistoryNodesRequest.ProtoReflect.Descriptor instead.
+func (*AppendHistoryNodesRequest) Descriptor() ([]byte, []int) {
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *AppendHistoryNodesRequest) GetBranchToken() []byte {
+	if x != nil {
+		return x.BranchToken
+	}
+	return nil
+}
+
+func (x *AppendHistoryNodesRequest) GetIsNewBranch() bool {
+	if x != nil {
+		return x.IsNewBranch
+	}
+	return false
+}
+
+func (x *AppendHistoryNodesRequest) GetInfo() string {
+	if x != nil {
+		return x.Info
+	}
+	return ""
+}
+
+func (x *AppendHistoryNodesRequest) GetBranchInfo() *HistoryBranch {
+	if x != nil {
+		return x.BranchInfo
+	}
+	return nil
+}
+
+func (x *AppendHistoryNodesRequest) GetTreeInfo() *Blob {
+	if x != nil {
+		return x.TreeInfo
+	}
+	return nil
+}
+
+func (x *AppendHistoryNodesRequest) GetNode() *HistoryNode {
+	if x != nil {
+		return x.Node
+	}
+	return nil
+}
+
+func (x *AppendHistoryNodesRequest) GetShardId() int32 {
+	if x != nil {
+		return x.ShardId
+	}
+	return 0
+}
+
+// HistoryBranch mirrors persistencespb.HistoryBranch. It is mirrored rather than
+// embedded for the reason the header gives: this file is the format, and a proto
+// Temporal owns could renumber under it.
+type HistoryBranch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TreeId        string                 `protobuf:"bytes,1,opt,name=tree_id,json=treeId,proto3" json:"tree_id,omitempty"`
+	BranchId      string                 `protobuf:"bytes,2,opt,name=branch_id,json=branchId,proto3" json:"branch_id,omitempty"`
+	Ancestors     []*HistoryBranchRange  `protobuf:"bytes,3,rep,name=ancestors,proto3" json:"ancestors,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryBranch) Reset() {
+	*x = HistoryBranch{}
+	mi := &file_mutation_mutation_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryBranch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryBranch) ProtoMessage() {}
+
+func (x *HistoryBranch) ProtoReflect() protoreflect.Message {
+	mi := &file_mutation_mutation_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryBranch.ProtoReflect.Descriptor instead.
+func (*HistoryBranch) Descriptor() ([]byte, []int) {
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *HistoryBranch) GetTreeId() string {
+	if x != nil {
+		return x.TreeId
+	}
+	return ""
+}
+
+func (x *HistoryBranch) GetBranchId() string {
+	if x != nil {
+		return x.BranchId
+	}
+	return ""
+}
+
+func (x *HistoryBranch) GetAncestors() []*HistoryBranchRange {
+	if x != nil {
+		return x.Ancestors
+	}
+	return nil
+}
+
+type HistoryBranchRange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BranchId      string                 `protobuf:"bytes,1,opt,name=branch_id,json=branchId,proto3" json:"branch_id,omitempty"`
+	BeginNodeId   int64                  `protobuf:"varint,2,opt,name=begin_node_id,json=beginNodeId,proto3" json:"begin_node_id,omitempty"`
+	EndNodeId     int64                  `protobuf:"varint,3,opt,name=end_node_id,json=endNodeId,proto3" json:"end_node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryBranchRange) Reset() {
+	*x = HistoryBranchRange{}
+	mi := &file_mutation_mutation_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryBranchRange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryBranchRange) ProtoMessage() {}
+
+func (x *HistoryBranchRange) ProtoReflect() protoreflect.Message {
+	mi := &file_mutation_mutation_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryBranchRange.ProtoReflect.Descriptor instead.
+func (*HistoryBranchRange) Descriptor() ([]byte, []int) {
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *HistoryBranchRange) GetBranchId() string {
+	if x != nil {
+		return x.BranchId
+	}
+	return ""
+}
+
+func (x *HistoryBranchRange) GetBeginNodeId() int64 {
+	if x != nil {
+		return x.BeginNodeId
+	}
+	return 0
+}
+
+func (x *HistoryBranchRange) GetEndNodeId() int64 {
+	if x != nil {
+		return x.EndNodeId
+	}
+	return 0
+}
+
+// HistoryNode mirrors persistence.InternalHistoryNode. node_id with
+// transaction_id is the row's key, and the pair is what orders a merged page:
+// node ascending, transaction descending, which is the order the store reads in
+// (it stores transaction_id negated and sorts ascending).
+type HistoryNode struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	NodeId            int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	TransactionId     int64                  `protobuf:"varint,2,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	PrevTransactionId int64                  `protobuf:"varint,3,opt,name=prev_transaction_id,json=prevTransactionId,proto3" json:"prev_transaction_id,omitempty"`
+	Events            *Blob                  `protobuf:"bytes,4,opt,name=events,proto3" json:"events,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *HistoryNode) Reset() {
+	*x = HistoryNode{}
+	mi := &file_mutation_mutation_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryNode) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryNode) ProtoMessage() {}
+
+func (x *HistoryNode) ProtoReflect() protoreflect.Message {
+	mi := &file_mutation_mutation_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryNode.ProtoReflect.Descriptor instead.
+func (*HistoryNode) Descriptor() ([]byte, []int) {
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *HistoryNode) GetNodeId() int64 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *HistoryNode) GetTransactionId() int64 {
+	if x != nil {
+		return x.TransactionId
+	}
+	return 0
+}
+
+func (x *HistoryNode) GetPrevTransactionId() int64 {
+	if x != nil {
+		return x.PrevTransactionId
+	}
+	return 0
+}
+
+func (x *HistoryNode) GetEvents() *Blob {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
 // The keyed collections travel as repeated entries rather than as proto maps.
 //
-// Map fields do not marshal deterministically unless every call asks for it, and
-// a codec whose bytes depend on an option someone remembers to pass is not one a
-// differential oracle can rest on. Entries are written in sorted key order.
+// Map fields do not marshal deterministically unless every call asks for it, so
+// a codec resting on one gives a single mutation several byte strings. Entries
+// are written in sorted key order instead, which is what lets two encodings of
+// the same mutation be compared byte for byte.
 type Int64BlobEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           int64                  `protobuf:"varint,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -1347,7 +1696,7 @@ type Int64BlobEntry struct {
 
 func (x *Int64BlobEntry) Reset() {
 	*x = Int64BlobEntry{}
-	mi := &file_mutation_mutation_proto_msgTypes[12]
+	mi := &file_mutation_mutation_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1359,7 +1708,7 @@ func (x *Int64BlobEntry) String() string {
 func (*Int64BlobEntry) ProtoMessage() {}
 
 func (x *Int64BlobEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_mutation_mutation_proto_msgTypes[12]
+	mi := &file_mutation_mutation_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1372,7 +1721,7 @@ func (x *Int64BlobEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Int64BlobEntry.ProtoReflect.Descriptor instead.
 func (*Int64BlobEntry) Descriptor() ([]byte, []int) {
-	return file_mutation_mutation_proto_rawDescGZIP(), []int{12}
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Int64BlobEntry) GetKey() int64 {
@@ -1399,7 +1748,7 @@ type StringBlobEntry struct {
 
 func (x *StringBlobEntry) Reset() {
 	*x = StringBlobEntry{}
-	mi := &file_mutation_mutation_proto_msgTypes[13]
+	mi := &file_mutation_mutation_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1411,7 +1760,7 @@ func (x *StringBlobEntry) String() string {
 func (*StringBlobEntry) ProtoMessage() {}
 
 func (x *StringBlobEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_mutation_mutation_proto_msgTypes[13]
+	mi := &file_mutation_mutation_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1424,7 +1773,7 @@ func (x *StringBlobEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StringBlobEntry.ProtoReflect.Descriptor instead.
 func (*StringBlobEntry) Descriptor() ([]byte, []int) {
-	return file_mutation_mutation_proto_rawDescGZIP(), []int{13}
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *StringBlobEntry) GetKey() string {
@@ -1457,7 +1806,7 @@ type ChasmNodeEntry struct {
 
 func (x *ChasmNodeEntry) Reset() {
 	*x = ChasmNodeEntry{}
-	mi := &file_mutation_mutation_proto_msgTypes[14]
+	mi := &file_mutation_mutation_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1469,7 +1818,7 @@ func (x *ChasmNodeEntry) String() string {
 func (*ChasmNodeEntry) ProtoMessage() {}
 
 func (x *ChasmNodeEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_mutation_mutation_proto_msgTypes[14]
+	mi := &file_mutation_mutation_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1482,7 +1831,7 @@ func (x *ChasmNodeEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChasmNodeEntry.ProtoReflect.Descriptor instead.
 func (*ChasmNodeEntry) Descriptor() ([]byte, []int) {
-	return file_mutation_mutation_proto_rawDescGZIP(), []int{14}
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ChasmNodeEntry) GetKey() string {
@@ -1523,7 +1872,7 @@ type TaskGroup struct {
 
 func (x *TaskGroup) Reset() {
 	*x = TaskGroup{}
-	mi := &file_mutation_mutation_proto_msgTypes[15]
+	mi := &file_mutation_mutation_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1535,7 +1884,7 @@ func (x *TaskGroup) String() string {
 func (*TaskGroup) ProtoMessage() {}
 
 func (x *TaskGroup) ProtoReflect() protoreflect.Message {
-	mi := &file_mutation_mutation_proto_msgTypes[15]
+	mi := &file_mutation_mutation_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1548,7 +1897,7 @@ func (x *TaskGroup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskGroup.ProtoReflect.Descriptor instead.
 func (*TaskGroup) Descriptor() ([]byte, []int) {
-	return file_mutation_mutation_proto_rawDescGZIP(), []int{15}
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *TaskGroup) GetCategoryId() int32 {
@@ -1582,7 +1931,7 @@ type Task struct {
 
 func (x *Task) Reset() {
 	*x = Task{}
-	mi := &file_mutation_mutation_proto_msgTypes[16]
+	mi := &file_mutation_mutation_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1594,7 +1943,7 @@ func (x *Task) String() string {
 func (*Task) ProtoMessage() {}
 
 func (x *Task) ProtoReflect() protoreflect.Message {
-	mi := &file_mutation_mutation_proto_msgTypes[16]
+	mi := &file_mutation_mutation_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1607,7 +1956,7 @@ func (x *Task) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Task.ProtoReflect.Descriptor instead.
 func (*Task) Descriptor() ([]byte, []int) {
-	return file_mutation_mutation_proto_rawDescGZIP(), []int{16}
+	return file_mutation_mutation_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Task) GetFireTime() *timestamppb.Timestamp {
@@ -1648,24 +1997,30 @@ const file_mutation_mutation_proto_rawDesc = "" +
 	"\x14range_complete_tasks\x18\n" +
 	" \x01(\v2,.waltz.mutation.v1.RangeCompleteTasksRequestH\x00R\x12rangeCompleteTasks\x12 \n" +
 	"\vprovisional\x18\b \x01(\bR\vprovisionalB\t\n" +
-	"\arequest\"\xe6\x01\n" +
+	"\arequest\"\xcb\x02\n" +
 	"\rCreateRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\x05R\x04mode\x12&\n" +
 	"\x0fprevious_run_id\x18\x03 \x01(\tR\rpreviousRunId\x12=\n" +
 	"\x1bprevious_last_write_version\x18\x04 \x01(\x03R\x18previousLastWriteVersion\x12?\n" +
-	"\bsnapshot\x18\x05 \x01(\v2#.waltz.mutation.v1.WorkflowSnapshotR\bsnapshot\"\xc7\x01\n" +
+	"\bsnapshot\x18\x05 \x01(\v2#.waltz.mutation.v1.WorkflowSnapshotR\bsnapshot\x12c\n" +
+	"\x17new_workflow_new_events\x18\x06 \x03(\v2,.waltz.mutation.v1.AppendHistoryNodesRequestR\x14newWorkflowNewEvents\"\x97\x03\n" +
 	"\rUpdateRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\x05R\x04mode\x12?\n" +
 	"\bmutation\x18\x03 \x01(\v2#.waltz.mutation.v1.WorkflowMutationR\bmutation\x12F\n" +
-	"\fnew_snapshot\x18\x04 \x01(\v2#.waltz.mutation.v1.WorkflowSnapshotR\vnewSnapshot\"\xab\x02\n" +
+	"\fnew_snapshot\x18\x04 \x01(\v2#.waltz.mutation.v1.WorkflowSnapshotR\vnewSnapshot\x12i\n" +
+	"\x1aupdate_workflow_new_events\x18\x05 \x03(\v2,.waltz.mutation.v1.AppendHistoryNodesRequestR\x17updateWorkflowNewEvents\x12c\n" +
+	"\x17new_workflow_new_events\x18\x06 \x03(\v2,.waltz.mutation.v1.AppendHistoryNodesRequestR\x14newWorkflowNewEvents\"\x8d\x05\n" +
 	"\x16ConflictResolveRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\x05R\x04mode\x12J\n" +
 	"\x0ereset_snapshot\x18\x03 \x01(\v2#.waltz.mutation.v1.WorkflowSnapshotR\rresetSnapshot\x12F\n" +
 	"\fnew_snapshot\x18\x04 \x01(\v2#.waltz.mutation.v1.WorkflowSnapshotR\vnewSnapshot\x12N\n" +
-	"\x10current_mutation\x18\x05 \x01(\v2#.waltz.mutation.v1.WorkflowMutationR\x0fcurrentMutation\"h\n" +
+	"\x10current_mutation\x18\x05 \x01(\v2#.waltz.mutation.v1.WorkflowMutationR\x0fcurrentMutation\x12x\n" +
+	"\"current_workflow_events_new_events\x18\x06 \x03(\v2,.waltz.mutation.v1.AppendHistoryNodesRequestR\x1ecurrentWorkflowEventsNewEvents\x12t\n" +
+	" reset_workflow_events_new_events\x18\a \x03(\v2,.waltz.mutation.v1.AppendHistoryNodesRequestR\x1cresetWorkflowEventsNewEvents\x12p\n" +
+	"\x1enew_workflow_events_new_events\x18\b \x03(\v2,.waltz.mutation.v1.AppendHistoryNodesRequestR\x1anewWorkflowEventsNewEvents\"h\n" +
 	"\n" +
 	"SetRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x05R\ashardId\x12?\n" +
@@ -1748,7 +2103,29 @@ const file_mutation_mutation_proto_rawDesc = "" +
 	"\bchecksum\x18\x13 \x01(\v2\x17.waltz.mutation.v1.BlobR\bchecksum\"6\n" +
 	"\x04Blob\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x1a\n" +
-	"\bencoding\x18\x02 \x01(\x05R\bencoding\"O\n" +
+	"\bencoding\x18\x02 \x01(\x05R\bencoding\"\xbe\x02\n" +
+	"\x19AppendHistoryNodesRequest\x12!\n" +
+	"\fbranch_token\x18\x01 \x01(\fR\vbranchToken\x12\"\n" +
+	"\ris_new_branch\x18\x02 \x01(\bR\visNewBranch\x12\x12\n" +
+	"\x04info\x18\x03 \x01(\tR\x04info\x12A\n" +
+	"\vbranch_info\x18\x04 \x01(\v2 .waltz.mutation.v1.HistoryBranchR\n" +
+	"branchInfo\x124\n" +
+	"\ttree_info\x18\x05 \x01(\v2\x17.waltz.mutation.v1.BlobR\btreeInfo\x122\n" +
+	"\x04node\x18\x06 \x01(\v2\x1e.waltz.mutation.v1.HistoryNodeR\x04node\x12\x19\n" +
+	"\bshard_id\x18\a \x01(\x05R\ashardId\"\x8a\x01\n" +
+	"\rHistoryBranch\x12\x17\n" +
+	"\atree_id\x18\x01 \x01(\tR\x06treeId\x12\x1b\n" +
+	"\tbranch_id\x18\x02 \x01(\tR\bbranchId\x12C\n" +
+	"\tancestors\x18\x03 \x03(\v2%.waltz.mutation.v1.HistoryBranchRangeR\tancestors\"u\n" +
+	"\x12HistoryBranchRange\x12\x1b\n" +
+	"\tbranch_id\x18\x01 \x01(\tR\bbranchId\x12\"\n" +
+	"\rbegin_node_id\x18\x02 \x01(\x03R\vbeginNodeId\x12\x1e\n" +
+	"\vend_node_id\x18\x03 \x01(\x03R\tendNodeId\"\xae\x01\n" +
+	"\vHistoryNode\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12%\n" +
+	"\x0etransaction_id\x18\x02 \x01(\x03R\rtransactionId\x12.\n" +
+	"\x13prev_transaction_id\x18\x03 \x01(\x03R\x11prevTransactionId\x12/\n" +
+	"\x06events\x18\x04 \x01(\v2\x17.waltz.mutation.v1.BlobR\x06events\"O\n" +
 	"\x0eInt64BlobEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x03R\x03key\x12+\n" +
 	"\x04blob\x18\x02 \x01(\v2\x17.waltz.mutation.v1.BlobR\x04blob\"P\n" +
@@ -1780,7 +2157,7 @@ func file_mutation_mutation_proto_rawDescGZIP() []byte {
 	return file_mutation_mutation_proto_rawDescData
 }
 
-var file_mutation_mutation_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_mutation_mutation_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_mutation_mutation_proto_goTypes = []any{
 	(*Payload)(nil),                   // 0: waltz.mutation.v1.Payload
 	(*CreateRequest)(nil),             // 1: waltz.mutation.v1.CreateRequest
@@ -1794,12 +2171,16 @@ var file_mutation_mutation_proto_goTypes = []any{
 	(*WorkflowMutation)(nil),          // 9: waltz.mutation.v1.WorkflowMutation
 	(*WorkflowSnapshot)(nil),          // 10: waltz.mutation.v1.WorkflowSnapshot
 	(*Blob)(nil),                      // 11: waltz.mutation.v1.Blob
-	(*Int64BlobEntry)(nil),            // 12: waltz.mutation.v1.Int64BlobEntry
-	(*StringBlobEntry)(nil),           // 13: waltz.mutation.v1.StringBlobEntry
-	(*ChasmNodeEntry)(nil),            // 14: waltz.mutation.v1.ChasmNodeEntry
-	(*TaskGroup)(nil),                 // 15: waltz.mutation.v1.TaskGroup
-	(*Task)(nil),                      // 16: waltz.mutation.v1.Task
-	(*timestamppb.Timestamp)(nil),     // 17: google.protobuf.Timestamp
+	(*AppendHistoryNodesRequest)(nil), // 12: waltz.mutation.v1.AppendHistoryNodesRequest
+	(*HistoryBranch)(nil),             // 13: waltz.mutation.v1.HistoryBranch
+	(*HistoryBranchRange)(nil),        // 14: waltz.mutation.v1.HistoryBranchRange
+	(*HistoryNode)(nil),               // 15: waltz.mutation.v1.HistoryNode
+	(*Int64BlobEntry)(nil),            // 16: waltz.mutation.v1.Int64BlobEntry
+	(*StringBlobEntry)(nil),           // 17: waltz.mutation.v1.StringBlobEntry
+	(*ChasmNodeEntry)(nil),            // 18: waltz.mutation.v1.ChasmNodeEntry
+	(*TaskGroup)(nil),                 // 19: waltz.mutation.v1.TaskGroup
+	(*Task)(nil),                      // 20: waltz.mutation.v1.Task
+	(*timestamppb.Timestamp)(nil),     // 21: google.protobuf.Timestamp
 }
 var file_mutation_mutation_proto_depIdxs = []int32{
 	1,  // 0: waltz.mutation.v1.Payload.create:type_name -> waltz.mutation.v1.CreateRequest
@@ -1811,49 +2192,60 @@ var file_mutation_mutation_proto_depIdxs = []int32{
 	6,  // 6: waltz.mutation.v1.Payload.add_tasks:type_name -> waltz.mutation.v1.AddTasksRequest
 	7,  // 7: waltz.mutation.v1.Payload.range_complete_tasks:type_name -> waltz.mutation.v1.RangeCompleteTasksRequest
 	10, // 8: waltz.mutation.v1.CreateRequest.snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
-	9,  // 9: waltz.mutation.v1.UpdateRequest.mutation:type_name -> waltz.mutation.v1.WorkflowMutation
-	10, // 10: waltz.mutation.v1.UpdateRequest.new_snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
-	10, // 11: waltz.mutation.v1.ConflictResolveRequest.reset_snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
-	10, // 12: waltz.mutation.v1.ConflictResolveRequest.new_snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
-	9,  // 13: waltz.mutation.v1.ConflictResolveRequest.current_mutation:type_name -> waltz.mutation.v1.WorkflowMutation
-	10, // 14: waltz.mutation.v1.SetRequest.snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
-	15, // 15: waltz.mutation.v1.AddTasksRequest.tasks:type_name -> waltz.mutation.v1.TaskGroup
-	8,  // 16: waltz.mutation.v1.RangeCompleteTasksRequest.inclusive_min:type_name -> waltz.mutation.v1.TaskKey
-	8,  // 17: waltz.mutation.v1.RangeCompleteTasksRequest.exclusive_max:type_name -> waltz.mutation.v1.TaskKey
-	17, // 18: waltz.mutation.v1.TaskKey.fire_time:type_name -> google.protobuf.Timestamp
-	11, // 19: waltz.mutation.v1.WorkflowMutation.execution_info:type_name -> waltz.mutation.v1.Blob
-	11, // 20: waltz.mutation.v1.WorkflowMutation.execution_state:type_name -> waltz.mutation.v1.Blob
-	12, // 21: waltz.mutation.v1.WorkflowMutation.upsert_activity_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
-	13, // 22: waltz.mutation.v1.WorkflowMutation.upsert_timer_infos:type_name -> waltz.mutation.v1.StringBlobEntry
-	12, // 23: waltz.mutation.v1.WorkflowMutation.upsert_child_execution_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
-	12, // 24: waltz.mutation.v1.WorkflowMutation.upsert_request_cancel_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
-	12, // 25: waltz.mutation.v1.WorkflowMutation.upsert_signal_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
-	14, // 26: waltz.mutation.v1.WorkflowMutation.upsert_chasm_nodes:type_name -> waltz.mutation.v1.ChasmNodeEntry
-	11, // 27: waltz.mutation.v1.WorkflowMutation.new_buffered_events:type_name -> waltz.mutation.v1.Blob
-	15, // 28: waltz.mutation.v1.WorkflowMutation.tasks:type_name -> waltz.mutation.v1.TaskGroup
-	11, // 29: waltz.mutation.v1.WorkflowMutation.checksum:type_name -> waltz.mutation.v1.Blob
-	11, // 30: waltz.mutation.v1.WorkflowSnapshot.execution_info:type_name -> waltz.mutation.v1.Blob
-	11, // 31: waltz.mutation.v1.WorkflowSnapshot.execution_state:type_name -> waltz.mutation.v1.Blob
-	12, // 32: waltz.mutation.v1.WorkflowSnapshot.activity_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
-	13, // 33: waltz.mutation.v1.WorkflowSnapshot.timer_infos:type_name -> waltz.mutation.v1.StringBlobEntry
-	12, // 34: waltz.mutation.v1.WorkflowSnapshot.child_execution_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
-	12, // 35: waltz.mutation.v1.WorkflowSnapshot.request_cancel_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
-	12, // 36: waltz.mutation.v1.WorkflowSnapshot.signal_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
-	14, // 37: waltz.mutation.v1.WorkflowSnapshot.chasm_nodes:type_name -> waltz.mutation.v1.ChasmNodeEntry
-	15, // 38: waltz.mutation.v1.WorkflowSnapshot.tasks:type_name -> waltz.mutation.v1.TaskGroup
-	11, // 39: waltz.mutation.v1.WorkflowSnapshot.checksum:type_name -> waltz.mutation.v1.Blob
-	11, // 40: waltz.mutation.v1.Int64BlobEntry.blob:type_name -> waltz.mutation.v1.Blob
-	11, // 41: waltz.mutation.v1.StringBlobEntry.blob:type_name -> waltz.mutation.v1.Blob
-	11, // 42: waltz.mutation.v1.ChasmNodeEntry.metadata:type_name -> waltz.mutation.v1.Blob
-	11, // 43: waltz.mutation.v1.ChasmNodeEntry.data:type_name -> waltz.mutation.v1.Blob
-	16, // 44: waltz.mutation.v1.TaskGroup.tasks:type_name -> waltz.mutation.v1.Task
-	17, // 45: waltz.mutation.v1.Task.fire_time:type_name -> google.protobuf.Timestamp
-	11, // 46: waltz.mutation.v1.Task.blob:type_name -> waltz.mutation.v1.Blob
-	47, // [47:47] is the sub-list for method output_type
-	47, // [47:47] is the sub-list for method input_type
-	47, // [47:47] is the sub-list for extension type_name
-	47, // [47:47] is the sub-list for extension extendee
-	0,  // [0:47] is the sub-list for field type_name
+	12, // 9: waltz.mutation.v1.CreateRequest.new_workflow_new_events:type_name -> waltz.mutation.v1.AppendHistoryNodesRequest
+	9,  // 10: waltz.mutation.v1.UpdateRequest.mutation:type_name -> waltz.mutation.v1.WorkflowMutation
+	10, // 11: waltz.mutation.v1.UpdateRequest.new_snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
+	12, // 12: waltz.mutation.v1.UpdateRequest.update_workflow_new_events:type_name -> waltz.mutation.v1.AppendHistoryNodesRequest
+	12, // 13: waltz.mutation.v1.UpdateRequest.new_workflow_new_events:type_name -> waltz.mutation.v1.AppendHistoryNodesRequest
+	10, // 14: waltz.mutation.v1.ConflictResolveRequest.reset_snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
+	10, // 15: waltz.mutation.v1.ConflictResolveRequest.new_snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
+	9,  // 16: waltz.mutation.v1.ConflictResolveRequest.current_mutation:type_name -> waltz.mutation.v1.WorkflowMutation
+	12, // 17: waltz.mutation.v1.ConflictResolveRequest.current_workflow_events_new_events:type_name -> waltz.mutation.v1.AppendHistoryNodesRequest
+	12, // 18: waltz.mutation.v1.ConflictResolveRequest.reset_workflow_events_new_events:type_name -> waltz.mutation.v1.AppendHistoryNodesRequest
+	12, // 19: waltz.mutation.v1.ConflictResolveRequest.new_workflow_events_new_events:type_name -> waltz.mutation.v1.AppendHistoryNodesRequest
+	10, // 20: waltz.mutation.v1.SetRequest.snapshot:type_name -> waltz.mutation.v1.WorkflowSnapshot
+	19, // 21: waltz.mutation.v1.AddTasksRequest.tasks:type_name -> waltz.mutation.v1.TaskGroup
+	8,  // 22: waltz.mutation.v1.RangeCompleteTasksRequest.inclusive_min:type_name -> waltz.mutation.v1.TaskKey
+	8,  // 23: waltz.mutation.v1.RangeCompleteTasksRequest.exclusive_max:type_name -> waltz.mutation.v1.TaskKey
+	21, // 24: waltz.mutation.v1.TaskKey.fire_time:type_name -> google.protobuf.Timestamp
+	11, // 25: waltz.mutation.v1.WorkflowMutation.execution_info:type_name -> waltz.mutation.v1.Blob
+	11, // 26: waltz.mutation.v1.WorkflowMutation.execution_state:type_name -> waltz.mutation.v1.Blob
+	16, // 27: waltz.mutation.v1.WorkflowMutation.upsert_activity_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
+	17, // 28: waltz.mutation.v1.WorkflowMutation.upsert_timer_infos:type_name -> waltz.mutation.v1.StringBlobEntry
+	16, // 29: waltz.mutation.v1.WorkflowMutation.upsert_child_execution_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
+	16, // 30: waltz.mutation.v1.WorkflowMutation.upsert_request_cancel_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
+	16, // 31: waltz.mutation.v1.WorkflowMutation.upsert_signal_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
+	18, // 32: waltz.mutation.v1.WorkflowMutation.upsert_chasm_nodes:type_name -> waltz.mutation.v1.ChasmNodeEntry
+	11, // 33: waltz.mutation.v1.WorkflowMutation.new_buffered_events:type_name -> waltz.mutation.v1.Blob
+	19, // 34: waltz.mutation.v1.WorkflowMutation.tasks:type_name -> waltz.mutation.v1.TaskGroup
+	11, // 35: waltz.mutation.v1.WorkflowMutation.checksum:type_name -> waltz.mutation.v1.Blob
+	11, // 36: waltz.mutation.v1.WorkflowSnapshot.execution_info:type_name -> waltz.mutation.v1.Blob
+	11, // 37: waltz.mutation.v1.WorkflowSnapshot.execution_state:type_name -> waltz.mutation.v1.Blob
+	16, // 38: waltz.mutation.v1.WorkflowSnapshot.activity_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
+	17, // 39: waltz.mutation.v1.WorkflowSnapshot.timer_infos:type_name -> waltz.mutation.v1.StringBlobEntry
+	16, // 40: waltz.mutation.v1.WorkflowSnapshot.child_execution_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
+	16, // 41: waltz.mutation.v1.WorkflowSnapshot.request_cancel_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
+	16, // 42: waltz.mutation.v1.WorkflowSnapshot.signal_infos:type_name -> waltz.mutation.v1.Int64BlobEntry
+	18, // 43: waltz.mutation.v1.WorkflowSnapshot.chasm_nodes:type_name -> waltz.mutation.v1.ChasmNodeEntry
+	19, // 44: waltz.mutation.v1.WorkflowSnapshot.tasks:type_name -> waltz.mutation.v1.TaskGroup
+	11, // 45: waltz.mutation.v1.WorkflowSnapshot.checksum:type_name -> waltz.mutation.v1.Blob
+	13, // 46: waltz.mutation.v1.AppendHistoryNodesRequest.branch_info:type_name -> waltz.mutation.v1.HistoryBranch
+	11, // 47: waltz.mutation.v1.AppendHistoryNodesRequest.tree_info:type_name -> waltz.mutation.v1.Blob
+	15, // 48: waltz.mutation.v1.AppendHistoryNodesRequest.node:type_name -> waltz.mutation.v1.HistoryNode
+	14, // 49: waltz.mutation.v1.HistoryBranch.ancestors:type_name -> waltz.mutation.v1.HistoryBranchRange
+	11, // 50: waltz.mutation.v1.HistoryNode.events:type_name -> waltz.mutation.v1.Blob
+	11, // 51: waltz.mutation.v1.Int64BlobEntry.blob:type_name -> waltz.mutation.v1.Blob
+	11, // 52: waltz.mutation.v1.StringBlobEntry.blob:type_name -> waltz.mutation.v1.Blob
+	11, // 53: waltz.mutation.v1.ChasmNodeEntry.metadata:type_name -> waltz.mutation.v1.Blob
+	11, // 54: waltz.mutation.v1.ChasmNodeEntry.data:type_name -> waltz.mutation.v1.Blob
+	20, // 55: waltz.mutation.v1.TaskGroup.tasks:type_name -> waltz.mutation.v1.Task
+	21, // 56: waltz.mutation.v1.Task.fire_time:type_name -> google.protobuf.Timestamp
+	11, // 57: waltz.mutation.v1.Task.blob:type_name -> waltz.mutation.v1.Blob
+	58, // [58:58] is the sub-list for method output_type
+	58, // [58:58] is the sub-list for method input_type
+	58, // [58:58] is the sub-list for extension type_name
+	58, // [58:58] is the sub-list for extension extendee
+	0,  // [0:58] is the sub-list for field type_name
 }
 
 func init() { file_mutation_mutation_proto_init() }
@@ -1877,7 +2269,7 @@ func file_mutation_mutation_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mutation_mutation_proto_rawDesc), len(file_mutation_mutation_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

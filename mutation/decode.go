@@ -28,6 +28,7 @@ func decodeCreate(r *CreateRequest, registry tasks.TaskCategoryRegistry) (*p.Int
 		Mode:                     p.CreateWorkflowMode(r.Mode),
 		PreviousRunID:            r.PreviousRunId,
 		PreviousLastWriteVersion: r.PreviousLastWriteVersion,
+		NewWorkflowNewEvents:     decodeHistoryRequests(r.NewWorkflowNewEvents),
 	}
 	if snapshot != nil {
 		out.NewWorkflowSnapshot = *snapshot
@@ -41,8 +42,10 @@ func decodeUpdate(r *UpdateRequest, registry tasks.TaskCategoryRegistry) (*p.Int
 		return nil, err
 	}
 	out := &p.InternalUpdateWorkflowExecutionRequest{
-		ShardID: r.ShardId,
-		Mode:    p.UpdateWorkflowMode(r.Mode),
+		ShardID:                 r.ShardId,
+		Mode:                    p.UpdateWorkflowMode(r.Mode),
+		UpdateWorkflowNewEvents: decodeHistoryRequests(r.UpdateWorkflowNewEvents),
+		NewWorkflowNewEvents:    decodeHistoryRequests(r.NewWorkflowNewEvents),
 	}
 	if mutation != nil {
 		out.UpdateWorkflowMutation = *mutation
@@ -59,8 +62,11 @@ func decodeConflictResolve(r *ConflictResolveRequest, registry tasks.TaskCategor
 		return nil, err
 	}
 	out := &p.InternalConflictResolveWorkflowExecutionRequest{
-		ShardID: r.ShardId,
-		Mode:    p.ConflictResolveWorkflowMode(r.Mode),
+		ShardID:                        r.ShardId,
+		Mode:                           p.ConflictResolveWorkflowMode(r.Mode),
+		CurrentWorkflowEventsNewEvents: decodeHistoryRequests(r.CurrentWorkflowEventsNewEvents),
+		ResetWorkflowEventsNewEvents:   decodeHistoryRequests(r.ResetWorkflowEventsNewEvents),
+		NewWorkflowEventsNewEvents:     decodeHistoryRequests(r.NewWorkflowEventsNewEvents),
 	}
 	if reset != nil {
 		out.ResetWorkflowSnapshot = *reset

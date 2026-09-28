@@ -65,14 +65,28 @@ reflective codec. What to know before changing any of it:
   (`execution_manager.go`), so this is faithful — but it is also why a *fixture*
   that sets the struct and not the blob survives a fold and vanishes on replay;
 
-* **three things are dropped on purpose**, each with an invariant behind it:
+* **two things are dropped on purpose**, each with an invariant behind it:
   `RangeID` on every request that has one, because it is the epoch (I11), it
   travels with the entry, and a copy inside the payload could disagree with it;
-  the `*NewEvents` slices, because event history stays out of the WAL in v1 (D3)
-  and is written by `AppendHistoryNodes` before the append; and
-  `InternalChasmNode.CassandraBlob`, which is set only under Cassandra —
+  and `InternalChasmNode.CassandraBlob`, which is set only under Cassandra —
   dropping it silently would lose state, so `Encode` **refuses** a mutation that
   carries one rather than encoding without it;
+
+* **the `*NewEvents` slices are the codec's choice and not the format's**
+  (ADR 0014). `Encode` leaves them out and `EncodeWithHistory` puts them in, so
+  one mutation has two encodings and which one is written is the mode's. Three
+  things hold that safe and each is easy to undo by accident. A mutation
+  carrying *no* batches must encode identically either way, which is what makes
+  a record written in the default mode the record this codec wrote before those
+  fields existed. `rejectUnknownFields` is what stops a rollback from replaying
+  a history-bearing record short its events — it recurses into nested messages,
+  so the fields being on `CreateRequest` rather than on `Payload` does not
+  matter, and a build without them refuses the entry and halts the shard rather
+  than dropping them. And the batches are judged at **both** ends
+  (`ErrMalformedHistory`): the encoder refuses where refusing writes nothing,
+  and the decoder refuses because what reads a batch — the fold's key, the
+  applier's blob — dereferences it, and a payload this build did not write
+  reaches those the same way;
 
 * **`Encode` is a function of its argument, and that is load-bearing.** Go map
   iteration is randomized, and one mutation encoded 200 times through an
