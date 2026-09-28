@@ -548,8 +548,12 @@ therefore unavailable, by design rather than by omission.
 
 Obligations of the intercepted path, which the store discharges:
 
-* **The events go down first.** Every intercepted write calls `AppendHistoryNodes` on the base store
-  for each of the mutation's `EventSlots()` *before* the mutation reaches the log.
+* **The events are durable before the state that names them, and which writer makes them so is the
+  cold store's.** Over a store that does not declare `cold.HistoryApplier`, every intercepted write
+  calls `AppendHistoryNodes` on the base store for each of the mutation's `EventSlots()` *before* the
+  mutation reaches the log, and strips them off it. Over one that does, they stay on the mutation,
+  ride its record, and the drain writes them before it publishes the state (ADR 0014). Either way a
+  mutable state is never acked over history nodes nobody wrote.
 * **Errors are returned exactly as they arrive.** `ContextImpl.handleWriteErrorLocked` in the
   history service type-switches on concrete values, so one `%w` would turn an expected condition
   failure into a background re-acquire.

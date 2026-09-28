@@ -78,8 +78,8 @@ reflective codec. What to know before changing any of it:
   through the store strips them off (`wrapper.ExecutionStore.appendEvents`), so a
   mutation reaching the codec carries exactly the batches nobody has written yet.
   Do not add a mode parameter back here: the one that existed made the write path
-  fold an object that differed from the one it appended, and the setting behind
-  it was a second home for a bit the cold store already answers. Three things hold this
+  fold an object that differed from the one it appended. The bit it read is the
+  cold store's own (`cold.HistoryApplier`) and has no second home. Three things hold this
   safe and each is easy to undo by accident. An empty slot must encode to an
   *absent* field, which is what makes a record written in the default mode the
   record this codec wrote before those fields existed.

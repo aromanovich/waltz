@@ -36,7 +36,7 @@ func (a *Accumulator) branchNodes(treeID, branchID string) []p.InternalHistoryNo
 
 // addHistory takes the mutation's batches into the window. A mutation whose
 // batches were written through the store before the append carries none, so this
-// is the mode's fork and there is no flag here: what the accumulator holds is
+// is the cold store's fork and there is no flag here: what the accumulator holds is
 // what the record held.
 func (a *Accumulator) addHistory(seqno wal.Seqno, m mutation.Mutation) {
 	for _, slot := range m.EventSlots() {

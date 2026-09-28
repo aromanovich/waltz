@@ -92,6 +92,18 @@ way whatever this key says.
 
 ## Consequences
 
+**The shipped in-process store takes them, so this is a change of behaviour and
+not only of configuration.** `cold/memcold` declares the marker — it can write
+the rows inside the drain's own transaction, so claiming otherwise would be
+false — which means every composition over it now carries events in the record
+where the shipped configuration used to put them through the base store first.
+Three things ride on that and are named here rather than discovered: the tail's
+byte budget starts spending on event blobs, the three transiting history methods
+below stop being an opt-in exposure, and a node returning to a build without
+these fields meets records that have them (which it refuses — see *Changing
+stores*). A deployment that wants the old path composes a store that does not
+declare the marker.
+
 **One append makes a state transition and its events durable together**, and a
 refused write leaves nothing behind — where the default path leaves the events
 written and unreferenced. The foreground cold-store round trip per event batch
@@ -100,8 +112,8 @@ goes away, and the drain writes a window's worth of nodes at once.
 **The byte budget counts event blobs wherever the store takes them in the
 record.** I10 bounds a shard's tail in bytes and the bound is unchanged, so such
 a deployment's window holds fewer mutations and drains sooner.
-Nothing here re-derives the defaults; a deployment turning this on should expect
-the collapse ratio to fall and should read
+Nothing here re-derives the defaults; a deployment whose store takes them should
+expect the collapse ratio to fall and should read
 [14-where-the-defaults-came-from.md](../handbook/14-where-the-defaults-came-from.md)
 before changing the numbers.
 
