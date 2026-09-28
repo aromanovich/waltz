@@ -125,17 +125,6 @@ type Config struct {
 	// read that crosses a window.
 	DrainOnRead bool
 
-	// HistoryInWAL makes a create, update or conflict-resolve record carry its
-	// own event batches, so that one append makes the state transition and its
-	// events durable together and the drain writes the nodes before it publishes
-	// the state pointing at them. Off, the wrapper writes them through the store
-	// before the append instead (ADR 0014).
-	//
-	// It is read at the append and nowhere else. The *read* overlay does not
-	// consult it: a window can hold history under either setting, because a tail
-	// written with this on is replayed by a node with it off.
-	HistoryInWAL bool
-
 	// HardMaxEntries and HardMaxBytes are I10's bound on one shard's tail: what
 	// has been acked and not yet applied. Neither unit works alone: one workflow
 	// near the server's 8 MB mutable-state limit turns an entries-only bound

@@ -30,15 +30,6 @@ type WAL struct {
 	// DrainOnRead answers every read from the cold store, draining the window
 	// first — see [cycle.Config.DrainOnRead] for what it costs.
 	DrainOnRead bool `mapstructure:"drain_on_read"`
-
-	// HistoryInWAL makes a create, update or conflict-resolve record carry its
-	// own event batches — see [cycle.Config.HistoryInWAL] for what the drain
-	// then owes. It is on this surface rather than among the settings because a
-	// misspelt key here refuses to start, where a misspelt setting is a warning
-	// and the default standing silently: this one decides which of two writers
-	// makes a request's events durable, and a node that took the wrong answer
-	// from a typo would write them twice or not at all.
-	HistoryInWAL bool `mapstructure:"history_in_wal"`
 }
 
 // knob is one key of the section: its yaml name, the rule joining the [WAL]
@@ -76,9 +67,6 @@ var knobs = []knob{
 	always("drain_on_read",
 		func(w *WAL) *bool { return &w.DrainOnRead },
 		func(c *cycle.Config) *bool { return &c.DrainOnRead }),
-	always("history_in_wal",
-		func(w *WAL) *bool { return &w.HistoryInWAL },
-		func(c *cycle.Config) *bool { return &c.HistoryInWAL }),
 }
 
 // StaticConfig is [cycle.Defaults] with each [knobs] row the section set

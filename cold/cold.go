@@ -112,12 +112,17 @@ type Applier interface {
 // [fold.Batch.History]. It is a marker and not a method, because the writing
 // happens inside Apply: what it exists for is the refusal.
 //
-// A batch carries history only under waltz's history_in_wal mode, and an applier
-// written before that mode existed will ignore the field and commit a mutable
-// state over events nobody wrote — acked, and lost, with every suite green. So
-// the composition refuses to start that mode over an applier that does not
-// declare this, where the process can still be told what is missing. It is the
-// same judgement as baserow.ErrNoVersionedRead at the other seam.
+// Declaring it is what puts history in the batch: a layer composed over an
+// applier that does not gets the events written through the store below before
+// each append instead, and its batches carry none. So an applier that would
+// ignore the field never meets one — the failure it would cause, a mutable state
+// committed over events nobody wrote, is acked and lost with every suite green,
+// and there is no configuration that can reach it.
+//
+// It is a claim and not a method because the writing happens inside Apply. What
+// makes the claim cheap to keep honest is that it is also the only way to be
+// asked: a store that declares it and then ignores [fold.Batch.History] loses
+// its own deployment's history on the first window that carries any.
 type HistoryApplier interface {
 	Applier
 

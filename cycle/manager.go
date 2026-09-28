@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/metrics"
 
+	"github.com/aromanovich/waltz/cold"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/walmetrics"
 )
@@ -20,6 +21,11 @@ import (
 type Manager struct {
 	deps   Deps
 	policy Policy
+
+	// writesHistory is [Manager.WritesHistory]: taken off the applier once, at
+	// construction, because a capability of the store cannot change under a
+	// running node.
+	writesHistory bool
 
 	// held owns the shard map, the retired counters and the mutex over both.
 	// Manager has no lock of its own, which is what stops any code here holding
@@ -99,16 +105,20 @@ func NewManager(deps Deps, policy Policy) (*Manager, error) {
 		// before the server handed a handler over.
 		deps.Metrics = walmetrics.New(nil)
 	}
-	return &Manager{deps: deps, policy: policy, held: newHeld()}, nil
+	_, writesHistory := deps.Writer.(cold.HistoryApplier)
+	return &Manager{deps: deps, policy: policy, writesHistory: writesHistory, held: newHeld()}, nil
 }
 
 // WritesHistory reports whether an intercepted write's event batches ride the
-// record this layer appends: [Config.HistoryInWAL] read off the policy, which is
-// the same source [Cycle.add] encodes from. So the store above and the append
-// below cannot be configured apart — the disagreement that loses data is a store
-// told the batches ride the record over a layer whose policy says they do not,
-// which writes them nowhere.
-func (m *Manager) WritesHistory() bool { return m.policy().HistoryInWAL }
+// record this layer appends, which is a property of the cold store underneath
+// and of nothing else: one that declares [cold.HistoryApplier] writes them in
+// the drain's own publication, and one that does not gets them through the base
+// store before the append, as every store did before that interface existed.
+//
+// There is no setting. A deployment's answer is which store it composed, so the
+// two halves of the question — who writes the batches, and who is told to — are
+// one value read in one place and cannot be configured apart.
+func (m *Manager) WritesHistory() bool { return m.writesHistory }
 
 // Use points this node's cycles at the server's metrics handler; it satisfies
 // wrapper.MetricsSink, which is how a handler built long after this registry

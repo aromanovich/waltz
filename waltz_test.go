@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/baserow"
+	"github.com/aromanovich/waltz/cold"
 	"github.com/aromanovich/waltz/cycle"
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/internal/verify/coldtest"
@@ -539,32 +540,25 @@ func TestTheNarrowReadsAnswerForAShardNobodyHolds(t *testing.T) {
 	require.False(t, layer.RetireShard(never), "there was no cycle to retire")
 }
 
-// The mode puts the event batches in the record, so the drain is what writes
-// them — and an applier that predates the mode ignores that field and commits
-// the mutable state anyway. That is acked data lost with every suite green, so
-// the composition refuses before anything is opened.
-func TestHistoryInWALIsRefusedOverAStoreThatWouldNotWriteIt(t *testing.T) {
-	cfg := cycle.Defaults()
-	cfg.HistoryInWAL = true
+// Which of the two writers puts an intercepted write's event batches down is
+// the cold store's own property and there is no setting for it: a store that
+// declares it writes them gets them in the record, and one that does not gets
+// them through the base store before the append. A deployment's answer is which
+// store it composed, so there is nothing for a second place to disagree with.
+func TestTheColdStoreDecidesWhoWritesTheEventBatches(t *testing.T) {
+	compose := func(store cold.Store) *Layer {
+		l, err := Compose(
+			Backends{Log: memwal.New(), Cold: store},
+			cycle.Fixed(cycle.Defaults()), DefaultTaskCategories(), nil, nil,
+		)
+		require.NoError(t, err)
+		return l
+	}
 
-	_, err := Compose(
-		Backends{Log: memwal.New(), Cold: coldtest.New()},
-		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
-	)
-	require.ErrorIs(t, err, ErrNoHistoryApplier)
-
-	_, err = Compose(
-		Backends{Log: memwal.New(), Cold: historyApplier{coldtest.New()}},
-		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
-	)
-	require.NoError(t, err, "a store that declares the marker composes")
-
-	cfg.HistoryInWAL = false
-	_, err = Compose(
-		Backends{Log: memwal.New(), Cold: coldtest.New()},
-		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
-	)
-	require.NoError(t, err, "the default mode writes history before the append, so it asks nothing of the store")
+	require.False(t, compose(coldtest.New()).Options().Layer.WritesHistory(),
+		"a store that does not write the batches must have them written through it before the append")
+	require.True(t, compose(historyApplier{coldtest.New()}).Options().Layer.WritesHistory(),
+		"a store that writes them takes them in the record, so nothing writes them twice")
 }
 
 // historyApplier is the seam's own double with the marker on it: what the

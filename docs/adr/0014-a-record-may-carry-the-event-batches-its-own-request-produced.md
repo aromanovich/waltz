@@ -4,8 +4,9 @@ Date: 2026-09-28
 
 ## Status
 
-Accepted, behind the restart-only `history_in_wal` key, off by default. It
-supersedes decision D3 of
+Accepted and unconditional: every intercepted write's event history goes through
+the layer, and where it lands is the cold store's own property rather than a
+setting. It supersedes decision D3 of
 [ADR 0008](0008-the-log-carries-history-tasks-and-not-shard-or-event-writes.md)
 for the batches a mutable-state request carries, and leaves D3 standing for
 every other way history reaches the store.
@@ -44,12 +45,20 @@ carries exactly the batches nobody has written yet**. An empty slot encodes to a
 absent field, so a record written in the default mode is the record this codec
 wrote before the fields existed.
 
-**The mode has one home.** It is `cycle.Config.HistoryInWAL`, read off the
-policy, and the store above asks the layer for it (`wrapper.ShardWriter.WritesHistory`)
-rather than being configured with it. A flag beside `wrapper.Options.Layer` would
-be a second place for the same bit, and one of the two disagreements writes the
-batches nowhere — the store told they ride the record, over a layer whose policy
-says they do not.
+**There is no setting, and the choice is the cold store's.** An applier that
+declares `cold.HistoryApplier` writes the batches in the drain's own
+publication, so the record carries them; one that does not has them written
+through the base store before the append, exactly as every store did before that
+interface existed. The wrapper asks the layer which it is
+(`wrapper.ShardWriter.WritesHistory`), and the layer answers off the applier it
+was composed with — one value, read in one place, taken once at construction.
+
+A key was the first shape of this and it was the wrong one. The bit then had two
+homes, the yaml and the store, and one of the two disagreements writes the
+batches nowhere: a store told they ride the record, over an applier that never
+looks at the field. A capability cannot disagree with itself, and it also says
+the true thing — whether the batches can ride the record is not an operator's
+preference, it is whether the store underneath will write them.
 
 **The order is pinned at the drain, and the mechanism is not.** `cold.Applier`'s
 first obligation becomes *one drain is one publication*: the merged requests, the
@@ -60,15 +69,17 @@ immutable and keyed by `(tree, branch, node, transaction)`, so a repeated write
 is the same row and a drain that failed after them leaves orphans nobody
 references; the other order cannot be recovered from.
 
-**A store must say it writes them.** `cold.HistoryApplier` is a marker an applier
-declares, and `Compose` refuses `history_in_wal` over one that does not. An
-applier written before this mode ignores the field and commits the mutable state
-anyway — acked data lost, with every suite green — so the refusal is at
-composition, where the process has not started and can be told what is missing.
+**A store that does not declare it is not refused, it is served the old way.**
+`cold.HistoryApplier` is the marker, and an applier without it gets a layer that
+writes the events through the base store before the append and hands it a batch
+carrying none. So the failure the marker exists to prevent — an applier ignoring
+`fold.Batch.History` and committing the mutable state anyway, acked data lost
+with every suite green — is unreachable rather than refused: nothing puts
+history in a batch a store did not say it would write.
 
-**`ReadHistoryBranch` is merged on read, in both modes.** A tail written with the
-mode on is replayed by a node with it off, so whether the window holds nodes is a
-fact about the log rather than about this node's configuration. The merge is
+**`ReadHistoryBranch` is merged on read, always.** Whether the window holds nodes
+is a fact about the tail this shard inherited — a log written under one store is
+replayed by a node composed with another — rather than about this node. The merge is
 `fold.Accumulator.HistoryPage`, under the pagination rule the task page already
 had.
 
@@ -86,17 +97,18 @@ refused write leaves nothing behind — where the default path leaves the events
 written and unreferenced. The foreground cold-store round trip per event batch
 goes away, and the drain writes a window's worth of nodes at once.
 
-**The byte budget now counts event blobs.** I10 bounds a shard's tail in bytes
-and the bound is unchanged, so a window holds fewer mutations and drains sooner.
+**The byte budget counts event blobs wherever the store takes them in the
+record.** I10 bounds a shard's tail in bytes and the bound is unchanged, so such
+a deployment's window holds fewer mutations and drains sooner.
 Nothing here re-derives the defaults; a deployment turning this on should expect
 the collapse ratio to fall and should read
 [14-where-the-defaults-came-from.md](../handbook/14-where-the-defaults-came-from.md)
 before changing the numbers.
 
-**Rolling back is safe and loud.** A build without these fields refuses an entry
+**Changing stores is safe and loud.** A build without these fields refuses an entry
 that has them (`mutation.rejectUnknownFields` recurses into nested messages) and
-halts the shard rather than replaying it short its events. A build *with* them
-running with the key off replays such a tail correctly, because the fold takes
+halts the shard rather than replaying it short its events. A node composed with a store that
+does not take them replays such a tail correctly anyway, because the fold takes
 whatever the record held.
 
 **Three history methods still transit past a window that may hold their rows**,
@@ -118,7 +130,7 @@ an undrained node should do depends on where that deployment put its history.
   store no window is merged into, whatever this key says on the history nodes.
 
 A deployment that wants these closed can drain the window before such a call, or
-refuse them while the mode is on. Neither is done here.
+refuse them outright. Neither is done here.
 
 **The merge makes explicit a store obligation that was already there.** A base
 page the cut emits nothing from is left unread and reached again by its own

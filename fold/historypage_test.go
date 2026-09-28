@@ -287,7 +287,7 @@ func readWholeBranch(
 // What the drain gets: every batch the window folded, in WAL order, and a
 // watermark at or above the entry that carried the last one. A batch left
 // behind is a mutable state published over nodes nobody wrote.
-func TestTheBatchCarriesEveryFoldedHistoryInWALOrder(t *testing.T) {
+func TestTheBatchCarriesEveryFoldedBatchInLogOrder(t *testing.T) {
 	acc := New(shardID)
 	require.NoError(t, acc.Add(11, carrying(create(p.CreateWorkflowModeBrandNew), 4, 5)))
 	require.NoError(t, acc.Add(12, carrying(update(p.UpdateWorkflowModeUpdateCurrent), 6)))
