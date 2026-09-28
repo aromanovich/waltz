@@ -5,7 +5,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
+
+	"github.com/aromanovich/waltz/mutation"
 )
 
 // The order the merge has to hold is the store's own, and it is not the obvious
@@ -276,4 +279,51 @@ func readWholeBranch(
 	require.NoError(t, err)
 	require.Empty(t, resp.NextPageToken, "the fixture's page holds everything")
 	return resp.Nodes
+}
+
+// What the drain gets: every batch the window folded, in WAL order, and a
+// watermark at or above the entry that carried the last one. A batch left
+// behind is a mutable state published over nodes nobody wrote.
+func TestTheBatchCarriesEveryFoldedHistoryInWALOrder(t *testing.T) {
+	acc := New(shardID)
+	require.NoError(t, acc.Add(11, carrying(create(p.CreateWorkflowModeBrandNew), 4, 5)))
+	require.NoError(t, acc.Add(12, carrying(update(p.UpdateWorkflowModeUpdateCurrent), 6)))
+
+	batch := acc.Drain()
+	require.Equal(t, []int64{4, 5, 6}, nodeIDs(batch.History()))
+	require.GreaterOrEqual(t, int(batch.Watermark()), 12,
+		"a watermark below the entry that carried a batch would have the drain publish rows the log still owns")
+
+	require.Empty(t, acc.Drain().History(), "a drained window may not hand the same batches to a second transaction")
+}
+
+func nodeIDs(rs []*p.InternalAppendHistoryNodesRequest) []int64 {
+	out := make([]int64, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, r.Node.NodeID)
+	}
+	return out
+}
+
+// carrying puts one batch per node id on a create's or an update's own slot, the
+// way a record written by EncodeWithHistory decodes.
+func carrying[R *p.InternalCreateWorkflowExecutionRequest | *p.InternalUpdateWorkflowExecutionRequest](
+	req R, nodeIDs ...int64,
+) mutation.Mutation {
+	batches := make([]*p.InternalAppendHistoryNodesRequest, 0, len(nodeIDs))
+	for _, id := range nodeIDs {
+		batches = append(batches, &p.InternalAppendHistoryNodesRequest{
+			ShardID:    int32(shardID),
+			BranchInfo: &persistencespb.HistoryBranch{TreeId: "tree", BranchId: "b"},
+			Node:       node(id, 100+id),
+		})
+	}
+	switch r := any(req).(type) {
+	case *p.InternalCreateWorkflowExecutionRequest:
+		r.NewWorkflowNewEvents = batches
+		return mutation.Mutation{Create: r}
+	default:
+		r.(*p.InternalUpdateWorkflowExecutionRequest).UpdateWorkflowNewEvents = batches
+		return mutation.Mutation{Update: r.(*p.InternalUpdateWorkflowExecutionRequest)}
+	}
 }

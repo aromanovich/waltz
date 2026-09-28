@@ -538,3 +538,42 @@ func TestTheNarrowReadsAnswerForAShardNobodyHolds(t *testing.T) {
 	require.Equal(t, cycle.Stats{}, stats, "and the value beside a false must carry nothing")
 	require.False(t, layer.RetireShard(never), "there was no cycle to retire")
 }
+
+// The mode puts the event batches in the record, so the drain is what writes
+// them — and an applier that predates the mode ignores that field and commits
+// the mutable state anyway. That is acked data lost with every suite green, so
+// the composition refuses before anything is opened.
+func TestHistoryInWALIsRefusedOverAStoreThatWouldNotWriteIt(t *testing.T) {
+	cfg := cycle.Defaults()
+	cfg.HistoryInWAL = true
+
+	_, err := Compose(
+		Backends{Log: memwal.New(), Cold: plainApplier{}},
+		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
+	)
+	require.ErrorIs(t, err, ErrNoHistoryApplier)
+
+	_, err = Compose(
+		Backends{Log: memwal.New(), Cold: historyApplier{}},
+		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
+	)
+	require.NoError(t, err, "a store that declares the marker composes")
+
+	cfg.HistoryInWAL = false
+	_, err = Compose(
+		Backends{Log: memwal.New(), Cold: plainApplier{}},
+		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
+	)
+	require.NoError(t, err, "the default mode writes history before the append, so it asks nothing of the store")
+}
+
+type plainApplier struct{}
+
+func (plainApplier) Apply(context.Context, wal.ShardID, wal.Epoch, fold.Batch) error { return nil }
+func (plainApplier) Watermark(context.Context, wal.ShardID) (wal.Seqno, bool, error) {
+	return 0, false, nil
+}
+
+type historyApplier struct{ plainApplier }
+
+func (historyApplier) AppliesHistory() {}

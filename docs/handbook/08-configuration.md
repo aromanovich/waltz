@@ -58,7 +58,7 @@ persistence:
                     endpoint: "store.example.net:2135"
                     database: "/local"
 
-                    # the WAL layer's section: two keys, no numbers.
+                    # the WAL layer's section: three keys, no numbers.
                     # Writing the section at all is what turns intercept mode on.
                     wal:
                         # optional, default false
@@ -66,6 +66,9 @@ persistence:
 
                         # optional, default false
                         drain_on_read: false
+
+                        # optional, default false
+                        history_in_wal: false
 ```
 
 ### Absent, present, malformed
@@ -93,7 +96,7 @@ flowchart TD
   A --> C["the store's own parser"]
   B --> D["waltz.Parse (strict decoder)"]
   C --> E["the cold store the applier writes through"]
-  D --> G["waltz.WAL: sync, drain_on_read"]
+  D --> G["waltz.WAL: sync, drain_on_read, history_in_wal"]
   H["the dynamicConfig file"] --> I["the nine wal.* settings"]
   G --> J["cycle.Policy"]
   I --> J
@@ -108,12 +111,13 @@ they reach the same `cycle.Policy` from the dynamic-config file.
 
 ## 2. Table 1 — the `wal` section's keys
 
-Two keys live on this strict, restart-only surface. Each switches the node into an attribution
-mode — a configuration you turn on to find out where an observed number came from, not a policy to
-run in production. No numeric operating limit lives here, and nothing here says what the layer is
-built over.
+Three keys live on this strict, restart-only surface. `sync` and `drain_on_read` switch the node
+into an attribution mode — a configuration you turn on to find out where an observed number came
+from, not a policy to run in production. `history_in_wal` is not one of those: it is a shipped mode
+a deployment may choose to run, and it changes which of two writers makes a request's event history
+durable. No numeric operating limit lives here, and nothing here says what the layer is built over.
 
-The shipped configuration leaves both false.
+The shipped configuration leaves all three false.
 
 `sync: true` isolates the drain. Every writer waits for a transaction carrying its own mutation and
 nothing else, so nothing collapses, and a condition failure the drain discovers *after* the ack has
@@ -131,8 +135,9 @@ Each switch turns off the mechanism it exists to expose, which is why neither is
 |---|---|---|---|---|
 | `sync` | bool | `false` | `true` drains inside every write and hands the drain's outcome back to the caller, instead of answering the caller as soon as the log holds the write and applying it later. The debugging configuration, not a shipped mode: the window is one mutation, so nothing collapses and a write costs an append **plus** an apply transaction — more than the store alone. This book describes the layer with `sync` off; where a chapter says a series is always zero — `trigger="sync"`, for instance — that is why | `snyc: true` is a refusal to start, which is the whole reason this key is on the strict surface |
 | `drain_on_read` | bool | `false` | `true` makes a read drain the window first, so all three reads are answered by the cold store. An attribution instrument, not a shipped mode; it costs a transaction per read that crosses a window | as above: an unknown key is a refusal to start |
+| `history_in_wal` | bool | `false` | `true` puts a create's, update's or conflict-resolve's own event batches in the same WAL record, so one append makes the state transition and its events durable together and the drain writes those rows before it publishes the state. `false` has the wrapper write them through the cold store before the append. It needs a cold store declaring `cold.HistoryApplier` — a composition over one that does not is refused with `waltz.ErrNoHistoryApplier` — and it spends the tail's byte budget on event blobs, so a window holds fewer mutations. ADR 0014 has the trade and the three history methods it leaves transiting | as above: an unknown key is a refusal to start |
 
-Both are read once, when the node composes its layer. There is no way to change them without a
+All three are read once, when the node composes its layer. There is no way to change them without a
 restart.
 
 Three mechanical consequences of `sync`, for anyone reading a sync-mode run's numbers:
