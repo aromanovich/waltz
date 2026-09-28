@@ -23,8 +23,8 @@ task rows.
 
 The version-42 example gives the routing rule: a read must enter the layer when an intercepted write
 can have changed its answer without changing the cold store yet. `wrapper.ExecutionStore`
-decorates the base `ExecutionStore`. Of its 28 methods, intercept mode answers eleven
-differently and refuses a twelfth (`CompleteHistoryTask`). Eight of the eleven are the writes the
+decorates the base `ExecutionStore`. Of its 28 methods, intercept mode answers twelve
+differently and refuses a thirteenth (`CompleteHistoryTask`). Eight of the twelve are the writes the
 record format has a shape for; the other three are reads. The remaining 16 transit — the wrapper
 calls the base store's method of the same name and returns what it said.
 
@@ -108,7 +108,7 @@ catches up; [chapter 13](13-designs-that-were-rejected.md#reads) has both.
 ## 2. Routing a read, and `DrainOnRead`
 
 Section 1 said which methods route. This one says whether the cycle they route to may answer at all,
-which is the question the overlay and the merge below both stand on. All three reads go through
+which is the question the overlay and the merge below both stand on. All four reads go through
 `Cycle.prelude`, in one order: the readiness gate, the count, the routing rule, and the drain
 `DrainOnRead` may ask for.
 
@@ -124,7 +124,7 @@ Every position in that order is load-bearing.
 * **The drain last**, and only when `DrainOnRead` is on. Its two reasons for being there are below,
   with the instrument itself.
 
-The routing decision, for all three reads.
+The routing decision, for all four reads.
 
 ```mermaid
 flowchart TD
@@ -659,6 +659,6 @@ witness; [chapter 10](10-metrics.md) owns every series named here, with its tags
 * [`../../cycle/decide.go`](../../cycle/decide.go) — `readRoute` and the four rules that
   return it, as functions of values.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the
-  eleven-of-28 partition, method by method, and where each read counter is raised.
+  twelve-of-28 partition, method by method, and where each read counter is raised.
 * [`../../walmetrics/walmetrics.go`](../../walmetrics/walmetrics.go) — the series, with
   the routed-versus-hit reasoning written at each definition.

@@ -513,7 +513,7 @@ intercept. `Options.Metrics` is a `*walmetrics.Emitter` and nil records nowhere.
 
 ### `wrapper.ExecutionStore` — 28 methods
 
-Eleven are answered differently in intercept mode and a twelfth is refused; passthrough changes
+Twelve are answered differently in intercept mode and a thirteenth is refused; passthrough changes
 none.
 
 | Method | Disposition in intercept mode |
@@ -913,7 +913,7 @@ must agree on the signature may not import each other, so `wrapper.ShardReader` 
 type out and a defined type here would not satisfy it.
 
 A `*Cycle` itself exposes `Shard()`, `Epoch()`, `State()`, `Stats()`, `Close(ctx)` and `Retire()`.
-The write and the three reads are unexported on purpose: a caller holding a `*Cycle` cannot know
+The write and the four reads are unexported on purpose: a caller holding a `*Cycle` cannot know
 whether it is still the shard's cycle, and the epoch check lives on `Manager.Write`. `Retire()`
 stops a cycle without draining and answers with what it counted, because stopping it and taking its
 count are one thing rather than two a caller has to order.
@@ -1034,7 +1034,7 @@ has to answer for itself — see `cycle.ErrNoBaseRow`.
 * [`../../fold/assert.go`](../../fold/assert.go) — what each kind claims about the store,
   per mode.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the 28
-  methods, the interception table and the refused twelfth.
+  methods, the interception table and the refused thirteenth.
 * [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — six methods, and how
   an acquire is told from a heartbeat.
 * [`../../wrapper/wrapper.go`](../../wrapper/wrapper.go) — `Options`, the four faces of

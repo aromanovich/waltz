@@ -61,7 +61,7 @@ func (*Store) AppliesHistory() {}
 //     request touches, then its rows.
 //  5. the shard-level task rows, and the watermark.
 //
-// A client owes the same four things and gets none of them from an
+// A client owes the same things and gets none of them from an
 // ExecutionStore: that interface has nowhere to declare a transaction spanning
 // many workflows, so the write path has to be built beside it, on whatever the
 // driver offers below. An implementer whose driver offers nothing below cannot

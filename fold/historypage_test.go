@@ -309,7 +309,7 @@ func nodeIDs(rs []*p.InternalAppendHistoryNodesRequest) []int64 {
 }
 
 // carrying puts one batch per node id on a create's or an update's own slot, the
-// way a record written by EncodeWithHistory decodes.
+// way a record that carried them decodes.
 func carrying[R *p.InternalCreateWorkflowExecutionRequest | *p.InternalUpdateWorkflowExecutionRequest](
 	req R, nodeIDs ...int64,
 ) mutation.Mutation {

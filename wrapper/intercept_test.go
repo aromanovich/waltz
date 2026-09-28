@@ -146,8 +146,8 @@ func (w *recordingLayer) GetHistoryTasks(
 	return nil, w.err
 }
 
-// WritesHistory answers false: this fake asserts what the wrapper does with a
-// mutation, and the default mode is the one where the wrapper does something.
+// WritesHistory is the mode face. It answers the field, which the fakes leave
+// false: the default mode is the one where the wrapper has work to do.
 func (w *recordingLayer) WritesHistory() bool { return w.writesHistory }
 
 func (w *recordingLayer) ReadHistoryBranch(
@@ -678,5 +678,36 @@ func events(id string) *p.InternalAppendHistoryNodesRequest {
 			NodeID: 1,
 			Events: &commonpb.DataBlob{Data: []byte(id)},
 		},
+	}
+}
+
+// The mode's two branches at the store, which is the whole of what this store
+// does with it. False is the shipped one: the batches go down through the base
+// store and come off the mutation, so the record the layer appends carries none
+// and the drain writes them nowhere. True skips both, and the batches reach the
+// layer still on the request — where the append is what makes them durable.
+func TestTheStoreWritesTheEventsItselfOnlyWhereTheRecordWillNotCarryThem(t *testing.T) {
+	for _, writes := range []bool{false, true} {
+		t.Run(map[bool]string{false: "record carries none", true: "record carries them"}[writes], func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			base := versioned(ctrl)
+			layer := &recordingLayer{writesHistory: writes}
+			store := newStore(t, base, Options{Layer: layer})
+
+			events := &p.InternalAppendHistoryNodesRequest{ShardID: 1, Node: p.InternalHistoryNode{NodeID: 4}}
+			if !writes {
+				base.EXPECT().AppendHistoryNodes(gomock.Any(), events).Return(nil)
+			}
+			// No expectation in the other arm, so a call to the base fails the
+			// controller naming it.
+			require.NoError(t, store.UpdateWorkflowExecution(t.Context(), &p.InternalUpdateWorkflowExecutionRequest{
+				ShardID:                 1,
+				UpdateWorkflowNewEvents: []*p.InternalAppendHistoryNodesRequest{events},
+			}))
+
+			require.Len(t, layer.got, 1)
+			require.Equal(t, writes, len(layer.got[0].EventSlots()[0]) == 1,
+				"the layer must be handed exactly the batches nobody has written yet")
+		})
 	}
 }

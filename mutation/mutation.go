@@ -209,10 +209,10 @@ func (m Mutation) TaskSlots() []*map[tasks.Category][]p.InternalHistoryTask {
 //
 // Which of the two writers puts them down is the mode's, and both keep the same
 // rule: a mutation acked over history nodes nobody wrote is a mutable state the
-// cold store can never be brought to, and no functional suite sees it. [Encode]
-// drops them, so whoever writes such a mutation writes them first through the
-// store; [EncodeWithHistory] carries them, so the one append makes both durable
-// and the drain writes the nodes before it publishes the state.
+// cold store can never be brought to, and no functional suite sees it. The
+// writer that puts them down through the store strips them off once they are
+// down, so a mutation still holding batches is one whose append is what makes
+// them durable — and the drain writes the nodes before it publishes the state.
 func (m Mutation) EventSlots() [][]*p.InternalAppendHistoryNodesRequest {
 	kind := m.Kind()
 	if kind == KindInvalid {
@@ -361,7 +361,7 @@ func encode(m Mutation, provisional bool) ([]byte, error) {
 
 // Decode is [Encode]'s inverse over what the payload carries. The rangeID is
 // never in it, so a decoded mutation reports zero; the event batches are in it
-// only for an entry [EncodeWithHistory] wrote. The registry must be the
+// for an entry whose writer still held them. The registry must be the
 // server's own task-category registry: it is the one input that is not a
 // function of the bytes, so the same payload decodes on one node and fails on
 // another.

@@ -67,10 +67,10 @@ message Payload {
 // (invariant I11), it travels with the WAL entry, and a copy inside the payload
 // could disagree with it.
 //
-// The *_new_events slices are carried or dropped by the codec rather than by
-// this file: Encode leaves them out and EncodeWithHistory puts them in, so the
-// bytes of a record written without history are the bytes the codec wrote before
-// these fields existed. An older build meeting one that has them refuses to
+// The *_new_events slices are appended fields, so a record carrying none is
+// byte-for-byte what the codec wrote before they existed. Whether a mutation
+// still holds any is decided above the codec: the writer that puts the batches
+// down through the store strips them off. An older build meeting one that has them refuses to
 // decode it (mutation.rejectUnknownFields), which is what stops a rollback from
 // replaying a record short its events.
 message CreateRequest {

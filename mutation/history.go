@@ -10,9 +10,9 @@ import (
 
 // The event batches a mutable-state request carries, into the mirror and back.
 //
-// Only [EncodeWithHistory] puts them on the wire. What decides that is the
-// caller's mode, not this file: a record written without them is byte-for-byte
-// what the codec wrote before these fields existed.
+// The codec carries whatever the mutation still holds and decides nothing: a
+// record written with none is byte-for-byte what the codec wrote before these
+// fields existed.
 
 // ErrMalformedHistory is what [Encode] and [Decode] answer a request
 // whose event batches are missing something the fold keys on or the applier

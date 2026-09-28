@@ -294,20 +294,20 @@ answer.
 **Passthrough vs intercept.** The switch is exactly one field, `wrapper.Options.Layer`: nil is
 passthrough, non-nil is intercept. In passthrough every call goes to the base store untouched, and
 the wrapper observes nothing — not even a metric. There is no cycle, so there is no window to size.
-In intercept the wrapper takes **eleven** of `ExecutionStore`'s 28 methods into the layer,
-**refuses a twelfth**, and transits the rest:
+In intercept the wrapper takes **twelve** of `ExecutionStore`'s 28 methods into the layer,
+**refuses a thirteenth**, and transits the rest:
 
 * **eight writes become log records** — `CreateWorkflowExecution`, `UpdateWorkflowExecution`,
   `ConflictResolveWorkflowExecution`, `SetWorkflowExecution`, `DeleteWorkflowExecution`,
   `DeleteCurrentWorkflowExecution`, `AddHistoryTasks`, `RangeCompleteHistoryTasks`;
-* **three reads are answered by the layer** — `GetWorkflowExecution` and `GetCurrentExecution`
+* **four reads are answered by the layer** — `GetWorkflowExecution` and `GetCurrentExecution`
   through the overlay, `GetHistoryTasks` through the task merge;
 * **one is refused** — `CompleteHistoryTask`, with `wrapper.ErrCompleteHistoryTaskUnsupported`,
   because the log's deletion record is a range per category and has no shape for a single key;
 * **the other sixteen transit**, exactly as they do in passthrough.
 
 [Chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) has the method table; [chapter
-07](07-read-path.md) has the three reads; and what makes the two task calls records at all — they
+07](07-read-path.md) has the four reads; and what makes the two task calls records at all — they
 name no run and assert nothing — is the **task record** entry of [chapter
 02](02-concepts-and-invariants.md#the-glossary-in-reading-order). Why the two exclusions above are
 excluded is argued where each belongs: [chapter
@@ -393,7 +393,7 @@ above is [chapter 08](08-configuration.md).
 * [`../../fold/histtasks.go`](../../fold/histtasks.go) — I7 inside the window: the range
   deletions, and which tasks they drop before a drain ever sees them.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the
-  eleven-of-28 partition and the refused twelfth, method by method.
+  twelve-of-28 partition and the refused thirteenth, method by method.
 * [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — the one window onto
   shard ownership, and how an acquire is told from a heartbeat.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — the state machine and `cycle.Defaults()`'s

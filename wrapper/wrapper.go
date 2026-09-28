@@ -64,9 +64,9 @@ type ShardWriter interface {
 	//
 	// A face rather than a field of [Options] for the reason [ShardLayer] is one
 	// interface: the two could otherwise be configured apart, and one of the two
-	// disagreements loses data — a store told the layer carries them while the
-	// layer's own policy says it does not writes them nowhere, and acks a mutable
-	// state over history nobody wrote.
+	// disagreements loses data. A store told the batches ride the record, over a
+	// layer whose policy says they do not, writes them nowhere — and acks a
+	// mutable state over history nobody wrote.
 	WritesHistory() bool
 
 	// Write acks m into its shard's log and reports what the apply transaction

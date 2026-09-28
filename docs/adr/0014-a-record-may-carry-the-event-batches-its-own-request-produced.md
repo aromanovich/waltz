@@ -114,8 +114,8 @@ an undrained node should do depends on where that deployment put its history.
   which transits: a branch whose tree row is still in the window is invisible to
   it, so the branch is not deleted and its rows stay.
 * Both are also reachable from the worker service's history scavenger, which
-  holds no shard and therefore runs passthrough — see
-  [15-the-limits-of-the-evidence.md](../handbook/15-the-limits-of-the-evidence.md).
+  holds no shard and so runs passthrough: it reads and deletes through a cold
+  store no window is merged into, whatever this key says on the history nodes.
 
 A deployment that wants these closed can drain the window before such a call, or
 refuse them while the mode is on. Neither is done here.

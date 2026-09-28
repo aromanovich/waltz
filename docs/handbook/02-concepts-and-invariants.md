@@ -413,7 +413,7 @@ branches:
 what makes the read correct.
 
 **Wrapper.** The seam into a running server: a decorator over a base `DataStoreFactory` that takes
-eleven persistence methods into the layer, refuses a twelfth — `CompleteHistoryTask`, with
+twelve persistence methods into the layer, refuses a thirteenth — `CompleteHistoryTask`, with
 `wrapper.ErrCompleteHistoryTaskUnsupported` — and transits the rest. It wraps the base plugin rather
 than forking it, and it may import no persistence implementation at all, so which store sits
 underneath is the binary's business. *Not to be confused with:* adapter, proxy — both suggest
