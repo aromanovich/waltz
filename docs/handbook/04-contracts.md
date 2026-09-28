@@ -366,9 +366,12 @@ Four kinds of accessor carry every consumer:
   home in the request, so callers such as a range delete write through it, and the order is part of
   the contract because callers concatenate the slots.
 * `EventSlots()` returns every slice of new history events the request carries, in the order they
-  must reach the store. The payload drops these, so **whoever writes a mutation writes the events
-  first**: a mutation acked over history nodes nobody wrote is a mutable state the cold store can
-  never be brought to.
+  must reach the store, and `ClearEvents()` drops them in place. The payload carries whatever is
+  still there, so **the events are durable before the state that names them either way**: a mutation
+  acked over history nodes nobody wrote is a mutable state the cold store can never be brought to.
+  The writer that puts them down through the store clears them once they are down, which is what
+  makes "a mutation reaching the layer carries exactly the batches nobody has written yet" true, and
+  what lets the codec and the fold hold no mode of their own (ADR 0014).
 
 The codec is four functions. `Encode(m)` and `EncodeProvisional(m)` produce a payload;
 `Decode(payload, registry)` and `DecodeEntry(payload, registry) (Mutation, bool, error)` read one
@@ -529,13 +532,16 @@ none.
 | `GetWorkflowExecution` | answered from the layer — the overlay, with the base read handed down as a closure |
 | `GetCurrentExecution` | answered from the layer — the overlay |
 | `GetHistoryTasks` | answered from the layer — the task merge |
+| `ReadHistoryBranch` | answered from the layer — the history merge, always, with the base read handed down as a closure |
 | `CompleteHistoryTask` | **refused** with `wrapper.ErrCompleteHistoryTaskUnsupported` |
 | `Close`, `GetName`, `GetHistoryBranchUtil` | transit |
 | `ListConcreteExecutions` | transit |
 | `PutReplicationTaskToDLQ`, `GetReplicationTasksFromDLQ`, `DeleteReplicationTaskFromDLQ`, `RangeDeleteReplicationTaskFromDLQ`, `IsReplicationDLQEmpty` | transit |
-| `AppendHistoryNodes`, `DeleteHistoryNodes`, `ReadHistoryBranch`, `ForkHistoryBranch`, `DeleteHistoryBranch`, `GetHistoryTreeContainingBranch`, `GetAllHistoryTreeBranches` | transit |
+| `AppendHistoryNodes`, `DeleteHistoryNodes`, `ForkHistoryBranch`, `DeleteHistoryBranch`, `GetHistoryTreeContainingBranch`, `GetAllHistoryTreeBranches` | transit |
 
-That is 8 intercepted writes + 3 reads answered from the layer + 1 refusal + 16 transits = 28.
+That is 8 intercepted writes + 4 reads answered from the layer + 1 refusal + 15 transits = 28.
+The history read always merges, because a tail written under a store that took the batches is
+replayed by a node composed with one that does not.
 `ErrCompleteHistoryTaskUnsupported` is a `serviceerror.NewUnimplemented`: the log's deletion record
 is a range per category, not a key, and a second deletion shape would be another thing every reader,
 drain and replay has to agree about. A range is also the shape the caller already has: a queue
@@ -611,7 +617,7 @@ may be keyed on it.
   decides it before the entry is appended; under `Sync` the drain decides it, and the window is one
   mutation, so it is this caller's there too. `base` is called inside the goroutine that owns the
   window, at most once per asserted row.
-* **`ShardReader`** — three reads, each taking the caller's request and the cold store's own answer
+* **`ShardReader`** — four reads, each taking the caller's request and the cold store's own answer
   as a closure, so the layer decides whether to call it. `GetWorkflowExecution` and
   `GetCurrentExecution` take `base func(context.Context) (…, error)`; `GetHistoryTasks` takes `base
   func(context.Context, *p.GetHistoryTasksRequest) (…, error)`, because the merge asks a different
@@ -906,7 +912,7 @@ to start. Its surface:
 |---|---|
 | `ShardAcquired(ctx, shard, epoch) error` | the `ShardStore` wrapper. Fences the log at the new epoch **first**, then installs a fresh cycle: the log's epoch may never lag the database's. Idempotent at an epoch a cycle already holds; refused with `wal.ErrFenced` at a lower one, and with `cycle.ErrClosed` once `Manager.Close` has emptied the registry; a superseded cycle is retired without a drain, its entries staying in the log for the new owner |
 | `Write(ctx, mut, epoch, base) error` | the `ExecutionStore` wrapper. A shard this node holds no cycle for, or a write carrying a non-zero epoch other than the cycle's, is answered with `*p.ShardOwnershipLostError` — falling through to the store below would be a write around the log |
-| `GetWorkflowExecution`, `GetCurrentExecution`, `GetHistoryTasks` | the `ExecutionStore` wrapper's three reads. See [chapter 07](07-read-path.md) |
+| `GetWorkflowExecution`, `GetCurrentExecution`, `GetHistoryTasks`, `ReadHistoryBranch` | the `ExecutionStore` wrapper's four reads. See [chapter 07](07-read-path.md) |
 | `Use(h metrics.Handler)` | the wrapper's `MetricsSink`. First call wins; a nil handler is ignored |
 | `Shard(shard) *Cycle` | internal callers that have already resolved a shard; nil when this node has not acquired it |
 | `Totals() Totals` | a witness |

@@ -7,7 +7,10 @@
 // the one thing this package exists for and the one thing Temporal has no
 // method for — with the watermark that write commits inside itself, and the
 // current-row read that carries the last_write_version Temporal's own response
-// type has nowhere to hold.
+// type has nowhere to hold. It also declares [cold.HistoryApplier], so the
+// window's event history is written here too, inside that same transaction: this
+// store can, and claiming otherwise would be false. Every composition over it
+// therefore carries an intercepted write's event batches in the record.
 //
 // That embedding is why the package is this small, and why it will not grow. A
 // history shard's store is the hardest thing here to get right and the easiest

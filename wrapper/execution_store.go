@@ -168,7 +168,7 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 		// rather than a panic because the alternative is a write counted nowhere.
 		return fmt.Errorf("wrapper: %w: kind %s reaches no interception row", mutation.ErrNotExactlyOneRequest, m.Kind())
 	}
-	// Asked only where there is something to write: four of the eight kinds
+	// Asked only where there is something to write: five of the eight kinds
 	// carry no batches at all, and the question has one answer on a write with
 	// none.
 	if len(m.EventSlots()) != 0 && !s.layer.WritesHistory() {
@@ -440,9 +440,12 @@ func (s *ExecutionStore) DeleteHistoryNodes(
 	return s.base.DeleteHistoryNodes(ctx, request)
 }
 
-// ReadHistoryBranch is merged on read, in both modes: what decides whether the
-// window holds event batches is the tail this shard inherited, not the mode this
-// node runs. The tree id comes out of the branch token here because the codec
+// ReadHistoryBranch is merged on read whatever the store below does with a
+// write's batches, and not only where the records carry them: what decides
+// whether the window holds event batches is the tail this shard inherited — a log
+// written under one store is replayed by a node composed with another — and not
+// this node. Passthrough still transits, there being no window to merge. The tree
+// id comes out of the branch token here because the codec
 // for it is the base store's ([p.ExecutionStore.GetHistoryBranchUtil]) and the
 // layer may name no store.
 func (s *ExecutionStore) ReadHistoryBranch(

@@ -136,10 +136,9 @@ type ShardReader interface {
 	// store's own codec is reachable.
 	//
 	// It is asked whatever the store below does with a write's batches, and not
-	// only where the records carry them: a
-	// tail written with that mode on is replayed by a node with it off, so
-	// whether the window holds nodes is a fact about the log rather than about
-	// this node's configuration.
+	// only where the records carry them: a tail written under a store that took
+	// them is replayed by a node composed with one that does not, so whether the
+	// window holds nodes is a fact about the log rather than about this node.
 	ReadHistoryBranch(
 		ctx context.Context,
 		req *p.InternalReadHistoryBranchRequest,

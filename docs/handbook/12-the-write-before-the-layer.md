@@ -177,11 +177,16 @@ A batch of events is one row. So:
 * a transition that starts a new history branch pays an extra tree row, and so an extra transaction,
   on top of that.
 
-The layer keeps that stage where it was and changes its shape. `wrapper.ExecutionStore.appendEvents`
-walks the mutation's `EventSlots()` and puts each batch down through the base store's
-`AppendHistoryNodes` — one call per batch, in order rather than in parallel. It does so before the
-mutation is handed to the cycle, because a mutation acked with its events unwritten would point at
-history nodes nobody wrote. What that costs the design is [the ceiling on the
+The layer has two answers to that stage, and which one a deployment gets is a property of its cold
+store rather than a setting. Over a store that does not declare `cold.HistoryApplier` the stage stays
+where it was and changes shape: `wrapper.ExecutionStore.appendEvents` walks the mutation's
+`EventSlots()` and puts each batch down through the base store's `AppendHistoryNodes` — one call per
+batch, in order rather than in parallel, before the mutation is handed to the cycle, because a
+mutation acked with its events unwritten would point at history nodes nobody wrote. Over a store that
+declares it the stage moves: the batches ride the record, one append makes the transition and its
+events durable together, and the drain writes a window's worth of nodes at once, still before it
+publishes the state naming them. The row count is the same either way — history is append-only and
+there is nothing to fold — so what that costs the design is unchanged: [the ceiling on the
 win](#therefore-fewer-writes-and-the-ceiling-on-the-win), below.
 
 ```mermaid
@@ -301,10 +306,11 @@ often deleted by a queue shortly after they appear, sometimes almost at once. Ne
 cost of *one* write — each is a cost of the *number* of writes, and neither has anything to do with
 how fast the log acknowledges. That is what the rest of the layer is about.
 
-**Event history is the ceiling on that win.** History rows never enter the log and were never amplified in
-the first place: they are append-only, one row per batch, written before the mutation that refers to
-them. So a workflow whose transitions carry hundreds of event batches still pays hundreds of history
-writes by the old path however wide the window is. Whatever fraction of a deployment's write volume
+**Event history is the ceiling on that win.** History rows were never amplified in the first place:
+they are append-only, one row per batch, durable before the mutable state that refers to them
+whichever writer puts them down. Nothing about carrying them on the record folds any of them — the
+window holds them, it does not merge them. So a workflow whose transitions carry hundreds of event
+batches still pays hundreds of history rows however wide the window is. Whatever fraction of a deployment's write volume
 is event history is a fraction the layer cannot address at all. So if you tune the window against
 total write volume, you are tuning against a number that includes writes no window can remove; tune
 against the mutable-state half instead.

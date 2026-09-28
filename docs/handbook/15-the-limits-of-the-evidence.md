@@ -201,22 +201,27 @@ shape reaches the store — and the column is that rule at its sharpest, since r
 would let the layer ack against one value and refuse against another. A deployment's applier meets
 the same four questions.
 
-## Event history stays outside the log
+## Where event history lands is the cold store's, and neither path is measured
 
-Event history is written by `AppendHistoryNodes` on the incumbent path, before the mutable-state
-write, and never enters the layer. [Chapter 01](01-overview.md#what-this-is-not) lists that among
-the things the layer deliberately is not. Read as a bound rather than as a statement of scope, it
-says more: **a workflow that makes hundreds of state transitions still performs hundreds of history
-writes by the old path, whatever the layer does with its mutable state.**
+An intercepted write's event batches always reach the layer; where they land is the cold store's own
+property (ADR 0014). Neither landing changes the **number** of history rows, and that is the bound:
+**a workflow that makes hundreds of state transitions still writes hundreds of history rows, whatever
+the layer does with its mutable state.** History is append-only, so the fold has nothing to merge; a
+window holds those batches, it does not collapse them.
 
 The fold can collapse the mutable-state half of the cost to one apply transaction per window. It
 cannot touch the other half at all. So the benefit of the whole construction is bounded above by the
 share of a deployment's cold-store writes that are mutable-state writes rather than history appends,
 and a deployment dominated by event history has less to gain than a collapse ratio alone would
-suggest.
+suggest. That much is a decision rather than a gap, and no measurement removes it.
 
-No measurement removes this bound. It follows from the wrapper's method partition, which is a
-decision rather than a gap.
+What *is* a gap is the difference between the two paths. Carrying the batches on the record removes a
+foreground round trip per batch and lets a drain write a window's worth of nodes at once; it also
+spends I10's byte budget on event blobs, so the window holds fewer mutations and drains sooner. **No
+run here measures either side of that trade.** The shipped composition takes the batches
+(`cold/memcold` declares the marker), so every green target in this tree exercises that path — and
+[chapter 14](14-where-the-defaults-came-from.md#the-drain-triggers-256-mutations-and-256-kib)'s two
+size triggers were derived on a corpus whose records carry no event blobs.
 
 ## No partition between layer nodes is staged
 
@@ -340,7 +345,8 @@ Where this chapter can say which is which, it says so:
 | no failure of the log or the store is staged | 2 — a harness with processes to kill |
 | nothing cross-cluster | 2 — a project |
 | no partition between layer nodes | 3 — the nodes speak only to the log and the store |
-| event history stays outside the log | 3 — the wrapper's method partition |
+| the number of history rows is untouched | 3 — history is append-only; there is nothing to fold |
+| neither history path is measured against the other | 1 — a measurement |
 | the saving on deferred work is unobservable from outside | 3 — I7's bound is not persisted |
 
 Mixing the three is what turns an honest limits section into an apology. A reader who cannot tell

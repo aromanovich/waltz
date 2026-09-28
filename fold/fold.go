@@ -7,6 +7,11 @@
 // request resets the run's accumulator (I8); tasks concatenate across that
 // reset, being queue entries rather than workflow state.
 //
+// Event history is the exception and history.go says why: a window keeps the
+// batches a record carried, in WAL order, and folds none of them. Two appends of
+// one node are two rows the store dedupes on its own key, and a blob is the
+// caller's rather than a state this layer may collapse.
+//
 // This package folds what it is handed and may not name wal.Log or
 // wal.Entry: reaching the log is how trim and pacing land here one
 // convenience at a time, and both are the apply cycle's policy.

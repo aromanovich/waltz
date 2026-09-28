@@ -382,8 +382,8 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W11 an empty layer acked nothing",
-	// The empty layer: what a run that writes neither must leave behind —
-	// decision D3 as an assertion, in every window that has a layer at all, and
+	// The empty layer: what a run that writes neither must leave behind — an
+	// empty log, in every window that has a layer at all, and
 	// the same claim in both windows on purpose: a suite that writes nothing
 	// has an empty window whatever the window is configured to be, so a
 	// difference here would be the layer having grown a path.

@@ -163,7 +163,7 @@ graph TD
   LOG(("wal.Log contract"))
   MW(("memwal: the in-process log"))
   MC(("memcold: the in-process store"))
-  AP(("cold.Applier: one drain, one transaction"))
+  AP(("cold.Applier: one drain, one publication"))
   CS(("the cold store"))
   MET(("walmetrics.Emitter"))
 

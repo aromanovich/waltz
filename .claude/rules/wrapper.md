@@ -30,11 +30,11 @@ changing either:
   than writing no-op methods — the fake satisfies the type, still answers only
   its own half, and panics by name if the wrapper ever reaches a half the test
   did not expect, which is the outcome a no-op would swallow;
-* **intercept takes eleven methods and refuses a twelfth**: eight writes (#57,
-  #142) and three reads (#78, #80), with `CompleteHistoryTask` answered
+* **intercept takes twelve methods and refuses a thirteenth**: eight writes (#57,
+  #142) and four reads (#78, #80, ADR 0014), with `CompleteHistoryTask` answered
   `Unimplemented`. (The partition is also described for a human in
-  `docs/handbook/01-overview.md`, which goes stale the moment eleven stops
-  being eleven.)
+  `docs/handbook/01-overview.md`, which goes stale the moment twelve stops
+  being twelve.)
   Six of the writes are the four mutable-state ones and both deletes — the
   deletes because #34 decided they are, since routing them around the log would
   force a drain each (~1.8% of the stream) and an outbox would leave a deleted
@@ -44,15 +44,17 @@ changing either:
   immediately is a delete that misses the row it was meant to cover, and for a
   scheduled category that is a lost timer rather than a leaked row (the store
   deletes those by fire time and ignores the task ids). ADR 0008 holds the
-  boundary — why not shard writes, why not event history. Two of the
-  reads are `GetWorkflowExecution` and `GetCurrentExecution`, whose answer one of
-  the eight can change; the third is `GetHistoryTasks`, which is merge-on-read and
-  whose base closure takes a *request*, because the merge asks the store below a
-  different question than the caller asked.
-  `TestInterceptModeTakesTheElevenAndOnlyTheEleven` drives all 28 by reflection
+  boundary — why not shard writes; ADR 0014 holds the event-history half, which
+  moved. Two of the reads are `GetWorkflowExecution` and `GetCurrentExecution`,
+  whose answer one of the eight can change; the third is `GetHistoryTasks` and the
+  fourth `ReadHistoryBranch`, both merge-on-read, and both base closures take a
+  *request*, because the merge asks the store below a different question than the
+  caller asked — the history one takes a `treeID` beside it as well, the
+  branch-token codec being the base store's.
+  `TestInterceptModeTakesTheTwelveAndOnlyTheTwelve` drives all 28 by reflection
   and asserts the partition three ways; the bad failure is silent in every
-  direction (a twelfth method taken into the layer is a rule appearing in a
-  second place, one of the eleven left transiting is a write the accumulator
+  direction (a thirteenth method taken into the layer is a rule appearing in a
+  second place, one of the twelve left transiting is a write the accumulator
   never saw, a read answered from a cold store the window is ahead of, a task
   page with the tail missing from it, or a range delete that removes rows the
   window has not written yet);
@@ -67,11 +69,14 @@ changing either:
   test has a `refused`
   set beside the other two; a second entry in it would be a second thing the
   record format has no shape for, which is a decision and not a detail;
-* **an intercepted write puts its own new events down first**, through the base
-  store's `AppendHistoryNodes`, because event history stays out of the WAL in v1
-  (D3) and that is exactly where a store's own Create/Update/ConflictResolve
-  put them. Forget it and the log holds a mutable state pointing at history
-  nodes nobody wrote;
+* **an intercepted write's events are durable before the state naming them, and
+  which writer makes them so is the cold store's** (ADR 0014, superseding D3 in
+  part). Over a store that does not declare `cold.HistoryApplier` the wrapper puts
+  them down first through the base store's `AppendHistoryNodes` — exactly where a
+  store's own Create/Update/ConflictResolve put them — and strips them off the
+  mutation; over one that does, they ride the record and the drain writes them.
+  Forget either half and the log holds a mutable state pointing at history nodes
+  nobody wrote, or the drain writes rows the caller was already answered over;
 * **a write also hands the layer the store's own two reads** (#74): the condition
   authority verifies an assertion the window does not determine against the
   pre-window row, and this package may not name a cold store any more than

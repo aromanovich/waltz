@@ -44,7 +44,7 @@ and the policy it hands `Compose`. What to know before changing any of it:
 * **what a composed `Layer` hands back is narrow reads, not the registry.**
   `Totals()` and `ShardStats(id)` are what callers outside this package actually
   want; handing out `cycle.Manager` would also hand out `Manager.Write` and the
-  three reads — a second door onto the write path with no wrapper and no epoch
+  four reads — a second door onto the write path with no wrapper and no epoch
   check in front of it. So resist adding it back for a caller's convenience:
   what that caller needs is a method as narrow as its question. **That rule
   applied to `Shard(id)` itself**: it would hand back the `*cycle.Cycle`, so a

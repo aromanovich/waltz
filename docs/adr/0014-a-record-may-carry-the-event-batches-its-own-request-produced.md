@@ -42,8 +42,8 @@ mutation still holds. What makes that safe is one invariant established at the
 writer — `wrapper.ExecutionStore.appendEvents` strips the batches off the
 mutation once the base store has taken them, so **a mutation reaching the layer
 carries exactly the batches nobody has written yet**. An empty slot encodes to an
-absent field, so a record written in the default mode is the record this codec
-wrote before the fields existed.
+absent field, so a record carrying none is the record this codec wrote before the
+fields existed.
 
 **There is no setting, and the choice is the cold store's.** An applier that
 declares `cold.HistoryApplier` writes the batches in the drain's own
@@ -87,8 +87,8 @@ had.
 condition, epoch and ack it could share, so giving it one is a record kind with
 an ordering and an acknowledgement boundary of its own. That is a separate
 decision and this one does not take it. Cross-cluster replication is its main
-caller, so a deployment running replication keeps writing that history the old
-way whatever this key says.
+caller, so a deployment running replication keeps writing that history through
+the store whatever its applier declares.
 
 ## Consequences
 
@@ -142,7 +142,7 @@ an undrained node should do depends on where that deployment put its history.
   store no window is merged into, whatever this key says on the history nodes.
 
 A deployment that wants these closed can drain the window before such a call, or
-refuse them outright. Neither is done here.
+refuse them outright. Neither is done here, whatever its applier declares.
 
 **The merge makes explicit a store obligation that was already there.** A base
 page the cut emits nothing from is left unread and reached again by its own

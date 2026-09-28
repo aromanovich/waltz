@@ -955,21 +955,41 @@ There is no second door to keep in step. Swapping the two calls is red — which
 says only that the *order* is held: how much of each slot goes down was a
 separate question, and is the closed entry above about a slot's second batch.
 
-**Event history staying outside the log is not a loss** (read). It was on the
-open list on its own terms — a crash between the events and the ack leaves events
-no mutable state points at — and the entry above is why that is the only order it
-can happen in: the events are down *first*, so what a crash strands is unreachable
-history nodes and never a mutable state pointing at events nobody wrote. Nothing
-acked is missing, and the class of garbage produced is one upstream produces
-itself and has a collector for: its own deletion path leaves a history branch
-behind whenever stage 3 commits and stage 4 fails, "won't be accessible (because
-mutable state is deleted) and special garbage collection workflow will delete it
+**Event history cannot be published behind the state that names it, whichever
+writer puts it down** (read). It was on the open list on its own terms — a crash
+between the events and the ack leaves events no mutable state points at — and it
+closes the same way on both of the two paths a cold store can choose between
+(ADR 0014), because the *order* is what is pinned and the mechanism is not.
+
+Where the store does not declare `cold.HistoryApplier`, the wrapper puts the
+events down through it *first*, so a crash strands unreachable history nodes and
+never a mutable state pointing at events nobody wrote. Where the store does
+declare it, the events and the state are one record with one ack, so there is no
+interval between them at all; what can then strand is a drain that made the
+history rows durable and failed before its transaction, which leaves the same
+unreachable nodes. **The forbidden order is unreachable in both**: the contract on
+`cold.Applier` is that every history row the batch carried is durable before the
+transaction publishing the state opens, and `memcold` keeps it by putting them
+inside that transaction.
+
+The class of garbage is the same in both and is one upstream produces itself and
+has a collector for: its own deletion path leaves a history branch behind
+whenever stage 3 commits and stage 4 fails, "won't be accessible (because mutable
+state is deleted) and special garbage collection workflow will delete it
 eventually" (`service/history/shard/context_impl.go`, v1.29.6). So this is a
-storage leak on a path upstream already leaks on, and
-[ADR 0008](docs/adr/0008-the-log-carries-history-tasks-and-not-shard-or-event-writes.md)
-holds the boundary. It stays worth knowing, which is what
-[chapter 15](docs/handbook/15-the-limits-of-the-evidence.md)'s bound on the
-saving is about — it is not a durability entry.
+storage leak on a path upstream already leaks on. Nothing acked is missing on
+either path, which is why this stays a read rather than an open entry.
+
+What is *not* closed by it and is named rather than counted: the three history
+methods that transit past a window which may hold their rows
+([ADR 0014](docs/adr/0014-a-record-may-carry-the-event-batches-its-own-request-produced.md)'s
+last consequence). A `DeleteHistoryNodes` from `TrimHistoryBranch` finds no row
+and the drain writes that node after it; a `DeleteHistoryBranch` cannot see a
+branch whose tree row is still in the window. Both leave rows behind rather than
+taking acked ones away — a leak on the same collector's path — and both are
+accepted here because what a deletion aimed at an undrained node *should* do
+depends on where a deployment put its history, which is not this library's to
+decide.
 
 **No error is swallowed on the layer's write paths** (measured, by sweep). One
 discarded error exists — the age tick's drain, which has no caller to answer and
