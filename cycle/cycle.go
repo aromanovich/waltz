@@ -708,21 +708,16 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 		return err
 	}
 
-	// Two independent bits of the record, so four encoders rather than a wrapper
-	// each. The ack is provisional exactly where the drain below answers the
-	// caller, which is sync mode's every write: there the condition is not yet
-	// verified when the entry becomes durable, and replay reads the bit back.
-	// History rides the record where the mode says the append is what makes it
-	// durable — and the encoder is also where a batch nothing could apply is
-	// refused, which is here because past the append it is acked and inherited.
+	// The ack is provisional exactly where the drain below answers the caller,
+	// which is sync mode's every write: there the condition is not yet verified
+	// when the entry becomes durable. Replay reads the bit back.
+	//
+	// Nothing here says whether the record carries event batches: the mutation
+	// arrives holding exactly the ones nobody has written yet, so the encoder
+	// carries what is there (ADR 0014).
 	encode := mutation.Encode
-	switch {
-	case cfg.Sync && cfg.HistoryInWAL:
-		encode = mutation.EncodeProvisionalWithHistory
-	case cfg.Sync:
+	if cfg.Sync {
 		encode = mutation.EncodeProvisional
-	case cfg.HistoryInWAL:
-		encode = mutation.EncodeWithHistory
 	}
 	payload, err := encode(m)
 	if err != nil {
@@ -735,13 +730,6 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 		if err := c.appendFailed(ctx, s, err, payload); err != nil {
 			return err
 		}
-	}
-	if !cfg.HistoryInWAL {
-		// The wrapper has already put these batches in the store, so leaving them
-		// on the mutation would have the drain write them a second time. Replay
-		// does not come through here: it reaches accept directly, so a record
-		// written with history is applied by a node running without it.
-		m.ClearEvents()
 	}
 	if err := c.accept(ctx, s, m, len(payload)); err != nil {
 		return err

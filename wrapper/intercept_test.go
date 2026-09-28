@@ -88,6 +88,9 @@ type recordingLayer struct {
 	// treeID is what the wrapper parsed out of a history read's branch token.
 	treeID   string
 	callBase bool
+	// writesHistory is the mode face: false means the wrapper owes the events
+	// to the base store before it calls Write.
+	writesHistory bool
 
 	// baseRows is the pair of reads the write path was handed for the condition
 	// authority's residual. Kept rather than called, so that a test can ask
@@ -142,6 +145,10 @@ func (w *recordingLayer) GetHistoryTasks(
 	}
 	return nil, w.err
 }
+
+// WritesHistory answers false: this fake asserts what the wrapper does with a
+// mutation, and the default mode is the one where the wrapper does something.
+func (w *recordingLayer) WritesHistory() bool { return w.writesHistory }
 
 func (w *recordingLayer) ReadHistoryBranch(
 	ctx context.Context,

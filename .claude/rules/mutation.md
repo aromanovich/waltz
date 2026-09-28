@@ -72,13 +72,17 @@ reflective codec. What to know before changing any of it:
   dropping it silently would lose state, so `Encode` **refuses** a mutation that
   carries one rather than encoding without it;
 
-* **the `*NewEvents` slices are the codec's choice and not the format's**
-  (ADR 0014). `Encode` leaves them out and `EncodeWithHistory` puts them in, so
-  one mutation has two encodings and which one is written is the mode's. Three
-  things hold that safe and each is easy to undo by accident. A mutation
-  carrying *no* batches must encode identically either way, which is what makes
-  a record written in the default mode the record this codec wrote before those
-  fields existed. `rejectUnknownFields` is what stops a rollback from replaying
+* **the `*NewEvents` slices are carried, and the codec decides nothing about it**
+  (ADR 0014). `Encode` carries whatever the mutation holds; what makes that safe
+  is an invariant established above — the writer that puts the batches down
+  through the store strips them off (`wrapper.ExecutionStore.appendEvents`), so a
+  mutation reaching the codec carries exactly the batches nobody has written yet.
+  Do not add a mode parameter back here: the one that existed made the write path
+  fold an object that differed from the one it appended. Three things hold this
+  safe and each is easy to undo by accident. An empty slot must encode to an
+  *absent* field, which is what makes a record written in the default mode the
+  record this codec wrote before those fields existed.
+  `rejectUnknownFields` is what stops a rollback from replaying
   a history-bearing record short its events — it recurses into nested messages,
   so the fields being on `CreateRequest` rather than on `Payload` does not
   matter, and a build without them refuses the entry and halts the shard rather

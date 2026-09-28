@@ -1,6 +1,7 @@
 package fold
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -18,21 +19,21 @@ import (
 // takes the older one.
 func TestAForwardPageOrdersNodesUpAndTransactionsDown(t *testing.T) {
 	acc := New(7)
-	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{
 		node(5, 100), node(4, 200), node(5, 101),
-	}
+	})
 
-	page := readWholeBranch(t, acc, request(pageOf(20)), noBaseRows)
+	page := readWholeBranch(t, acc, request(20), noBaseRows)
 	require.Equal(t, []historyKey{{4, 200}, {5, 101}, {5, 100}}, keysOf(page))
 }
 
 func TestAReversePageInvertsBothHalvesOfTheKey(t *testing.T) {
 	acc := New(7)
-	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{
 		node(5, 100), node(4, 200), node(5, 101),
-	}
+	})
 
-	req := request(pageOf(20))
+	req := request(20)
 	req.ReverseOrder = true
 	page := readWholeBranch(t, acc, req, noBaseRows)
 	require.Equal(t, []historyKey{{5, 100}, {5, 101}, {4, 200}}, keysOf(page))
@@ -43,9 +44,9 @@ func TestAReversePageInvertsBothHalvesOfTheKey(t *testing.T) {
 // workflow short the events its own caller was told were durable.
 func TestAPageInterleavesTheWindowWithTheColdStore(t *testing.T) {
 	acc := New(7)
-	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(2, 200), node(4, 400)}
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{node(2, 200), node(4, 400)})
 
-	page := readWholeBranch(t, acc, request(pageOf(20)), rows(node(1, 100), node(3, 300)))
+	page := readWholeBranch(t, acc, request(20), rows(node(1, 100), node(3, 300)))
 	require.Equal(t, []historyKey{{1, 100}, {2, 200}, {3, 300}, {4, 400}}, keysOf(page))
 }
 
@@ -53,9 +54,9 @@ func TestAPageInterleavesTheWindowWithTheColdStore(t *testing.T) {
 // halves. The cold row is the one that stays, being the one the store keeps.
 func TestANodeInBothHalvesIsEmittedOnce(t *testing.T) {
 	acc := New(7)
-	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(1, 100), node(2, 200)}
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{node(1, 100), node(2, 200)})
 
-	page := readWholeBranch(t, acc, request(pageOf(20)), rows(node(1, 100)))
+	page := readWholeBranch(t, acc, request(20), rows(node(1, 100)))
 	require.Equal(t, []historyKey{{1, 100}, {2, 200}}, keysOf(page))
 }
 
@@ -65,14 +66,14 @@ func TestANodeInBothHalvesIsEmittedOnce(t *testing.T) {
 // here. Driven across every page size that cuts the stream somewhere different.
 func TestPagingNeverCutsInsideABasePageAndNeverOverruns(t *testing.T) {
 	for size := 1; size <= 9; size++ {
-		t.Run(pageName(size), func(t *testing.T) {
+		t.Run(fmt.Sprintf("page size %d", size), func(t *testing.T) {
 			acc := New(7)
-			acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{
+			windowHolds(acc, "tree", "b", []p.InternalHistoryNode{
 				node(2, 200), node(4, 400), node(6, 600), node(8, 800),
-			}
+			})
 			base := countingBase(rows(node(1, 100), node(3, 300), node(5, 500), node(7, 700)))
 
-			req := request(pageOf(size))
+			req := request((size))
 			var got []historyKey
 			var token []byte
 			for range 40 {
@@ -88,6 +89,10 @@ func TestPagingNeverCutsInsideABasePageAndNeverOverruns(t *testing.T) {
 			require.Equal(t, []historyKey{
 				{1, 100}, {2, 200}, {3, 300}, {4, 400}, {5, 500}, {6, 600}, {7, 700}, {8, 800},
 			}, got, "every node, once, in order, whichever page size cuts the stream")
+			if size > len(acc.historyWrites) {
+				require.Zero(t, base.reAsked,
+					"a pagination the window does not overflow never re-asks the base a cursor")
+			}
 		})
 	}
 }
@@ -98,12 +103,12 @@ func TestPagingNeverCutsInsideABasePageAndNeverOverruns(t *testing.T) {
 // would lose rows on one side and duplicate them on the other.
 func TestAPageTheWindowFillsLeavesTheBasesCursorWhereItWas(t *testing.T) {
 	acc := New(7)
-	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{
 		node(2, 200), node(3, 300), node(4, 400),
-	}
+	})
 	base := countingBase(rows(node(5, 500), node(6, 600)))
 
-	req := request(pageOf(2))
+	req := request(2)
 	req.NextPageToken = encodeHistoryToken(&historyPageToken{Base: []byte{0}})
 	resp, err := acc.HistoryPage(req, "tree", base.page)
 	require.NoError(t, err)
@@ -114,9 +119,9 @@ func TestAPageTheWindowFillsLeavesTheBasesCursorWhereItWas(t *testing.T) {
 
 func TestAPageDropsWindowNodesOutsideTheRange(t *testing.T) {
 	acc := New(7)
-	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(1, 100), node(5, 500), node(9, 900)}
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{node(1, 100), node(5, 500), node(9, 900)})
 
-	req := request(pageOf(20))
+	req := request(20)
 	req.MinNodeID, req.MaxNodeID = 5, 9
 	page := readWholeBranch(t, acc, req, noBaseRows)
 	require.Equal(t, []historyKey{{5, 500}}, keysOf(page))
@@ -124,9 +129,9 @@ func TestAPageDropsWindowNodesOutsideTheRange(t *testing.T) {
 
 func TestMetadataOnlyStripsTheWindowsBlobsToo(t *testing.T) {
 	acc := New(7)
-	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(1, 100)}
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{node(1, 100)})
 
-	req := request(pageOf(20))
+	req := request(20)
 	req.MetadataOnly = true
 	page := readWholeBranch(t, acc, req, noBaseRows)
 	require.Len(t, page, 1)
@@ -138,11 +143,11 @@ func TestMetadataOnlyStripsTheWindowsBlobsToo(t *testing.T) {
 // another's reader.
 func TestAPageSeesOnlyItsOwnBranchOfItsOwnTree(t *testing.T) {
 	acc := New(7)
-	acc.history[historyBranch{"tree", "b"}] = []p.InternalHistoryNode{node(1, 100)}
-	acc.history[historyBranch{"tree", "other"}] = []p.InternalHistoryNode{node(2, 200)}
-	acc.history[historyBranch{"other-tree", "b"}] = []p.InternalHistoryNode{node(3, 300)}
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{node(1, 100)})
+	windowHolds(acc, "tree", "other", []p.InternalHistoryNode{node(2, 200)})
+	windowHolds(acc, "other-tree", "b", []p.InternalHistoryNode{node(3, 300)})
 
-	page := readWholeBranch(t, acc, request(pageOf(20)), noBaseRows)
+	page := readWholeBranch(t, acc, request(20), noBaseRows)
 	require.Equal(t, []historyKey{{1, 100}}, keysOf(page))
 }
 
@@ -161,7 +166,7 @@ func TestABasePageTheMergeCannotRestOnIsRefused(t *testing.T) {
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			acc := New(7)
-			_, err := acc.HistoryPage(request(pageOf(20)), "tree",
+			_, err := acc.HistoryPage(request(20), "tree",
 				func(int, []byte) ([]p.InternalHistoryNode, []byte, error) { return c.rows, c.token, nil })
 			require.ErrorIs(t, err, c.want)
 		})
@@ -169,7 +174,7 @@ func TestABasePageTheMergeCannotRestOnIsRefused(t *testing.T) {
 
 	t.Run("larger than asked for", func(t *testing.T) {
 		acc := New(7)
-		_, err := acc.HistoryPage(request(pageOf(1)), "tree",
+		_, err := acc.HistoryPage(request(1), "tree",
 			func(int, []byte) ([]p.InternalHistoryNode, []byte, error) {
 				return []p.InternalHistoryNode{node(1, 100), node(2, 200)}, nil, nil
 			})
@@ -214,10 +219,6 @@ func request(pageSize int) *p.InternalReadHistoryBranchRequest {
 	}
 }
 
-func pageOf(n int) int { return n }
-
-func pageName(n int) string { return "page size " + string(rune('0'+n)) }
-
 func keysOf(nodes []p.InternalHistoryNode) []historyKey {
 	out := make([]historyKey, 0, len(nodes))
 	for _, n := range nodes {
@@ -239,9 +240,11 @@ func rows(ns ...p.InternalHistoryNode) HistoryBasePage {
 // countingBase pages through its rows one ask at a time and records any token it
 // is handed twice, which is the obligation this merge is written not to need.
 type base struct {
-	all     []p.InternalHistoryNode
+	all []p.InternalHistoryNode
+	// seen counts each cursor handed over, and reAsked is how many were handed
+	// over twice — the store obligation the cut rule bounds but does not remove.
 	seen    map[string]int
-	repeats []string
+	reAsked int
 }
 
 func countingBase(one HistoryBasePage) *base {
@@ -253,7 +256,7 @@ func (b *base) page(ask int, token []byte) ([]p.InternalHistoryNode, []byte, err
 	if len(token) > 0 {
 		b.seen[string(token)]++
 		if b.seen[string(token)] > 1 {
-			b.repeats = append(b.repeats, string(token))
+			b.reAsked++
 		}
 	}
 	from := 0
@@ -325,5 +328,17 @@ func carrying[R *p.InternalCreateWorkflowExecutionRequest | *p.InternalUpdateWor
 	default:
 		r.(*p.InternalUpdateWorkflowExecutionRequest).UpdateWorkflowNewEvents = batches
 		return mutation.Mutation{Update: r.(*p.InternalUpdateWorkflowExecutionRequest)}
+	}
+}
+
+// windowHolds fills the accumulator's history the way a folded record does: one
+// append request per node, all on one branch of one tree.
+func windowHolds(acc *Accumulator, treeID, branchID string, nodes []p.InternalHistoryNode) {
+	for _, n := range nodes {
+		acc.historyWrites = append(acc.historyWrites, &p.InternalAppendHistoryNodesRequest{
+			ShardID:    int32(acc.shard),
+			BranchInfo: &persistencespb.HistoryBranch{TreeId: treeID, BranchId: branchID},
+			Node:       n,
+		})
 	}
 }

@@ -27,11 +27,6 @@ type ExecutionStore struct {
 	// layer is [Options.Layer], the mode itself: nil is passthrough.
 	layer ShardLayer
 
-	// historyInWAL is [Options.HistoryInWAL], fixed for this store's lifetime:
-	// it decides which of the two writers puts an intercepted write's event
-	// batches down, and nothing else here reads it.
-	historyInWAL bool
-
 	// baseRows is the write path's pair of pre-window reads ([baserow.Rows]),
 	// resolved and boxed once at construction.
 	baseRows *baserow.Rows
@@ -39,6 +34,10 @@ type ExecutionStore struct {
 	// baseTasks is the merged read's base: the store's own method value, taken
 	// once rather than allocated at every merged page.
 	baseTasks func(context.Context, *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error)
+
+	// baseHistory is the same for the branch page, and taken for the same
+	// reason: a closure per page would allocate one and say nothing more.
+	baseHistory func(context.Context, *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error)
 
 	// emit sends the same numbers to the server's metrics stack, tagged by
 	// store method.
@@ -80,8 +79,9 @@ func NewExecutionStore(base p.ExecutionStore, opts Options) (*ExecutionStore, er
 		// so that every record below is one branch rather than two.
 		emit = walmetrics.New(nil)
 	}
-	s := &ExecutionStore{base: base, layer: opts.Layer, historyInWAL: opts.HistoryInWAL, emit: emit}
+	s := &ExecutionStore{base: base, layer: opts.Layer, emit: emit}
 	s.baseTasks = base.GetHistoryTasks
+	s.baseHistory = base.ReadHistoryBranch
 	if opts.Layer != nil {
 		rows, err := baserow.Of(base)
 		if err != nil {
@@ -168,7 +168,10 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 		// rather than a panic because the alternative is a write counted nowhere.
 		return fmt.Errorf("wrapper: %w: kind %s reaches no interception row", mutation.ErrNotExactlyOneRequest, m.Kind())
 	}
-	if !s.historyInWAL {
+	// Asked only where there is something to write: four of the eight kinds
+	// carry no batches at all, and a mode question on a write that has none is a
+	// question with one answer.
+	if len(m.EventSlots()) != 0 && !s.layer.WritesHistory() {
 		if err := s.appendEvents(ctx, m); err != nil {
 			return err
 		}
@@ -179,11 +182,18 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 }
 
 // appendEvents writes the mutation's new history events through the base store,
-// before the mutation that refers to them is acked. It is the writer for records
-// that do not carry the batches: skipping them would ack a mutable state
-// pointing at history nodes nobody wrote — which no functional suite sees, the
-// entry being durable and correct. Where the record carries them the drain is
-// the writer instead, under the same rule (ADR 0014).
+// before the mutation that refers to them is acked, and strips them off the
+// mutation once they are down. It is the writer for records that do not carry
+// the batches: skipping them would ack a mutable state pointing at history nodes
+// nobody wrote — which no functional suite sees, the entry being durable and
+// correct. Where the record carries them the drain is the writer instead, under
+// the same rule (ADR 0014).
+//
+// The strip is what lets everything below hold one invariant: a mutation
+// reaching the layer carries exactly the batches nobody has written yet. So the
+// codec and the fold need no mode of their own — they carry and apply what the
+// mutation holds — and the layer folds the object it appended rather than one
+// that differs from it in a field.
 func (s *ExecutionStore) appendEvents(ctx context.Context, m mutation.Mutation) error {
 	for _, slot := range m.EventSlots() {
 		for _, events := range slot {
@@ -192,6 +202,7 @@ func (s *ExecutionStore) appendEvents(ctx context.Context, m mutation.Mutation) 
 			}
 		}
 	}
+	m.ClearEvents()
 	return nil
 }
 
@@ -446,10 +457,7 @@ func (s *ExecutionStore) ReadHistoryBranch(
 	}
 	s.historyReads.Add(1)
 	s.emit.OverlaidRead("ReadHistoryBranch")
-	return s.layer.ReadHistoryBranch(ctx, request, branch.GetTreeId(),
-		func(ctx context.Context, ask *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error) {
-			return s.base.ReadHistoryBranch(ctx, ask)
-		})
+	return s.layer.ReadHistoryBranch(ctx, request, branch.GetTreeId(), s.baseHistory)
 }
 
 func (s *ExecutionStore) ForkHistoryBranch(

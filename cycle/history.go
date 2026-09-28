@@ -43,7 +43,7 @@ func (m *Manager) ReadHistoryBranch(
 	shard := wal.ShardID(req.ShardID)
 	c := m.Shard(shard)
 	if c == nil {
-		route, refusal := noCycleRoute(historyRead, shard)
+		route, refusal := noCycleRoute(mutableStateRead, shard)
 		return offLoop(ctx, route, refusal, baseAlone(req, base))
 	}
 	return c.readHistoryBranch(ctx, req, treeID, base)
@@ -59,7 +59,7 @@ func (c *Cycle) readHistoryBranch(
 		return c.readHistoryPage(ctx, s, req, treeID, base)
 	})
 	if stopped {
-		route, refusal := c.stoppedRead(historyRead, err)
+		route, refusal := c.stoppedRead(mutableStateRead, err)
 		return offLoop(ctx, route, refusal, baseAlone(req, base))
 	}
 	return resp, err
@@ -92,9 +92,12 @@ func (c *Cycle) readHistoryPage(
 	treeID string,
 	base BaseHistory,
 ) (*p.InternalReadHistoryBranchResponse, error) {
-	switch pass, err := c.prelude(ctx, s, historyRead, func(s *state) bool {
-		return s.acc.HeldHistory(treeID, req.BranchID, req.MinNodeID, req.MaxNodeID)
-	}); {
+	// No view is taken, for the reason the task page takes none: Reads and
+	// ReadsHeld are the mutable-state overlay's numbers, and three witness rules
+	// read ReadsHeld as "the overlay crossed a held workflow". A branch page
+	// raising it would let that claim be satisfied by a read that never touched
+	// the overlay at all — the silent pass those rules exist to catch.
+	switch pass, err := c.prelude(ctx, s, mutableStateRead, nil); {
 	case err != nil:
 		return nil, err
 	case pass:

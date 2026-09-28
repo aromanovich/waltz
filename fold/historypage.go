@@ -92,7 +92,7 @@ type historyPageToken struct {
 }
 
 func (t *historyPageToken) after() (historyKey, bool) {
-	if t == nil || !t.After {
+	if !t.After {
 		return historyKey{}, false
 	}
 	return historyKey{nodeID: t.AfterNode, txnID: t.AfterTxn}, true
@@ -107,6 +107,8 @@ func (t *historyPageToken) setAfter(k historyKey) {
 // token is one of ours at all.
 var historyTokenMagic = [4]byte{'w', 'h', 's', '1'}
 
+// encodeHistoryToken frames one of ours. A nil token is the pagination being
+// over, which is an absent token rather than an empty one.
 func encodeHistoryToken(t *historyPageToken) []byte {
 	if t == nil {
 		return nil
@@ -124,17 +126,14 @@ func encodeHistoryToken(t *historyPageToken) []byte {
 // across a node with no cycle, so a page answered from the cold store alone
 // hands back the store's own token and the next page may arrive here with it.
 func decodeHistoryToken(raw []byte) *historyPageToken {
-	if len(raw) == 0 {
-		return nil
-	}
-	if len(raw) < len(historyTokenMagic) || [4]byte(raw[:4]) != historyTokenMagic {
-		return &historyPageToken{Base: raw}
-	}
 	var t historyPageToken
-	if err := json.Unmarshal(raw[len(historyTokenMagic):], &t); err != nil {
-		return &historyPageToken{Base: raw}
+	if len(raw) >= len(historyTokenMagic) && [4]byte(raw[:4]) == historyTokenMagic &&
+		json.Unmarshal(raw[len(historyTokenMagic):], &t) == nil {
+		return &t
 	}
-	return &t
+	// The zero value is what "no cursor either side" means, so an empty argument
+	// needs no case of its own and no caller needs a nil check.
+	return &historyPageToken{Base: raw}
 }
 
 // BaseHistoryToken is the cold store's own token inside one this layer wrote, or
@@ -166,7 +165,7 @@ func (a *Accumulator) HistoryPage(
 	base HistoryBasePage,
 ) (*p.InternalReadHistoryBranchResponse, error) {
 	token := decodeHistoryToken(req.NextPageToken)
-	window := a.history[historyBranch{treeID: treeID, branchID: req.BranchID}]
+	window := a.branchNodes(treeID, req.BranchID)
 	page, next, err := mergeHistoryPage(req, base, window, token)
 	if err != nil {
 		return nil, err
@@ -207,18 +206,14 @@ func mergeHistoryPage(
 
 	var basePage []p.InternalHistoryNode
 	var nextBase []byte
-	baseDone := token != nil && token.BaseDone
+	baseDone := token.BaseDone
 	if !baseDone {
 		// The base is asked for what the window does not already fill, floored at
 		// one: asking for nothing would end the pagination with rows left in the
 		// store.
 		ask := max(pageSize-len(tail), 1)
-		var carried []byte
-		if token != nil {
-			carried = token.Base
-		}
 		var err error
-		basePage, nextBase, err = base(ask, carried)
+		basePage, nextBase, err = base(ask, token.Base)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -284,9 +279,7 @@ func mergeHistoryPage(
 	}
 	only := inReach[:min(cut, pageSize)]
 	// Nothing was emitted from the base, so its cursor stays where it was.
-	if token != nil {
-		next.Base = token.Base
-	}
+	next.Base = token.Base
 	next.setAfter(keyOf(only[len(only)-1]))
 	return only, next, nil
 }

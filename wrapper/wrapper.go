@@ -57,6 +57,18 @@ type ShardLayer interface {
 // log, and in sync mode applied — with the drain's outcome — before the call
 // returns.
 type ShardWriter interface {
+	// WritesHistory reports whether an intercepted write's event batches ride
+	// the record this layer appends. False means the caller owes them to the
+	// base store before it calls Write, and owes it to strip them off the
+	// mutation once it has.
+	//
+	// A face rather than a field of [Options] for the reason [ShardLayer] is one
+	// interface: the two could otherwise be configured apart, and one of the two
+	// disagreements loses data — a store told the layer carries them while the
+	// layer's own policy says it does not writes them nowhere, and acks a mutable
+	// state over history nobody wrote.
+	WritesHistory() bool
+
 	// Write acks m into its shard's log and reports what the apply transaction
 	// did with it; the mutation names its own shard.
 	//
@@ -155,15 +167,6 @@ type Options struct {
 	// overlay and the task and history reads through their merges. Nil is
 	// passthrough.
 	Layer ShardLayer
-	// HistoryInWAL is the record format the intercepted writes use: a create,
-	// update or conflict-resolve carries its own event batches instead of having
-	// them written through the base store before the append (ADR 0014). It must
-	// be what the layer's own policy says, which is why [waltz.Layer.Options]
-	// fills it rather than a caller.
-	//
-	// It reaches the read path nowhere: history reads merge in both settings,
-	// because a tail written with this on is replayed by a node with it off.
-	HistoryInWAL bool
 	// Metrics is where the wrapper's own counters go, and it is the emitter the
 	// layer records through rather than a handler of this seam's own: both
 	// halves of the numbers are then pointed at the server's stack by the one

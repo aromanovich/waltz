@@ -268,8 +268,7 @@ type Accumulator struct {
 	taskTail     wal.Seqno
 	tasksDropped map[string]int
 
-	// The event batches this window carries, in two shapes: see history.go.
-	history       map[historyBranch][]p.InternalHistoryNode
+	// The event batches this window carries: see history.go.
 	historyWrites []*p.InternalAppendHistoryNodesRequest
 	historyTail   wal.Seqno
 }
@@ -280,7 +279,6 @@ func New(shard wal.ShardID) *Accumulator {
 		shard:     shard,
 		workflows: make(map[wfKey]*workflowAcc),
 		ranges:    make(map[int32]*rangeAcc),
-		history:   make(map[historyBranch][]p.InternalHistoryNode),
 	}
 }
 
@@ -625,7 +623,6 @@ func (a *Accumulator) Drain() Batch {
 	watermark = max(watermark, work.TailSeqno, a.historyTail)
 
 	history := a.historyWrites
-	a.history = make(map[historyBranch][]p.InternalHistoryNode)
 	a.historyWrites = nil
 	a.historyTail = 0
 	a.workflows = make(map[wfKey]*workflowAcc)

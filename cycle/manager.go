@@ -102,6 +102,14 @@ func NewManager(deps Deps, policy Policy) (*Manager, error) {
 	return &Manager{deps: deps, policy: policy, held: newHeld()}, nil
 }
 
+// WritesHistory reports whether an intercepted write's event batches ride the
+// record this layer appends: [Config.HistoryInWAL] read off the policy, which is
+// the same source [Cycle.add] encodes from. So the store above and the append
+// below cannot be configured apart — the disagreement that loses data is a store
+// told the batches ride the record over a layer whose policy says they do not,
+// which writes them nowhere.
+func (m *Manager) WritesHistory() bool { return m.policy().HistoryInWAL }
+
 // Use points this node's cycles at the server's metrics handler; it satisfies
 // wrapper.MetricsSink, which is how a handler built long after this registry
 // reaches it. First call wins, and a nil handler is ignored.

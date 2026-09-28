@@ -20,7 +20,7 @@ import (
 // encodings of the same mutation, and Go's map iteration order would give one
 // mutation several byte strings.
 
-func encodeCreate(r *p.InternalCreateWorkflowExecutionRequest, history bool) (*CreateRequest, error) {
+func encodeCreate(r *p.InternalCreateWorkflowExecutionRequest) (*CreateRequest, error) {
 	snapshot, err := encodeSnapshot(&r.NewWorkflowSnapshot)
 	if err != nil {
 		return nil, err
@@ -31,11 +31,11 @@ func encodeCreate(r *p.InternalCreateWorkflowExecutionRequest, history bool) (*C
 		PreviousRunId:            r.PreviousRunID,
 		PreviousLastWriteVersion: r.PreviousLastWriteVersion,
 		Snapshot:                 snapshot,
-		NewWorkflowNewEvents:     encodeHistoryRequests(r.NewWorkflowNewEvents, history),
+		NewWorkflowNewEvents:     encodeHistoryRequests(r.NewWorkflowNewEvents),
 	}, nil
 }
 
-func encodeUpdate(r *p.InternalUpdateWorkflowExecutionRequest, history bool) (*UpdateRequest, error) {
+func encodeUpdate(r *p.InternalUpdateWorkflowExecutionRequest) (*UpdateRequest, error) {
 	mutation, err := encodeMutation(&r.UpdateWorkflowMutation)
 	if err != nil {
 		return nil, err
@@ -44,8 +44,8 @@ func encodeUpdate(r *p.InternalUpdateWorkflowExecutionRequest, history bool) (*U
 		ShardId:                 r.ShardID,
 		Mode:                    int32(r.Mode),
 		Mutation:                mutation,
-		UpdateWorkflowNewEvents: encodeHistoryRequests(r.UpdateWorkflowNewEvents, history),
-		NewWorkflowNewEvents:    encodeHistoryRequests(r.NewWorkflowNewEvents, history),
+		UpdateWorkflowNewEvents: encodeHistoryRequests(r.UpdateWorkflowNewEvents),
+		NewWorkflowNewEvents:    encodeHistoryRequests(r.NewWorkflowNewEvents),
 	}
 	if r.NewWorkflowSnapshot != nil {
 		if out.NewSnapshot, err = encodeSnapshot(r.NewWorkflowSnapshot); err != nil {
@@ -55,7 +55,7 @@ func encodeUpdate(r *p.InternalUpdateWorkflowExecutionRequest, history bool) (*U
 	return out, nil
 }
 
-func encodeConflictResolve(r *p.InternalConflictResolveWorkflowExecutionRequest, history bool) (*ConflictResolveRequest, error) {
+func encodeConflictResolve(r *p.InternalConflictResolveWorkflowExecutionRequest) (*ConflictResolveRequest, error) {
 	reset, err := encodeSnapshot(&r.ResetWorkflowSnapshot)
 	if err != nil {
 		return nil, err
@@ -64,9 +64,9 @@ func encodeConflictResolve(r *p.InternalConflictResolveWorkflowExecutionRequest,
 		ShardId:                        r.ShardID,
 		Mode:                           int32(r.Mode),
 		ResetSnapshot:                  reset,
-		CurrentWorkflowEventsNewEvents: encodeHistoryRequests(r.CurrentWorkflowEventsNewEvents, history),
-		ResetWorkflowEventsNewEvents:   encodeHistoryRequests(r.ResetWorkflowEventsNewEvents, history),
-		NewWorkflowEventsNewEvents:     encodeHistoryRequests(r.NewWorkflowEventsNewEvents, history),
+		CurrentWorkflowEventsNewEvents: encodeHistoryRequests(r.CurrentWorkflowEventsNewEvents),
+		ResetWorkflowEventsNewEvents:   encodeHistoryRequests(r.ResetWorkflowEventsNewEvents),
+		NewWorkflowEventsNewEvents:     encodeHistoryRequests(r.NewWorkflowEventsNewEvents),
 	}
 	if r.NewWorkflowSnapshot != nil {
 		if out.NewSnapshot, err = encodeSnapshot(r.NewWorkflowSnapshot); err != nil {

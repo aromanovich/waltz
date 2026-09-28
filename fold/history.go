@@ -3,10 +3,12 @@ package fold
 // The window's half of event history: the batches a mutable-state record
 // carried, kept until the drain writes them.
 //
-// Two shapes of the same nodes, because two callers want different things. The
-// drain wants the requests, in WAL order, because what it writes is a row per
-// request and a tree row beside a new branch. A read wants the nodes of one
-// branch, because a page is merged per branch.
+// One slice, in WAL order, because that is what the drain writes: a row per
+// request and a tree row beside a new branch. A read wants one branch's nodes
+// and derives them from it — an index kept beside the slice would be a second
+// thing to append to and a second thing to reset, and both divergences are
+// silent in opposite directions (a node in one and not the other is either
+// history no read shows or history no drain writes).
 //
 // Nothing here folds. Two appends of one node are two rows the store dedupes on
 // the key it writes them under, and a window that dropped the second would
@@ -20,11 +22,16 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// historyBranch is what a page is read by and what the window keys its nodes
-// on. The tree is part of it because a branch id is unique only inside one.
-type historyBranch struct {
-	treeID   string
-	branchID string
+// branchNodes is the window's nodes for one branch, in WAL order. The tree is
+// part of the key because a branch id is unique only inside one.
+func (a *Accumulator) branchNodes(treeID, branchID string) []p.InternalHistoryNode {
+	var out []p.InternalHistoryNode
+	for _, r := range a.historyWrites {
+		if r.BranchInfo.TreeId == treeID && r.BranchInfo.BranchId == branchID {
+			out = append(out, r.Node)
+		}
+	}
+	return out
 }
 
 // addHistory takes the mutation's batches into the window. A mutation whose
@@ -34,25 +41,10 @@ type historyBranch struct {
 func (a *Accumulator) addHistory(seqno wal.Seqno, m mutation.Mutation) {
 	for _, slot := range m.EventSlots() {
 		for _, r := range slot {
-			branch := historyBranch{treeID: r.BranchInfo.TreeId, branchID: r.BranchInfo.BranchId}
-			a.history[branch] = append(a.history[branch], r.Node)
 			a.historyWrites = append(a.historyWrites, r)
 			a.historyTail = seqno
 		}
 	}
-}
-
-// HeldHistory reports whether the window holds a node of the branch inside the
-// range a read names. It is the read's "did the window have anything for this",
-// which is a counter and not a routing decision — [Accumulator.HistoryPage] is
-// what decides the page.
-func (a *Accumulator) HeldHistory(treeID, branchID string, minNodeID, maxNodeID int64) bool {
-	for _, node := range a.history[historyBranch{treeID: treeID, branchID: branchID}] {
-		if node.NodeID >= minNodeID && node.NodeID < maxNodeID {
-			return true
-		}
-	}
-	return false
 }
 
 // History is every event batch this window carries, in WAL order: what a drain

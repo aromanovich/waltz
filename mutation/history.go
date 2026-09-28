@@ -14,7 +14,7 @@ import (
 // caller's mode, not this file: a record written without them is byte-for-byte
 // what the codec wrote before these fields existed.
 
-// ErrMalformedHistory is what [EncodeWithHistory] and [Decode] answer a request
+// ErrMalformedHistory is what [Encode] and [Decode] answer a request
 // whose event batches are missing something the fold keys on or the applier
 // writes: a nil batch, one belonging to another shard, one with no branch, one
 // whose node carries no events, or one opening a branch with no tree info.
@@ -55,12 +55,12 @@ func validateHistory(m Mutation) error {
 	return nil
 }
 
-// encodeHistoryRequests mirrors one slot. carry false returns nil, which is how
-// the default mode's payload keeps the bytes it had before this field existed —
-// rather than encoding the batches and dropping them, which would pay for the
-// blobs on every write that does not carry them.
-func encodeHistoryRequests(rs []*p.InternalAppendHistoryNodesRequest, carry bool) []*AppendHistoryNodesRequest {
-	if !carry || len(rs) == 0 {
+// encodeHistoryRequests mirrors one slot. An empty slot encodes to an absent
+// field, which is the absent-vs-empty rule the rest of this codec keeps and what
+// makes a batch-less mutation's bytes the ones written before these fields
+// existed.
+func encodeHistoryRequests(rs []*p.InternalAppendHistoryNodesRequest) []*AppendHistoryNodesRequest {
+	if len(rs) == 0 {
 		return nil
 	}
 	out := make([]*AppendHistoryNodesRequest, 0, len(rs))

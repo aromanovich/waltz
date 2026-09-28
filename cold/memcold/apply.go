@@ -491,13 +491,13 @@ func assertRuns(
 // its own answer to the same question.
 func applyHistory(ctx context.Context, tx sqlplugin.Tx, batches []*p.InternalAppendHistoryNodesRequest) error {
 	for _, r := range batches {
-		treeID, err := primitives.ParseUUID(r.BranchInfo.TreeId)
+		treeID, err := parseTree(r.BranchInfo.TreeId)
 		if err != nil {
-			return fmt.Errorf("memcold: history tree id %q: %w", r.BranchInfo.TreeId, err)
+			return err
 		}
-		branchID, err := primitives.ParseUUID(r.BranchInfo.BranchId)
+		branchID, err := parseBranch(r.BranchInfo.BranchId)
 		if err != nil {
-			return fmt.Errorf("memcold: history branch id %q: %w", r.BranchInfo.BranchId, err)
+			return err
 		}
 		if _, err := tx.InsertIntoHistoryNode(ctx, &sqlplugin.HistoryNodeRow{
 			ShardID:      r.ShardID,

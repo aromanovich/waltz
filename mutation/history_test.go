@@ -9,40 +9,39 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestEncodeWithHistoryCarriesTheBatchesAndEncodeDropsThem(t *testing.T) {
+func TestEncodeCarriesTheBatchesAndEncodeDropsThem(t *testing.T) {
 	m := createWithHistory()
 
-	carried, err := EncodeWithHistory(m)
+	carried, err := Encode(m)
 	require.NoError(t, err)
 	got, err := Decode(carried, registry())
 	require.NoError(t, err)
 	require.Len(t, got.Create.NewWorkflowNewEvents, 2,
-		"an entry written with history decodes holding it, or the drain writes a state over nodes nobody wrote")
+		"an entry written holding batches decodes holding them, or the drain writes a state over nodes nobody wrote")
 	require.Equal(t, []byte("e2"), got.Create.NewWorkflowNewEvents[1].Node.Events.Data)
 	require.Equal(t, "branch-1", got.Create.NewWorkflowNewEvents[1].BranchInfo.BranchId)
 
-	dropped, err := Encode(m)
+	m.ClearEvents()
+	stripped, err := Encode(m)
 	require.NoError(t, err)
-	got, err = Decode(dropped, registry())
+	got, err = Decode(stripped, registry())
 	require.NoError(t, err)
 	require.Nil(t, got.Create.NewWorkflowNewEvents,
-		"the default mode's writer puts the events down itself, so carrying them too would write them twice")
+		"a mutation whose batches the store already took carries none, so the drain does not write them again")
 }
 
-// The compatibility claim the new fields rest on: a record this mode does not
-// carry history in is the record the codec wrote before these fields existed.
-// Held by comparing the two encoders rather than against recorded bytes, which
-// record_format_test.go already does for the rest of the format.
-func TestAMutationWithNoBatchesEncodesTheSameBytesEitherWay(t *testing.T) {
+// The compatibility claim the appended fields rest on: an empty slot encodes
+// absent, so a batch-less record is the bytes this codec wrote before these
+// fields existed.
+func TestAMutationWithNoBatchesEncodesToAnAbsentField(t *testing.T) {
 	m := createWithHistory()
-	m.Create.NewWorkflowNewEvents = nil
+	m.ClearEvents()
 
-	plain, err := Encode(m)
+	payload, err := Encode(m)
 	require.NoError(t, err)
-	withHistory, err := EncodeWithHistory(m)
-	require.NoError(t, err)
-	require.Equal(t, plain, withHistory,
-		"a mutation carrying no batches must encode identically in both modes")
+	var pb Payload
+	require.NoError(t, proto.Unmarshal(payload, &pb))
+	require.Nil(t, pb.GetCreate().NewWorkflowNewEvents)
 }
 
 // Each shape is something the fold or the applier dereferences, and each is
@@ -73,12 +72,8 @@ func TestTheEncoderRefusesAHistoryBatchNothingCouldApply(t *testing.T) {
 			m := createWithHistory()
 			m.Create.NewWorkflowNewEvents[1] = breakIt(m.Create.NewWorkflowNewEvents[1])
 
-			_, err := EncodeWithHistory(m)
+			_, err := Encode(m)
 			require.ErrorIs(t, err, ErrMalformedHistory)
-
-			_, err = Encode(m)
-			require.NoError(t, err,
-				"the default mode does not carry the batch, so it has nothing to refuse it for")
 		})
 	}
 }
@@ -89,7 +84,7 @@ func TestTheEncoderRefusesAHistoryBatchNothingCouldApply(t *testing.T) {
 // panicking one.
 func TestDecodeRefusesAHistoryBatchNothingCouldApply(t *testing.T) {
 	m := createWithHistory()
-	payload, err := EncodeWithHistory(m)
+	payload, err := Encode(m)
 	require.NoError(t, err)
 
 	var pb Payload

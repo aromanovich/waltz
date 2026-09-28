@@ -35,11 +35,21 @@ where it is one statement of the cold-store contract.
 
 ## Decision
 
-**A create, update or conflict-resolve record may carry its own event batches.**
-`mutation.Encode` leaves them out and `mutation.EncodeWithHistory` puts them in;
-which one runs is the mode's. A mutation carrying no batches encodes identically
-either way, so a record written in the default mode is the record this codec
+**A create, update or conflict-resolve record may carry its own event batches**,
+and the codec decides nothing about it: `mutation.Encode` carries whatever the
+mutation still holds. What makes that safe is one invariant established at the
+writer — `wrapper.ExecutionStore.appendEvents` strips the batches off the
+mutation once the base store has taken them, so **a mutation reaching the layer
+carries exactly the batches nobody has written yet**. An empty slot encodes to an
+absent field, so a record written in the default mode is the record this codec
 wrote before the fields existed.
+
+**The mode has one home.** It is `cycle.Config.HistoryInWAL`, read off the
+policy, and the store above asks the layer for it (`wrapper.ShardWriter.WritesHistory`)
+rather than being configured with it. A flag beside `wrapper.Options.Layer` would
+be a second place for the same bit, and one of the two disagreements writes the
+batches nowhere — the store told they ride the record, over a layer whose policy
+says they do not.
 
 **The order is pinned at the drain, and the mechanism is not.** `cold.Applier`'s
 first obligation becomes *one drain is one publication*: the merged requests, the

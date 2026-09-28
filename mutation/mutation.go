@@ -222,12 +222,12 @@ func (m Mutation) EventSlots() [][]*p.InternalAppendHistoryNodesRequest {
 }
 
 // ClearEvents drops the request's event batches in place, for the writer that
-// has already put them down through the store: without it the same batches
-// would also reach the drain, which is a second write of rows the caller was
-// answered over.
+// has already put them down through the store. It is what makes "a mutation
+// carries exactly the batches nobody has written yet" true, and so what lets
+// [Encode] and the fold carry no mode of their own.
 //
-// It writes through the caller's request, which is the layer's own once
-// [wal.Log] has the entry — a mutation is not reused past its append.
+// It writes through the caller's request, which the layer takes ownership of
+// (wrapper.ShardWriter.Write).
 func (m Mutation) ClearEvents() {
 	switch m.Kind() {
 	case KindCreate:
@@ -265,37 +265,33 @@ var ErrCassandraBlob = errors.New("mutation: CHASM node carries a Cassandra blob
 // that is a crash loop or a silent hole; before it, refusing writes nothing.
 var ErrUncarriedProto = errors.New("mutation: parsed execution info or state with no blob carrying it")
 
-// Encode turns a mutation into the bytes of a WAL entry's payload, leaving the
-// request's event batches out. The same mutation always encodes to the same
-// bytes, across processes as well.
-func Encode(m Mutation) ([]byte, error) { return encode(m, false, false) }
-
-// EncodeWithHistory is [Encode] carrying the request's event batches, so that
-// one append makes the state transition and its events durable together. A
-// mutation with no batches encodes to the same bytes either way.
+// Encode turns a mutation into the bytes of a WAL entry's payload, carrying
+// whatever event batches the mutation still holds. The same mutation always
+// encodes to the same bytes, across processes as well.
+//
+// Whether it holds any is the caller's: the writer that puts the batches down
+// through the store itself strips them off the mutation once they are down
+// (wrapper.ExecutionStore.appendEvents), so a mutation reaching here carries
+// exactly what nobody has written yet. A mutation carrying none encodes to the
+// bytes this codec wrote before those fields existed.
 //
 // It refuses a batch [ErrMalformedHistory] names, which is what makes this the
 // place that judges them: an entry past the append is acked and inherited.
-func EncodeWithHistory(m Mutation) ([]byte, error) { return encode(m, false, true) }
+func Encode(m Mutation) ([]byte, error) { return encode(m, false) }
 
 // EncodeProvisional is [Encode] for an entry acked before its condition was
 // verified, so that replay can tell an answer somebody already got from a
 // divergence. It is the payload's `provisional` flag, and nothing else about
 // the record differs.
-func EncodeProvisional(m Mutation) ([]byte, error) { return encode(m, true, false) }
+func EncodeProvisional(m Mutation) ([]byte, error) { return encode(m, true) }
 
-// EncodeProvisionalWithHistory is [EncodeWithHistory] for a provisional entry.
-func EncodeProvisionalWithHistory(m Mutation) ([]byte, error) { return encode(m, true, true) }
-
-func encode(m Mutation, provisional, history bool) ([]byte, error) {
+func encode(m Mutation, provisional bool) ([]byte, error) {
 	kind := m.Kind()
 	if kind == KindInvalid {
 		return nil, fmt.Errorf("mutation: encode: %w", ErrNotExactlyOneRequest)
 	}
-	if history {
-		if err := validateHistory(m); err != nil {
-			return nil, err
-		}
+	if err := validateHistory(m); err != nil {
+		return nil, err
 	}
 
 	payload := &Payload{Format: formatVersion, Provisional: provisional}
@@ -303,15 +299,15 @@ func encode(m Mutation, provisional, history bool) ([]byte, error) {
 	switch kind {
 	case KindCreate:
 		var r *CreateRequest
-		r, err = encodeCreate(m.Create, history)
+		r, err = encodeCreate(m.Create)
 		payload.Request = &Payload_Create{Create: r}
 	case KindUpdate:
 		var r *UpdateRequest
-		r, err = encodeUpdate(m.Update, history)
+		r, err = encodeUpdate(m.Update)
 		payload.Request = &Payload_Update{Update: r}
 	case KindConflictResolve:
 		var r *ConflictResolveRequest
-		r, err = encodeConflictResolve(m.ConflictResolve, history)
+		r, err = encodeConflictResolve(m.ConflictResolve)
 		payload.Request = &Payload_ConflictResolve{ConflictResolve: r}
 	case KindSet:
 		var r *SetRequest

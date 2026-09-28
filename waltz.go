@@ -233,11 +233,7 @@ func Compose(
 // options and the cycle behind it report to the same handler — the one
 // [wrapper.MetricsSink] hands over.
 func (l *Layer) Options() wrapper.Options {
-	return wrapper.Options{
-		Layer:        l.manager,
-		HistoryInWAL: l.policy().HistoryInWAL,
-		Metrics:      l.metrics,
-	}
+	return wrapper.Options{Layer: l.manager, Metrics: l.metrics}
 }
 
 // AbstractFactory is the value a custom main hands to

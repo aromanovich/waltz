@@ -548,32 +548,27 @@ func TestHistoryInWALIsRefusedOverAStoreThatWouldNotWriteIt(t *testing.T) {
 	cfg.HistoryInWAL = true
 
 	_, err := Compose(
-		Backends{Log: memwal.New(), Cold: plainApplier{}},
+		Backends{Log: memwal.New(), Cold: coldtest.New()},
 		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
 	)
 	require.ErrorIs(t, err, ErrNoHistoryApplier)
 
 	_, err = Compose(
-		Backends{Log: memwal.New(), Cold: historyApplier{}},
+		Backends{Log: memwal.New(), Cold: historyApplier{coldtest.New()}},
 		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
 	)
 	require.NoError(t, err, "a store that declares the marker composes")
 
 	cfg.HistoryInWAL = false
 	_, err = Compose(
-		Backends{Log: memwal.New(), Cold: plainApplier{}},
+		Backends{Log: memwal.New(), Cold: coldtest.New()},
 		cycle.Fixed(cfg), DefaultTaskCategories(), nil, nil,
 	)
 	require.NoError(t, err, "the default mode writes history before the append, so it asks nothing of the store")
 }
 
-type plainApplier struct{}
-
-func (plainApplier) Apply(context.Context, wal.ShardID, wal.Epoch, fold.Batch) error { return nil }
-func (plainApplier) Watermark(context.Context, wal.ShardID) (wal.Seqno, bool, error) {
-	return 0, false, nil
-}
-
-type historyApplier struct{ plainApplier }
+// historyApplier is the seam's own double with the marker on it: what the
+// refusal turns on is the declaration, not what Apply does with the batch.
+type historyApplier struct{ *coldtest.Cold }
 
 func (historyApplier) AppliesHistory() {}

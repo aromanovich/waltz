@@ -30,18 +30,15 @@ type reader int
 
 const (
 	// mutableStateRead has legitimate callers that do not own the shard, so a
-	// stale answer is the cost this reader is the one allowed to pay.
+	// stale answer is the cost this reader is the one allowed to pay. The
+	// history-branch page is one of these and not a taskRead: its reader deletes
+	// nothing it read, so a page short the window's newest nodes is that same
+	// staleness rather than a key acked past.
 	mutableStateRead reader = iota
 	// taskRead has exactly one caller — the owning shard's queue processors —
 	// and no such thing as a harmlessly incomplete page: the reader completes
 	// the range it asked for and acks past whatever was missing.
 	taskRead
-	// historyRead routes with mutableStateRead and is named apart from it so a
-	// refusal and a metric say which read was refused. A history reader deletes
-	// nothing it read, so a page short the window's newest nodes is staleness of
-	// the kind tailRoute already decides who may pay — not a task page's skipped
-	// key.
-	historyRead
 )
 
 // readRoute is what becomes of a read the layer cannot answer out of both its
