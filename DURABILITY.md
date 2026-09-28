@@ -612,10 +612,73 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-Nothing today, and the second time this page has been able to say so. Read it as
-"the queue is worked", never as "the tree is clean": the entries below were found by
-deleting a write, or a condition, and watching nothing fail, and the section that
-says what this file is not says how to find the next one.
+**A current row written without the start time the policy above it measures.**
+The same failure as the closed entry *A delegated conflict that invents a start
+time*, one house along: that one was the conflict error this layer **hands back**,
+and this is the row it **writes**. Closing the messenger left the record itself
+short, so the store answers honestly ever after and every later reader — the
+sequential path included — measures against a run that began at the zero time.
+
+`currentWriteOfConflictResolve` (`fold/assert.go`) renders a conflict-resolve's
+current row from four fields — run id, create request id, state, status — and
+`memcold`'s `writeCurrentRow` derives the row's columns from exactly that blob,
+so `start_time` lands NULL and `data` holds the reduced state. Durably. Both
+upstream plugins pass the snapshot's **own** blob through instead
+(`sql/execution.go`'s `ConflictResolveWorkflowModeUpdateCurrent` arm and
+`cassandra/mutable_state_store.go`'s), which is where the divergence is.
+
+What it costs is a namespace policy that silently stops working. Upstream computes
+`timeSinceStart := now.Sub(currentWorkflowStartTime.UTC())` in
+`ResolveWorkflowIDReusePolicy` and in `resolveDuplicateWorkflowStart`
+(`service/history/api/workflow_id_dedup.go`); against the zero time every interval
+is ~2000 years, so `minimalReuseInterval < timeSinceStart` always holds.
+`WorkflowIdReuseMinimalInterval` never fires again for that workflow — the reuse
+arm skips its *Too many starts* refusal and the terminate arm terminates instead of
+answering `ResourceExhausted`. No start time is ever restored: nothing back-fills
+that field, unlike the request ids below.
+
+**The request-id half is strictly narrower, and the difference matters.**
+`WorkflowExecutionStateFromBlob` back-fills `RequestIds[CreateRequestId]`
+(`common/persistence/serialization/blob.go`), and the reduced rendering keeps the
+create request id — so an ordinary retried start still deduplicates. What is lost
+is every **non-create** id, the ones `AttachRequestID` accumulates for an
+attached start or an update-with-start. For those the dedup misses, and the two
+conflict policies answer accordingly: `FAIL` raises a false *already started*, and
+`TERMINATE_EXISTING` terminates a live run and starts another. Reachable where the
+run whose state becomes the current row has accumulated such ids — a replication
+conflict-resolve over a rebuilt run, not a flat reset, whose fresh run carries only
+its create id and which upstream renders the same way.
+
+*Why no instrument here catches it:* the oracle that ships in this repository
+drives one stream folded and unfolded, and a window of one still renders the row
+through the same function — so both arms carry the reduced blob and it cancels,
+which is this file's own standing caveat about that instrument. Handbook 13
+credits "a differential run against the incumbent" with having found the
+rendering, and such a run — the layer against an unwrapped store — could see it;
+the run described two paragraphs later, folded against unfolded, could not. Worth
+resolving when that chapter is next touched, since only one of the two is the
+oracle that still exists here.
+
+*What the tree says about it now.* The divergence is recorded as deliberate in
+three places — ADR 0012, the table in handbook 15, handbook 13 — and none of them
+records this consequence; the ADR gives its address rather than a reason ("that is
+what fold hands the applier"), and handbook 15 lists it as the one of its four
+differences that does **not** follow from the layer having already acked the write.
+Beside them sits one assertion that is simply false about upstream:
+`fold/currentwrite_test.go` pins the reduced form with "the store's
+conflict-resolve path writes run, create request, state and status — nothing else",
+where both plugins write the snapshot's whole blob and its start time. The comment
+at `fold/assert.go` is the one that states the situation correctly.
+
+*What closing it takes:* the rendering collapses to the snapshot the upstream arms
+pick (`newWorkflow` when there is one, else `resetWorkflow`) handed to the existing
+`currentWriteOfSnapshot`, which is **less** code than the four-field build; the
+columns then come right by themselves, since `writeCurrentRow` already recovers
+them from the blob. Two tests, each watched red against this defect: a conflict
+carrying the start time, and the drained row carrying it in its column. Then the
+four documents, because the divergence stops existing and two of the claims are
+wrong independently of the fix. It is a **reverse of a recorded decision**, so it
+is the owner's call rather than a hardening session's.
 
 ---
 
@@ -686,6 +749,28 @@ storage the log actually runs on — fence at a higher epoch from a second proce
 then append from the first — and read the outcome off the log rather than off
 either writer. Said at the instrument, on `waltest.RunContractSuite`, because the
 carrier of this one is whoever writes the backend.
+
+*What stands in for it today, and what that costs to give up.* The delegated reads
+`Cycle.checkDelegated` takes before an append are the only thing in the tree that
+notices this failure while the caller is still on the line: a second writer that
+has been writing has moved the versions those reads sample, so the write is
+refused **before** the ack and the caller retries. They are not a barrier and must
+not be read as one — nothing is locked between the read and the append, so against
+a truly simultaneous writer this is a race, and the real barrier is the epoch
+assertion inside the drain's transaction, which runs *after* the ack. What they
+buy is therefore narrower and worth naming exactly: a violation that persists is
+detected at a **repeatable request** instead of at a halted shard with acked
+entries in the log that no replay will apply.
+
+That is the standing argument against every proposal to drop those reads — a cache
+of versions this layer wrote itself, or trusting the `DBRecordVersion - 1` the
+request already carries. Both are sound under the assumption the whole design
+already makes (the writers of these rows are exactly this layer), both are
+genuinely cheaper, and both move this entry from *accepted and detectable* to
+*accepted and silent*. Neither is a configuration flag; either one is an edit to
+this page first. The assumption stops being an assumption only if the cold store
+itself refuses a row write that carries no current epoch, which nothing in either
+seam asks for today.
 
 **Nothing is staged between two layer *processes*, and nothing at all between
 clusters.** Two *owners* are staged, and the distinction is narrower than it
@@ -1161,8 +1246,12 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**The floor is signed, and Open is empty.** Every entry anybody has written down
-is now closed, refuted or accepted. Three of the acceptances are the harness this
+**The floor is signed. Open was empty and is not.** One adversarial pass on a
+fresh context put an entry back — a current row written without its start time —
+which is what the paragraph below says such a pass is for, and the first time it
+has happened rather than been anticipated. The floor itself is unchanged: every
+entry that was closed, refuted or accepted still is. Three of the acceptances are
+the harness this
 library does not build — a durable log, two processes, a kill, and a judge outside
 all three — and the change that would reopen all three at once is durable storage
 shipping here, which
