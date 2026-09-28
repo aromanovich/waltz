@@ -395,7 +395,7 @@ func DecodeEntry(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation,
 	}
 
 	prov := pb.Provisional
-	m, err := decodeRequest(pb, registry)
+	m, err := decodeRequest(&pb, registry)
 	if err != nil {
 		return Mutation{}, false, err
 	}
@@ -408,7 +408,7 @@ func DecodeEntry(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation,
 	return m, prov, nil
 }
 
-func decodeRequest(pb Payload, registry tasks.TaskCategoryRegistry) (Mutation, error) {
+func decodeRequest(pb *Payload, registry tasks.TaskCategoryRegistry) (Mutation, error) {
 	switch r := pb.Request.(type) {
 	case *Payload_Create:
 		req, err := decodeCreate(r.Create, registry)

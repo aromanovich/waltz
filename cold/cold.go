@@ -28,12 +28,14 @@
 //     nobody references. The other order is the one that cannot be recovered
 //     from: a mutable state published over nodes that are not there points at
 //     history nobody wrote.
+//
 //  2. The watermark commits inside that transaction. It is the seqno the batch
 //     carries ([Applier]), and [Watermarker] reads it back — the only witness to
 //     what a drain did, and the reason a store may never derive that answer from
 //     the rows themselves. A watermark written beside the transaction rather than
 //     in it is a shard that either replays what it applied or trims what it did
 //     not.
+//
 //  3. The epoch is asserted first, and the store refuses the whole batch if it
 //     has moved. Fencing is what makes the layer a shard's single writer, and an
 //     applier that writes under a stale epoch has two. Nothing else in the
@@ -41,6 +43,7 @@
 //     version that a second owner would have moved, but a window of task work
 //     asserts nothing at all, so a range completion drained under an epoch that
 //     is gone deletes rows the shard's real owner acked.
+//
 //  4. The outcome comes back in [apply]'s five classes. Committed, refused,
 //     shard lost, invariant violated, unknown outcome: the cycle branches on
 //     them, and the fifth is the one a store gets wrong by rounding an ambiguous
