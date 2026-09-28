@@ -12,10 +12,22 @@
 // things, and each is a way the acked-is-never-lost rule can be broken from
 // below.
 //
-//  1. One drain is one transaction. A batch that lands half-applied leaves rows
-//     no replay can reconstruct: the mutations behind it were acked, folded and
-//     collapsed, so what a replay re-drives is that same window, against rows
-//     the half that landed has already moved.
+//  1. One drain is one publication. The merged requests, the task work and the
+//     watermark are one transaction: a batch that lands half-applied leaves rows
+//     no replay can reconstruct, since the mutations behind it were acked,
+//     folded and collapsed, so what a replay re-drives is that same window
+//     against rows the half that landed has already moved.
+//
+//     [Batch.History] is the one part that may be written outside it, and the
+//     freedom is deliberate: a store whose bulk path cannot join its
+//     mutable-state transaction may write those rows first, by whatever means it
+//     likes. What is pinned is the order and not the mechanism — every history
+//     row must be durable **before** that transaction starts. History nodes are
+//     immutable and keyed by (tree, branch, node, transaction), so a repeated
+//     write is the same row and a drain that failed after them leaves orphans
+//     nobody references. The other order is the one that cannot be recovered
+//     from: a mutable state published over nodes that are not there points at
+//     history nobody wrote.
 //  2. The watermark commits inside that transaction. It is the seqno the batch
 //     carries ([Applier]), and [Watermarker] reads it back — the only witness to
 //     what a drain did, and the reason a store may never derive that answer from
@@ -77,8 +89,9 @@ type Applier interface {
 	// Apply commits everything batch carries — the merged request per dirty
 	// workflow, the history-task work, the range completions — and
 	// batch.Watermark(), in one transaction, under an epoch it compare-and-sets
-	// first. The four obligations in this package's doc say why each of those
-	// is not negotiable.
+	// first, with batch.History() durable before that transaction opens. The
+	// four obligations in this package's doc say why each of those is not
+	// negotiable.
 	//
 	// The error is the whole of what the cycle learns, and it is read through
 	// apply.Classify rather than compared: return nil only if the transaction
@@ -90,6 +103,23 @@ type Applier interface {
 	// failure: the cycle answers an unknown outcome by reading the watermark,
 	// and answers a failure by giving up on the batch.
 	Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error
+}
+
+// HistoryApplier is what an [Applier] declares to say it writes
+// [fold.Batch.History]. It is a marker and not a method, because the writing
+// happens inside Apply: what it exists for is the refusal.
+//
+// A batch carries history only under waltz's history_in_wal mode, and an applier
+// written before that mode existed will ignore the field and commit a mutable
+// state over events nobody wrote — acked, and lost, with every suite green. So
+// the composition refuses to start that mode over an applier that does not
+// declare this, where the process can still be told what is missing. It is the
+// same judgement as baserow.ErrNoVersionedRead at the other seam.
+type HistoryApplier interface {
+	Applier
+
+	// AppliesHistory is never called. Declaring it is the claim.
+	AppliesHistory()
 }
 
 // Watermarker is the recovery half of the same seam: the only read the layer

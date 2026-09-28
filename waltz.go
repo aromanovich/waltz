@@ -121,6 +121,29 @@ func checkPolicy(policy cycle.Policy) error {
 	return nil
 }
 
+// ErrNoHistoryApplier is what composing history_in_wal over a cold store that
+// does not declare [cold.HistoryApplier] answers with. That mode puts a
+// request's event batches in the record, so the drain is what writes them: an
+// applier that ignores fold.Batch.History commits a mutable state over events
+// nobody wrote, which is acked data lost with every suite green.
+//
+// Refused here, where the process has not started and can be told what is
+// missing — the same judgement baserow.ErrNoVersionedRead makes at the other
+// seam.
+var ErrNoHistoryApplier = errors.New("waltz: history_in_wal needs a cold store that declares " +
+	"cold.HistoryApplier: the drain is what writes the event batches in that mode")
+
+// checkHistory holds the store to the mode before anything is opened.
+func checkHistory(policy cycle.Policy, backends Backends) error {
+	if !policy().HistoryInWAL {
+		return nil
+	}
+	if _, ok := backends.Cold.(cold.HistoryApplier); !ok {
+		return fmt.Errorf("%w (store is %T)", ErrNoHistoryApplier, backends.Cold)
+	}
+	return nil
+}
+
 // Backends is where a composed layer's bytes go: the log its appends are
 // ordered in, and the cold store one drain becomes a transaction on and an
 // unknown outcome is read back from.
@@ -166,6 +189,9 @@ func Compose(
 	handler metrics.Handler,
 ) (*Layer, error) {
 	if err := checkPolicy(policy); err != nil {
+		return nil, err
+	}
+	if err := checkHistory(policy, backends); err != nil {
 		return nil, err
 	}
 	if logger == nil {
