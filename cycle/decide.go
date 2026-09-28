@@ -36,6 +36,12 @@ const (
 	// and no such thing as a harmlessly incomplete page: the reader completes
 	// the range it asked for and acks past whatever was missing.
 	taskRead
+	// historyRead routes with mutableStateRead and is named apart from it so a
+	// refusal and a metric say which read was refused. A history reader deletes
+	// nothing it read, so a page short the window's newest nodes is staleness of
+	// the kind tailRoute already decides who may pay — not a task page's skipped
+	// key.
+	historyRead
 )
 
 // readRoute is what becomes of a read the layer cannot answer out of both its

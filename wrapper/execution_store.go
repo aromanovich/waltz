@@ -15,17 +15,22 @@ import (
 )
 
 // ExecutionStore is the WAL layer's ExecutionStore: 28 methods, of which
-// intercept mode answers eleven differently and refuses a twelfth
+// intercept mode answers twelve differently and refuses a thirteenth
 // (CompleteHistoryTask, see [ErrCompleteHistoryTaskUnsupported]); passthrough
-// changes none. The eleven are the eight writes the record format has a shape
-// for (four mutable-state, two deletes, two history-task calls) and the three
-// reads one of those eight can change the answer to. The other 16 transit in
+// changes none. The twelve are the eight writes the record format has a shape
+// for (four mutable-state, two deletes, two history-task calls) and the four
+// reads one of those eight can change the answer to. The other 15 transit in
 // both modes.
 type ExecutionStore struct {
 	base p.ExecutionStore
 
 	// layer is [Options.Layer], the mode itself: nil is passthrough.
 	layer ShardLayer
+
+	// historyInWAL is [Options.HistoryInWAL], fixed for this store's lifetime:
+	// it decides which of the two writers puts an intercepted write's event
+	// batches down, and nothing else here reads it.
+	historyInWAL bool
 
 	// baseRows is the write path's pair of pre-window reads ([baserow.Rows]),
 	// resolved and boxed once at construction.
@@ -51,6 +56,9 @@ type ExecutionStore struct {
 	// answers out of the cold store alone is in it.
 	overlaid  atomic.Int64
 	taskReads atomic.Int64
+	// historyReads counts the branch pages routed through the merge — routed,
+	// not merged: a page the window contributed nothing to is in it.
+	historyReads atomic.Int64
 }
 
 var _ p.ExecutionStore = (*ExecutionStore)(nil)
@@ -72,7 +80,7 @@ func NewExecutionStore(base p.ExecutionStore, opts Options) (*ExecutionStore, er
 		// so that every record below is one branch rather than two.
 		emit = walmetrics.New(nil)
 	}
-	s := &ExecutionStore{base: base, layer: opts.Layer, emit: emit}
+	s := &ExecutionStore{base: base, layer: opts.Layer, historyInWAL: opts.HistoryInWAL, emit: emit}
 	s.baseTasks = base.GetHistoryTasks
 	if opts.Layer != nil {
 		rows, err := baserow.Of(base)
@@ -97,8 +105,10 @@ type Counts struct {
 	TasksCompleted int64
 	// Overlaid is the mutable-state reads routed through the layer.
 	Overlaid int64
-	// TaskReads is GetHistoryTasks pages routed at the merge.
-	TaskReads int64
+	// TaskReads is GetHistoryTasks pages routed at the merge, and HistoryReads
+	// is ReadHistoryBranch pages.
+	TaskReads    int64
+	HistoryReads int64
 }
 
 // Counts reports the counters. Safe to call from any goroutine.
@@ -109,6 +119,7 @@ func (s *ExecutionStore) Counts() Counts {
 		TasksCompleted: s.tasksCompleted.Load(),
 		Overlaid:       s.overlaid.Load(),
 		TaskReads:      s.taskReads.Load(),
+		HistoryReads:   s.historyReads.Load(),
 	}
 }
 
@@ -142,11 +153,12 @@ var interception = [mutation.KindCount]interceptRow{
 	mutation.KindRangeCompleteTasks: {op: "RangeCompleteHistoryTasks", counter: tasksCompletedOf},
 }
 
-// write is intercept mode's whole write path: the request's new events into the
-// cold store, then one mutation into the log, and whatever the drain that
-// carried it answered. All eight intercepted writes come through here and read
-// their own row off the kind, so neither step is a method's to remember. The
-// error is returned exactly as it arrives, since
+// write is intercept mode's whole write path: one mutation into the log, and
+// whatever the drain that carried it answered — preceded, where the record does
+// not carry them, by the request's new events into the cold store. All eight
+// intercepted writes come through here and read their own row off the kind, so
+// neither step is a method's to remember. The error is returned exactly as it
+// arrives, since
 // ContextImpl.handleWriteErrorLocked type-switches on these values and one %w
 // turns an expected condition failure into a background re-acquire.
 func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
@@ -156,8 +168,10 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 		// rather than a panic because the alternative is a write counted nowhere.
 		return fmt.Errorf("wrapper: %w: kind %s reaches no interception row", mutation.ErrNotExactlyOneRequest, m.Kind())
 	}
-	if err := s.appendEvents(ctx, m); err != nil {
-		return err
+	if !s.historyInWAL {
+		if err := s.appendEvents(ctx, m); err != nil {
+			return err
+		}
 	}
 	row.counter(s).Add(1)
 	s.emit.InterceptedWrite(row.op)
@@ -165,10 +179,11 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 }
 
 // appendEvents writes the mutation's new history events through the base store,
-// before the mutation that refers to them is acked. The WAL carries the mutation
-// and not the events (D3), so skipping them would ack a mutable state pointing
-// at history nodes nobody wrote — which no functional suite sees, the entry
-// being durable and correct.
+// before the mutation that refers to them is acked. It is the writer for records
+// that do not carry the batches: skipping them would ack a mutable state
+// pointing at history nodes nobody wrote — which no functional suite sees, the
+// entry being durable and correct. Where the record carries them the drain is
+// the writer instead, under the same rule (ADR 0014).
 func (s *ExecutionStore) appendEvents(ctx context.Context, m mutation.Mutation) error {
 	for _, slot := range m.EventSlots() {
 		for _, events := range slot {
@@ -394,7 +409,13 @@ func (s *ExecutionStore) IsReplicationDLQEmpty(
 	return s.base.IsReplicationDLQEmpty(ctx, request)
 }
 
-// --- history V2: the event trees, which the WAL does not carry (D3) -------
+// --- history V2: the event trees ------------------------------------------
+//
+// One of the seven is answered by the layer. The other six transit in both
+// modes, which for the two deletions and the tree read is a decision rather than
+// an omission: what a delete aimed at a node still in the window should do
+// depends on where that deployment put its history, and this library does not
+// choose for it. ADR 0014 names the exposure.
 
 func (s *ExecutionStore) AppendHistoryNodes(
 	ctx context.Context, request *p.InternalAppendHistoryNodesRequest,
@@ -408,10 +429,27 @@ func (s *ExecutionStore) DeleteHistoryNodes(
 	return s.base.DeleteHistoryNodes(ctx, request)
 }
 
+// ReadHistoryBranch is merged on read, in both modes: what decides whether the
+// window holds event batches is the tail this shard inherited, not the mode this
+// node runs. The tree id comes out of the branch token here because the codec
+// for it is the base store's ([p.ExecutionStore.GetHistoryBranchUtil]) and the
+// layer may name no store.
 func (s *ExecutionStore) ReadHistoryBranch(
 	ctx context.Context, request *p.InternalReadHistoryBranchRequest,
 ) (*p.InternalReadHistoryBranchResponse, error) {
-	return s.base.ReadHistoryBranch(ctx, request)
+	if s.layer == nil {
+		return s.base.ReadHistoryBranch(ctx, request)
+	}
+	branch, err := s.base.GetHistoryBranchUtil().ParseHistoryBranchInfo(request.BranchToken)
+	if err != nil {
+		return nil, err
+	}
+	s.historyReads.Add(1)
+	s.emit.OverlaidRead("ReadHistoryBranch")
+	return s.layer.ReadHistoryBranch(ctx, request, branch.GetTreeId(),
+		func(ctx context.Context, ask *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error) {
+			return s.base.ReadHistoryBranch(ctx, ask)
+		})
 }
 
 func (s *ExecutionStore) ForkHistoryBranch(

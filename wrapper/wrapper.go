@@ -81,7 +81,7 @@ type ShardWriter interface {
 	) error
 }
 
-// ShardReader is the read path: the three reads whose answer one of the writes
+// ShardReader is the read path: the four reads whose answer one of the writes
 // can change. base is how the cold store is reached, since the layer below may
 // not name a store; the layer calls it inside the goroutine that owns the
 // window, so a read cannot observe a drain in flight. Errors come back
@@ -117,6 +117,22 @@ type ShardReader interface {
 		req *p.GetHistoryTasksRequest,
 		base func(context.Context, *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error),
 	) (*p.InternalGetHistoryTasksResponse, error)
+
+	// ReadHistoryBranch answers one page of a branch from the cold store's rows
+	// and whatever event batches the shard's window still holds. treeID is
+	// parsed from the opaque branch token by the wrapper, which is where the
+	// store's own codec is reachable.
+	//
+	// It is asked in both modes and not only where the records carry history: a
+	// tail written with that mode on is replayed by a node with it off, so
+	// whether the window holds nodes is a fact about the log rather than about
+	// this node's configuration.
+	ReadHistoryBranch(
+		ctx context.Context,
+		req *p.InternalReadHistoryBranchRequest,
+		treeID string,
+		base func(context.Context, *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error),
+	) (*p.InternalReadHistoryBranchResponse, error)
 }
 
 // MetricsSink is the layer's half of the metrics hand-off: the server's own
@@ -136,8 +152,18 @@ type MetricsSink interface {
 type Options struct {
 	// Layer, when set, is intercept mode: acquires are reported to it, the eight
 	// writes go into the WAL through it, the two mutable-state reads through its
-	// overlay and the task read through its merge. Nil is passthrough.
+	// overlay and the task and history reads through their merges. Nil is
+	// passthrough.
 	Layer ShardLayer
+	// HistoryInWAL is the record format the intercepted writes use: a create,
+	// update or conflict-resolve carries its own event batches instead of having
+	// them written through the base store before the append (ADR 0014). It must
+	// be what the layer's own policy says, which is why [waltz.Layer.Options]
+	// fills it rather than a caller.
+	//
+	// It reaches the read path nowhere: history reads merge in both settings,
+	// because a tail written with this on is replayed by a node with it off.
+	HistoryInWAL bool
 	// Metrics is where the wrapper's own counters go, and it is the emitter the
 	// layer records through rather than a handler of this seam's own: both
 	// halves of the numbers are then pointed at the server's stack by the one

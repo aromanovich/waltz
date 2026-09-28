@@ -125,6 +125,17 @@ type Config struct {
 	// read that crosses a window.
 	DrainOnRead bool
 
+	// HistoryInWAL makes a create, update or conflict-resolve record carry its
+	// own event batches, so that one append makes the state transition and its
+	// events durable together and the drain writes the nodes before it publishes
+	// the state pointing at them. Off, the wrapper writes them through the store
+	// before the append instead (ADR 0014).
+	//
+	// It is read at the append and nowhere else. The *read* overlay does not
+	// consult it: a window can hold history under either setting, because a tail
+	// written with this on is replayed by a node with it off.
+	HistoryInWAL bool
+
 	// HardMaxEntries and HardMaxBytes are I10's bound on one shard's tail: what
 	// has been acked and not yet applied. Neither unit works alone: one workflow
 	// near the server's 8 MB mutable-state limit turns an entries-only bound
@@ -697,12 +708,21 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 		return err
 	}
 
-	// The ack is provisional exactly where the drain below answers the caller,
-	// which is sync mode's every write: there the condition is not yet verified
-	// when the entry becomes durable. Replay reads the bit back.
+	// Two independent bits of the record, so four encoders rather than a wrapper
+	// each. The ack is provisional exactly where the drain below answers the
+	// caller, which is sync mode's every write: there the condition is not yet
+	// verified when the entry becomes durable, and replay reads the bit back.
+	// History rides the record where the mode says the append is what makes it
+	// durable — and the encoder is also where a batch nothing could apply is
+	// refused, which is here because past the append it is acked and inherited.
 	encode := mutation.Encode
-	if cfg.Sync {
+	switch {
+	case cfg.Sync && cfg.HistoryInWAL:
+		encode = mutation.EncodeProvisionalWithHistory
+	case cfg.Sync:
 		encode = mutation.EncodeProvisional
+	case cfg.HistoryInWAL:
+		encode = mutation.EncodeWithHistory
 	}
 	payload, err := encode(m)
 	if err != nil {
@@ -715,6 +735,13 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 		if err := c.appendFailed(ctx, s, err, payload); err != nil {
 			return err
 		}
+	}
+	if !cfg.HistoryInWAL {
+		// The wrapper has already put these batches in the store, so leaving them
+		// on the mutation would have the drain write them a second time. Replay
+		// does not come through here: it reaches accept directly, so a record
+		// written with history is applied by a node running without it.
+		m.ClearEvents()
 	}
 	if err := c.accept(ctx, s, m, len(payload)); err != nil {
 		return err

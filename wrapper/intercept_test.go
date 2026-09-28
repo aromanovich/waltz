@@ -1,12 +1,13 @@
 package wrapper
 
 // Intercept mode's partition of the 28 ExecutionStore methods: eight writes go
-// into the WAL, three reads are answered by the layer (two through the overlay,
-// one through the task merge), one is refused, and the other sixteen transit.
-// Both ways of getting it wrong are silent in a functional suite — a twelfth
-// method taken into the layer, or one of the eleven left transiting past the
-// accumulator — so the partition is driven by reflection over the whole
-// interface and both sides are checked in the same loop.
+// into the WAL, four reads are answered by the layer (two through the overlay,
+// one through the task merge, one through the history merge), one is refused,
+// and the other fifteen transit. Both ways of getting it wrong are silent in a
+// functional suite — a thirteenth method taken into the layer, or one of the
+// twelve left transiting past the accumulator — so the partition is driven by
+// reflection over the whole interface and both sides are checked in the same
+// loop.
 //
 // Nothing here needs a cluster: the store below is upstream's gomock mock and
 // the layer below is a recorder.
@@ -46,12 +47,13 @@ var intercepted = map[string]mutation.Kind{
 
 // answered is the read half: the reads whose answer one of the writes can
 // change, so the layer and not the store below decides what comes back. The
-// first two go through the overlay, the third through the merge. A method in
-// none of these three maps is asserted to transit.
+// first two go through the overlay, the other two through a merge apiece. A
+// method in none of these three maps is asserted to transit.
 var answered = map[string]bool{
 	"GetWorkflowExecution": true,
 	"GetCurrentExecution":  true,
 	"GetHistoryTasks":      true,
+	"ReadHistoryBranch":    true,
 }
 
 // refused is the third part of the partition: the method intercept mode answers
@@ -82,7 +84,9 @@ type recordingLayer struct {
 
 	// reads names the store methods that reached the read path, and callBase
 	// makes the layer use the closure it was handed.
-	reads    []string
+	reads []string
+	// treeID is what the wrapper parsed out of a history read's branch token.
+	treeID   string
 	callBase bool
 
 	// baseRows is the pair of reads the write path was handed for the condition
@@ -139,16 +143,31 @@ func (w *recordingLayer) GetHistoryTasks(
 	return nil, w.err
 }
 
+func (w *recordingLayer) ReadHistoryBranch(
+	ctx context.Context,
+	req *p.InternalReadHistoryBranchRequest,
+	treeID string,
+	base func(context.Context, *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error),
+) (*p.InternalReadHistoryBranchResponse, error) {
+	w.reads = append(w.reads, "ReadHistoryBranch")
+	w.treeID = treeID
+	if w.callBase {
+		return base(ctx, req)
+	}
+	return nil, w.err
+}
+
 var _ ShardLayer = (*recordingLayer)(nil)
 
 // Use takes the handler and drops it; what the hand-off is asserted with are
 // the two fakes in metrics_test.go, which override this.
 func (w *recordingLayer) Use(metrics.Handler) {}
 
-func TestInterceptModeTakesTheElevenAndOnlyTheEleven(t *testing.T) {
+func TestInterceptModeTakesTheTwelveAndOnlyTheTwelve(t *testing.T) {
 	iface := reflect.TypeFor[p.ExecutionStore]()
 	require.Len(t, intercepted, 8, "the WAL's record format has eight shapes (invariant I1)")
-	require.Len(t, answered, 3, "two mutable-state reads through the overlay, one task read through the merge")
+	require.Len(t, answered, 4,
+		"two mutable-state reads through the overlay, one task page and one history page through a merge apiece")
 	require.Len(t, refused, 1, "the single-key completion is the one method the record format has no shape for")
 
 	for method := range iface.Methods() {
@@ -158,6 +177,14 @@ func TestInterceptModeTakesTheElevenAndOnlyTheEleven(t *testing.T) {
 			layer := &recordingLayer{err: errors.New(method.Name + ": the layer's own error")}
 			store := newStore(t, base, Options{Layer: layer})
 
+			if method.Name == "ReadHistoryBranch" {
+				// The branch-token codec, which this read borrows to get a tree
+				// id out of an opaque token. It is allowed where a *read* of the
+				// store is not: it opens nothing and answers out of the token's
+				// own bytes, so the claim below — that the wrapper reads nothing
+				// on its own account — is untouched.
+				base.EXPECT().GetHistoryBranchUtil().Return(&p.HistoryBranchUtilImpl{}).AnyTimes()
+			}
 			args := callArgs(method.Type)
 			kind, isIntercepted := intercepted[method.Name]
 			switch {

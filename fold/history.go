@@ -42,10 +42,11 @@ func (a *Accumulator) addHistory(seqno wal.Seqno, m mutation.Mutation) {
 	}
 }
 
-// heldHistory reports whether the window holds a node of the branch inside the
-// range a read names. It is the read's "did the window have anything for this"
-// — [Accumulator.HistoryPage] is what decides the page.
-func (a *Accumulator) heldHistory(treeID, branchID string, minNodeID, maxNodeID int64) bool {
+// HeldHistory reports whether the window holds a node of the branch inside the
+// range a read names. It is the read's "did the window have anything for this",
+// which is a counter and not a routing decision — [Accumulator.HistoryPage] is
+// what decides the page.
+func (a *Accumulator) HeldHistory(treeID, branchID string, minNodeID, maxNodeID int64) bool {
 	for _, node := range a.history[historyBranch{treeID: treeID, branchID: branchID}] {
 		if node.NodeID >= minNodeID && node.NodeID < maxNodeID {
 			return true
