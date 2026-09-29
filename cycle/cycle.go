@@ -317,6 +317,10 @@ type Cycle struct {
 	// rather than in its state because [Cycle.Retire] waits for it once the
 	// loop is gone.
 	trimmer *trim.Trimmer
+
+	// pressure is the log's optional pressure face, asserted once at [New];
+	// nil is a backend with nothing to report.
+	pressure wal.PressureSource
 }
 
 // job is one operation, served on the cycle's own goroutine. It closes over its
@@ -358,8 +362,20 @@ func New(shard wal.ShardID, epoch wal.Epoch, deps Deps, policy Policy) *Cycle {
 		mirror: tailstate.NewMirror(deps.Metrics),
 	}
 	c.trimmer = trim.New(shard, deps.Log, c.clock, deps.Metrics, deps.Logger, c.clock.Now())
+	c.pressure, _ = deps.Log.(wal.PressureSource)
 	go c.run()
 	return c
+}
+
+// pressureLevel polls the backend's pressure. Polled rather than kept, and at
+// each of its consumers rather than once per operation: the level can rise
+// inside the very append whose response carries it, and a snapshot taken
+// before the append would miss exactly that one.
+func (c *Cycle) pressureLevel() wal.PressureLevel {
+	if c.pressure == nil {
+		return wal.PressureNone
+	}
+	return c.pressure.Pressure(c.shard)
 }
 
 // Shard and Epoch name what this cycle owns.
@@ -600,13 +616,26 @@ func (c *Cycle) run() {
 			// stalled tail: a cycle in that state refuses its writers, so no
 			// write arrives to bring a drain with it, and an empty window would
 			// leave the stall standing for good. [Config.Age] is that retry
-			// cadence as well as this one.
+			// cadence as well as this one — and standing pressure's too, below,
+			// which is what retries a forced trim that failed: under
+			// [wal.PressureStop] the writers are refused, so nothing else
+			// brings a drain or a trim with it.
 			_, stalled := s.tail.Stalled()
-			if s.st == StateRunning && (stalled || s.window.Aged(c.clock.Now(), maxAge)) {
+			urgent := s.st == StateRunning && s.started && c.pressureLevel() >= wal.PressureDrain
+			mutations, _ := s.window.Size()
+			if s.st == StateRunning && (stalled || s.window.Aged(c.clock.Now(), maxAge) || (urgent && mutations > 0)) {
 				// Discarded rather than unchecked: this drain has no caller to
 				// answer, and the outcome it carries is on the state already —
 				// drain halts the cycle itself.
-				_ = c.drain(context.Background(), s, drainWatermarkAge)
+				cause := drainWatermarkAge
+				if urgent {
+					cause = drainStoragePressure
+				}
+				_ = c.drain(context.Background(), s, cause)
+			} else if urgent {
+				// Nothing to drain, so no commit will force the trim: the tick
+				// asks for it directly, at the watermark as it stands.
+				c.trimmer.Force(s.tail.Applied())
 			}
 		case j := <-c.jobs:
 			j(s)
@@ -644,7 +673,7 @@ func (c *Cycle) stats(s *state) Stats {
 // cfg is the caller's own snapshot rather than a read of its own: the two call
 // sites are one write, and [Cycle.add] refuses and appends under one policy.
 func (c *Cycle) writeRefused(entries, bytes int64, stalled wal.Seqno, cfg Config) error {
-	refusal, limit := writeRefused(entries, bytes, stalled, c.shard, cfg)
+	refusal, limit := writeRefused(entries, bytes, stalled, c.pressureLevel(), c.shard, cfg)
 	if refusal == nil {
 		return nil
 	}
@@ -725,7 +754,14 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 	}
 
 	if cfg.Sync {
+		// Pressure changes nothing on this arm: the drain runs and answers the
+		// caller regardless, and its commit consults the level for the trim.
 		return c.drain(ctx, s, drainSync)
+	}
+	// Polled after the append rather than with the refusal above, because this
+	// very append's response is where a backend most often learns it.
+	if c.pressureLevel() >= wal.PressureDrain {
+		return c.drain(ctx, s, drainStoragePressure)
 	}
 	switch s.window.Trips(cfg.watermarks()) {
 	case window.TripMutations:
@@ -979,6 +1015,13 @@ func (c *Cycle) start(ctx context.Context, s *state) error {
 	}
 	s.Counters.add(attempt)
 	s.started = true
+	// A backend under pressure at an acquire is owed the previous owner's
+	// applied entries before this cycle appends anything, and the watermark
+	// just read bounds them. Replay's own drains force the trim only where a
+	// tail gave them a commit to force it from.
+	if c.pressureLevel() >= wal.PressureDrain {
+		c.trimmer.Force(s.tail.Applied())
+	}
 	return nil
 }
 
@@ -1057,6 +1100,13 @@ var (
 	// its caller already has and the entry is dropped rather than the shard
 	// halted. Legal only for a window of exactly one replayed entry.
 	drainReplayProvisional = drainCause{walmetrics.TriggerReplay, dropsProvisional, false}
+
+	// drainStoragePressure is the backend asking for its storage back
+	// ([wal.PressureSource]): the window is drained at whatever size it has,
+	// so the trim its commit forces can reach everything acked so far. Its
+	// writers were answered at their acks like the size watermarks', and the
+	// append that observed the pressure succeeded and stays succeeded.
+	drainStoragePressure = drainCause{walmetrics.TriggerStoragePressure, noCaller, true}
 )
 
 // drain applies the window as one transaction and moves the watermark with it.
@@ -1135,7 +1185,14 @@ func (c *Cycle) drain(ctx context.Context, s *state, cause drainCause) error {
 	// A halted cycle's log is not its to shorten: halted-lost belongs to the
 	// next owner and halted-invariant to whoever reads it.
 	if s.st == StateRunning {
-		c.trimmer.Drained(s.tail.Applied(), c.policy().cadence())
+		// Every committed drain consults the level, not only the one the
+		// pressure triggered: whichever cause got here first, the backend is
+		// owed the space at the watermark this drain just moved.
+		if c.pressureLevel() >= wal.PressureDrain {
+			c.trimmer.Force(s.tail.Applied())
+		} else {
+			c.trimmer.Drained(s.tail.Applied(), c.policy().cadence())
+		}
 	}
 	return nil
 }

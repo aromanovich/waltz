@@ -68,7 +68,8 @@ var (
 	// BackpressureRefusals is a write refused before its append, tagged by why:
 	// entries means a stalled applier, bytes a workflow near the server's own
 	// blob limits, unresolved an applier that cannot say what its last drain
-	// did.
+	// did, storage_pressure a backend that asked for no new appends until its
+	// storage recovers.
 	BackpressureRefusals = metrics.NewCounterDef("wal_backpressure_refusals",
 		metrics.WithDescription("Writes the shard refused before appending them, by what refused."))
 
@@ -143,6 +144,11 @@ const (
 	TriggerReplay    = "replay"    // a tail a previous owner left, being applied
 	TriggerExplicit  = "explicit"  // a caller asked — shutdown, or a test
 	TriggerRead      = "read"      // [cycle.Config.DrainOnRead]: a read emptying the window it would have merged
+
+	// TriggerStoragePressure is the backend asking for its storage back: the
+	// window is drained at whatever size it has, and the trim behind it runs
+	// outside the cadence.
+	TriggerStoragePressure = "storage_pressure"
 )
 
 // Limit values for [BackpressureRefusals], and outcome values for [Trims].
@@ -152,6 +158,10 @@ const (
 	// LimitUnresolved is the bound that is not a size: the applier cannot read
 	// what its last drain did, so nothing may be applied over it.
 	LimitUnresolved = "unresolved"
+	// LimitStoragePressure is not the layer's bound but the backend's: it
+	// reports storage pressure at the level that stops appends, and the shard
+	// refuses new writes until the backend lowers it.
+	LimitStoragePressure = "storage_pressure"
 
 	TrimStarted = "started"
 	TrimFailed  = "failed"

@@ -233,6 +233,7 @@ flowchart TD
     B -->|"ResourceExhausted PERSISTENCE_LIMIT"| C{"wal_backpressure_refusals limit tag"}
     C -->|"entries or bytes"| D["runbook (a): backpressure"]
     C -->|"unresolved"| E["the applier cannot read its last drain: runbook (a)"]
+    C -->|"storage_pressure"| SP["the backend is out of headroom: runbook (a)"]
     B -->|"ShardOwnershipLost"| F["wal_halts state=halted-lost: normal failover, runbook (b)"]
     B -->|"refusal matching ErrHalted"| G["wal_halts state=halted-invariant: page, runbook (b)"]
     B -->|"condition failure"| H["expected traffic: answered before the append, not a layer fault"]
@@ -242,11 +243,12 @@ flowchart TD
     J -->|"no"| L["one shard is hot: check the window keys"]
 ```
 
-How to read this: start from the error the *caller* saw, not from the dashboard. The two
+How to read this: start from the error the *caller* saw, not from the dashboard. The
 `ResourceExhausted` branches differ by the `limit` tag on `wal_backpressure_refusals`: `entries`
-and `bytes` are I10's size bound, while `unresolved` is the applier being blind rather than behind —
+and `bytes` are I10's size bound, `unresolved` is the applier being blind rather than behind —
 it cannot say whether its last drain committed, so nothing may be applied over it, and no size knob
-will clear it.
+will clear it — and `storage_pressure` is not the layer's condition at all: the WAL backend asked
+for the stop, and the backend's storage is where to look.
 
 ---
 
@@ -295,10 +297,20 @@ conditions below; the keys are
   another owner has been draining this shard, and the cycle halts `halted-lost`, which is a failover
   and not an incident. If the watermark
   remains unreadable, retain the log and the original drain error and escalate the storage failure.
+* **What `storage_pressure` means.** The WAL backend implements
+  [`wal.PressureSource`](04-contracts.md#walpressuresource--the-optional-pressure-face) and raised
+  its level to the one that stops appends: its storage is running out while its appends still
+  succeed. The error says `shard N's WAL backend reports storage pressure and takes no new appends
+  until it clears`.
+* **What to do for `storage_pressure`.** Act on the backend's storage — capacity, or whatever the
+  backend's own monitoring names. The layer is already doing everything it can: every drain commits
+  at once (`wal_drains{trigger="storage_pressure"}`) and every trim runs with the cadence bypassed,
+  so `wal.trimEvery`/`wal.trimAfter` are not the knobs and no key of the layer's clears the
+  refusal. The backend lowers the level itself, and writes resume with nothing to reset.
 
-No refused call in this runbook wrote anything: all three refusals — `entries`, `bytes` and
-`unresolved` — are decided before the append. The history node's handling of `PERSISTENCE_LIMIT`
-keeps the shard loaded and slows its queues instead of DLQ-ing tasks.
+No refused call in this runbook wrote anything: all four refusals — `entries`, `bytes`,
+`unresolved` and `storage_pressure` — are decided before the append. The history node's handling of
+`PERSISTENCE_LIMIT` keeps the shard loaded and slows its queues instead of DLQ-ing tasks.
 
 Nothing has to be reconciled afterwards either. A refused write is retried at the version it was
 refused at: the caller was told "no", so it still holds the row it read and its assertion still

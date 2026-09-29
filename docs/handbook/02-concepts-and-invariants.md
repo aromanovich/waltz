@@ -340,13 +340,17 @@ retried at the next cadence and halts nothing. It is part of the latency budget 
 a log that is never trimmed grows without bound, and a backend's reads get dearer as its log gets
 longer, so trimming sits on the drain's budget rather than being a background chore.
 
-**Backpressure.** The refusal a shard's write meets before it is appended. Three things raise it,
+**Backpressure.** The refusal a shard's write meets before it is appended. Four things raise it,
 and the metric's `limit` tag says which:
 
 * `entries` — the tail has reached the hard limit in entries;
 * `bytes` — the tail has reached the hard limit in bytes;
 * `unresolved` — the shard's applier cannot read whether its last drain committed. This one is not
-  a size at all, and it is checked ahead of the other two.
+  a size at all, and it is checked ahead of the other three;
+* `storage_pressure` — the WAL backend itself asked for no new appends until its storage recovers
+  ([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)). Not the layer's
+  bound at all, and checked ahead of the two sizes: while it stands, the layer's own drains and
+  trims are already forced, so a size would name the wrong constraint.
 
 Three things about how the refusal is raised:
 

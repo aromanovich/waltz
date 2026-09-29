@@ -253,3 +253,37 @@ type Log interface {
 	// that never closes it owning shards it has stopped writing to.
 	Close()
 }
+
+// PressureLevel is how urgently a backend wants the log's storage back.
+// Ordered: each level asks everything the ones below it ask.
+type PressureLevel int
+
+const (
+	// PressureNone is no outstanding report. It is not a health promise: a
+	// backend reports what its operations happened to observe, and one that
+	// observed nothing answers this.
+	PressureNone PressureLevel = iota
+	// PressureDrain asks the layer to stop accumulating: drain what it holds
+	// and trim the applied entries now, outside any configured cadence.
+	PressureDrain
+	// PressureStop asks the layer to stop appending as well, until the level
+	// drops. What was acked stays acked; refusing the next write is the
+	// reaction that keeps the promise without touching it.
+	PressureStop
+)
+
+// PressureSource is the optional face a backend grows when its storage can run
+// low while appends still succeed: the append is durable, and the same
+// response warns that the space it landed in is running out. Failing such an
+// append instead would report an entry the log holds as one it does not, so
+// this is the channel for everything the warning says beyond the ack.
+//
+// Pressure is a level, not an event. The backend keeps it current from
+// whatever its own operations observe and lowers it itself once the condition
+// clears; the layer polls it around every write and on its age tick, so
+// answering must be cheap and safe for concurrent use. Which operation raised
+// it does not travel with it, deliberately: the level describes the storage,
+// not the call that noticed.
+type PressureSource interface {
+	Pressure(shard ShardID) PressureLevel
+}

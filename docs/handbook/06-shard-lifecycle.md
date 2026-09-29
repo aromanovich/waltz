@@ -443,7 +443,7 @@ a reference to come back to once the transitions above are familiar, not a way o
 | Transition | Emitted / counted |
 |---|---|
 | a committed drain | `wal_drains{trigger=…}`, `wal_drained_mutations`, `wal_drained_workflows`, `wal_window_age`; `Counters.Drains` |
-| a write refused before its append | `wal_backpressure_refusals{limit="entries"\|"bytes"\|"unresolved"}` |
+| a write refused before its append | `wal_backpressure_refusals{limit="entries"\|"bytes"\|"unresolved"\|"storage_pressure"}` |
 | entering either halt | `wal_halts{state="halted-lost"\|"halted-invariant"}`, plus a `WARN apply cycle halted` log line carrying the cause. **A retire is the exception**: it leaves the cycle reporting `halted-lost` and emits neither, because nothing went wrong |
 | a replay that found entries and finished | `wal_replayed_entries` |
 | every move of the tail | `wal_tail_entries`, `wal_tail_bytes`, `wal_unapplied_entries` — one `Emitter.Tail` call records all three |

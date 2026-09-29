@@ -314,6 +314,43 @@ HasPredecessor}`. `RefuseAtNext` is `AppendRefusal` for a backend that keeps the
 continues at instead of answering `Taken` and `HasPredecessor` separately. A backend that diagnoses
 in its own order answers a different contract.
 
+### `wal.PressureSource` — the optional pressure face
+
+Some backends can commit an append and, in the same response, warn that the storage it landed in is
+running low. Failing the append instead would report an entry the log holds as one it does not —
+the exact lie the first rule forbids — so the warning travels beside the contract rather than
+through its errors:
+
+```go
+type PressureSource interface {
+    Pressure(shard ShardID) PressureLevel
+}
+```
+
+A backend that has nothing of the kind simply does not implement it, and the layer behaves exactly
+as this chapter has described so far. One that does keeps a **level** current — `PressureNone`,
+`PressureDrain`, `PressureStop`, ordered, each asking everything the ones below it ask — from
+whatever its own operations observe, and lowers it itself once the condition clears. The layer
+polls the level rather than consuming events: around every write and on the apply cycle's age tick.
+Which operation raised it does not travel with it, deliberately — the level describes the storage,
+not the call that noticed.
+
+What each level buys, on the layer's side:
+
+* **`PressureDrain`** — stop accumulating. Every accepted write drains the window at whatever size
+  it has (`wal_drains{trigger="storage_pressure"}`), every committed drain trims at the new applied
+  watermark with the cadence bypassed, and an acquire trims what the previous owner left applied
+  before the first new append. The age tick covers the shard nothing is writing to, and retries a
+  forced trim that failed.
+* **`PressureStop`** — additionally, new appends are refused before they reach the log, with the
+  same unwrapped `ResourceExhausted` as I10's bound and
+  `wal_backpressure_refusals{limit="storage_pressure"}`. Reads still answer. The first write after
+  the backend lowers the level goes through; there is nothing to reset.
+
+Two things the level never does: it does not change the answer of the append whose response carried
+it — that append remains a durable acknowledgement — and it does not move the trim past the applied
+watermark, so trim safety is exactly what it was.
+
 ## `mutation` — what one entry is
 
 One `mutation.Mutation` is **one `ExecutionStore`-level write request and the unit of atomicity**:

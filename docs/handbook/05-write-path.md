@@ -265,8 +265,8 @@ The quieter rules of the drain:
 
 ### The drain triggers
 
-Eight things start a drain, and each carries one tag value on `wal_drains`. There are nine
-`drainCause` values behind those eight tags, because `replay` covers two of them: a replayed
+Nine things start a drain, and each carries one tag value on `wal_drains`. There are ten
+`drainCause` values behind those nine tags, because `replay` covers two of them: a replayed
 provisional entry whose condition fails is dropped, where every other replayed entry that fails one
 halts the shard. [Chapter 04](04-contracts.md#applyclass--sorting-the-outcome) has what that split
 is for.
@@ -276,7 +276,9 @@ flowchart TD
   W["a write is folded"] --> M["256 mutations reached: trigger=mutations"]
   W --> B["256 KiB reached: trigger=bytes"]
   W --> RF["fold.ErrRefused, the window cannot express it: trigger=refusal"]
+  W --> P["the backend reports storage pressure: trigger=storage_pressure"]
   T["the age timer ticks"] --> A["window older than Age: trigger=age"]
+  T --> P
   RP["a new owner replays a tail"] --> R["a size trigger trips, or the tail runs out: trigger=replay"]
   X["Close or drainNow"] --> E["shutdown, or a test: trigger=explicit"]
   RD["a read, with drain_on_read on"] --> D["the window is emptied first: trigger=read"]
@@ -291,18 +293,23 @@ raised at the condition check runs before the append, so that caller has consume
 nobody waiting at all; `replay` and `explicit` do — the request that started the cycle waits through
 the whole replay, and a shutdown waits for the drain it asked for — but neither waiter wrote anything
 the window carries. `read` happens only when `drain_on_read` is on, which nothing that ships turns
-on ([chapter 08](08-configuration.md)).
+on ([chapter 08](08-configuration.md)). `storage_pressure` fires from both sides: inside a write
+whose append the backend answered under pressure — that caller is acked, like the size triggers' —
+and from the age tick, for a window the level rose under between writes. It is the one trigger with
+a consequence past the drain itself: the trim behind it bypasses the cadence
+([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)).
 
-**`sync` is the eighth, and it is the same cycle rather than a path around it.** With `sync: true`
+**`sync` is the ninth, and it is the same cycle rather than a path around it.** With `sync: true`
 the window holds one mutation and its drain runs inside the write, so every drain a caller triggers
-on such a node carries `trigger="sync"`. The size triggers are never consulted there and the age
-tick always finds an empty window, so a dashboard panelled by `trigger` shows nothing on the
-`mutations`, `bytes` and `age` series; the one other value it can see is `replay`, over the
-at-most-one in-flight entry a killed node leaves behind. Everything else is the same code — the
-halts, replay, the trim, backpressure and every counter.
+on such a node carries `trigger="sync"`. The size triggers are never consulted there, the age
+tick always finds an empty window, and pressure adds no drain sync mode did not already run — it
+forces the trim behind the sync drain instead — so a dashboard panelled by `trigger` shows nothing
+on the `mutations`, `bytes`, `age` and `storage_pressure` series; the one other value it can see is
+`replay`, over the at-most-one in-flight entry a killed node leaves behind. Everything else is the
+same code — the halts, replay, the trim, backpressure and every counter.
 
 What sync mode changes is whose answer a failed drain is. Beside its trigger, each drain carries a
-`callerRule`: the legal (trigger, rule) pairs are a fixed list of nine values in `cycle/cycle.go`
+`callerRule`: the legal (trigger, rule) pairs are a fixed list of ten values in `cycle/cycle.go`
 with no constructor, because an attribution that is too permissive reports a failure to a caller who
 did not write the mutation. Seven of the nine answer nobody, so a condition failure inside one halts
 the shard. `drainSync` answers its caller. A lone replayed provisional entry drops instead. That is
@@ -412,7 +419,7 @@ the retry stays inside the history client. It must reach the caller **unwrapped*
 path reads `*serviceerror.ResourceExhausted` as "definitely not committed", and one `%w` drops it to
 the default arm, which is a background re-acquire — a self-inflicted failover.
 
-Three things refuse a write here, and the metric says which through the `limit` tag on
+Four things refuse a write here, and the metric says which through the `limit` tag on
 `wal_backpressure_refusals`:
 
 | `limit` | What ran out | What it means |
@@ -420,9 +427,12 @@ Three things refuse a write here, and the metric says which through the `limit` 
 | `entries` | `HardMaxEntries`, 8192 by default | the applier is behind |
 | `bytes` | `HardMaxBytes`, 8 MiB by default | a workflow near the server's own blob limits |
 | `unresolved` | not a size at all | the cycle cannot read what its last drain did, so nothing may be applied over it |
+| `storage_pressure` | the backend's storage, not any bound of the layer's | the backend reports pressure at `wal.PressureStop` and takes no new appends until it lowers the level ([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)) |
 
-`unresolved` takes precedence over the two sizes: it is the one an operator can act on, and the one
-that waiting will not clear.
+The precedence is `unresolved`, then `storage_pressure`, then the two sizes: what is named is the
+thing least in this shard's own power to clear. A blind applier is refused as blind even where the
+tail is also full, and the backend's veto is named ahead of a size an operator would answer by
+looking at an applier that is not the constraint.
 
 Two more rules of the bound. **No mutation is refused for its own size.** The check reads the tail
 as it stands, never the tail this mutation would make, so the tail overshoots by at most one entry.
@@ -636,9 +646,9 @@ One row per thing the caller can be told, and what it means everywhere else.
 
 | Symptom at the caller | `apply.Class` | What the cycle does | What the operator sees |
 |---|---|---|---|
-| nil | —, or `ClassCommitted` if this call triggered a drain | acked and folded; possibly drained before return | `wal_intercepted_writes`, `wal_tail_entries`; a triggering call also emits `wal_drains{trigger="mutations"\|"bytes"}` |
+| nil | —, or `ClassCommitted` if this call triggered a drain | acked and folded; possibly drained before return | `wal_intercepted_writes`, `wal_tail_entries`; a triggering call also emits `wal_drains{trigger="mutations"\|"bytes"\|"storage_pressure"}` |
 | `WorkflowConditionFailedError` / `CurrentWorkflowConditionFailedError` / `ConditionFailedError` | — (never appended); `ClassInvariantViolated` in sync mode, where the drain answered its own writer | nothing acked, nothing folded, no seqno consumed — in sync mode the entry stays acked and is settled without moving the watermark | nothing in the windowed modes, where `wal_answered_condition_failures` stays 0; in sync mode it counts every answer |
-| `ResourceExhausted` | — (refused before the append) | nothing acked | `wal_backpressure_refusals{limit="entries"\|"bytes"\|"unresolved"}` |
+| `ResourceExhausted` | — (refused before the append) | nothing acked | `wal_backpressure_refusals{limit="entries"\|"bytes"\|"unresolved"\|"storage_pressure"}` |
 | `ShardOwnershipLost` | `ClassShardLost` | halt-lost: window dropped, tail kept, nothing trimmed | `wal_halts{state="halted-lost"}`; warn *"apply cycle halted"* |
 | an unrecognised error (invariant halt) | `ClassInvariantViolated` | halt-invariant: no retry, no conversion to a failover | `wal_halts{state="halted-invariant"}`; warn *"apply cycle halted"* with the diverged rows |
 | an unrecognised error (unknown outcome) | `ClassUnknownOutcome` | read the watermark; commit-after-all, halt, or stall | warn *"a drain's outcome could not be read"*, or info *"an ambiguous drain had committed"*; then `wal_backpressure_refusals{limit="unresolved"}` while a stall stands |
