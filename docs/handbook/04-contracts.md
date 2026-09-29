@@ -988,7 +988,7 @@ which is a second answer to which registry a node decodes a tail with.
 | `Policy() cycle.Policy` | a caller asking what this node runs at, rather than sampling the dynamic config again — two samples of a start-up setting can differ |
 | `Totals() cycle.Totals` | a witness: the number that says the layer was not empty |
 | `ShardStats(shard) (cycle.Stats, bool)` | one shard's counters, epoch and existence. A value and not the cycle, which also carries `Retire` and `Close` |
-| `RetireShard(shard) bool` | a harness staging what a process that died leaves behind — it stops a cycle without draining, which is why it is named apart from `Shutdown`: a drain writes, and a kill does not |
+| `RetireShard(shard, epoch) bool` | a harness staging what a process that died leaves behind — it stops a cycle without draining, which is why it is named apart from `Shutdown`: a drain writes, and a kill does not. `epoch` names the acquisition being retired and a mismatch retires nothing, so a late unload cannot stop the owner that superseded it; the stopped cycle stays the shard's, and `ShardStats` and `Totals` go on answering its tail off the mirror |
 | `Shutdown(ctx, budget)` | the binary, after the server has stopped. The budget goes on a context **detached** from the caller's cancellation — a shutdown drain runs where a context has just been cancelled, and one inheriting that cancellation returns at once, leaving a tail behind and nothing in the log that says so. A drain the budget cuts short leaves a tail, not lost data (I2) |
 
 ## `baserow` — the two cold-store reads everybody needs

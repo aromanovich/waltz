@@ -354,7 +354,8 @@ and the emitter, which is lock-free. Everything else is per-shard and single-thr
   rangeID and is therefore visible, while closing a shard makes no persistence call and is not. So a
   shard the server has quietly stopped serving leaves a goroutine and an empty accumulator behind
   until its node stops — a bounded leak, taken knowingly. A caller that knows the shard is gone can
-  stop it with `Layer.RetireShard`, which retires without draining.
+  stop it with `Layer.RetireShard(shard, epoch)`, which retires without draining — the epoch being
+  which acquisition it means, since a caller that knows a shard is gone may be learning it late.
 * **The layer's lifecycle brackets the server's.** `waltz.Compose` runs before the server is built,
   so its two startup assertions — `cycle.Config.CheckBudget`, and a task-category registry that must
   not be nil — stop the binary rather than a shard. `Layer.Shutdown(ctx, budget)` runs after the

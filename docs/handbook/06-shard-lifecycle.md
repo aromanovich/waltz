@@ -461,8 +461,14 @@ is not its own to apply: the entries stay in the log for the next owner. It stam
 `halted-lost`, stops the loop and waits for it to finish, waits for any trim in flight, and answers
 with what the cycle counted. Stopping the cycle and taking its count are one operation rather than
 two the caller has to order: before the stop the loop can still count, and after it there is no loop
-left to ask. `Layer.RetireShard(shard)` is the same verb one level out, named apart from `Shutdown`
-precisely because it writes nothing — it stands in for what a process that died leaves behind.
+left to ask. `Layer.RetireShard(shard, epoch)` is the same verb one level out, named apart from
+`Shutdown` precisely because it writes nothing — it stands in for what a process that died leaves
+behind. It takes the epoch because its caller is the one whose shard may have been reacquired since:
+a cleanup running late names the acquisition it was holding, and a mismatch retires nothing rather
+than stopping the owner that superseded it. What it does **not** do is take the cycle out of the
+registry. The cycle stays the shard's, and that is what lets `ShardStats` and `Totals` go on
+answering for a shard whose tail is acked entries still in the log — a shard removed here would
+answer as one nobody holds, which is the zero a caller reads as "nothing stranded".
 
 **`Cycle.Close(ctx)` — drain, then retire.** This is the shutdown path. A halted cycle drains
 nothing and returns its halt.

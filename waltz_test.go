@@ -357,7 +357,7 @@ func TestARetiredShardStillReportsWhatItHolds(t *testing.T) {
 	require.Equal(t, 1, before.TailEntries)
 	require.Equal(t, 1, layer.Totals().TailEntries)
 
-	require.True(t, layer.RetireShard(shard))
+	require.True(t, layer.RetireShard(shard, epoch))
 
 	after, ok := layer.ShardStats(shard)
 	require.True(t, ok, "the cycle is still the shard's")
@@ -393,6 +393,37 @@ func TestAShutdownDrainsWhatASupersededCycleLeft(t *testing.T) {
 	require.NoError(t, layer.Shutdown(ctx, time.Minute))
 	require.Equal(t, 1, cold.Drains(),
 		"the predecessor's acked entry was replayed by the cycle that replaced it and applied")
+}
+
+// TestALateUnloadDoesNotRetireTheOwnerThatSupersededIt: RetireShard kills a
+// cycle, and the caller staging what a dead process left is exactly the caller
+// whose shard may have been reacquired since. The epoch is the whole of what
+// distinguishes the acquisition it means from the one this node holds now.
+// Named only by shard, the kill lands on the new owner, and a stopped cycle
+// refuses every write with ShardOwnershipLost — a failover this node inflicts
+// on itself with the log and the cold store both healthy.
+func TestALateUnloadDoesNotRetireTheOwnerThatSupersededIt(t *testing.T) {
+	ctx := context.Background()
+	const shard = wal.ShardID(11)
+	const stale, live = wal.Epoch(10), wal.Epoch(11)
+
+	layer, _ := composed(t, cycle.Defaults())
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, stale))
+	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, live))
+
+	require.False(t, layer.RetireShard(shard, stale),
+		"the epoch-10 context is not what this node holds")
+
+	stats, ok := layer.ShardStats(shard)
+	require.True(t, ok)
+	require.Equal(t, live, stats.Epoch)
+	require.Equal(t, cycle.StateRunning, stats.State, "the owner that superseded it is untouched")
+
+	require.NoError(t, layer.Options().Layer.Write(ctx,
+		mutation.Mutation{Create: aCreate(shard)}, live, baserow.New(emptyStore{})),
+		"and it still takes the writes it owns")
+
+	require.True(t, layer.RetireShard(shard, live), "the epoch this node does hold retires")
 }
 
 // unreadableCold is a store whose watermark cannot be read, which is what one
@@ -489,7 +520,7 @@ func TestAShutdownAfterACleanRetireIsQuiet(t *testing.T) {
 		mutation.Mutation{Create: aCreate(shard)}, epoch, baserow.New(emptyStore{})))
 	require.Equal(t, 1, cold.Drains(), "the entry is in the cold store, so the shard holds nothing")
 
-	require.True(t, layer.RetireShard(shard))
+	require.True(t, layer.RetireShard(shard, epoch))
 	require.NoError(t, layer.Shutdown(ctx, time.Minute))
 }
 
@@ -537,7 +568,7 @@ func TestTheNarrowReadsAnswerForAShardNobodyHolds(t *testing.T) {
 	stats, ok := layer.ShardStats(never)
 	require.False(t, ok, "no acquire installed a cycle for this shard")
 	require.Equal(t, cycle.Stats{}, stats, "and the value beside a false must carry nothing")
-	require.False(t, layer.RetireShard(never), "there was no cycle to retire")
+	require.False(t, layer.RetireShard(never, wal.Epoch(1)), "there was no cycle to retire")
 }
 
 // Which of the two writers puts an intercepted write's event batches down is
