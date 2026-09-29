@@ -309,6 +309,10 @@ func TestTheTickActsOnWhatItSees(t *testing.T) {
 		{"pressure with an empty window goes straight to the trim", StateRunning, true, false, false, wal.PressureDrain, true, tickForceTrim},
 		{"the stop level asks nothing more of the tick", StateRunning, true, false, false, wal.PressureStop, true, tickForceTrim},
 		{"an unstarted cycle has no position to trim to", StateRunning, false, false, false, wal.PressureStop, true, tickNothing},
+		// No live cycle reaches the tick stalled before its start — the tail
+		// is floored by start alone — so this row pins the rule's shape:
+		// started gates pressure and nothing else.
+		{"a stall drains before start too, and not as pressure", StateRunning, false, true, false, wal.PressureDrain, true, tickDrainAge},
 		{"a halted cycle's log is not its to shorten", StateHaltedLost, true, false, true, wal.PressureStop, false, tickNothing},
 		{"nor is a diverged one's", StateHaltedInvariant, true, true, false, wal.PressureDrain, false, tickNothing},
 	} {

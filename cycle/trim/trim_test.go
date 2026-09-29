@@ -226,7 +226,7 @@ func TestWaitCoversTheQueuedFollowUp(t *testing.T) {
 	require.Equal(t, []wal.Seqno{1, 2}, backend.Trims())
 }
 
-func TestAForceATrimAlreadyCoveredSchedulesNothing(t *testing.T) {
+func TestAForceAtACoveredWatermarkSchedulesNothing(t *testing.T) {
 	trimmer, backend, _ := start(t)
 
 	trimmer.Force(5)

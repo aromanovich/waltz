@@ -537,11 +537,15 @@ What to know before changing it:
   which no cycle can answer for itself) — what a write meets before its append (`writeRefused`: I10's two units and the unresolved drain,
   one rule because the precedence between them is a decision rather than the
   order two calls sit in), the store boundary's translation (`storeError`), the drain's
-  attribution (`attribute`) and what a drain's outcome *means* (`settlementOf`,
-  which reads `attribute` for the one class that turns on the cause). Four of
-  them keep a method beside the call site that supplies the values — the other
-  three, `noCycleRoute`, `supersededRoute` and `storeError`, are called from
-  `Manager` directly, where their values already are — so the loop reads as it
+  attribution (`attribute`), what a drain's outcome *means* (`settlementOf`,
+  which reads `attribute` for the one class that turns on the cause), and what
+  one age tick does (`tickActionOf`: which of the tick's jobs runs, and under
+  which name a pressure-fired drain is counted — its stall-under-pressure row
+  is unreachable through a cycle and enumerable here alone). Four of
+  them keep a method beside the call site that supplies the values — the rest
+  are called where their values already are, `noCycleRoute`, `supersededRoute`
+  and `storeError` from `Manager` and `tickActionOf` from the loop's tick — so
+  the loop reads as it
   did and what a call site can still get wrong is *which* values it hands over.
   This is #174's argument turned on this package — the module that answers for a divergence must be
   judgeable itself — and the attribution rule is why it is not tidiness: its
