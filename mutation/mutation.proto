@@ -65,14 +65,21 @@ message Payload {
 //
 // RangeID is absent on purpose here and in every other request: it is the epoch
 // (invariant I11), it travels with the WAL entry, and a copy inside the payload
-// could disagree with it. So are the *NewEvents slices — event history stays out
-// of the WAL in v1 (decision D3).
+// could disagree with it.
+//
+// The *_new_events slices are appended fields, so a record carrying none is
+// byte-for-byte what the codec wrote before they existed. Whether a mutation
+// still holds any is decided above the codec: the writer that puts the batches
+// down through the store strips them off. An older build meeting one that has them refuses to
+// decode it (mutation.rejectUnknownFields), which is what stops a rollback from
+// replaying a record short its events.
 message CreateRequest {
   int32 shard_id = 1;
   int32 mode = 2;
   string previous_run_id = 3;
   int64 previous_last_write_version = 4;
   WorkflowSnapshot snapshot = 5;
+  repeated AppendHistoryNodesRequest new_workflow_new_events = 6;
 }
 
 // UpdateRequest mirrors persistence.InternalUpdateWorkflowExecutionRequest.
@@ -81,6 +88,8 @@ message UpdateRequest {
   int32 mode = 2;
   WorkflowMutation mutation = 3;
   WorkflowSnapshot new_snapshot = 4;
+  repeated AppendHistoryNodesRequest update_workflow_new_events = 5;
+  repeated AppendHistoryNodesRequest new_workflow_new_events = 6;
 }
 
 // ConflictResolveRequest mirrors
@@ -91,6 +100,17 @@ message ConflictResolveRequest {
   WorkflowSnapshot reset_snapshot = 3;
   WorkflowSnapshot new_snapshot = 4;
   WorkflowMutation current_mutation = 5;
+  // The doubled events_new_events is upstream's name and not a typo. Temporal
+  // appends NewEvents to each part's name when it lowers a request to its
+  // internal form, and this request's parts already end in Events
+  // (ResetWorkflowEvents and its two siblings), where a create's and an
+  // update's end in Workflow. The mirror is field for field, so it is copied
+  // rather than tidied: the field-set guard matches the reflected "Name Type"
+  // exactly, and a name corrected here would be a field upstream could later
+  // add unnoticed.
+  repeated AppendHistoryNodesRequest current_workflow_events_new_events = 6;
+  repeated AppendHistoryNodesRequest reset_workflow_events_new_events = 7;
+  repeated AppendHistoryNodesRequest new_workflow_events_new_events = 8;
 }
 
 // SetRequest mirrors persistence.InternalSetWorkflowExecutionRequest.
@@ -229,6 +249,49 @@ message WorkflowSnapshot {
 message Blob {
   bytes data = 1;
   int32 encoding = 2;
+}
+
+// AppendHistoryNodesRequest mirrors
+// persistence.InternalAppendHistoryNodesRequest: one batch of events on its way
+// to the history tree, carried by the mutable-state request that produced it.
+//
+// It has no record kind of its own. A standalone AppendHistoryNodes has no
+// mutation whose condition, epoch and ack it could share, and giving it one is a
+// separate decision (ADR 0014).
+message AppendHistoryNodesRequest {
+  bytes branch_token = 1;
+  bool is_new_branch = 2;
+  string info = 3;
+  HistoryBranch branch_info = 4;
+  Blob tree_info = 5;
+  HistoryNode node = 6;
+  int32 shard_id = 7;
+}
+
+// HistoryBranch mirrors persistencespb.HistoryBranch. It is mirrored rather than
+// embedded for the reason the header gives: this file is the format, and a proto
+// Temporal owns could renumber under it.
+message HistoryBranch {
+  string tree_id = 1;
+  string branch_id = 2;
+  repeated HistoryBranchRange ancestors = 3;
+}
+
+message HistoryBranchRange {
+  string branch_id = 1;
+  int64 begin_node_id = 2;
+  int64 end_node_id = 3;
+}
+
+// HistoryNode mirrors persistence.InternalHistoryNode. node_id with
+// transaction_id is the row's key, and the pair is what orders a merged page:
+// node ascending, transaction descending, which is the order the store reads in
+// (it stores transaction_id negated and sorts ascending).
+message HistoryNode {
+  int64 node_id = 1;
+  int64 transaction_id = 2;
+  int64 prev_transaction_id = 3;
+  Blob events = 4;
 }
 
 // The keyed collections travel as repeated entries rather than as proto maps.

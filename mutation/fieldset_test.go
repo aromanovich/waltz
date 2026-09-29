@@ -42,9 +42,8 @@ type mirroredStruct struct {
 }
 
 const (
-	whyEpoch   = "RangeID is the epoch (I11); it travels with the WAL entry, and a copy could disagree with it"
-	whyHistory = "event history stays out of the WAL in v1 (D3); it is written by AppendHistoryNodes before the append"
-	whyBlob    = "derived from the blob, which is what the store writes verbatim; carrying the proto would make the stored bytes a re-marshal"
+	whyEpoch = "RangeID is the epoch (I11); it travels with the WAL entry, and a copy could disagree with it"
+	whyBlob  = "derived from the blob, which is what the store writes verbatim; carrying the proto would make the stored bytes a re-marshal"
 	// The map keyed by the same type is carried: its keys travel as ids beside
 	// the rows they key, so the map comes back whole. A bare category has no
 	// such row, and one payload decoding on one node and failing on another
@@ -152,7 +151,7 @@ var mirroredStructs = []mirroredStruct{
 			{"PreviousRunID string", carried, ""},
 			{"PreviousLastWriteVersion int64", carried, ""},
 			{"NewWorkflowSnapshot persistence.InternalWorkflowSnapshot", carried, ""},
-			{"NewWorkflowNewEvents []*persistence.InternalAppendHistoryNodesRequest", dropped, whyHistory},
+			{"NewWorkflowNewEvents []*persistence.InternalAppendHistoryNodesRequest", carried, ""},
 		},
 	},
 	{
@@ -163,9 +162,9 @@ var mirroredStructs = []mirroredStruct{
 			{"RangeID int64", dropped, whyEpoch},
 			{"Mode persistence.UpdateWorkflowMode", carried, ""},
 			{"UpdateWorkflowMutation persistence.InternalWorkflowMutation", carried, ""},
-			{"UpdateWorkflowNewEvents []*persistence.InternalAppendHistoryNodesRequest", dropped, whyHistory},
+			{"UpdateWorkflowNewEvents []*persistence.InternalAppendHistoryNodesRequest", carried, ""},
 			{"NewWorkflowSnapshot *persistence.InternalWorkflowSnapshot", carried, ""},
-			{"NewWorkflowNewEvents []*persistence.InternalAppendHistoryNodesRequest", dropped, whyHistory},
+			{"NewWorkflowNewEvents []*persistence.InternalAppendHistoryNodesRequest", carried, ""},
 		},
 	},
 	{
@@ -176,11 +175,11 @@ var mirroredStructs = []mirroredStruct{
 			{"RangeID int64", dropped, whyEpoch},
 			{"Mode persistence.ConflictResolveWorkflowMode", carried, ""},
 			{"ResetWorkflowSnapshot persistence.InternalWorkflowSnapshot", carried, ""},
-			{"ResetWorkflowEventsNewEvents []*persistence.InternalAppendHistoryNodesRequest", dropped, whyHistory},
+			{"ResetWorkflowEventsNewEvents []*persistence.InternalAppendHistoryNodesRequest", carried, ""},
 			{"NewWorkflowSnapshot *persistence.InternalWorkflowSnapshot", carried, ""},
-			{"NewWorkflowEventsNewEvents []*persistence.InternalAppendHistoryNodesRequest", dropped, whyHistory},
+			{"NewWorkflowEventsNewEvents []*persistence.InternalAppendHistoryNodesRequest", carried, ""},
 			{"CurrentWorkflowMutation *persistence.InternalWorkflowMutation", carried, ""},
-			{"CurrentWorkflowEventsNewEvents []*persistence.InternalAppendHistoryNodesRequest", dropped, whyHistory},
+			{"CurrentWorkflowEventsNewEvents []*persistence.InternalAppendHistoryNodesRequest", carried, ""},
 		},
 	},
 	{

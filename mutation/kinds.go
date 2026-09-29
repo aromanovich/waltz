@@ -33,9 +33,11 @@ type kindInfo struct {
 	rangeID func(Mutation) int64
 
 	// events names the request's slices of new history events, in the order
-	// they must reach the store. Nothing carries them into the payload (D3), so
-	// this row is the only enumeration of them, and a kind whose row omits one
-	// is a mutation acked over history nodes nobody wrote.
+	// they must reach the store. This row is the only enumeration of them, and
+	// it is what both writers walk — the one that puts them down through the
+	// store and clears them, and the codec that carries whatever is left — so a
+	// kind whose row omits one is a mutation acked over history nodes nobody
+	// wrote (ADR 0014).
 	events func(Mutation) [][]*p.InternalAppendHistoryNodesRequest
 }
 

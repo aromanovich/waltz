@@ -66,14 +66,14 @@ and the cycle have handed it on.
 | `wal/waltest` | The conformance suite an implementation runs, plus `Faulty`, a log wrapped so a chosen call fails. | `RunContractSuite`, `Faulty`, `Fault`, `Once`, `Always` | the same, **plus every implementation including `memwal`** — a suite that could name one would special-case it and stop being about the contract |
 | `mutation` | What one log entry *is*: the protobuf record of one persistence call, and the eight kinds. | `Mutation`, `Kind`, `Part`, `Encode`, `Decode` | any persistence implementation — the record mirrors Temporal's requests; the store that eventually writes them is the applier's business |
 | `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — `wrapper`, `cycle` and `apply` all need this pair and none of them may name another's copy, so it imports Temporal's persistence and nothing more |
-| `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page merge. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
-| `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. `Store` is the pair as a deployment supplies it — one value, because a watermark read from a store other than the one the drains landed in is no witness at all. | `Store`, `Applier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
+| `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page merge. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage`, `HistoryBasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
+| `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. `Store` is the pair as a deployment supplies it — one value, because a watermark read from a store other than the one the drains landed in is no witness at all. | `Store`, `Applier`, `HistoryApplier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
 | `cold/memcold` | That contract satisfied, and the one cold store this repository ships: Temporal's own SQL persistence over an in-memory SQLite database, embedded whole, with the folded window's transaction added beside its 28 inherited methods. It sits *under* the layer rather than being part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | `cycle`, `wrapper` and the root package — a store that could see the layer would be judged by the thing sitting on top of it. It does name the vocabulary the contract is stated in: `fold`, `wal`, `apply`, `baserow`, `mutation` |
 | `apply` | What a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries. | `Class`, `Classify`, `Diverged`, `InvariantViolationError` | `wal.Log` and `wal.Entry` — pacing and trim are the cycle's policy, not the outcome's |
 | `cycle/window` | The size and age of what a cycle folded since its last drain, as a type whose counters cannot be written from outside. | `Window`, `Taken`, `Watermarks`, `Trip` | `fold`, `walmetrics` — the window counts, it does not fold, and it publishes nothing |
 | `cycle/tailstate` | The tail's arithmetic in one place: everything invariant [I10](02-concepts-and-invariants.md#the-invariants) bounds, plus the off-loop mirror of it. | `Tail`, `Mirror`, `New`, `NewMirror`, `WatermarkMove`, `Unresolved` | `fold` — the tail is arithmetic over what the loop acked, not the log those seqnos index nor the window they outlive |
 | `cycle/trim` | The lazy deletion of entries the cold store already holds: the cadence, the one trim in flight, the two counters. | `Trimmer`, `New`, `Cadence` | `fold`, `cycle/tailstate` — a cadence over a watermark it is handed; it may reach neither the thing that moves that watermark nor the thing that folds |
-| `cycle` | The state machine: one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the three reads and replay, plus the node's registry of them. | `Cycle`, `Manager`, `NewManager`, `Deps`, `Config`, `Defaults`, `Policy`, `Fixed`, `Live`, `Moving`, `State`, `Stats`, `Totals`, `Counters` | any persistence implementation — the cold store arrives as `cold.Applier` and `cold.Watermarker`, and there may be no second door |
+| `cycle` | The state machine: one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the four reads and replay, plus the node's registry of them. | `Cycle`, `Manager`, `NewManager`, `Deps`, `Config`, `Defaults`, `Policy`, `Fixed`, `Live`, `Moving`, `State`, `Stats`, `Totals`, `Counters` | any persistence implementation — the cold store arrives as `cold.Applier` and `cold.Watermarker`, and there may be no second door |
 | `wrapper` | The seam into a running server: a decorator over a base data store factory whose `ExecutionStore` and `ShardStore` the history service talks to. | `Options`, `ShardLayer`, `ShardObserver`, `ShardWriter`, `ShardReader`, `MetricsSink`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory`, `DataStoreFactory`, `NewDataStoreFactory`, `ErrCompleteHistoryTaskUnsupported` | any persistence implementation, and `cycle` — wrap, don't fork: the decorator is defined over upstream's interface, and composing it with a base store is the binary's job |
 | `waltz` (the module root) | The composition a server builds: the `wal` config section, the dynamic-config settings, the components they name, the lifecycle, and the factory that is the door out. | `Compose`, `Layer`, `Backends`, `Config`, `WAL`, `Parse`, `Registry`, `TaskCategories`, `DefaultTaskCategories`, `NewPolicy`, `AbstractFactory` | — (it composes everything, which is the point) |
 | `walmetrics` | Where the numbers go: the metric definitions and the emitter, on the server's own handler. | `Emitter`, `New`, and the `metrics.*Def` values (`InterceptedWrites`, `Drains`, `TailBytes`, …) | `wal`, `fold`, `apply`, `cycle`, `wrapper`, `mutation` — the metric names are the layer's vocabulary, so nothing that can be measured may be imported here |
@@ -117,7 +117,7 @@ graph TD
   LOG(("wal.Log"))
   CS(("the cold store"))
 
-  HS -->|"eight writes, three reads"| ES
+  HS -->|"eight writes, four reads"| ES
   HS -->|"UpdateShard"| SS
   SS -->|"ShardAcquired: fence and create"| MGR
   SS -->|"the shard row itself"| CS
@@ -139,8 +139,8 @@ shard to its one cycle, and everything under that cycle belongs to that shard al
 the cold store through an interface the layer names, and both are the deployment's to implement —
 `cold.Applier`, the layer's only *write* door, and `cold.Watermarker`, which reads back what the last
 drain committed when its outcome was unknown. The wrapper's own arrows to the cold store are the
-transits. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers eleven of them itself — the
-eight writes and the three reads on the diagram — refuses a twelfth, `CompleteHistoryTask`, with
+transits. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers twelve of them itself — the
+eight writes and the four reads on the diagram — refuses a thirteenth, `CompleteHistoryTask`, with
 `wrapper.ErrCompleteHistoryTaskUnsupported`, and hands the other sixteen straight to the store below.
 
 The two mutable-state reads the write path makes against the cold store — `baserow.Rows.Run` for one
@@ -267,7 +267,8 @@ mutable state at that epoch. What it owns:
 * the `window.Window` (the window's mutation count, byte count and age);
 * the `tailstate.Tail` (acked-but-unsettled entries and their bytes);
 * the drain, including the applier's transaction;
-* the three reads — `GetWorkflowExecution`, `GetCurrentExecution` and `GetHistoryTasks`;
+* the four reads — `GetWorkflowExecution`, `GetCurrentExecution`, `GetHistoryTasks` and
+  `ReadHistoryBranch`;
 * replay, on the first request after an acquire.
 
 That is what makes the accumulator single-threaded with no lock at all. Work reaches the loop as a

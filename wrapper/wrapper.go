@@ -57,6 +57,18 @@ type ShardLayer interface {
 // log, and in sync mode applied — with the drain's outcome — before the call
 // returns.
 type ShardWriter interface {
+	// WritesHistory reports whether an intercepted write's event batches ride
+	// the record this layer appends. False means the caller owes them to the
+	// base store before it calls Write, and owes it to strip them off the
+	// mutation once it has.
+	//
+	// A face rather than a field of [Options] for the reason [ShardLayer] is one
+	// interface: the two could otherwise be configured apart, and one of the two
+	// disagreements loses data. A store told the batches ride the record, over a
+	// layer whose store does not write them, writes them nowhere — and acks a
+	// mutable state over history nobody wrote.
+	WritesHistory() bool
+
 	// Write acks m into its shard's log and reports what the apply transaction
 	// did with it; the mutation names its own shard.
 	//
@@ -81,7 +93,7 @@ type ShardWriter interface {
 	) error
 }
 
-// ShardReader is the read path: the three reads whose answer one of the writes
+// ShardReader is the read path: the four reads whose answer one of the writes
 // can change. base is how the cold store is reached, since the layer below may
 // not name a store; the layer calls it inside the goroutine that owns the
 // window, so a read cannot observe a drain in flight. Errors come back
@@ -117,6 +129,22 @@ type ShardReader interface {
 		req *p.GetHistoryTasksRequest,
 		base func(context.Context, *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error),
 	) (*p.InternalGetHistoryTasksResponse, error)
+
+	// ReadHistoryBranch answers one page of a branch from the cold store's rows
+	// and whatever event batches the shard's window still holds. treeID is
+	// parsed from the opaque branch token by the wrapper, which is where the
+	// store's own codec is reachable.
+	//
+	// It is asked whatever the store below does with a write's batches, and not
+	// only where the records carry them: a tail written under a store that took
+	// them is replayed by a node composed with one that does not, so whether the
+	// window holds nodes is a fact about the log rather than about this node.
+	ReadHistoryBranch(
+		ctx context.Context,
+		req *p.InternalReadHistoryBranchRequest,
+		treeID string,
+		base func(context.Context, *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error),
+	) (*p.InternalReadHistoryBranchResponse, error)
 }
 
 // MetricsSink is the layer's half of the metrics hand-off: the server's own
@@ -136,7 +164,8 @@ type MetricsSink interface {
 type Options struct {
 	// Layer, when set, is intercept mode: acquires are reported to it, the eight
 	// writes go into the WAL through it, the two mutable-state reads through its
-	// overlay and the task read through its merge. Nil is passthrough.
+	// overlay and the task and history reads through their merges. Nil is
+	// passthrough.
 	Layer ShardLayer
 	// Metrics is where the wrapper's own counters go, and it is the emitter the
 	// layer records through rather than a handler of this seam's own: both

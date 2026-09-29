@@ -52,7 +52,7 @@ need no row — *the next owner's cycle* and *the operator*.
 | `cycle.Cycle` | one goroutine per (shard, epoch): the accumulator, the drain, the trim cadence, the reads |
 | `fold.Accumulator` | the window — merged requests per dirty workflow, plus the assertions they stand on |
 | `wal.Log` | the log contract; `memwal` is the implementation this tree ships |
-| `cold.Applier` | one drain, one transaction — the layer's only write door; `memcold` is the implementation this tree ships |
+| `cold.Applier` | one drain, one publication — the layer's only write door; `memcold` is the implementation this tree ships |
 | `the cold store` | a persistence implementation, on the other side of that door: `memcold` here, a deployment's own otherwise |
 
 Two positions run through the whole chapter. **commitSeqno** is the last seqno acked into the log.
@@ -78,7 +78,7 @@ sequenceDiagram
   participant CS as the cold store
 
   HS->>ES: UpdateWorkflowExecution(request)
-  ES->>CS: AppendHistoryNodes for the request's new events
+  ES->>CS: AppendHistoryNodes for the request's new events — only where the cold store does not take them on the record
   ES->>MG: Write(mutation, epoch=request.RangeID, baseRows)
   MG->>MG: resolve the shard's cycle, compare epochs (I11)
   MG->>CY: write(mutation, baseRows)
@@ -152,7 +152,7 @@ sequenceDiagram
   CY->>ACC: Drain()
   ACC-->>CY: batch — one merged request per dirty workflow, plus its assertions
   CY->>AP: Apply(shard, epoch, batch)
-  AP->>CS: one transaction — epoch CAS, the folded task ranges deleted, the requests, the task rows, the watermark
+  AP->>CS: the batch's event history made durable, then one transaction — epoch CAS, the folded task ranges deleted, the requests, the task rows, the watermark
   CS-->>AP: committed
   AP-->>CY: nil
   Note over CY: appliedSeqno = batch.Watermark(), tail releases the window's bytes
@@ -169,7 +169,8 @@ drain included. That cost was accepted knowingly and has never been measured
 
 ## 2. The drain itself
 
-One drain is one transaction. This is what it does, in order.
+One drain is one publication: the merged requests, the task work and the watermark in one
+transaction, over event history already durable. This is what it does, in order.
 
 ```mermaid
 sequenceDiagram
@@ -674,7 +675,7 @@ waits on the trim, which is detached, and nobody waits on another shard.
 ## Where this lives in the code
 
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — `write`, the
-  events-first rule, and the eight kinds that become log records.
+  events-before-state rule and which writer keeps it, and the eight kinds that become log records.
 * [`../../cycle/write.go`](../../cycle/write.go) — `Manager.Write`: the shard lookup, the
   I11 epoch check, and the translation of a cycle's answer into the store's error types.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — `add`, `accept`, `drain`, `resolve`
@@ -695,7 +696,7 @@ waits on the trim, which is detached, and nobody waits on another shard.
   delegated assertion costs.
 * [`../../apply/failure.go`](../../apply/failure.go) — `Classify`, `Refuse` and the
   attribution readback an applier hands back.
-* [`../../cold/cold.go`](../../cold/cold.go) — the four things a drain's transaction owes,
+* [`../../cold/cold.go`](../../cold/cold.go) — the four things a drain owes, the one part that may sit outside its transaction, `HistoryApplier`,
   as the seam states them; [`../../cold/memcold/apply.go`](../../cold/memcold/apply.go) is
   the applier this tree ships, whose doc comment is the statement order section 2 walks.
 * [`../../cycle/replay.go`](../../cycle/replay.go) — what a new owner does with the tail

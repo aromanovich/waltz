@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/metrics"
 
+	"github.com/aromanovich/waltz/cold"
 	"github.com/aromanovich/waltz/wal"
 	"github.com/aromanovich/waltz/walmetrics"
 )
@@ -100,6 +101,21 @@ func NewManager(deps Deps, policy Policy) (*Manager, error) {
 		deps.Metrics = walmetrics.New(nil)
 	}
 	return &Manager{deps: deps, policy: policy, held: newHeld()}, nil
+}
+
+// WritesHistory reports whether an intercepted write's event batches ride the
+// record this layer appends, which is a property of the cold store underneath
+// and of nothing else: one that declares [cold.HistoryApplier] writes them in
+// the drain's own publication, and one that does not gets them through the base
+// store before the append, as every store did before that interface existed.
+//
+// There is no setting. A deployment's answer is which store it composed, and the
+// deps are fixed at construction, so the two halves of the question — who writes
+// the batches, and who is told to — are one value derived in one place and
+// cannot be configured apart.
+func (m *Manager) WritesHistory() bool {
+	_, ok := m.deps.Writer.(cold.HistoryApplier)
+	return ok
 }
 
 // Use points this node's cycles at the server's metrics handler; it satisfies

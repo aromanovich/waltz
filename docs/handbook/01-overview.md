@@ -33,10 +33,11 @@ at. A transition rewrites the run's row **whole**, and adds and deletes the rows
 one at a time. `InternalWorkflowMutation` carries exactly that shape: the entire `ExecutionInfoBlob`
 even for a delta, plus a per-member upsert and delete map for each collection.
 
-That asymmetry is why the layer intercepts mutable state and lets event history pass straight
-through to the store. An appended batch is never rewritten by the next transition, so holding it
-back saves nothing. A run row rewritten dozens of times in one short workflow's lifetime can be held
-back and written once.
+That asymmetry is why the layer folds mutable state and never folds event history. An appended batch
+is never rewritten by the next transition, so there is nothing in it to collapse. A run row rewritten
+dozens of times in one short workflow's lifetime can be held back and written once. The batches still
+travel with the mutation that produced them where the cold store says it writes them
+(`cold.HistoryApplier`) — they ride the record unfolded, one row out for every row in.
 
 The tempting solution is to batch those writes, and two things go wrong if you batch them naively.
 An ordinary batch makes the caller wait until the batch commits, which turns an efficiency mechanism
@@ -139,7 +140,7 @@ graph TD
   LOG(("wal.Log contract"))
   MW(("memwal: the in-process log"))
   MC(("memcold: the in-process store"))
-  AP(("cold.Applier: one drain, one transaction"))
+  AP(("cold.Applier: one drain, one publication"))
   CS(("the cold store"))
   MET(("walmetrics.Emitter"))
 
@@ -199,7 +200,7 @@ moving from the diagram into the tree.
 | `mutation/` | what one entry *is*: the protobuf record of one persistence call, plus the record kinds |
 | `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task pages |
 | `baserow/` | the cold store's two mutable-state reads as the write path needs them — one run's row, and the current-execution row with `last_write_version` beside it. `wrapper`, `cycle` and `apply` all need the pair and none of them may import another's copy, so it lives here and imports nothing of the layer |
-| `cold/` | the cold store's contract: `Store`, which is what a deployment implements — the `Applier` a drain lands on and the `Watermarker` that reads back the seqno the last drain committed, embedded in one interface because one value has to answer both — and the four things an implementation owes — one transaction per drain, the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
+| `cold/` | the cold store's contract: `Store`, which is what a deployment implements — the `Applier` a drain lands on and the `Watermarker` that reads back the seqno the last drain committed, embedded in one interface because one value has to answer both — and the four things an implementation owes — one publication per drain (the merged requests, the task work and the watermark in one transaction, over event history already durable), the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
 | `cold/memcold/` | the one implementation of that contract here: Temporal's own SQL execution store, embedded whole, over an in-process SQLite database, with the folded window's transaction added beside its 28 inherited methods |
 | `apply/` | what a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries |
 | `cycle/` | one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the reads and replay — the layer's state machine |
@@ -241,7 +242,7 @@ different shape, which [chapter 12](12-the-write-before-the-layer.md#event-histo
 takes apart. History rows are append-only and were never amplified, so there is nothing there for
 the layer to collapse. Whatever share of a deployment's write volume is event history is a share the
 layer cannot reduce, and it is therefore the ceiling on everything the layer can save
-([chapter 15](15-the-limits-of-the-evidence.md#event-history-stays-outside-the-log)).
+([chapter 15](15-the-limits-of-the-evidence.md#where-event-history-lands-is-the-cold-stores-and-neither-path-is-measured)).
 
 Two consequences follow, and they are the project's actual goals:
 
@@ -294,20 +295,21 @@ answer.
 **Passthrough vs intercept.** The switch is exactly one field, `wrapper.Options.Layer`: nil is
 passthrough, non-nil is intercept. In passthrough every call goes to the base store untouched, and
 the wrapper observes nothing — not even a metric. There is no cycle, so there is no window to size.
-In intercept the wrapper takes **eleven** of `ExecutionStore`'s 28 methods into the layer,
-**refuses a twelfth**, and transits the rest:
+In intercept the wrapper takes **twelve** of `ExecutionStore`'s 28 methods into the layer,
+**refuses a thirteenth**, and transits the rest:
 
 * **eight writes become log records** — `CreateWorkflowExecution`, `UpdateWorkflowExecution`,
   `ConflictResolveWorkflowExecution`, `SetWorkflowExecution`, `DeleteWorkflowExecution`,
   `DeleteCurrentWorkflowExecution`, `AddHistoryTasks`, `RangeCompleteHistoryTasks`;
-* **three reads are answered by the layer** — `GetWorkflowExecution` and `GetCurrentExecution`
-  through the overlay, `GetHistoryTasks` through the task merge;
+* **four reads are answered by the layer** — `GetWorkflowExecution` and `GetCurrentExecution`
+  through the overlay, `GetHistoryTasks` through the task merge, `ReadHistoryBranch` through the
+  history merge;
 * **one is refused** — `CompleteHistoryTask`, with `wrapper.ErrCompleteHistoryTaskUnsupported`,
   because the log's deletion record is a range per category and has no shape for a single key;
-* **the other sixteen transit**, exactly as they do in passthrough.
+* **the other fifteen transit**, exactly as they do in passthrough.
 
 [Chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) has the method table; [chapter
-07](07-read-path.md) has the three reads; and what makes the two task calls records at all — they
+07](07-read-path.md) has the four reads; and what makes the two task calls records at all — they
 name no run and assert nothing — is the **task record** entry of [chapter
 02](02-concepts-and-invariants.md#the-glossary-in-reading-order). Why the two exclusions above are
 excluded is argued where each belongs: [chapter
@@ -350,9 +352,10 @@ operator does about a halt is [chapter
   shards, however capable the store underneath may be.
 * **Not a general-purpose queue.** The log carries `ExecutionStore` mutations and history-task
   calls only. Shard writes (`GetOrCreateShard`, `UpdateShard`, `AssertShardOwnership`) go straight
-  to the store, because rangeID is both the fencing token and the task-id allocator; event history
-  goes straight through too, and matching, visibility and cluster metadata never enter the layer at
-  all.
+  to the store, because rangeID is both the fencing token and the task-id allocator; a standalone
+  `AppendHistoryNodes` goes straight through too, and matching, visibility and cluster metadata never
+  enter the layer at all. An intercepted write's *own* event batches are not in this list — they reach
+  the layer always, and the cold store decides whether they ride the record.
 * **Not a sidecar.** The layer is a library inside a custom `temporal-server` main, reached through
   the standard data store factory extension point. Process death is therefore an ordinary
   history-node failure.
@@ -393,7 +396,7 @@ above is [chapter 08](08-configuration.md).
 * [`../../fold/histtasks.go`](../../fold/histtasks.go) — I7 inside the window: the range
   deletions, and which tasks they drop before a drain ever sees them.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the
-  eleven-of-28 partition and the refused twelfth, method by method.
+  twelve-of-28 partition and the refused thirteenth, method by method.
 * [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — the one window onto
   shard ownership, and how an acquire is told from a heartbeat.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — the state machine and `cycle.Defaults()`'s

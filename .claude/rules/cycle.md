@@ -74,7 +74,7 @@ What to know before changing it:
   since #160: a task page is answered by the shard's *current* cycle or not at
   all, which is `Manager.taskPage` and cannot be anywhere else, because being
   superseded is a fact about the registry's map that no cycle can read;
-* **`Manager` is the seam, and the three reads on `*Cycle` are unexported for
+* **`Manager` is the seam, and the four reads on `*Cycle` are unexported for
   it** (#176). There were two doors into the same questions and the cycle's was
   silently the less correct one; the reasoning is on the `Cycle` type and beside
   each read. The append went the same way in #216, for that reason and for
@@ -130,7 +130,7 @@ What to know before changing it:
   that nothing is being stranded (`waltz.UndrainedError` says so at length). The
   fence that acquire already took is not undone: a fence changes ownership and
   nothing else, and the shard's next owner fences above it;
-* **the three reads share one order and it has one home, `Cycle.prelude`: the
+* **the four reads share one order and it has one home, `Cycle.prelude`: the
   readiness gate, the count, the halt rule, the drain.** A halt found inside the
   replay is left to the halt rule rather than returned from the gate (#155).
   Every position is load-bearing and the reasoning is on `prelude` — a halt rule

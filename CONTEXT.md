@@ -200,7 +200,7 @@ goroutine is what makes it correct)
 
 **Wrapper (обёртка)**:
 The seam into a running server: a decorator over the base `DataStoreFactory`
-that takes eleven persistence methods into the layer, refuses a twelfth and
+that takes twelve persistence methods into the layer, refuses a thirteenth and
 transits the rest. Named for what it does structurally — wrap, don't fork — and
 it may name no cold store at all, so which store sits underneath is the
 caller's business.
@@ -212,7 +212,7 @@ here. In passthrough every method transits and the layer changes no
 bytes — a claim only a whole-store comparison can check, since
 passthrough behaves identically by construction and every suite is green over
 it either way. In intercept the wrapper takes
-eleven methods into the layer, refuses a twelfth and transits the rest. One
+twelve methods into the layer, refuses a thirteenth and transits the rest. One
 field is the whole of the difference: a flag beside it could disagree with it.
 _Avoid_: on/off, enabled (they name a switch rather than what changes)
 

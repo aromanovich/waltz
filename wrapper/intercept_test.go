@@ -1,12 +1,13 @@
 package wrapper
 
 // Intercept mode's partition of the 28 ExecutionStore methods: eight writes go
-// into the WAL, three reads are answered by the layer (two through the overlay,
-// one through the task merge), one is refused, and the other sixteen transit.
-// Both ways of getting it wrong are silent in a functional suite — a twelfth
-// method taken into the layer, or one of the eleven left transiting past the
-// accumulator — so the partition is driven by reflection over the whole
-// interface and both sides are checked in the same loop.
+// into the WAL, four reads are answered by the layer (two through the overlay,
+// one through the task merge, one through the history merge), one is refused,
+// and the other fifteen transit. Both ways of getting it wrong are silent in a
+// functional suite — a thirteenth method taken into the layer, or one of the
+// twelve left transiting past the accumulator — so the partition is driven by
+// reflection over the whole interface and both sides are checked in the same
+// loop.
 //
 // Nothing here needs a cluster: the store below is upstream's gomock mock and
 // the layer below is a recorder.
@@ -46,12 +47,13 @@ var intercepted = map[string]mutation.Kind{
 
 // answered is the read half: the reads whose answer one of the writes can
 // change, so the layer and not the store below decides what comes back. The
-// first two go through the overlay, the third through the merge. A method in
-// none of these three maps is asserted to transit.
+// first two go through the overlay, the other two through a merge apiece. A
+// method in none of these three maps is asserted to transit.
 var answered = map[string]bool{
 	"GetWorkflowExecution": true,
 	"GetCurrentExecution":  true,
 	"GetHistoryTasks":      true,
+	"ReadHistoryBranch":    true,
 }
 
 // refused is the third part of the partition: the method intercept mode answers
@@ -82,8 +84,13 @@ type recordingLayer struct {
 
 	// reads names the store methods that reached the read path, and callBase
 	// makes the layer use the closure it was handed.
-	reads    []string
+	reads []string
+	// treeID is what the wrapper parsed out of a history read's branch token.
+	treeID   string
 	callBase bool
+	// writesHistory is the mode face: false means the wrapper owes the events
+	// to the base store before it calls Write.
+	writesHistory bool
 
 	// baseRows is the pair of reads the write path was handed for the condition
 	// authority's residual. Kept rather than called, so that a test can ask
@@ -139,16 +146,35 @@ func (w *recordingLayer) GetHistoryTasks(
 	return nil, w.err
 }
 
+// WritesHistory is the face the wrapper asks before writing events itself. The
+// fakes leave it false, which is the arm where the wrapper has work to do.
+func (w *recordingLayer) WritesHistory() bool { return w.writesHistory }
+
+func (w *recordingLayer) ReadHistoryBranch(
+	ctx context.Context,
+	req *p.InternalReadHistoryBranchRequest,
+	treeID string,
+	base func(context.Context, *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error),
+) (*p.InternalReadHistoryBranchResponse, error) {
+	w.reads = append(w.reads, "ReadHistoryBranch")
+	w.treeID = treeID
+	if w.callBase {
+		return base(ctx, req)
+	}
+	return nil, w.err
+}
+
 var _ ShardLayer = (*recordingLayer)(nil)
 
 // Use takes the handler and drops it; what the hand-off is asserted with are
 // the two fakes in metrics_test.go, which override this.
 func (w *recordingLayer) Use(metrics.Handler) {}
 
-func TestInterceptModeTakesTheElevenAndOnlyTheEleven(t *testing.T) {
+func TestInterceptModeTakesTheTwelveAndOnlyTheTwelve(t *testing.T) {
 	iface := reflect.TypeFor[p.ExecutionStore]()
 	require.Len(t, intercepted, 8, "the WAL's record format has eight shapes (invariant I1)")
-	require.Len(t, answered, 3, "two mutable-state reads through the overlay, one task read through the merge")
+	require.Len(t, answered, 4,
+		"two mutable-state reads through the overlay, one task page and one history page through a merge apiece")
 	require.Len(t, refused, 1, "the single-key completion is the one method the record format has no shape for")
 
 	for method := range iface.Methods() {
@@ -158,6 +184,14 @@ func TestInterceptModeTakesTheElevenAndOnlyTheEleven(t *testing.T) {
 			layer := &recordingLayer{err: errors.New(method.Name + ": the layer's own error")}
 			store := newStore(t, base, Options{Layer: layer})
 
+			if method.Name == "ReadHistoryBranch" {
+				// The branch-token codec, which this read borrows to get a tree
+				// id out of an opaque token. It is allowed where a *read* of the
+				// store is not: it opens nothing and answers out of the token's
+				// own bytes, so the claim below — that the wrapper reads nothing
+				// on its own account — is untouched.
+				base.EXPECT().GetHistoryBranchUtil().Return(&p.HistoryBranchUtilImpl{}).AnyTimes()
+			}
 			args := callArgs(method.Type)
 			kind, isIntercepted := intercepted[method.Name]
 			switch {
@@ -644,5 +678,36 @@ func events(id string) *p.InternalAppendHistoryNodesRequest {
 			NodeID: 1,
 			Events: &commonpb.DataBlob{Data: []byte(id)},
 		},
+	}
+}
+
+// The two branches at the store, which is the whole of what this store
+// does with it. False is the shipped one: the batches go down through the base
+// store and come off the mutation, so the record the layer appends carries none
+// and the drain writes them nowhere. True skips both, and the batches reach the
+// layer still on the request — where the append is what makes them durable.
+func TestTheStoreWritesTheEventsItselfOnlyWhereTheRecordWillNotCarryThem(t *testing.T) {
+	for _, writes := range []bool{false, true} {
+		t.Run(map[bool]string{false: "record carries none", true: "record carries them"}[writes], func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			base := versioned(ctrl)
+			layer := &recordingLayer{writesHistory: writes}
+			store := newStore(t, base, Options{Layer: layer})
+
+			events := &p.InternalAppendHistoryNodesRequest{ShardID: 1, Node: p.InternalHistoryNode{NodeID: 4}}
+			if !writes {
+				base.EXPECT().AppendHistoryNodes(gomock.Any(), events).Return(nil)
+			}
+			// No expectation in the other arm, so a call to the base fails the
+			// controller naming it.
+			require.NoError(t, store.UpdateWorkflowExecution(t.Context(), &p.InternalUpdateWorkflowExecutionRequest{
+				ShardID:                 1,
+				UpdateWorkflowNewEvents: []*p.InternalAppendHistoryNodesRequest{events},
+			}))
+
+			require.Len(t, layer.got, 1)
+			require.Equal(t, writes, len(layer.got[0].EventSlots()[0]) == 1,
+				"the layer must be handed exactly the batches nobody has written yet")
+		})
 	}
 }

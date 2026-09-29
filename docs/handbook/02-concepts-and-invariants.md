@@ -225,12 +225,14 @@ pass and measures nothing.
 
 **Drain.** One pass of the apply cycle over a folded window. A non-empty batch is written in one
 transaction and moves appliedSeqno; an empty batch writes no transaction and settles its entries in
-memory without moving the watermark. A transactional drain is all-or-nothing, and appliedSeqno is
+memory without moving the watermark. A transactional drain is all-or-nothing over everything it
+publishes — event history excepted, which is durable before the transaction opens — and appliedSeqno is
 the witness to whether that transaction committed. *Not to be confused with:* stopping a layer or a
 node, which is `Shutdown` (it drains *and* closes).
 
 **Apply.** The step that turns folded summary updates into cold-store writes: one transaction
-carrying the merged requests, the appliedSeqno bump and the epoch compare-and-swap. Who performs it
+carrying the merged requests, the appliedSeqno bump and the epoch compare-and-swap, over event history
+the batch carried and the store has already made durable. Who performs it
 is `cold.Applier`, which no package of the layer implements — the drain hands over a `fold.Batch` and
 never a column. What the layer keeps of it is `apply`, the package that says what a drain's outcome
 demands of its caller: the five classes an error sorts into — committed, refused, shard lost,
@@ -382,8 +384,10 @@ those two interfaces here: Temporal's own SQL persistence, embedded whole, over 
 that lives in this process and dies with it. Everything above the seam is exercised against it, and
 it is a real store rather than a stub — Temporal's own persistence suites judge it exactly as they
 judge a plugin. A deployment supplies its own as one `cold.Store` — one value answering both halves
-of the seam — and what it owes is four things: one drain is one transaction, the watermark commits
-inside it, the epoch is asserted first, and the outcome comes back in `apply`'s five classes. What
+of the seam — and what it owes is four things: one drain is one publication (the merged requests, the
+task work and the watermark in one transaction, opened only once every history row the batch carried
+is durable), the watermark commits inside it, the epoch is asserted first, and the outcome comes back
+in `apply`'s five classes. What
 each demands of the cycle is [chapter 04](04-contracts.md#apply--what-a-drains-outcome-demands), and why
 the watermark has to ride that transaction is [the recovery
 rule](04-contracts.md#the-recovery-rule-the-watermark-exists-for) there. *Not to be confused with:*
@@ -413,7 +417,7 @@ branches:
 what makes the read correct.
 
 **Wrapper.** The seam into a running server: a decorator over a base `DataStoreFactory` that takes
-eleven persistence methods into the layer, refuses a twelfth — `CompleteHistoryTask`, with
+twelve persistence methods into the layer, refuses a thirteenth — `CompleteHistoryTask`, with
 `wrapper.ErrCompleteHistoryTaskUnsupported` — and transits the rest. It wraps the base plugin rather
 than forking it, and it may import no persistence implementation at all, so which store sits
 underneath is the binary's business. *Not to be confused with:* adapter, proxy — both suggest

@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 
 	"github.com/aromanovich/waltz/baserow"
+	"github.com/aromanovich/waltz/cold"
 	"github.com/aromanovich/waltz/cycle"
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/internal/verify/coldtest"
@@ -538,3 +539,30 @@ func TestTheNarrowReadsAnswerForAShardNobodyHolds(t *testing.T) {
 	require.Equal(t, cycle.Stats{}, stats, "and the value beside a false must carry nothing")
 	require.False(t, layer.RetireShard(never), "there was no cycle to retire")
 }
+
+// Which of the two writers puts an intercepted write's event batches down is
+// the cold store's own property and there is no setting for it: a store that
+// declares it writes them gets them in the record, and one that does not gets
+// them through the base store before the append. A deployment's answer is which
+// store it composed, so there is nothing for a second place to disagree with.
+func TestTheColdStoreDecidesWhoWritesTheEventBatches(t *testing.T) {
+	compose := func(store cold.Store) *Layer {
+		l, err := Compose(
+			Backends{Log: memwal.New(), Cold: store},
+			cycle.Fixed(cycle.Defaults()), DefaultTaskCategories(), nil, nil,
+		)
+		require.NoError(t, err)
+		return l
+	}
+
+	require.False(t, compose(coldtest.New()).Options().Layer.WritesHistory(),
+		"a store that does not write the batches must have them written through it before the append")
+	require.True(t, compose(historyApplier{coldtest.New()}).Options().Layer.WritesHistory(),
+		"a store that writes them takes them in the record, so nothing writes them twice")
+}
+
+// historyApplier is the seam's own double with the marker on it: what the
+// refusal turns on is the declaration, not what Apply does with the batch.
+type historyApplier struct{ *coldtest.Cold }
+
+func (historyApplier) AppliesHistory() {}

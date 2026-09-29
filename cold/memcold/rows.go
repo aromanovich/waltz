@@ -762,6 +762,22 @@ func parseRun(runID string) (primitives.UUID, error) {
 	return run, nil
 }
 
+func parseTree(treeID string) (primitives.UUID, error) {
+	tree, err := primitives.ParseUUID(treeID)
+	if err != nil {
+		return nil, serviceerror.NewInternalf("history tree id %q is not a uuid: %v", treeID, err)
+	}
+	return tree, nil
+}
+
+func parseBranch(branchID string) (primitives.UUID, error) {
+	branch, err := primitives.ParseUUID(branchID)
+	if err != nil {
+		return nil, serviceerror.NewInternalf("history branch id %q is not a uuid: %v", branchID, err)
+	}
+	return branch, nil
+}
+
 // lockRun reads a run row's db_record_version under the transaction's lock, and
 // reports absence as a nil row rather than as an error, which is the shape
 // fold's assertion is stated over.

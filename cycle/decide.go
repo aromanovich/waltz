@@ -30,7 +30,10 @@ type reader int
 
 const (
 	// mutableStateRead has legitimate callers that do not own the shard, so a
-	// stale answer is the cost this reader is the one allowed to pay.
+	// stale answer is the cost this reader is the one allowed to pay. The
+	// history-branch page is one of these and not a taskRead: its reader deletes
+	// nothing it read, so a page short the window's newest nodes is that same
+	// staleness rather than a key acked past.
 	mutableStateRead reader = iota
 	// taskRead has exactly one caller — the owning shard's queue processors —
 	// and no such thing as a harmlessly incomplete page: the reader completes

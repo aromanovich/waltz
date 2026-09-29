@@ -29,7 +29,7 @@ var (
 	InterceptedWrites = metrics.NewCounterDef("wal_intercepted_writes",
 		metrics.WithDescription("Writes this store sent at the layer, by store method."))
 
-	// OverlaidReads counts reads routed through the overlay, not reads the
+	// OverlaidReads counts reads routed at the layer — the two mutable-state reads through the overlay and ReadHistoryBranch through the history merge, the name predating the third, not reads the
 	// window could answer: a counter that only fired on a hit would read zero
 	// on a healthy idle cluster and zero on a layer wired up wrong.
 	OverlaidReads = metrics.NewCounterDef("wal_overlaid_reads",

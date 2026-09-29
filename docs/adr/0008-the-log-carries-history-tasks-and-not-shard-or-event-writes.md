@@ -7,6 +7,10 @@ Date: 2026-08-02
 Accepted, and implemented: two record kinds for the two history-task calls, and no bound kept
 beside the apply loop.
 
+**Decision D3 is superseded in part** by [ADR 0014](0014-a-record-may-carry-the-event-batches-its-own-request-produced.md),
+which lets a mutable-state record carry the event batches that request produced. D3 stands for every
+other way history reaches the store, standalone `AppendHistoryNodes` included.
+
 ## Context
 
 Before this the write path was split. Six mutable-state writes went through the WAL; both

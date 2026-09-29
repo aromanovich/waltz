@@ -68,6 +68,12 @@ persistence:
                         drain_on_read: false
 ```
 
+Where a request's event history goes is **not** a key. It is a property of the cold store the node
+composed: one whose applier declares `cold.HistoryApplier` takes the batches in the drain's own
+publication, and one that does not has them written through it before the append. A deployment's
+answer is which store it brought, so there is no second place for it to disagree with itself
+(ADR 0014).
+
 ### Absent, present, malformed
 
 | the file says | what the node does |
@@ -130,7 +136,7 @@ Each switch turns off the mechanism it exists to expose, which is why neither is
 | key | type | default | effect | what a typo costs |
 |---|---|---|---|---|
 | `sync` | bool | `false` | `true` drains inside every write and hands the drain's outcome back to the caller, instead of answering the caller as soon as the log holds the write and applying it later. The debugging configuration, not a shipped mode: the window is one mutation, so nothing collapses and a write costs an append **plus** an apply transaction — more than the store alone. This book describes the layer with `sync` off; where a chapter says a series is always zero — `trigger="sync"`, for instance — that is why | `snyc: true` is a refusal to start, which is the whole reason this key is on the strict surface |
-| `drain_on_read` | bool | `false` | `true` makes a read drain the window first, so all three reads are answered by the cold store. An attribution instrument, not a shipped mode; it costs a transaction per read that crosses a window | as above: an unknown key is a refusal to start |
+| `drain_on_read` | bool | `false` | `true` makes a read drain the window first, so all four reads are answered by the cold store. An attribution instrument, not a shipped mode; it costs a transaction per read that crosses a window | as above: an unknown key is a refusal to start |
 
 Both are read once, when the node composes its layer. There is no way to change them without a
 restart.

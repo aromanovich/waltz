@@ -205,15 +205,41 @@ func (m Mutation) TaskSlots() []*map[tasks.Category][]p.InternalHistoryTask {
 
 // EventSlots is every slice of new history events the request carries, in the
 // order they must reach the store, and nil for a kind whose request carries
-// none. The payload drops these (D3), so whoever writes a mutation writes them
-// first: a mutation acked over history nodes nobody wrote is a mutable state
-// the cold store can never be brought to, and no functional suite sees it.
+// none.
+//
+// Which of the two writers puts them down is the cold store's, and both keep the same
+// rule: a mutation acked over history nodes nobody wrote is a mutable state the
+// cold store can never be brought to, and no functional suite sees it. The
+// writer that puts them down through the store strips them off once they are
+// down, so a mutation still holding batches is one whose append is what makes
+// them durable — and the drain writes the nodes before it publishes the state.
 func (m Mutation) EventSlots() [][]*p.InternalAppendHistoryNodesRequest {
 	kind := m.Kind()
 	if kind == KindInvalid {
 		return nil
 	}
 	return kinds[kind].events(m)
+}
+
+// ClearEvents drops the request's event batches in place, for the writer that
+// has already put them down through the store. It is what makes "a mutation
+// carries exactly the batches nobody has written yet" true, and so what lets
+// [Encode] and the fold carry no mode of their own.
+//
+// It writes through the caller's request, which the layer takes ownership of
+// (wrapper.ShardWriter.Write).
+func (m Mutation) ClearEvents() {
+	switch m.Kind() {
+	case KindCreate:
+		m.Create.NewWorkflowNewEvents = nil
+	case KindUpdate:
+		m.Update.UpdateWorkflowNewEvents = nil
+		m.Update.NewWorkflowNewEvents = nil
+	case KindConflictResolve:
+		m.ConflictResolve.CurrentWorkflowEventsNewEvents = nil
+		m.ConflictResolve.ResetWorkflowEventsNewEvents = nil
+		m.ConflictResolve.NewWorkflowEventsNewEvents = nil
+	}
 }
 
 // ErrUnknownCategory is what [Decode] returns when an entry names a task
@@ -239,8 +265,18 @@ var ErrCassandraBlob = errors.New("mutation: CHASM node carries a Cassandra blob
 // that is a crash loop or a silent hole; before it, refusing writes nothing.
 var ErrUncarriedProto = errors.New("mutation: parsed execution info or state with no blob carrying it")
 
-// Encode turns a mutation into the bytes of a WAL entry's payload. The same
-// mutation always encodes to the same bytes, across processes as well.
+// Encode turns a mutation into the bytes of a WAL entry's payload, carrying
+// whatever event batches the mutation still holds. The same mutation always
+// encodes to the same bytes, across processes as well.
+//
+// Whether it holds any is the caller's: the writer that puts the batches down
+// through the store itself strips them off the mutation once they are down
+// (wrapper.ExecutionStore.appendEvents), so a mutation reaching here carries
+// exactly what nobody has written yet. A mutation carrying none encodes to the
+// bytes this codec wrote before those fields existed.
+//
+// It refuses a batch [ErrMalformedHistory] names, which is what makes this the
+// place that judges them: an entry past the append is acked and inherited.
 func Encode(m Mutation) ([]byte, error) { return encode(m, false) }
 
 // EncodeProvisional is [Encode] for an entry acked before its condition was
@@ -253,6 +289,9 @@ func encode(m Mutation, provisional bool) ([]byte, error) {
 	kind := m.Kind()
 	if kind == KindInvalid {
 		return nil, fmt.Errorf("mutation: encode: %w", ErrNotExactlyOneRequest)
+	}
+	if err := validateHistory(m); err != nil {
+		return nil, err
 	}
 
 	payload := &Payload{Format: formatVersion, Provisional: provisional}
@@ -320,11 +359,12 @@ func encode(m Mutation, provisional bool) ([]byte, error) {
 	return proto.MarshalOptions{Deterministic: true}.Marshal(payload)
 }
 
-// Decode is [Encode]'s inverse over what the payload carries: neither the
-// rangeID nor the new-events slices are in it, so a decoded mutation reports a
-// zero rangeID and carries no events. The registry must be the server's own
-// task-category registry: it is the one input that is not a function of the
-// bytes, so the same payload decodes on one node and fails on another.
+// Decode is [Encode]'s inverse over what the payload carries. The rangeID is
+// never in it, so a decoded mutation reports zero; the event batches are in it
+// for an entry whose writer still held them. The registry must be the
+// server's own task-category registry: it is the one input that is not a
+// function of the bytes, so the same payload decodes on one node and fails on
+// another.
 func Decode(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation, error) {
 	m, _, err := DecodeEntry(payload, registry)
 	return m, err
@@ -351,58 +391,72 @@ func DecodeEntry(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation,
 	}
 
 	prov := pb.Provisional
+	m, err := decodeRequest(&pb, registry)
+	if err != nil {
+		return Mutation{}, false, err
+	}
+	// The batches are judged again here rather than trusted from the encoder:
+	// what reads them — the fold's key, the applier's blob — dereferences, and a
+	// payload this build did not write reaches those the same way.
+	if err := validateHistory(m); err != nil {
+		return Mutation{}, false, err
+	}
+	return m, prov, nil
+}
+
+func decodeRequest(pb *Payload, registry tasks.TaskCategoryRegistry) (Mutation, error) {
 	switch r := pb.Request.(type) {
 	case *Payload_Create:
 		req, err := decodeCreate(r.Create, registry)
-		return Mutation{Create: req}, prov, err
+		return Mutation{Create: req}, err
 	case *Payload_Update:
 		req, err := decodeUpdate(r.Update, registry)
-		return Mutation{Update: req}, prov, err
+		return Mutation{Update: req}, err
 	case *Payload_ConflictResolve:
 		req, err := decodeConflictResolve(r.ConflictResolve, registry)
-		return Mutation{ConflictResolve: req}, prov, err
+		return Mutation{ConflictResolve: req}, err
 	case *Payload_Set:
 		req, err := decodeSet(r.Set, registry)
-		return Mutation{Set: req}, prov, err
+		return Mutation{Set: req}, err
 	case *Payload_Delete:
 		return Mutation{Delete: &p.DeleteWorkflowExecutionRequest{
 			ShardID:     r.Delete.ShardId,
 			NamespaceID: r.Delete.NamespaceId,
 			WorkflowID:  r.Delete.WorkflowId,
 			RunID:       r.Delete.RunId,
-		}}, prov, nil
+		}}, nil
 	case *Payload_DeleteCurrent:
 		return Mutation{DeleteCurrent: &p.DeleteCurrentWorkflowExecutionRequest{
 			ShardID:     r.DeleteCurrent.ShardId,
 			NamespaceID: r.DeleteCurrent.NamespaceId,
 			WorkflowID:  r.DeleteCurrent.WorkflowId,
 			RunID:       r.DeleteCurrent.RunId,
-		}}, prov, nil
+		}}, nil
 	case *Payload_AddTasks:
 		groups, err := decodeTasks(r.AddTasks.Tasks, registry)
 		if err != nil {
-			return Mutation{}, prov, err
+			return Mutation{}, err
 		}
 		return Mutation{AddTasks: &p.InternalAddHistoryTasksRequest{
 			ShardID:     r.AddTasks.ShardId,
 			NamespaceID: r.AddTasks.NamespaceId,
 			WorkflowID:  r.AddTasks.WorkflowId,
 			Tasks:       groups,
-		}}, prov, nil
+		}}, nil
 	case *Payload_RangeCompleteTasks:
 		req := r.RangeCompleteTasks
 		category, ok := registry.GetCategoryByID(int(req.CategoryId))
 		if !ok {
-			return Mutation{}, prov, fmt.Errorf("%w: %d", ErrUnknownCategory, req.CategoryId)
+			return Mutation{}, fmt.Errorf("%w: %d", ErrUnknownCategory, req.CategoryId)
 		}
 		return Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
 			ShardID:             req.ShardId,
 			TaskCategory:        category,
 			InclusiveMinTaskKey: decodeTaskKey(req.InclusiveMin),
 			ExclusiveMaxTaskKey: decodeTaskKey(req.ExclusiveMax),
-		}}, prov, nil
+		}}, nil
 	default:
-		return Mutation{}, false, errors.New("mutation: decode: payload holds no request")
+		return Mutation{}, errors.New("mutation: decode: payload holds no request")
 	}
 }
 

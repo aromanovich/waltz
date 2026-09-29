@@ -31,6 +31,7 @@ func encodeCreate(r *p.InternalCreateWorkflowExecutionRequest) (*CreateRequest, 
 		PreviousRunId:            r.PreviousRunID,
 		PreviousLastWriteVersion: r.PreviousLastWriteVersion,
 		Snapshot:                 snapshot,
+		NewWorkflowNewEvents:     encodeHistoryRequests(r.NewWorkflowNewEvents),
 	}, nil
 }
 
@@ -40,9 +41,11 @@ func encodeUpdate(r *p.InternalUpdateWorkflowExecutionRequest) (*UpdateRequest, 
 		return nil, err
 	}
 	out := &UpdateRequest{
-		ShardId:  r.ShardID,
-		Mode:     int32(r.Mode),
-		Mutation: mutation,
+		ShardId:                 r.ShardID,
+		Mode:                    int32(r.Mode),
+		Mutation:                mutation,
+		UpdateWorkflowNewEvents: encodeHistoryRequests(r.UpdateWorkflowNewEvents),
+		NewWorkflowNewEvents:    encodeHistoryRequests(r.NewWorkflowNewEvents),
 	}
 	if r.NewWorkflowSnapshot != nil {
 		if out.NewSnapshot, err = encodeSnapshot(r.NewWorkflowSnapshot); err != nil {
@@ -58,9 +61,12 @@ func encodeConflictResolve(r *p.InternalConflictResolveWorkflowExecutionRequest)
 		return nil, err
 	}
 	out := &ConflictResolveRequest{
-		ShardId:       r.ShardID,
-		Mode:          int32(r.Mode),
-		ResetSnapshot: reset,
+		ShardId:                        r.ShardID,
+		Mode:                           int32(r.Mode),
+		ResetSnapshot:                  reset,
+		CurrentWorkflowEventsNewEvents: encodeHistoryRequests(r.CurrentWorkflowEventsNewEvents),
+		ResetWorkflowEventsNewEvents:   encodeHistoryRequests(r.ResetWorkflowEventsNewEvents),
+		NewWorkflowEventsNewEvents:     encodeHistoryRequests(r.NewWorkflowEventsNewEvents),
 	}
 	if r.NewWorkflowSnapshot != nil {
 		if out.NewSnapshot, err = encodeSnapshot(r.NewWorkflowSnapshot); err != nil {

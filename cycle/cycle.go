@@ -1,6 +1,6 @@
 // Package cycle is the layer's state machine: one goroutine per (shard, epoch)
 // owns the accumulator, the drain, the apply transaction, the trim cadence and
-// the three reads, so that "who is touching this shard" has one answer.
+// the four reads, so that "who is touching this shard" has one answer.
 //
 // It names no cold store (the seam is [cold]'s); the store is reached only
 // through [cold.Applier], [cold.Watermarker] and the closures a caller passes
@@ -276,7 +276,7 @@ type Stats struct {
 // Cycle is one shard's apply cycle at one epoch: a goroutine, an accumulator
 // and the policy above. Every method is safe for concurrent use, and the ones
 // touching the window are answered by that goroutine, which is what makes the
-// accumulator single-threaded without a lock. The three reads are unexported
+// accumulator single-threaded without a lock. The four reads are unexported
 // and [Manager] is the door to them, because a caller holding a *Cycle cannot
 // know whether it is still the shard's cycle.
 type Cycle struct {
@@ -700,6 +700,10 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 	// The ack is provisional exactly where the drain below answers the caller,
 	// which is sync mode's every write: there the condition is not yet verified
 	// when the entry becomes durable. Replay reads the bit back.
+	//
+	// Nothing here says whether the record carries event batches: the mutation
+	// arrives holding exactly the ones nobody has written yet, so the encoder
+	// carries what is there (ADR 0014).
 	encode := mutation.Encode
 	if cfg.Sync {
 		encode = mutation.EncodeProvisional

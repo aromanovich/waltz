@@ -3,6 +3,7 @@ package mutation
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -134,24 +135,25 @@ func TestEveryFieldOfNewEventsIsASlotAndIsRecordedDropped(t *testing.T) {
 					"from the row is a batch nobody writes, and the mutation is acked over history "+
 					"nodes that are not there", k, marks, eventNames(m))
 			require.ElementsMatch(t, fields, recordedAsHistory(t, slot.Type().Elem()),
-				"kind %s: the fields holding new events and the fields fieldset_test records as "+
-					"dropped for D3 must be the same fields", k)
+				"kind %s: the fields EventSlots enumerates and the fields fieldset_test records as "+
+					"holding event batches must be the same fields", k)
 		})
 	}
 }
 
-// recordedAsHistory reports which fields of a request mirroredStructs records as
-// dropped because event history stays out of the WAL.
+// recordedAsHistory reports which fields of a request mirroredStructs records
+// as holding event batches, by the one type that does.
 func recordedAsHistory(t *testing.T, request reflect.Type) []string {
 	t.Helper()
 
+	const events = " []*persistence.InternalAppendHistoryNodesRequest"
 	for _, s := range mirroredStructs {
 		if s.typ != request {
 			continue
 		}
 		var out []string
 		for _, f := range s.fields {
-			if f.how == dropped && f.why == whyHistory {
+			if strings.HasSuffix(f.field, events) {
 				out = append(out, f.field)
 			}
 		}

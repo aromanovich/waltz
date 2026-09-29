@@ -117,8 +117,8 @@ func (c *Cycle) stoppedRead(who reader, halt error) (readRoute, error) {
 	return stoppedRoute(c.State(), c.mirror.Empty(), who, c.shard, halt)
 }
 
-// prelude is the order the three reads share: the readiness gate, the count, the
-// routing rule, and the drain the mode may ask for. pass is that rule's answer —
+// prelude is the order the four reads share: the readiness gate, the count, the
+// routing rule, and the drain DrainOnRead may ask for. pass is that rule's answer —
 // the read is to be served from the cold store.
 //
 // takeView builds the read's view of the window and reports whether the window held

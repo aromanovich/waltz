@@ -27,7 +27,14 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-var _ cold.Applier = (*Store)(nil)
+var (
+	_ cold.Applier        = (*Store)(nil)
+	_ cold.HistoryApplier = (*Store)(nil)
+)
+
+// AppliesHistory declares that this store writes the batch's event history. It
+// is never called; see [cold.HistoryApplier].
+func (*Store) AppliesHistory() {}
 
 // Apply is the cold package's contract implemented, and the reference for a
 // client implementing it over another database.
@@ -39,18 +46,22 @@ var _ cold.Applier = (*Store)(nil)
 //     failure a fenced writer would find underneath it — the shard's new owner
 //     has been writing, and every version this drain stands on is stale for a
 //     reason that is not this shard's to halt over.
-//  2. the task range deletes, before any task row this drain writes. A task
+//  2. the event-history rows this window carried, before anything that points at
+//     them. This store puts them in the same transaction; the contract allows a
+//     store whose bulk path cannot join one to write them first instead, the
+//     order being what is pinned.
+//  3. the task range deletes, before any task row this drain writes. A task
 //     that arrived after a range is one fold deliberately kept, and a delete
 //     running after that insert would take it away — a timer that never fires
 //     rather than a row left behind.
-//  3. the merged requests, in the batch's own tail-seqno order. Each opens with
+//  4. the merged requests, in the batch's own tail-seqno order. Each opens with
 //     the current-execution row where the workflow's record rides it — fold's
 //     head-of-window assertion and then the window's own write, once per
 //     workflow — then the head-of-window db_record_version on every run row the
 //     request touches, then its rows.
-//  4. the shard-level task rows, and the watermark.
+//  5. the shard-level task rows, and the watermark.
 //
-// A client owes the same four things and gets none of them from an
+// A client owes the same five and gets none of them from an
 // ExecutionStore: that interface has nowhere to declare a transaction spanning
 // many workflows, so the write path has to be built beside it, on whatever the
 // driver offers below. An implementer whose driver offers nothing below cannot
@@ -167,6 +178,14 @@ func (s *Store) drain(
 	// transaction writes no rows either way — while moving it past the loop is
 	// red, which is what `TestAStaleEpochShadowsTheVersionFailureUnderIt` holds.
 	if err := assertEpoch(ctx, tx, shardID, int64(epoch)); err != nil {
+		return err
+	}
+
+	// Inside the transaction, which this store may do and a client with a
+	// separate bulk path may not: what the contract pins is that these rows are
+	// durable before the mutable state naming them is, and one transaction is
+	// the strongest way to keep that.
+	if err := applyHistory(ctx, tx, batch.History()); err != nil {
 		return err
 	}
 
@@ -456,6 +475,53 @@ func assertRuns(
 		}
 		if err := runs[runID].VerifyRow(e.WorkflowID, base); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// applyHistory writes the window's event batches: one node row each, and a tree
+// row beside a batch that opens a branch.
+//
+// Both are upserts, which is what makes a repeated drain safe rather than a
+// duplicate-key failure the shard cannot get past: a history node is immutable
+// and keyed by (shard, tree, branch, node, transaction), so the row written
+// twice is the same row. The plugin is the one doing that — sqlite REPLACEs and
+// postgres takes the conflict — and a store whose insert is not an upsert owes
+// its own answer to the same question.
+func applyHistory(ctx context.Context, tx sqlplugin.Tx, batches []*p.InternalAppendHistoryNodesRequest) error {
+	for _, r := range batches {
+		treeID, err := parseTree(r.BranchInfo.TreeId)
+		if err != nil {
+			return err
+		}
+		branchID, err := parseBranch(r.BranchInfo.BranchId)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.InsertIntoHistoryNode(ctx, &sqlplugin.HistoryNodeRow{
+			ShardID:      r.ShardID,
+			TreeID:       treeID,
+			BranchID:     branchID,
+			NodeID:       r.Node.NodeID,
+			PrevTxnID:    r.Node.PrevTransactionID,
+			TxnID:        r.Node.TransactionID,
+			Data:         r.Node.Events.Data,
+			DataEncoding: r.Node.Events.EncodingType.String(),
+		}); err != nil {
+			return fmt.Errorf("memcold: history node %d of branch %s: %w", r.Node.NodeID, r.BranchInfo.BranchId, err)
+		}
+		if !r.IsNewBranch {
+			continue
+		}
+		if _, err := tx.InsertIntoHistoryTree(ctx, &sqlplugin.HistoryTreeRow{
+			ShardID:      r.ShardID,
+			TreeID:       treeID,
+			BranchID:     branchID,
+			Data:         r.TreeInfo.Data,
+			DataEncoding: r.TreeInfo.EncodingType.String(),
+		}); err != nil {
+			return fmt.Errorf("memcold: history tree %s: %w", r.BranchInfo.TreeId, err)
 		}
 	}
 	return nil
