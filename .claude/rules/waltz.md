@@ -59,6 +59,28 @@ and the policy it hands `Compose`. What to know before changing any of it:
   call site, and a layer paired with a zero `wrapper.Options` is a node running
   passthrough under a config that says intercept — which no suite can see,
   passthrough behaving identically by construction;
+* **`RetireShard` takes an epoch and leaves the cycle registered, and the second
+  half is the one somebody will try to "fix".** The epoch is the ordinary half:
+  its caller stages what a dead process left, so it is exactly the caller whose
+  shard may have been reacquired since, and a kill naming only the shard stops
+  whatever the registry holds *now* — the owner that superseded it, refusing
+  every write with `ShardOwnershipLost` while the log and the cold store are
+  both healthy. It is the check `Manager.Write` already makes, in the one other
+  door that names an epoch, and the cycle whose epoch was checked is the cycle
+  retired — never a re-lookup, which is what makes an acquire landing beside it
+  unable to redirect the kill onto the successor it just installed. Leaving it
+  in the registry is the half that reads like an oversight and is not: a retired
+  cycle's tail is **acked entries still in the log**, and `ShardStats`, `Totals`
+  and the shutdown's residue all go on reading it off the mirror. Take it out
+  and those answer as a shard nobody holds — the zero the operations runbook
+  reads as permission to remove the `wal` section, which is what
+  `TestARetiredShardStillReportsWhatItHolds` and `DURABILITY.md`'s entry beside
+  it closed. So a report arguing the registry should be cleared has found the
+  *epoch* hazard and mis-stated the remedy: the write path needs no help from a
+  removal, a stopped cycle already refusing at its own epoch with
+  `ShardOwnershipLost`. `TestALateUnloadDoesNotRetireTheOwnerThatSupersededIt`
+  is the first half; the second is an absence, and has no test beyond the one
+  named above;
 * **the section lives inside the datastore's own `options` map**, and this
   package reads that one key and nothing else
   ([ADR 0006](../../docs/adr/0006-the-wal-configuration-is-a-section-of-the-datastore-options.md)).

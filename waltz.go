@@ -261,11 +261,27 @@ func (l *Layer) ShardStats(shard wal.ShardID) (cycle.Stats, bool) {
 }
 
 // RetireShard stops one shard's cycle without draining it, and reports whether
-// there was one. It is what a process that died leaves behind, which is why it
-// is named apart from [Layer.Shutdown]: a drain writes, and a kill does not.
-func (l *Layer) RetireShard(shard wal.ShardID) bool {
+// the epoch named is the one this node still holds. It is what a process that
+// died leaves behind, which is why it is named apart from [Layer.Shutdown]: a
+// drain writes, and a kill does not.
+//
+// epoch is which acquisition is being retired, and a mismatch retires nothing.
+// Without it a late unload — a shard context cleaned up after the shard was
+// reacquired above it — stops the owner that superseded it, since the caller
+// has no other way to say which of the two it means. It is the check
+// [cycle.Manager.Write] makes for the same reason, in the one other door that
+// names an epoch.
+//
+// The stopped cycle stays the shard's, and that is not an omission: its tail is
+// acked entries still in the log, so [Layer.ShardStats] and [Layer.Totals] go
+// on answering for it off the mirror. Removing it here would answer a shard
+// nobody holds, which is the zero a caller reads as "nothing stranded".
+func (l *Layer) RetireShard(shard wal.ShardID, epoch wal.Epoch) bool {
 	c := l.manager.Shard(shard)
-	if c == nil {
+	// The cycle whose epoch was checked is the cycle retired, never a re-lookup:
+	// an epoch does not move under a cycle, so an acquire landing beside this
+	// cannot redirect it onto the successor it just installed.
+	if c == nil || c.Epoch() != epoch {
 		return false
 	}
 	c.Retire()
