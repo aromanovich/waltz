@@ -612,29 +612,20 @@ func (c *Cycle) run() {
 			// another.
 			maxAge := c.policy().Age
 			age.Reset(maxAge)
-			// The tick is also the only thing that re-asks the watermark for a
-			// stalled tail: a cycle in that state refuses its writers, so no
-			// write arrives to bring a drain with it, and an empty window would
-			// leave the stall standing for good. [Config.Age] is that retry
-			// cadence as well as this one — and standing pressure's too, below,
-			// which is what retries a forced trim that failed: under
-			// [wal.PressureStop] the writers are refused, so nothing else
-			// brings a drain or a trim with it.
+			// What the tick owes — the aged window, the stalled watermark's
+			// re-ask, standing pressure's drain and trim — is [tickActionOf]'s
+			// rule, with the reasoning on its values.
 			_, stalled := s.tail.Stalled()
-			urgent := s.st == StateRunning && s.started && c.pressureLevel() >= wal.PressureDrain
-			mutations, _ := s.window.Size()
-			if s.st == StateRunning && (stalled || s.window.Aged(c.clock.Now(), maxAge) || (urgent && mutations > 0)) {
-				// Discarded rather than unchecked: this drain has no caller to
-				// answer, and the outcome it carries is on the state already —
-				// drain halts the cycle itself.
-				cause := drainWatermarkAge
-				if urgent {
-					cause = drainStoragePressure
-				}
-				_ = c.drain(context.Background(), s, cause)
-			} else if urgent {
-				// Nothing to drain, so no commit will force the trim: the tick
-				// asks for it directly, at the watermark as it stands.
+			switch tickActionOf(s.st, s.started, stalled,
+				s.window.Aged(c.clock.Now(), maxAge), c.pressureLevel(), s.window.Empty()) {
+			case tickDrainAge:
+				// Discarded rather than unchecked, here and below: this drain
+				// has no caller to answer, and the outcome it carries is on
+				// the state already — drain halts the cycle itself.
+				_ = c.drain(context.Background(), s, drainWatermarkAge)
+			case tickDrainPressure:
+				_ = c.drain(context.Background(), s, drainStoragePressure)
+			case tickForceTrim:
 				c.trimmer.Force(s.tail.Applied())
 			}
 		case j := <-c.jobs:

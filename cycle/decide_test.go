@@ -281,6 +281,45 @@ func TestAWriteIsRefusedAtItsEdgeAndTheRefusalNamesWhy(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The age tick.
+// ---------------------------------------------------------------------------
+
+// TestTheTickActsOnWhatItSees enumerates [tickActionOf]: which of the tick's
+// jobs runs, and under which name a pressure-fired drain is counted. The rows
+// a cycle cannot be driven into are the point of enumerating — a stall met by
+// standing pressure, most of all, whose drain must carry the pressure trigger
+// because the trim its commit forces is pressure's doing.
+func TestTheTickActsOnWhatItSees(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		st          State
+		started     bool
+		stalled     bool
+		aged        bool
+		pressure    wal.PressureLevel
+		windowEmpty bool
+		want        tickAction
+	}{
+		{"nothing due on an idle shard", StateRunning, true, false, false, wal.PressureNone, true, tickNothing},
+		{"a young window is left to fill", StateRunning, true, false, false, wal.PressureNone, false, tickNothing},
+		{"an aged window drains", StateRunning, true, false, true, wal.PressureNone, false, tickDrainAge},
+		{"a stalled tail is re-asked", StateRunning, true, true, false, wal.PressureNone, true, tickDrainAge},
+		{"pressure with work drains before the age", StateRunning, true, false, false, wal.PressureDrain, false, tickDrainPressure},
+		{"pressure names the drain the stall's re-ask rides", StateRunning, true, true, false, wal.PressureStop, true, tickDrainPressure},
+		{"pressure with an empty window goes straight to the trim", StateRunning, true, false, false, wal.PressureDrain, true, tickForceTrim},
+		{"the stop level asks nothing more of the tick", StateRunning, true, false, false, wal.PressureStop, true, tickForceTrim},
+		{"an unstarted cycle has no position to trim to", StateRunning, false, false, false, wal.PressureStop, true, tickNothing},
+		{"a halted cycle's log is not its to shorten", StateHaltedLost, true, false, true, wal.PressureStop, false, tickNothing},
+		{"nor is a diverged one's", StateHaltedInvariant, true, true, false, wal.PressureDrain, false, tickNothing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want,
+				tickActionOf(tc.st, tc.started, tc.stalled, tc.aged, tc.pressure, tc.windowEmpty))
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // The store boundary.
 // ---------------------------------------------------------------------------
 
