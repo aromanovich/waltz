@@ -450,7 +450,12 @@ timer, which drains on a context of its own, so its flag is inert and a case
 over it passes with the flag flipped — said at the cause.
 
 **A trim past what the cold store holds.** The trim goes to `applied`, which only
-a committed drain moves — never to what the window acked.
+a committed drain moves — never to what the window acked. A forced trim under
+storage pressure takes the same field at each of its three sites — the
+settle-forward path, an acquire that has just read the watermark, and the age
+tick — and the follow-up coalesced behind a running trim takes the highest of
+values each of which was that field once, so bypassing the cadence bypasses no
+part of the bound.
 
 **A shutdown calling a shard clean that it never looked at.** A cycle replays
 lazily, on the first request to reach it, so one installed by an acquire and then
@@ -941,7 +946,14 @@ is reached only on the settle-forward path, after `Tail.Settle(..., MoveWatermar
 so the watermark it is handed is the seqno the committing transaction wrote. A
 halted cycle does not trim at all: the log is the next owner's evidence. Handing
 that call `Tail.Commit()` — the acked position — instead of `Tail.Applied()` is
-red, so the derivation is no longer the only thing holding it.
+red, so the derivation is no longer the only thing holding it. `Trimmer.Force`
+(read) added two reach paths beside that one and both hand the same field: an
+acquire calls it after `Tail.Floor` has planted the cold store's own watermark
+and before anything appends, and the age tick calls it on the loop, where only
+a committed drain has ever moved `applied`. The follow-up a Force queues behind
+a running trim coalesces to the highest of values each of which was `applied`
+at its own request, and `applied` never moves down, so the coalesced watermark
+is one the cold store held.
 
 **The write path cannot ack into a cycle that has not replayed** (measured).
 `Cycle.add` calls `Cycle.start` before it reads the policy, takes a seqno or

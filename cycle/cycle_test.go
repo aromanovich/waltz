@@ -172,8 +172,17 @@ func neverDrains(c *Config) {
 // test moves it.
 func newEnv(t *testing.T, shape func(*Config)) *env {
 	t.Helper()
+	f := newLog()
+	return newEnvWith(t, f, f, shape)
+}
+
+// newEnvWith is newEnv over a log the caller built: log is what the cycle
+// drives and faulty is the fault face somewhere in it, which a decorator
+// grown around the usual one still carries (pressure_test.go's is one).
+func newEnvWith(t *testing.T, logs wal.Log, faulty *waltest.Faulty, shape func(*Config)) *env {
+	t.Helper()
 	e := &env{
-		log:   newLog(),
+		log:   faulty,
 		apply: &fakeApplier{},
 		mark:  &fakeWatermark{},
 		clock: clock.NewEventTimeSource(),
@@ -192,7 +201,7 @@ func newEnv(t *testing.T, shape func(*Config)) *env {
 	t.Cleanup(func() { e.handler.StopCapture(e.capture) })
 
 	e.c = standUp(t, testEpoch, Deps{
-		Log:       e.log,
+		Log:       logs,
 		Writer:    e.apply,
 		Recoverer: e.mark,
 		Metrics:   walmetrics.New(e.handler),

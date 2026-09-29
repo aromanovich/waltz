@@ -122,6 +122,121 @@ func TestTheTwoCountersTellAFiredCadenceFromACommittedTrim(t *testing.T) {
 	require.Equal(t, 1, committed, "and only the one that committed is counted")
 }
 
+func TestForceTrimsOutsideTheCadence(t *testing.T) {
+	trimmer, backend, _ := start(t)
+	rarely := trim.Cadence{Every: 1 << 20, After: time.Hour}
+
+	trimmer.Drained(1, rarely)
+	trimmer.Wait()
+	require.Empty(t, backend.Trims(), "the cadence alone would not have fired")
+
+	trimmer.Force(2)
+	trimmer.Wait()
+	require.Equal(t, []wal.Seqno{2}, backend.Trims(), "a forced trim consults no cadence")
+	fired, committed := trimmer.Counters()
+	require.Equal(t, 1, fired)
+	require.Equal(t, 1, committed)
+}
+
+func TestForceIsTheCadencesLastTrim(t *testing.T) {
+	trimmer, backend, _ := start(t)
+	every2 := trim.Cadence{Every: 2, After: time.Hour}
+
+	trimmer.Force(1)
+	trimmer.Wait()
+	trimmer.Drained(2, every2)
+	trimmer.Wait()
+	require.Equal(t, []wal.Seqno{1}, backend.Trims(),
+		"one drain since the forced trim does not reach a cadence of two")
+
+	trimmer.Drained(3, every2)
+	trimmer.Wait()
+	require.Equal(t, []wal.Seqno{1, 3}, backend.Trims())
+}
+
+func TestAForceDuringATrimQueuesOneFollowUpAtTheHighestWatermark(t *testing.T) {
+	trimmer, backend, _ := start(t)
+	fault, hold := holding()
+	backend.OnTrim(fault)
+
+	trimmer.Force(1)
+	trimmer.Force(5)
+	trimmer.Force(9)
+	close(hold)
+	trimmer.Wait()
+
+	require.Equal(t, []wal.Seqno{1, 9}, backend.Trims(),
+		"the two requests behind the one in flight are one follow-up, at the highest watermark")
+	fired, committed := trimmer.Counters()
+	require.Equal(t, 2, fired, "a request coalesced into the queued follow-up is not a third attempt")
+	require.Equal(t, 2, committed)
+}
+
+func TestAFailedTrimDoesNotLoseTheForcedFollowUp(t *testing.T) {
+	trimmer, backend, _ := start(t)
+	hold := make(chan struct{})
+	backend.OnTrim(func(call int) error {
+		if call == 1 {
+			<-hold
+			return errors.New("the WAL table is busy")
+		}
+		return nil
+	})
+
+	trimmer.Force(3)
+	trimmer.Force(7)
+	close(hold)
+	trimmer.Wait()
+
+	require.Equal(t, []wal.Seqno{3, 7}, backend.Trims(),
+		"the follow-up runs whatever became of the trim it queued behind")
+	fired, committed := trimmer.Counters()
+	require.Equal(t, 2, fired)
+	require.Equal(t, 1, committed, "the failed attempt is fired and not committed")
+}
+
+func TestWaitCoversTheQueuedFollowUp(t *testing.T) {
+	trimmer, backend, _ := start(t)
+	first, second := make(chan struct{}), make(chan struct{})
+	backend.OnTrim(func(call int) error {
+		if call == 1 {
+			<-first
+		} else {
+			<-second
+		}
+		return nil
+	})
+
+	trimmer.Force(1)
+	trimmer.Force(2)
+
+	done := make(chan struct{})
+	go func() {
+		trimmer.Wait()
+		close(done)
+	}()
+	close(first)
+	select {
+	case <-done:
+		t.Fatal("Wait returned while the queued follow-up was still inside the backend")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(second)
+	<-done
+	require.Equal(t, []wal.Seqno{1, 2}, backend.Trims())
+}
+
+func TestAForceBeforeAnythingAppliedTrimsNothing(t *testing.T) {
+	trimmer, backend, _ := start(t)
+
+	trimmer.Force(wal.FirstSeqno - 1)
+	trimmer.Wait()
+
+	require.Empty(t, backend.Trims(), "no watermark means no space to give back")
+	fired, _ := trimmer.Counters()
+	require.Zero(t, fired)
+}
+
 func TestWaitReturnsOnlyWhenTheTrimIsDone(t *testing.T) {
 	trimmer, backend, _ := start(t)
 	fault, hold := holding()

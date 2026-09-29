@@ -206,18 +206,23 @@ func supersededRoute(stillCurrent, retried bool, shard wal.ShardID) (readRoute, 
 }
 
 // writeRefused is what a write meets before the append, nil where it may
-// proceed. Two reasons in one rule, because the precedence between them is a
-// decision rather than the order two calls happen to sit in: a stalled applier
-// is refused as such even where the tail is also full, that being the one an
-// operator can act on and the one waiting will not clear. The second result
-// names it for the metric, so asking this rule a question counts nothing
-// ([Cycle.writeRefused] emits).
+// proceed. Three reasons in one rule, because the precedence between them is a
+// decision rather than the order calls happen to sit in: what is named is the
+// thing least in this shard's own power to clear, so the stalled drain
+// outranks everything and the backend's pressure outranks the sizes. The
+// second result names it for the metric, so asking this rule a question counts
+// nothing ([Cycle.writeRefused] emits).
 //
 //   - stalled: the cycle cannot say whether its last drain committed, so
 //     nothing may be applied over it (see the stalled field of
 //     [tailstate.Tail]) and a shard taking more work would grow a tail it has
 //     no way to discharge. I10's rule at the moment the applier is not behind
 //     but blind;
+//   - pressure at [wal.PressureStop]: the backend is running out of the
+//     storage acked entries live in and asked that nothing more be appended
+//     until that clears. The level is the backend's to lower — this shard's
+//     drains and trims are already forced while it stands — so naming a size
+//     here would send an operator to an applier that is not the constraint;
 //   - I10 itself: entries means the applier is behind, bytes a workflow near
 //     the server's own blob limits, and a tail over both is named as bytes. It
 //     reads the tail as it stands, never the tail this mutation would make, so
@@ -230,11 +235,15 @@ func supersededRoute(stillCurrent, retried bool, shard wal.ShardID) (readRoute, 
 // background re-acquire. Cause and scope are the server's own persistence rate
 // limiter's, so the retry stays inside the history client.
 func writeRefused(
-	entries, bytes int64, stalled wal.Seqno, shard wal.ShardID, cfg Config,
+	entries, bytes int64, stalled wal.Seqno, pressure wal.PressureLevel, shard wal.ShardID, cfg Config,
 ) (*serviceerror.ResourceExhausted, string) {
 	switch {
 	case stalled != 0:
 		return unresolvedDrain(shard, stalled, "takes no writes"), walmetrics.LimitUnresolved
+	case pressure >= wal.PressureStop:
+		return persistenceLimit(
+			"shard %d's WAL backend reports storage pressure and takes no new appends until it clears",
+			shard), walmetrics.LimitStoragePressure
 	case entries >= int64(cfg.HardMaxEntries) || bytes >= int64(cfg.HardMaxBytes):
 		limit := walmetrics.LimitEntries
 		if bytes >= int64(cfg.HardMaxBytes) {

@@ -43,11 +43,11 @@ type Cadence struct {
 
 // Trimmer keeps one shard's log short.
 //
-// [Trimmer.Drained] is the cycle's loop and no other goroutine, which is what
-// lets the cadence be plain fields. [Trimmer.Counters] is the loop's too, plus
-// one read by whoever retires the cycle — taken after that caller's
-// [Trimmer.Wait] and once the loop is gone, which is what makes reading the
-// plain fired field there safe.
+// [Trimmer.Drained] and [Trimmer.Force] are the cycle's loop and no other
+// goroutine, which is what lets the cadence be plain fields. [Trimmer.Counters]
+// is the loop's too, plus one read by whoever retires the cycle — taken after
+// that caller's [Trimmer.Wait] and once the loop is gone, which is what makes
+// reading the plain fired field there safe.
 type Trimmer struct {
 	shard  wal.ShardID
 	log    wal.Log
@@ -61,10 +61,13 @@ type Trimmer struct {
 	lastAt    time.Time
 	fired     int
 
-	// running and inFlight guard the one detached trim; committed is written by
-	// it, since only it knows the outcome.
+	// running and mu guard the one detached trim and the one follow-up a Force
+	// may queue behind it; committed is written by the trim's goroutine, since
+	// only it knows the outcome.
 	running   sync.WaitGroup
-	inFlight  atomic.Bool
+	mu        sync.Mutex
+	inFlight  bool
+	pending   wal.Seqno // 0 is none: a queued follow-up, coalesced to the highest watermark asked for
 	committed atomic.Int64
 }
 
@@ -85,7 +88,7 @@ func New(shard wal.ShardID, log wal.Log, clock clock.TimeSource, emit *walmetric
 // of one log are the same trim twice.
 func (t *Trimmer) Drained(applied wal.Seqno, cadence Cadence) {
 	t.sinceTrim++
-	if t.inFlight.Load() {
+	if t.busy() {
 		return
 	}
 	now := t.clock.Now()
@@ -95,7 +98,35 @@ func (t *Trimmer) Drained(applied wal.Seqno, cadence Cadence) {
 	t.sinceTrim = 0
 	t.lastAt = now
 	t.fired++
-	t.start(applied)
+	t.start(applied, false)
+}
+
+// Force starts a trim at once, outside the cadence: a backend that reported
+// storage pressure is owed the applied entries' space now, not a cadence from
+// now. A trim already in flight takes one follow-up rather than losing the
+// request, coalesced to the highest watermark asked for; only a request that
+// scheduled an attempt counts as a fired one.
+//
+// A failed forced trim is not retried from here: the pressure that asked for it
+// is a level, and whoever polls it forces again while it stands.
+func (t *Trimmer) Force(applied wal.Seqno) {
+	if !wal.CheckTrim(applied) {
+		// Nothing has ever been applied, so there is no space to give back.
+		return
+	}
+	t.sinceTrim = 0
+	t.lastAt = t.clock.Now()
+	if t.start(applied, true) {
+		t.fired++
+	}
+}
+
+// busy reports a trim in flight, which is [Trimmer.Drained]'s reason to skip a
+// cadence rather than queue it.
+func (t *Trimmer) busy() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.inFlight
 }
 
 // Wait blocks until no trim is in flight. Whoever retires a cycle calls it, so
@@ -111,28 +142,56 @@ func (t *Trimmer) Counters() (fired, committed int) {
 	return t.fired, int(t.committed.Load())
 }
 
-// start runs one trim beside the caller's loop. It takes the watermark as a
+// start runs one trim beside the caller's loop, or — for a caller that may not
+// be skipped — queues a follow-up behind the one already running. It reports
+// whether it scheduled an attempt: a follow-up coalesced into one already
+// queued is the same attempt asked for twice. It takes the watermark as a
 // value and holds nothing of the caller's: what the goroutine touches is this
-// Trimmer's own atomics.
-func (t *Trimmer) start(upTo wal.Seqno) {
-	t.inFlight.Store(true)
+// Trimmer's own guarded fields.
+func (t *Trimmer) start(upTo wal.Seqno, queue bool) bool {
+	t.mu.Lock()
+	if t.inFlight {
+		if !queue {
+			t.mu.Unlock()
+			return false
+		}
+		scheduled := t.pending == 0
+		t.pending = max(t.pending, upTo)
+		t.mu.Unlock()
+		return scheduled
+	}
+	t.inFlight = true
 	t.running.Add(1)
-	t.emit.Trim(walmetrics.TrimStarted)
+	t.mu.Unlock()
 	go func() {
 		// Order: inFlight is cleared before Done, so a Wait that returns leaves
-		// the next cadence free to fire rather than skipping itself.
+		// the next cadence free to fire rather than skipping itself. Wait also
+		// covers a queued follow-up, because the goroutine runs it before Done.
 		defer t.running.Done()
-		defer t.inFlight.Store(false)
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		defer cancel()
-		if err := t.log.Trim(ctx, t.shard, upTo); err != nil {
-			// Both outcomes are counted, because "trims are failing" is a
-			// ratio.
-			t.emit.Trim(walmetrics.TrimFailed)
-			t.logger.Warn("apply cycle: trim failed, retrying at the next cadence",
-				tag.ShardID(int32(t.shard)), tag.Error(err))
+		for {
+			t.emit.Trim(walmetrics.TrimStarted)
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			err := t.log.Trim(ctx, t.shard, upTo)
+			cancel()
+			if err != nil {
+				// Both outcomes are counted, because "trims are failing" is a
+				// ratio.
+				t.emit.Trim(walmetrics.TrimFailed)
+				t.logger.Warn("apply cycle: trim failed, retrying at the next cadence",
+					tag.ShardID(int32(t.shard)), tag.Error(err))
+			} else {
+				t.committed.Add(1)
+			}
+			t.mu.Lock()
+			if t.pending != 0 {
+				upTo, t.pending = t.pending, 0
+				t.mu.Unlock()
+				continue
+			}
+			t.inFlight = false
+			t.mu.Unlock()
 			return
 		}
-		t.committed.Add(1)
 	}()
+	return true
 }

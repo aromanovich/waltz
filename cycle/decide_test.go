@@ -200,11 +200,12 @@ func TestEveryMomentAReadCanArriveInRoutesBothReaders(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestAWriteIsRefusedAtItsEdgeAndTheRefusalNamesWhy walks both of I10's units
-// across the boundary and the unreadable outcome beside them, and asserts which
-// one is reported: a shard tripping more than one has one metric to emit, and
-// the tag is the diagnosis — entries means the applier is stalled, bytes a
-// workflow near the server's own blob limits, unresolved an applier that cannot
-// say what it did.
+// across the boundary, the unreadable outcome beside them and the backend's own
+// veto, and asserts which one is reported: a shard tripping more than one has
+// one metric to emit, and the tag is the diagnosis — entries means the applier
+// is stalled, bytes a workflow near the server's own blob limits, unresolved an
+// applier that cannot say what it did, storage_pressure a backend that took no
+// more appends.
 //
 // The bound is `>=` in both units — at the limit is full — and every refusal is
 // the concrete type the shard's write path reads as "definitely not committed".
@@ -212,33 +213,43 @@ func TestAWriteIsRefusedAtItsEdgeAndTheRefusalNamesWhy(t *testing.T) {
 	cfg := Config{HardMaxEntries: 8, HardMaxBytes: 1024}
 
 	for _, tc := range []struct {
-		name    string
-		entries int64
-		bytes   int64
-		stalled wal.Seqno
-		limit   string // "" means the write may proceed
+		name     string
+		entries  int64
+		bytes    int64
+		stalled  wal.Seqno
+		pressure wal.PressureLevel
+		limit    string // "" means the write may proceed
 	}{
-		{"an empty tail", 0, 0, 0, ""},
-		{"one short in both units", 7, 1023, 0, ""},
-		{"at the entry bound", 8, 0, 0, walmetrics.LimitEntries},
-		{"one short of the entry bound, with bytes to spare", 7, 512, 0, ""},
-		{"at the byte bound", 0, 1024, 0, walmetrics.LimitBytes},
-		{"one short of the byte bound", 8191, 1023, 0, walmetrics.LimitEntries},
+		{"an empty tail", 0, 0, 0, wal.PressureNone, ""},
+		{"one short in both units", 7, 1023, 0, wal.PressureNone, ""},
+		{"at the entry bound", 8, 0, 0, wal.PressureNone, walmetrics.LimitEntries},
+		{"one short of the entry bound, with bytes to spare", 7, 512, 0, wal.PressureNone, ""},
+		{"at the byte bound", 0, 1024, 0, wal.PressureNone, walmetrics.LimitBytes},
+		{"one short of the byte bound", 8191, 1023, 0, wal.PressureNone, walmetrics.LimitEntries},
 		// The bound reads the tail as it stands, so a mutation is never refused
 		// for its own size and the tail may pass the limit by an entry.
-		{"over the entry bound by one", 9, 0, 0, walmetrics.LimitEntries},
-		{"one oversized mutation", 1, 2048, 0, walmetrics.LimitBytes},
+		{"over the entry bound by one", 9, 0, 0, wal.PressureNone, walmetrics.LimitEntries},
+		{"one oversized mutation", 1, 2048, 0, wal.PressureNone, walmetrics.LimitBytes},
 		// Both at once is reported as bytes: that is the diagnosis an operator
 		// cannot fix by waiting for the applier.
-		{"over both bounds", 64, 4096, 0, walmetrics.LimitBytes},
+		{"over both bounds", 64, 4096, 0, wal.PressureNone, walmetrics.LimitBytes},
 		// And a stall outranks the sizes, because it is the one waiting will
 		// not clear: a tail that cannot be applied over is why the other two
 		// grow in the first place.
-		{"a tail well inside both bounds, stalled", 1, 16, 4, walmetrics.LimitUnresolved},
-		{"stalled and over both bounds", 64, 4096, 4, walmetrics.LimitUnresolved},
+		{"a tail well inside both bounds, stalled", 1, 16, 4, wal.PressureNone, walmetrics.LimitUnresolved},
+		{"stalled and over both bounds", 64, 4096, 4, wal.PressureNone, walmetrics.LimitUnresolved},
+		// The drain level asks for drains and trims, never a refusal: only the
+		// stop level takes the write path with it.
+		{"pressure at the drain level", 0, 0, 0, wal.PressureDrain, ""},
+		{"pressure at the stop level", 0, 0, 0, wal.PressureStop, walmetrics.LimitStoragePressure},
+		// Pressure outranks the sizes — naming a size would send an operator
+		// to an applier that is not the constraint — and the stall outranks
+		// pressure: blind is worse than full.
+		{"at the stop level and over both bounds", 64, 4096, 0, wal.PressureStop, walmetrics.LimitStoragePressure},
+		{"stalled at the stop level", 1, 16, 4, wal.PressureStop, walmetrics.LimitUnresolved},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			refusal, limit := writeRefused(tc.entries, tc.bytes, tc.stalled, testShard, cfg)
+			refusal, limit := writeRefused(tc.entries, tc.bytes, tc.stalled, tc.pressure, testShard, cfg)
 			if tc.limit == "" {
 				require.Nil(t, refusal, "a write is not refused until it is")
 				require.Empty(t, limit, "and nothing is refused, so nothing named a reason")
@@ -254,13 +265,17 @@ func TestAWriteIsRefusedAtItsEdgeAndTheRefusalNamesWhy(t *testing.T) {
 				"a refusal raised before the append is definitely not committed, and the shard reads that off the type")
 			require.Contains(t, refusal.Message, fmt.Sprintf("shard %d", testShard),
 				"an operator reading one refusal must be told which shard tripped")
-			if tc.limit == walmetrics.LimitUnresolved {
+			switch tc.limit {
+			case walmetrics.LimitUnresolved:
 				require.Contains(t, refusal.Message, fmt.Sprintf("seqno %d", tc.stalled),
 					"and which drain it is waiting on")
-				return
+			case walmetrics.LimitStoragePressure:
+				require.Contains(t, refusal.Message, "storage pressure",
+					"and that the backend, not the layer, is what refused")
+			default:
+				require.Contains(t, refusal.Message, fmt.Sprintf("%d/%d entries", tc.entries, cfg.HardMaxEntries))
+				require.Contains(t, refusal.Message, fmt.Sprintf("%d/%d bytes", tc.bytes, cfg.HardMaxBytes))
 			}
-			require.Contains(t, refusal.Message, fmt.Sprintf("%d/%d entries", tc.entries, cfg.HardMaxEntries))
-			require.Contains(t, refusal.Message, fmt.Sprintf("%d/%d bytes", tc.bytes, cfg.HardMaxBytes))
 		})
 	}
 }

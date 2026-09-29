@@ -171,10 +171,21 @@ recovery reads the watermark rather than the log.
 Keeps a log implementation's working set small; part of the latency budget, not
 hygiene.
 
+**Storage pressure (давление хранилища)**:
+A backend's own report, beside appends that still succeed, that the storage
+acked entries live in is running low (`wal.PressureSource`). A level the layer
+polls, not an event it consumes: at the drain level every accepted write drains
+and every committed drain trims with the cadence bypassed; at the stop level new
+appends are also refused until the backend lowers it. Never an append error —
+the append that carried it stays a durable acknowledgement.
+_Avoid_: backpressure (that is the layer's own bound on the tail; this is the
+backend's condition, and the layer relieves it rather than imposes it)
+
 **Backpressure (граница хвоста)**:
 The refusal a shard's write meets once its tail reaches its hard maximum in
-either unit — or, ahead of both and not a size at all, once its applier cannot
-read whether its last drain committed. Raised **before** the append, so a
+either unit — ahead of both, once its applier cannot
+read whether its last drain committed, and, between those, once the backend
+reports storage pressure at the stop level. Raised **before** the append, so a
 refused mutation is provably not in the log; returned unwrapped and in the shape
 the server's own persistence limiter uses, because the shard's write path
 matches concrete types and anything it does not recognise becomes a background
