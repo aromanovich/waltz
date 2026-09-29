@@ -3,13 +3,14 @@ package cycle
 // The predicates this package's outcomes turn on, each a function of the
 // values it decides over and of nothing else, so decide_test.go can enumerate
 // them without a cycle. Four have a method beside the call site that supplies
-// the values; [noCycleRoute], [supersededRoute] and [storeError] are called
-// from [Manager] directly, where their values already are.
+// the values; the rest are called where their values already are —
+// [noCycleRoute], [supersededRoute] and [storeError] from [Manager],
+// [tickActionOf] from the loop's own tick.
 //
 // The first family is one rule in five moments — what becomes of a read the
 // layer cannot answer out of both its sources ([readRoute]); then I10's
-// refusal, the store boundary's translation, the drain's attribution and what a
-// drain's outcome means.
+// refusal, the store boundary's translation, the drain's attribution, what a
+// drain's outcome means, and what one age tick does.
 
 import (
 	"errors"

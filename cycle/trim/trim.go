@@ -99,7 +99,8 @@ func (t *Trimmer) Drained(applied wal.Seqno, cadence Cadence) {
 		return
 	}
 	if !t.start(applied, false) {
-		// A trim is in flight: skipped, and the cadence keeps accruing.
+		// In flight — skipped, and the cadence keeps accruing — or the
+		// watermark is already covered and there is nothing to give back.
 		return
 	}
 	t.sinceTrim = 0
@@ -113,7 +114,9 @@ func (t *Trimmer) Drained(applied wal.Seqno, cadence Cadence) {
 // request, coalesced to the highest watermark asked for; one that a trim has
 // already reached, or is reaching, schedules nothing, so a level standing
 // across ticks re-trims an unchanged watermark exactly never. Only a request
-// that scheduled an attempt counts as a fired one.
+// that scheduled an attempt counts as a fired one; the cadence resets either
+// way, because a request the trimmer refused is one a trim already covers, and
+// the next cadenced trim is owed no sooner for it.
 //
 // A failed forced trim is not retried from here: the pressure that asked for it
 // is a level, and whoever polls it forces again while it stands.
