@@ -439,12 +439,20 @@ func (x *UpdateRequest) GetNewWorkflowNewEvents() []*AppendHistoryNodesRequest {
 // ConflictResolveRequest mirrors
 // persistence.InternalConflictResolveWorkflowExecutionRequest.
 type ConflictResolveRequest struct {
-	state                          protoimpl.MessageState       `protogen:"open.v1"`
-	ShardId                        int32                        `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	Mode                           int32                        `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
-	ResetSnapshot                  *WorkflowSnapshot            `protobuf:"bytes,3,opt,name=reset_snapshot,json=resetSnapshot,proto3" json:"reset_snapshot,omitempty"`
-	NewSnapshot                    *WorkflowSnapshot            `protobuf:"bytes,4,opt,name=new_snapshot,json=newSnapshot,proto3" json:"new_snapshot,omitempty"`
-	CurrentMutation                *WorkflowMutation            `protobuf:"bytes,5,opt,name=current_mutation,json=currentMutation,proto3" json:"current_mutation,omitempty"`
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ShardId         int32                  `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	Mode            int32                  `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	ResetSnapshot   *WorkflowSnapshot      `protobuf:"bytes,3,opt,name=reset_snapshot,json=resetSnapshot,proto3" json:"reset_snapshot,omitempty"`
+	NewSnapshot     *WorkflowSnapshot      `protobuf:"bytes,4,opt,name=new_snapshot,json=newSnapshot,proto3" json:"new_snapshot,omitempty"`
+	CurrentMutation *WorkflowMutation      `protobuf:"bytes,5,opt,name=current_mutation,json=currentMutation,proto3" json:"current_mutation,omitempty"`
+	// The doubled events_new_events is upstream's name and not a typo. Temporal
+	// appends NewEvents to each part's name when it lowers a request to its
+	// internal form, and this request's parts already end in Events
+	// (ResetWorkflowEvents and its two siblings), where a create's and an
+	// update's end in Workflow. The mirror is field for field, so it is copied
+	// rather than tidied: the field-set guard matches the reflected "Name Type"
+	// exactly, and a name corrected here would be a field upstream could later
+	// add unnoticed.
 	CurrentWorkflowEventsNewEvents []*AppendHistoryNodesRequest `protobuf:"bytes,6,rep,name=current_workflow_events_new_events,json=currentWorkflowEventsNewEvents,proto3" json:"current_workflow_events_new_events,omitempty"`
 	ResetWorkflowEventsNewEvents   []*AppendHistoryNodesRequest `protobuf:"bytes,7,rep,name=reset_workflow_events_new_events,json=resetWorkflowEventsNewEvents,proto3" json:"reset_workflow_events_new_events,omitempty"`
 	NewWorkflowEventsNewEvents     []*AppendHistoryNodesRequest `protobuf:"bytes,8,rep,name=new_workflow_events_new_events,json=newWorkflowEventsNewEvents,proto3" json:"new_workflow_events_new_events,omitempty"`
