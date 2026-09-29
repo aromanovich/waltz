@@ -1,10 +1,7 @@
 package cycle
 
-// Storage pressure: a backend that says, beside a successful append, that it
-// is running out of the storage acked entries live in ([wal.PressureSource]).
-// What the cycle owes it is speed, never a changed answer — the drain and the
-// trim go at once, the next appends are refused at [wal.PressureStop] — and
-// what these tests hold above all is that the append that carried the signal
+// The cycle over a backend reporting storage pressure ([wal.PressureSource]).
+// What these tests hold above all is that the append that carried the signal
 // stays the durable ack it was.
 
 import (
@@ -14,7 +11,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.temporal.io/api/serviceerror"
 	p "go.temporal.io/server/common/persistence"
 
 	"github.com/aromanovich/waltz/wal"
@@ -84,9 +80,8 @@ func TestStopRefusesTheNextWriteUntilTheBackendLowersIt(t *testing.T) {
 
 	pl.report(wal.PressureStop)
 	err := e.add(t, mkUpdate(ns, wf, run, 2))
-	refusal, ok := err.(*serviceerror.ResourceExhausted) //nolint:errorlint // unwrapped is the contract
-	require.True(t, ok, "got %T: %v", err, err)
-	require.False(t, p.OperationPossiblySucceeded(refusal))
+	requireRefusal(t, err)
+	require.False(t, p.OperationPossiblySucceeded(err))
 	require.Len(t, e.entries(t), 1, "the refused write reached no log")
 	require.Equal(t, []string{walmetrics.LimitStoragePressure},
 		e.tagged("wal_backpressure_refusals", "limit"))
@@ -174,7 +169,7 @@ func TestPressureDrainsAWindowTheAgeWouldNotYet(t *testing.T) {
 	ns, wf, run := ids()
 	// Land the write just before the tick, so the window is far younger than
 	// the age when the timer fires.
-	e.clock.Advance(e.cfg.Age - time.Minute)
+	e.advance(t, e.cfg.Age-time.Minute)
 	require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
 
 	pl.report(wal.PressureDrain)

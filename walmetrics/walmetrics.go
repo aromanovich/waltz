@@ -145,10 +145,7 @@ const (
 	TriggerExplicit  = "explicit"  // a caller asked — shutdown, or a test
 	TriggerRead      = "read"      // [cycle.Config.DrainOnRead]: a read emptying the window it would have merged
 
-	// TriggerStoragePressure is the backend asking for its storage back: the
-	// window is drained at whatever size it has, and the trim behind it runs
-	// outside the cadence.
-	TriggerStoragePressure = "storage_pressure"
+	TriggerStoragePressure = "storage_pressure" // the WAL backend asking for its storage back: drain now, trim now
 )
 
 // Limit values for [BackpressureRefusals], and outcome values for [Trims].

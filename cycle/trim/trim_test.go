@@ -226,6 +226,54 @@ func TestWaitCoversTheQueuedFollowUp(t *testing.T) {
 	require.Equal(t, []wal.Seqno{1, 2}, backend.Trims())
 }
 
+func TestAForceATrimAlreadyCoveredSchedulesNothing(t *testing.T) {
+	trimmer, backend, _ := start(t)
+
+	trimmer.Force(5)
+	trimmer.Wait()
+	trimmer.Force(5)
+	trimmer.Force(4)
+	trimmer.Wait()
+
+	require.Equal(t, []wal.Seqno{5}, backend.Trims(),
+		"a watermark a trim has already reached has nothing left to give back")
+	fired, committed := trimmer.Counters()
+	require.Equal(t, 1, fired)
+	require.Equal(t, 1, committed)
+}
+
+func TestAForceAtTheWatermarkInFlightQueuesNothing(t *testing.T) {
+	trimmer, backend, _ := start(t)
+	fault, hold := holding()
+	backend.OnTrim(fault)
+
+	trimmer.Force(5)
+	trimmer.Force(5)
+	close(hold)
+	trimmer.Wait()
+
+	require.Equal(t, []wal.Seqno{5}, backend.Trims(),
+		"the trim in flight is already going where the second request asks")
+	fired, _ := trimmer.Counters()
+	require.Equal(t, 1, fired)
+}
+
+func TestAFailedForcedTrimIsNotCovered(t *testing.T) {
+	trimmer, backend, _ := start(t)
+	backend.OnTrim(waltest.Once(errors.New("the WAL volume is out of space")))
+
+	trimmer.Force(5)
+	trimmer.Wait()
+	trimmer.Force(5)
+	trimmer.Wait()
+
+	require.Equal(t, []wal.Seqno{5, 5}, backend.Trims(),
+		"only a committed trim covers its watermark: the retry gets through")
+	fired, committed := trimmer.Counters()
+	require.Equal(t, 2, fired)
+	require.Equal(t, 1, committed)
+}
+
 func TestAForceBeforeAnythingAppliedTrimsNothing(t *testing.T) {
 	trimmer, backend, _ := start(t)
 

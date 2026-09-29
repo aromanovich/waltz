@@ -205,6 +205,54 @@ func supersededRoute(stillCurrent, retried bool, shard wal.ShardID) (readRoute, 
 		"its cycle was superseded twice while one task page was being built, so this node cannot say what its tail holds")
 }
 
+// tickAction is what one age tick does. The tick is the loop's only
+// self-driven moment, so everything no caller's request brings with it lands
+// here, and [tickActionOf] is the rule over what the tick can see.
+type tickAction int
+
+const (
+	// tickNothing: not running, or nothing due.
+	tickNothing tickAction = iota
+	// tickDrainAge: an aged window — or a stalled tail, whose watermark the
+	// drain re-asks on the tick's own context. A stalled cycle refuses its
+	// writers and answers no reads, so nothing else brings a drain with it,
+	// and [Config.Age] is that retry cadence as well as the window's bound.
+	tickDrainAge
+	// tickDrainPressure: the same drain, fired by standing backend pressure
+	// before the age would have, and named for it — the stall's re-ask
+	// included — since the trim its commit forces is pressure's doing.
+	tickDrainPressure
+	// tickForceTrim: standing pressure with an empty window. No commit is
+	// coming to force the trim, so the tick asks the trimmer directly —
+	// which is also what retries a forced trim that failed, under a stop
+	// level that refuses the writers who would otherwise bring one.
+	tickForceTrim
+)
+
+// tickActionOf is the rule. An unstarted cycle is left alone whatever the
+// backend reports: its watermark has never been read, so there is no position
+// a trim could safely go to. Pressure that finds work drains rather than
+// trims directly, because only a commit moves the watermark a trim reclaims
+// to.
+func tickActionOf(
+	st State, started, stalled, aged bool, pressure wal.PressureLevel, windowEmpty bool,
+) tickAction {
+	if st != StateRunning {
+		return tickNothing
+	}
+	urgent := started && pressure >= wal.PressureDrain
+	switch {
+	case stalled || aged || (urgent && !windowEmpty):
+		if urgent {
+			return tickDrainPressure
+		}
+		return tickDrainAge
+	case urgent:
+		return tickForceTrim
+	}
+	return tickNothing
+}
+
 // writeRefused is what a write meets before the append, nil where it may
 // proceed. Three reasons in one rule, because the precedence between them is a
 // decision rather than the order calls happen to sit in: what is named is the
