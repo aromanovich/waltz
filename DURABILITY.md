@@ -1324,12 +1324,34 @@ pagination inside the window, leaves the base's cursor behind, and hands the ran
 the reader completes the acked rows that were in it. That is the closed entry above
 about the two token spaces, proved at last against the thing it is actually about.
 
-Finishing the run is the next pass's, and so is a `--confirm` over its greens. What
-is left unswept is `apply`, `wrapper`, `baserow`, `mutation`, `wal`, `memwal`,
-`memcold` and `walmetrics`. Two facts about the cost, since they decide how to run
-it: a mutation low in the import graph (`fold`, `wal`) rebuilds nearly everything
-and costs minutes, while one high in it (`memcold`, `walmetrics`) costs seconds —
-so sweep from the top down if the budget is short. And on the evidence above the
+**The third segment took the advice and is the whole of the cheap end**: the
+shipped store, the shipped log, the wrapper, the root package and the emitter —
+**94 mutations in six minutes**, against two minutes *each* in `fold`, because a
+mutation high in the import graph rebuilds almost nothing. Sweep from the top down
+when the budget is short; the number is that stark.
+
+Twenty-seven candidates, and `--confirm` settles them: **six are caught** and
+twenty-one are still green under the whole set. Of the six, three were already
+guarded by the packages a narrow judge drops — two by panics inside the drain's
+transaction (`applyCurrentRow`'s absent row, `applyHistory`'s tree row for a branch
+that is not new) and one by the in-process server (`applyTasks` handed an empty
+list). The other three are the tests this pass added: the store's own
+`startTimeOf`, which is `fold`'s twin and had no test because every fixture fills
+the field, and two **contract** claims that were missing from the conformance suite
+rather than from a backend — a trim below the lower end a previous trim left, where
+`upTo - base + 1` underflows and takes the whole log, and a read well past the end,
+where indexing from the lower end is a slice bound. Both now sit in
+`RunContractSuite`, so every backend meets them.
+
+Of the twenty-one still green, eighteen are `if err != nil` on a call no fixture
+can fail — the untested-error-path class this file already names as coverage rather
+than a defect — and three are `len(x) == 0` or nil early returns the next line
+no-ops through. `memwal`'s `CheckTrim` is the one worth naming: its absence is
+covered by the `upTo < base` check two lines later, which is the guard that does
+the work and is now driven.
+
+Finishing the run is the next pass's: what is left unswept is `apply`, `baserow`,
+`mutation`, `wal` and the rest of `fold`. On the evidence of all three segments the
 interesting question in each is the same one: **which of their refusals no valid
 stream reaches.**
 
