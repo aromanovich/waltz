@@ -448,6 +448,49 @@ func TestTombstone(t *testing.T) {
 	require.Equal(t, 3, stats.MutationsIn, "the failed add does not count; the idempotent delete does")
 }
 
+// TestEveryKindIsRefusedAfterATombstone: four sites raise ErrAfterTombstone and
+// one of them was driven. The other three are not decoration — a run's state after
+// a delete has no owner, so a handler that folds onto it dereferences nil: the
+// refusal is what stands between an impossible stream and a panic on the shard's
+// own goroutine, which takes the process with it.
+//
+// Impossible is the right word and is exactly why the refusal exists rather than
+// a guess: the single writer would have seen its assertion fail. But [Add] is also
+// where a replay arrives, with no [Accumulator.Check] in front of it, so what
+// reaches it is what some previous owner acked rather than what this one validated.
+func TestEveryKindIsRefusedAfterATombstone(t *testing.T) {
+	// A conflict-resolve's current mutation must land on a run whose window state
+	// is an update it can merge with, so that arm needs two runs: one tombstoned
+	// and one carrying the reset.
+	conflictOverCurrent := func() mutation.Mutation {
+		m := mkConflictResolve(runY, 3)
+		m.ConflictResolve.CurrentWorkflowMutation = &p.InternalWorkflowMutation{
+			NamespaceID: nsID, WorkflowID: wfID, RunID: runX, DBRecordVersion: 2,
+			ExecutionInfoBlob:  blob("info-v2"),
+			ExecutionStateBlob: blob("state-v2"),
+			ExecutionState:     &persistencespb.WorkflowExecutionState{RunId: runX},
+		}
+		return m
+	}
+
+	for _, c := range []struct {
+		name string
+		m    mutation.Mutation
+	}{
+		{"an update", mkUpdate(runX, 3)},
+		{"a set", mkSet(runX, 3)},
+		{"a conflict-resolve of the deleted run", mkConflictResolve(runX, 3)},
+		{"a conflict-resolve mutating the deleted run as current", conflictOverCurrent()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := fold.New(shard)
+			add(t, a, mkUpdate(runX, 2), mkDelete(runX))
+
+			require.ErrorIs(t, a.Add(3, c.m), fold.ErrAfterTombstone)
+		})
+	}
+}
+
 // TestCreateBehindTombstone: the only mutation that gives a tombstoned run row
 // state again, and so the only window that emits two requests naming one run. A
 // second delete of that run is an idempotent no-op, and neither the current row
