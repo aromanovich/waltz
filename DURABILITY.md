@@ -1270,22 +1270,45 @@ capped by `min(cut, pageSize)` — that last one provable from the branch's own
 arithmetic, since the branch implies an ask of one, hence a single base row, hence
 a first key equal to the last.
 
-**The second class, run the same way, and what a hardened tree looks like from
-it.** `guard` over the same set is a partial run — the first 80 of 331, through
-`cycle`, its three sub-packages and into `fold` — and it returned **eight** greens,
-none of them a hole. That is worth recording as a result rather than as an absence:
-the shapes were a state check a second check downstream repeats
-(`Cycle.startForRead`, `Manager.ShardAcquired`'s epoch, `trim.Trimmer.Force`'s
-`CheckTrim`, which `start`'s own `upTo <= doneUpTo` refuses anyway), a fast path
-whose own comment already predicts the green (`fold`'s `want.empty()`), and three
-where the guard is load-bearing and the caller happens to check too — `Cycle.halt`,
-`Cycle.refold` and `tailstate.Tail.Resolve`. The last of those is the one to read:
-resolving an unstalled tail assigns zero to `applied` **and** `resolved`, which is
-the watermark going backwards and the whole log back under the tail, so I10 refuses
-every write on the shard. All three now say at the guard what its absence costs,
-which is what this file means by "what it found and dismissed belongs beside the
-code". Finishing the run is the next pass's, and so is the `--confirm` the
-paragraph above owes.
+**The second class, run the same way, and it does not stop where the first did.**
+`guard` over the same set is a partial run — 141 of 331 at this writing, through
+`cycle`, its three sub-packages and into `fold` — with **25** greens, and the two
+halves of it read differently enough to be worth separating.
+
+Over `cycle` it found nothing that was a hole, which is a result rather than an
+absence: a state check a second check downstream repeats (`Cycle.startForRead`,
+`Manager.ShardAcquired`'s epoch, `trim.Trimmer.Force`'s `CheckTrim`, which `start`'s
+own `upTo <= doneUpTo` refuses anyway), a fast path whose own comment already
+predicts the green (`fold`'s `want.empty()`), and three where the guard is
+load-bearing and the caller happens to check too — `Cycle.halt`, `Cycle.refold` and
+`tailstate.Tail.Resolve`. The last is the one to read: resolving an unstalled tail
+assigns zero to `applied` **and** `resolved`, which is the watermark going backwards
+and the whole log back under the tail, so I10 refuses every write on the shard. All
+three now say at the guard what its absence costs.
+
+**Over `fold` it found six, and the fold's refusals are where this class earns its
+keep.** `ErrAfterTombstone` is raised at four sites and exactly one had a test; the
+other three each hide a nil dereference, because a delete leaves the run's state
+with no owner and a handler that folds onto it walks into that — a panic on the
+shard's own goroutine, which takes the process rather than halting one shard. Two
+more are `ErrRefused` sites, where the stream is legal and this accumulator cannot
+express it: a conflict-resolve's current mutation landing on a run the window holds
+as a snapshot or as an update that continued-as-new, and **a Set over a
+continued-as-new pair, which is the one that loses data rather than panicking** —
+dropping the pending request takes the new run's snapshot with it while the
+window's entry still points at it, so the drain emits the Set and never the
+creation. An acked start gone, with nothing that says so. The sixth is on the read
+path: a delete-current over a workflow the cold store has no current row for, whose
+guard would otherwise be compared against a row that is not there.
+
+Two things to take from the split. **A refusal is a guard**, and a tree whose
+decision paths are well driven can still have every one of its "this cannot be
+expressed" arms unreached — they are the arms no valid stream produces, which is
+exactly why nothing drives them and exactly why `Add` needs them, being where a
+replay arrives with no `Check` in front of it. And **a panic ends the test binary**,
+so the subtests after it never run: a sweep whose count looks one short may be
+reporting one mutation's blast radius rather than a miscount. Finishing the run is
+the next pass's, and so is the `--confirm` the paragraph above owes.
 
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence
