@@ -45,7 +45,16 @@ way a sweep lies:
     endless loop cost the whole run;
   * **a red with no test named is the harness, not the tree.** `--confirm` counts
     those apart as BROKEN and stops after three in a row, because by then it is
-    measuring the machine. All three of these were found by using this script.
+    measuring the machine;
+  * **a timeout under a shell kills the shell and not the test.** `go test` is a
+    grandchild, so it survives the timeout, holds the output pipe open and goes on
+    competing for the machine — one leaked run per hang, and every result after it
+    measured on a loaded box. The judge runs in a session of its own and is killed
+    as a group.
+
+All four were found by using this script rather than by reasoning about it, and all
+four fail in the same direction: a run that judged nothing reads as a tree with
+nothing to find.
 
 Every file is restored in a `finally`, so an interrupt leaves the tree as it was —
 and that covers an interrupt and not a kill. A `SIGKILL` leaves the file mutated,
@@ -72,6 +81,7 @@ the code.
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -206,12 +216,23 @@ def statements(path):
 
 
 def judged(judge):
+    """Run the judge and answer (exit code, tail of its output).
+
+    The process group is its own and is killed as a group on a timeout. A shell
+    plus a timeout otherwise kills only the shell: `go test` is a grandchild, so it
+    survives, keeps the output pipe open — which can block the harness where it
+    means to move on — and goes on competing for the machine every result after it
+    is measured on. One leaked run per hang, and this class produces hangs.
+    """
     cmd = f"WAL_ACCEPTANCE_MUTATIONS=10000 go test {judge} -count=1"
+    p = subprocess.Popen(cmd, cwd=REPO, shell=True, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, start_new_session=True)
     try:
-        p = subprocess.run(cmd, cwd=REPO, shell=True, capture_output=True, text=True,
-                           timeout=timeout_for(judge))
-        return p.returncode, (p.stdout + p.stderr)[-4000:]
+        out, _ = p.communicate(timeout=timeout_for(judge))
+        return p.returncode, out[-4000:]
     except subprocess.TimeoutExpired:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        p.communicate()
         # Red, and named: a flipped loop bound that never ends is a finding of its
         # own kind rather than a harness failure.
         return 124, "HUNG"
