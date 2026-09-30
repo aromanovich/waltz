@@ -258,6 +258,19 @@ def sweep(kind, patterns, outpath, judge):
               f"tools/mutation-sweep.py --confirm {outpath} <out.json>", flush=True)
 
 
+def locate(path, record):
+    """The line the record is about, found by content rather than by number: a
+    confirm run happens after the sweep, often after the file has moved, and a
+    line number is the one part of a record that goes stale. None when the text is
+    absent or ambiguous."""
+    lines = open(path).read().split("\n")
+    i = record["line"] - 1
+    if 0 <= i < len(lines) and lines[i].strip() == record["orig"]:
+        return i
+    hits = [j for j, line in enumerate(lines) if line.strip() == record["orig"]]
+    return hits[0] if len(hits) == 1 else None
+
+
 def confirm(sweeppath, outpath):
     """Re-run a sweep's greens with every package in the judge."""
     greens = [r for r in json.load(open(sweeppath)) if r["status"] == "GREEN"]
@@ -268,15 +281,34 @@ def confirm(sweeppath, outpath):
     for n, r in enumerate(greens):
         housekeep(n)
         path = os.path.join(REPO, r["file"])
-        i = r["line"] - 1
-        if open(path).read().split("\n")[i].strip() != r["orig"]:
+        i = locate(path, r)
+        if i is None:
             results.append(dict(r, verdict="MOVED"))
-            print(f"  MOVED       {r['file']}:{r['line']} — not the line the sweep saw", flush=True)
+            print(f"  MOVED       {r['file']}:{r['line']} — the sweep's line is gone or doubled", flush=True)
             continue
 
-        def mutate(lines, i=i, r=r):
-            lines[i] = lines[i].replace(r["orig"], r["mutated"], 1) if "mutated" in r else "// MUTANT " + lines[i]
-            return lines
+        if r["label"] == "guard":
+            # The mutation is the whole block, so it is re-derived rather than
+            # replayed: a record cannot carry a brace it did not see.
+            block = next((g for g in guards(path) if g[0] == i), None)
+            if block is None:
+                results.append(dict(r, verdict="MOVED"))
+                print(f"  MOVED       {r['file']}:{r['line']} — no guard block starts there now", flush=True)
+                continue
+
+            def mutate(lines, a=block[0], b=block[1]):
+                lines[a : b + 1] = ["// MUTANT " + x for x in lines[a : b + 1]]
+                return lines
+        elif "mutated" in r:
+
+            def mutate(lines, i=i, r=r):
+                lines[i] = lines[i].replace(r["orig"], r["mutated"], 1)
+                return lines
+        else:
+
+            def mutate(lines, i=i):
+                lines[i] = "// MUTANT " + lines[i]
+                return lines
 
         rc, out = apply_and_judge(path, mutate, FULL_JUDGE)
         failing = sorted({m for m in re.findall(r"^--- FAIL: (\w+)", out, re.M)})
