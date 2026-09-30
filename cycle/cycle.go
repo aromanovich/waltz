@@ -586,6 +586,19 @@ func (s *state) counted() *Counters {
 	return &s.Counters
 }
 
+// run is the loop. Nothing recovers a panic on it, and that is a decision rather
+// than an omission: the process goes down, which the first rule admits and which
+// leaves every acked entry in the log for a successor to replay. The containing
+// alternative — recover, halt the cycle, keep the node — is the unsafe one, and
+// the reason is what a halt then answers with. A halted-invariant cycle routes a
+// mutable-state read on its *tail*, and an empty tail is passthrough to the cold
+// store; a panic is by definition a moment when this loop's beliefs are wrong, so
+// a tail that reads empty because the panic left it half-moved would have the
+// shard answer reads out of a store that is missing acked entries. That is the
+// first rule broken to save one node's availability.
+//
+// What the deferred close does buy is that nothing hangs: every later call sees a
+// stopped cycle and gets [ErrHalted] rather than blocking on a loop that is gone.
 func (c *Cycle) run() {
 	defer close(c.done)
 

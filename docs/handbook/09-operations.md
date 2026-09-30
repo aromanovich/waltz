@@ -93,6 +93,19 @@ limit.
 A drain the budget cuts short is **not** data loss: the entries are in the log, acked, and the next
 owner replays them. It costs that owner a read loop and a transaction before it serves anything.
 
+**The budget bounds the drains `Shutdown` issues and not the whole call, so size a stop timeout above
+it.** Two waits sit outside it, both deliberately. A drain already running on the loop — an age tick's,
+or a size watermark's — carries earlier writers' acked mutations on a context of its own with no
+deadline, and stopping the cycle waits for the loop to come back; the only bound on that is the cold
+store's own, which is why
+[04-contracts.md](04-contracts.md#apply--what-a-drains-outcome-demands) states bounding `Apply` as an
+obligation of the store rather than something this layer can impose — a drain this layer cut short is
+an unknown outcome, which stalls the shard. And a trim in flight is waited for unconditionally, since
+the log is closed after the drains and closing it under a trim would fail one: that wait is bounded by
+the trimmer's own one minute, per shard. So a node whose cold store has wedged does not return from
+`Shutdown` on schedule, and what happens next is the supervisor's `SIGKILL` — which costs exactly what
+a budget that ran out costs, a replay by the next owner, and nothing more.
+
 That holds while there *is* a next owner, so `Shutdown` names what it could not empty rather than
 returning nothing. Given a budget it can use, its error is a `*waltz.UndrainedError` and nothing
 else, carrying one `cycle.Residue` per shard — the shard, its epoch, how many acked entries the tail

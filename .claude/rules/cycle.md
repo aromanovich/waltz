@@ -528,6 +528,28 @@ What to know before changing it:
   around one call site is indirection standing in for a rule — and the scans that
   held them were green on shapes nobody had thought of, which is the whole
   argument for reading this bullet instead;
+* **nothing recovers a panic on the loop, and the containing alternative is the
+  unsafe one.** An unrecovered panic in `run` takes the process down, which the
+  first rule admits — refusing a write is acceptable, taking the process down is
+  acceptable, losing an acked one is not — and every entry the shard acked is in
+  the log for a successor. The obvious improvement is to recover, halt the cycle
+  and keep the other 255 shards, and what makes it wrong is what a halt then
+  answers with: a halted-invariant cycle routes a mutable-state read on its
+  **tail**, and an empty tail is passthrough to the cold store. A panic is by
+  definition a moment when the loop's beliefs are wrong, so a tail left half-moved
+  reads as empty and the shard serves reads out of a store missing acked entries —
+  the first rule broken to save one node's availability. The one thing that *is*
+  deliberate about the failure path is `defer close(c.done)`: nothing hangs, every
+  later call gets `ErrHalted` instead of blocking on a goroutine that is gone;
+* **an `Apply` that never returns wedges the shard and the shutdown, and the
+  bound is the store's.** Four drains run on a context with no deadline
+  (`drainCause.detached`), so a store that can block for ever blocks the loop —
+  which serves that shard's writes and all four of its reads — and `Retire` waits
+  for the loop with no bound of its own, so `Layer.Shutdown` outlasts its budget.
+  There is deliberately no timeout to add here: a drain this layer cut short is an
+  unknown outcome, which stalls the shard, so an imposed bound trades a hang for
+  the state this design treats as worst. It is stated as an obligation on
+  `cold.Applier` instead, where the party that can honour it reads it;
 * **the decisions this package's outcomes turn on are functions of values,
   in `cycle/decide.go`**: what becomes of a read the layer cannot answer
   out of both its sources — one outcome type, `readRoute`, over the five moments

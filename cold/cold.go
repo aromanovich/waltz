@@ -49,6 +49,20 @@
 //     them, and the fifth is the one a store gets wrong by rounding an ambiguous
 //     code down to a failure. That is a batch applied twice.
 //
+// A fifth thing is owed and is not on that list, because it is not about what a
+// drain leaves behind: **an [Applier] must bound its own calls.** Four of the
+// layer's drains run on a context of their own with no deadline on it, which is
+// deliberate — what they carry is earlier writers' acked mutations, and bounding
+// the transaction by whichever caller happens to be on the line turns one expired
+// client deadline into a drain that did not commit — so an implementation that can
+// block for ever does. It blocks the shard's whole loop, which serves that shard's
+// writes and all four of its reads, and a graceful shutdown waits on that loop
+// with no bound of its own. The cycle deliberately has no timeout to offer here:
+// cutting a drain short produces an unknown outcome, which stalls the shard, so a
+// bound this layer imposed would trade a hang for the state it treats as worst.
+// Whatever the store's own driver, statement or request timeout is, it is the only
+// thing between a wedged store and a wedged node.
+//
 // Intercept mode asks for two reads besides, both of them pre-window rows it
 // asserts on rather than answers a caller with: a run's mutable state, and a
 // workflow's current-execution row with its last_write_version beside it. That
@@ -105,6 +119,12 @@ type Applier interface {
 	// a dropped connection, a context deadline. Do not round one down to a
 	// failure: the cycle answers an unknown outcome by reading the watermark,
 	// and answers a failure by giving up on the batch.
+	//
+	// ctx may carry no deadline, and often does not: the age tick's drain, the
+	// two size watermarks' and the refusal drain all run detached, since what
+	// they carry is earlier writers' acked mutations and no caller is waiting for
+	// the outcome. So the bound is the store's own — see the fifth obligation in
+	// this package's doc for what an unbounded Apply costs.
 	Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error
 }
 
