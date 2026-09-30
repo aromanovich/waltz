@@ -37,9 +37,12 @@ way a sweep lies:
     and it drops the build cache on a *cadence* — never "whenever space is short",
     which would make every build a cold one and every cold build of the whole set
     outrun any sane timeout;
-  * **a mutant that hangs is not a mutant that passed.** A flipped loop bound can
-    loop for ever; the run times it out and counts it red. The timeout is therefore
-    sized for a cold build of the whole judge and is not a knob to shorten;
+  * **a mutant that hangs is not a mutant that passed.** A flipped loop bound or a
+    deleted nil check in a page token's encoder turns a pagination into one that
+    never advances; the run times it out and counts it red. The budget is **per
+    judge** rather than one number, and both directions cost: too short and every
+    mutation is a HUNG, which reads as a guarded tree, while too long makes one
+    endless loop cost the whole run;
   * **a red with no test named is the harness, not the tree.** `--confirm` counts
     those apart as BROKEN and stops after three in a row, because by then it is
     measuring the machine. All three of these were found by using this script.
@@ -78,12 +81,20 @@ CACHE_EVERY = 40
 
 FULL_JUDGE = "./..."
 # Each mutation is a build of the packages under the judge plus a run of them, and
-# the first of those dominates on a cold cache — which is every mutation, a
-# mutation being a cache miss by construction. Sized for the whole set from cold
-# and still far below a loop that will not end. **It is not a knob to shorten:**
-# a timeout below the cold build time turns every mutation into a HUNG, and the
-# whole run then reads as a tree where nothing is unguarded.
-TIMEOUT_S = 1800
+# the first dominates on a cold cache — which is every mutation, a mutation being a
+# cache miss by construction. So the budget is per judge and not one number: the
+# whole set from cold is minutes, a narrowed one is seconds, and the two failures
+# are opposite. **Too short and every mutation is a HUNG**, which the run counts as
+# red and a reader counts as a guarded tree. **Too long and one endless loop costs
+# the whole budget** — and endless loops are what this class produces: deleting a
+# nil check in a page token's encoder turns a pagination into one that never
+# advances.
+TIMEOUT_NARROW_S = 300
+TIMEOUT_FULL_S = 1800
+
+
+def timeout_for(judge):
+    return TIMEOUT_FULL_S if judge == FULL_JUDGE else TIMEOUT_NARROW_S
 
 FLIPS = [("<=", "<"), (">=", ">"), ("<", "<="), (">", ">=")]
 
@@ -190,7 +201,8 @@ def statements(path):
 def judged(judge):
     cmd = f"WAL_ACCEPTANCE_MUTATIONS=10000 go test {judge} -count=1"
     try:
-        p = subprocess.run(cmd, cwd=REPO, shell=True, capture_output=True, text=True, timeout=TIMEOUT_S)
+        p = subprocess.run(cmd, cwd=REPO, shell=True, capture_output=True, text=True,
+                           timeout=timeout_for(judge))
         return p.returncode, (p.stdout + p.stderr)[-4000:]
     except subprocess.TimeoutExpired:
         # Red, and named: a flipped loop bound that never ends is a finding of its
