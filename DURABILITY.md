@@ -1350,10 +1350,27 @@ no-ops through. `memwal`'s `CheckTrim` is the one worth naming: its absence is
 covered by the `upTo < base` check two lines later, which is the guard that does
 the work and is now driven.
 
-Finishing the run is the next pass's: what is left unswept is `apply`, `baserow`,
-`mutation`, `wal` and the rest of `fold`. On the evidence of all three segments the
-interesting question in each is the same one: **which of their refusals no valid
-stream reaches.**
+**The fourth segment is measured rather than finished, and the measurement is the
+useful part.** `apply`, `baserow`, `mutation`, `wal` and what was left of `fold` are
+92 mutations, and they ran in **207 seconds** — against 85 seconds *each* under a
+judge of ten packages. The difference is entirely in what gets linked: a mutation in
+a package everything imports rebuilds that package either way, and the ten test
+binaries above it are the cost. But the judge that bought the speed was narrowed to
+`./mutation/ ./fold/`, and for these files that is **not a filter at all**: what
+guards `apply`, `wal` and `baserow` is each one's *own* tests, which were the ones
+dropped. It returned 40 greens and the first three confirmed all came back caught.
+
+So the rule for a package low in the import graph is narrower than "narrow the
+judge": narrow it to **that package's own tests and its direct consumers**, never to
+two arbitrary ones. And know the price of getting it wrong — a `--confirm` over the
+whole set costs about ten minutes *per candidate* down there, so forty candidates is
+a session of its own rather than a step at the end of one. That is why this segment
+is recorded as unswept: not because nothing ran, but because what ran was filtered
+by the wrong judge and the honest re-run is somebody's whole afternoon.
+
+On the evidence of the three segments that did land, the interesting question in
+each package left is the same one: **which of their refusals no valid stream
+reaches.**
 
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence
