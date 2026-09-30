@@ -36,6 +36,11 @@ jobs:
       # Both linters are `go run`ed from pins in the Makefile, so the first run
       # on a cold cache pays to build them and later ones do not.
       - run: make lint
+      # These two plus the pair above are `make check`: the gate CI runs is
+      # the gate a laptop runs, split into steps so a red one names which
+      # half failed.
+      - run: make race
+      - run: make vuln
 
   handbook:
     runs-on: ubuntu-latest
