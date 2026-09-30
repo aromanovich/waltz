@@ -1364,13 +1364,19 @@ So the rule for a package low in the import graph is narrower than "narrow the
 judge": narrow it to **that package's own tests and its direct consumers**, never to
 two arbitrary ones. And know the price of getting it wrong — a `--confirm` over the
 whole set costs about ten minutes *per candidate* down there, so forty candidates is
-a session of its own rather than a step at the end of one. That is why this segment
-is recorded as unswept: not because nothing ran, but because what ran was filtered
-by the wrong judge and the honest re-run is somebody's whole afternoon.
+a session of its own rather than a step at the end of one.
 
-On the evidence of the three segments that did land, the interesting question in
-each package left is the same one: **which of their refusals no valid stream
-reaches.**
+**Re-run that way, `apply`, `baserow` and `wal` come back with nothing**: their 14
+mutations, judged by their own tests plus `cycle`, `wrapper`, `memcold` and `fold`,
+are all caught — where the same 14 under the two-package judge had returned greens.
+So those three are swept and closed, with no candidates to confirm, and the pair of
+runs is the cleanest statement of the rule there is: **the judge decides the
+finding, so a green is about the judge until the judge contains whatever guards the
+line.** What is left unswept is `mutation` alone, 72 mutations, and its consumers are
+`fold`, `cycle`, `apply` and `memcold`.
+
+On the evidence of every segment, the interesting question in what remains is the
+same one: **which of its refusals no valid stream reaches.**
 
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence
