@@ -373,6 +373,12 @@ def confirm(sweeppath, outpath):
         failing = sorted({m for m in re.findall(r"^--- FAIL: (\w+)", out, re.M)})
         if rc == 0:
             state = "STILL GREEN"
+        elif any(marker in out for marker in BUILD_MARKERS):
+            # Not a candidate at all: deleting an `if err != nil` leaves the error
+            # unused, which is a compile error rather than a mutation. The sweep
+            # path says so; this one has to as well, or the two disagree about the
+            # same mutation.
+            state = "BUILD"
         elif failing or "panic: " in out:
             # A panic counts, and has to be asked for separately: it is the
             # loudest way the tree catches a mutation, and its stack is long
@@ -394,7 +400,7 @@ def confirm(sweeppath, outpath):
         if len(results) >= 3 and all(x["verdict"] == "BROKEN" for x in results[-3:]):
             raise SystemExit("stopping: three runs failed with no test named, so this is the harness")
 
-    caught = sum(1 for x in results if x["verdict"] == "CAUGHT")
+    caught = sum(1 for x in results if x["verdict"] in ("CAUGHT", "BUILD"))
     broken = sum(1 for x in results if x["verdict"] == "BROKEN")
     print(f"done: {caught} of {len(results)} were caught by the packages the sweep dropped"
           + (f", {broken} could not be judged" if broken else "")
