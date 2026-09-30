@@ -198,6 +198,15 @@ Two obligations sit in that gap, stated here because no suite in this tree can r
   consequences of a failure it cannot make asymmetric
   ([I10, at more length](02-concepts-and-invariants.md#i10-at-more-length)).
 
+**Two more sit in a different gap, and one of them has a check.** The conformance suite drives one
+`wal.Log` value, so what it can ask about is that value and not the storage under it: a backend that
+acks an append into memory it never gets out of the process satisfies every case, and so does one whose
+owning epoch is a field rather than a row. `waltest.CheckReopen` closes half of that with no second
+process — open the storage again and ask the fresh value for the entries, for who owns the shard, and
+for the position to continue at ([chapter 11](11-verification.md#the-log-contract-suite)). The other
+half is a fence *racing* a displaced owner's append, which needs two writers sharing no memory and
+stays a deployment's own test.
+
 **`memwal` is an implementation and not a test double.** The obvious reason for it is that everything
 above the log needs *a* log and nothing whatsoever from a cluster. The second reason is epistemic: a
 suite that has only ever run against one backend cannot tell a contract from an implementation, and

@@ -139,5 +139,25 @@ What to know before changing any of it:
   this one breaks the readback guarantee on purpose. Without it a deployment
   reading a green check cannot tell it from a check that passes anything, which
   is what `TestTheRetentionCheckIsNotVacuous` exists to say;
+* **the suite's other blind spot is the value it drives, and that one has an
+  instrument now too.** Guarantee 3 says an acked append is *durable*, which is a
+  claim about storage — and every case in the suite reads back through the same
+  value that appended, so a backend acking into memory it never gets out of the
+  process passes all 21. Guarantee 2 has the same shape one clause over, and
+  `RunContractSuite`'s own doc names it: an owning epoch kept in a process-local
+  field passes every fencing case, the contention one included, and fences nobody
+  at a failover. That doc sends the author to a two-process test, and **half of it
+  needs no second process**: `waltest.CheckReopen` takes a way of *opening* a log
+  rather than a log, writes a run, closes it, opens the storage again and asks the
+  fresh value for the entries, for who owns the shard, and for the position to
+  continue at. What it still cannot see is a fence *racing* a displaced owner's
+  append, which is two writers sharing no memory and stays the author's own test.
+  It is a function and not a case for a reason that is not `CheckRetention`'s cost:
+  `memwal` cannot be reopened at all, being a map in this process, so the suite has
+  no log to run it against. `waltest.Unfenced` is the double the ownership half is
+  proved against — a log whose epoch lives in this process and whose entries are
+  the wrapped log's, the third decorator here that is not a log a backend may be —
+  and `TestTheReopenCheckIsNotVacuous` proves both halves, each against the
+  backend shape it exists for;
 * the whole of it runs with nothing installed: `go test ./wal/...` is
   milliseconds, and it is the first thing to run on a fresh clone.

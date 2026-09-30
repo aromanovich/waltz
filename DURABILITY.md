@@ -749,30 +749,52 @@ boots over the library in `go test` with nothing installed. A second
 implementation a deployment could run would be a different library, and a suite
 over it would judge that library's storage rather than this layer.
 
-*What a deployment owes in its place:* `waltest.RunContractSuite` and
-`waltest.CheckRetention` against its own log, Temporal's four persistence suites
-against its own store, and the folded-against-sequential comparison rebuilt over
-that store rather than over `cold/memcold`.
+*What a deployment owes in its place:* `waltest.RunContractSuite`,
+`waltest.CheckReopen` and `waltest.CheckRetention` against its own log, Temporal's
+four persistence suites against its own store, and the folded-against-sequential
+comparison rebuilt over that store rather than over `cold/memcold`.
 
-**A backend whose `Fence` never reaches storage.** `RunContractSuite` drives one
+**A backend whose `Fence` never reaches storage** — *narrowed, and the narrowing
+is worth reading before the rest of this entry.* `RunContractSuite` drives one
 `wal.Log` value in one process, so a displaced owner is refused by the same
 in-process object its successor has just fenced, and a backend that records the
 owning epoch in a process-local field passes every fencing case here — the
 contention test included. Severity: silent, and the worst shape on this page —
 two writers at one seqno, each told its append is durable.
 
-*What is accepted* is that a green contract suite is a statement about a log's
-**logic** and not about whether its fence reaches another machine, and that
-nothing here instruments the difference — where the suite's other blind spot,
-time, has `waltest.CheckRetention`.
+*What was wrongly accepted, and the argument that did it.* This entry used to say
+the narrower form — one process, a second handle over the same storage — "cannot be
+had either: `memwal.New` makes its own map, so the only backend in this tree cannot
+supply the second handle, and a case added for it would be skipped by the one
+backend that could ever watch it go red." Both halves are true and the conclusion
+does not follow: the same two facts are true of *time*, and the answer there was not
+a suite case but a **function a deployment calls, proved in-tree against a
+decorator** — `CheckRetention` against `Expiring`. The entry even names that
+instrument, two paragraphs up, as what the other blind spot has. So the shape was
+sitting in the file and was read past.
 
-*Why it stays accepted:* it needs two writers that share no memory. Two processes
-is the honest form and there is none here. The narrower form — one process, two
-independently constructed handles over one storage — would catch a process-local
-epoch, and cannot be had either: `memwal.New` makes its own map, so the only
-backend in this tree cannot supply the second handle, and a case added for it
-would be skipped by the one backend that could ever watch it go red. A case no
-implementation here can fail is the shape this file's procedure exists to refuse.
+`waltest.CheckReopen` is that shape applied here. It takes a way of *opening* a log
+rather than a log: fence, append a run, close, open the storage again, and ask the
+fresh value for the entries, for who owns the shard, and for the position to
+continue at. `waltest.Unfenced` — a log whose epoch lives in this process while its
+entries are the wrapped log's — is the double it is proved against, and
+`TestTheReopenCheckIsNotVacuous` watches both halves go red, the ownership half
+against exactly the backend this entry describes. Its *other* half closes something
+this page had not named at all: guarantee 3 says an acked append is durable, every
+case in the suite reads back through the value that appended, so a backend acking
+into memory it never gets out of the process passed all 21 — and nothing anywhere
+asked.
+
+*What stays accepted* is the part that genuinely needs two processes: a fence
+**racing** a displaced owner's append. A reopen asks a quiescent question — who owns
+this shard now — and cannot ask whether the fence and the append are ordered against
+each other under contention. Two writers sharing no memory is the honest form of
+that and there is none here.
+
+*What is accepted* is therefore narrower than it was: a green contract suite plus a
+green reopen says the log's logic is right *and* that its entries and its epoch are
+in storage, and still says nothing about the ordering of a fence against a
+concurrent append on another machine.
 
 *What a deployment owes in its place:* stage the displaced owner against the
 storage the log actually runs on — fence at a higher epoch from a second process,
