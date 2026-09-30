@@ -29,6 +29,11 @@ test: ## Run every test in the module (default target)
 # wall clock and nothing this target looks for needs the extra length, a
 # concurrent access being reached by a short stream as well as by a long one.
 # What the shortening costs is the volume claim, which `test` already makes.
+#
+# What this target does not vary is the scheduler, and a race whose outcome turns
+# on it needs that: `GOMAXPROCS=2 go test <pkg> -race -count=3` is the follow-up
+# for anything timing-shaped, since a two-core runner and a twelve-core laptop
+# hand the same race to different winners.
 .PHONY: race
 race: ## Run every test under the race detector
 	WAL_ACCEPTANCE_MUTATIONS=10000 go test ./... -race -count=1
