@@ -909,7 +909,11 @@ func (c *Cycle) settleAppend(ctx context.Context, s *state, cause error, payload
 func (c *Cycle) refold(s *state, m mutation.Mutation, kind mutation.Kind, size int) {
 	if s.st != StateRunning {
 		// The drain halted: its window is dropped and everything acked behind it
-		// is the next owner's to replay.
+		// is the next owner's to replay. Folding into a halted cycle's
+		// accumulator is not a loss — nothing will ever drain it and the entry is
+		// in the log — but the counters and the window it moves are what
+		// [Cycle.residue] reports, and a shutdown naming bytes no drain could
+		// ever take is a shard an operator reads as unsafe to leave.
 		return
 	}
 	if err := s.acc.Add(s.tail.Commit(), m); err != nil {
@@ -1343,6 +1347,17 @@ func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause er
 
 // halt is where a cycle stops for good. Both halts keep the log: the entries
 // are the evidence, and the next owner fences and continues it.
+//
+// The first halt is the one that stands, and the early return is what makes that
+// true rather than incidental. A second would overwrite `cause`, which is the only
+// record of what diverged, and — worse — the *class*: halted-lost is fencing
+// working and the next owner's to continue, halted-invariant is a divergence this
+// process owns and may never be handed on as an ordinary failover, so a later halt
+// turning one into the other changes what the layer tells a server about a
+// failover. Nothing reaches it twice today, every door a caller has refusing
+// through [Cycle.halted] once the first has landed, which is why no test drives
+// it; it stays because "unreachable" is a claim about today's callers and this one
+// costs a comparison.
 func (c *Cycle) halt(s *state, st State, cause error) {
 	if s.st != StateRunning {
 		return
