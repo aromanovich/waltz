@@ -80,4 +80,36 @@ func TestTheCurrentRowsColumnsComeFromItsBlob(t *testing.T) {
 	require.Equal(t, enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED, row.State)
 	require.EqualValues(t, 7, row.LastWriteVersion)
 	require.Equal(t, run, row.RunID.String())
+
+	// A state that carries none writes none, and this arm is the one nothing
+	// drove: every fixture in the tree fills the field, so the nil check is
+	// removable with the whole of `go test ./...` green — and what it does instead
+	// is dereference, inside the drain's transaction, on the shard's own
+	// goroutine. The fold's twin of this function has the same claim, and `fold`'s
+	// is the one DURABILITY.md's start-time entry names.
+	withoutStart := &persistencespb.WorkflowExecutionState{
+		RunId:           run,
+		CreateRequestId: "the-create-request",
+		State:           enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED,
+		Status:          enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT,
+	}
+	bare, err := serialization.WorkflowExecutionStateToBlob(withoutStart)
+	require.NoError(t, err)
+
+	tx, err = s.db.BeginTx(ctx)
+	require.NoError(t, err)
+	require.NoError(t, writeCurrentRow(ctx, tx, shardID, ns, workflowID, &fold.CurrentWrite{
+		RunID:            run,
+		StateBlob:        bare,
+		LastWriteVersion: 8,
+		State:            withoutStart.State,
+	}, true))
+	require.NoError(t, tx.Commit())
+
+	row, err = s.db.SelectFromCurrentExecutions(ctx, sqlplugin.CurrentExecutionsFilter{
+		ShardID: shardID, NamespaceID: ns, WorkflowID: workflowID,
+	})
+	require.NoError(t, err)
+	require.Nil(t, row.StartTime, "a state with no start time writes no start time rather than inventing one")
+	require.EqualValues(t, 8, row.LastWriteVersion, "and the row is the one that was just written")
 }
