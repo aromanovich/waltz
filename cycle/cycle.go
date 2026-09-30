@@ -217,6 +217,17 @@ func (c Config) CheckBudget() error {
 	cfg := c
 	cfg.fill()
 	held := int64(cfg.HardMaxBytes) * int64(cfg.MaxShards)
+	// A product that does not fit is refused rather than compared, and this is
+	// the arm that keeps the assertion an assertion: signed overflow wraps, and
+	// what it wraps to is a number below any budget — so a bound typed with a few
+	// zeroes too many would *pass* here and leave the node running with I10's
+	// per-shard bound at that value, which is the bound gone. Both factors are
+	// above zero past fill, so the division is safe.
+	if held/int64(cfg.MaxShards) != int64(cfg.HardMaxBytes) {
+		return fmt.Errorf("%w: %d shards × %d bytes overflows a signed 64-bit count, so no node holds "+
+			"it and the budget of %d is not the reason",
+			ErrBudget, cfg.MaxShards, cfg.HardMaxBytes, cfg.TailBudgetBytes)
+	}
 	if held > int64(cfg.TailBudgetBytes) {
 		return fmt.Errorf("%w: %d shards × %d bytes is %d bytes of tail, over the node's budget of %d",
 			ErrBudget, cfg.MaxShards, cfg.HardMaxBytes, held, cfg.TailBudgetBytes)
