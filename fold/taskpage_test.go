@@ -362,6 +362,20 @@ func TestAForeignPageTokenIsRefused(t *testing.T) {
 	_, _, err := a.TaskPage(req, basePage(cold, req))
 	require.ErrorIs(t, err, fold.ErrForeignPageToken)
 	require.Zero(t, cold.Calls, "a refused page must not reach the store below either")
+
+	// The base's token above is refused by the frame *and* by the parse, so it
+	// says nothing about which of the two did the work — and the rule is that the
+	// frame answers whether a token is ours at all. This one parses: four bytes of
+	// somebody else's followed by a body that unmarshals into this layer's token.
+	// Without the frame it is adopted as ours at the cursor those bytes decode to,
+	// which restarts the pagination inside the window and leaves the base's own
+	// cursor behind — and the range the reader completes at the end takes the
+	// acked rows that were in it.
+	req.NextPageToken = []byte(`abcd{"after":true,"afterTaskId":99}`)
+	_, _, err = a.TaskPage(req, basePage(cold, req))
+	require.ErrorIs(t, err, fold.ErrForeignPageToken,
+		"a token whose body parses is still not ours: the frame is what answers that")
+	require.Zero(t, cold.Calls)
 }
 
 // TestABaseErrorFailsThePageUnwrapped: a base that cannot be read fails the
