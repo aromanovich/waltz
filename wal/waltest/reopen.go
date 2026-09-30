@@ -37,6 +37,16 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
+// reopenShortfall is what a run short of its entries means where an open came
+// between: guarantee 3 is that a completed append is durable, and the causes are
+// the ones that keep an ack inside the process rather than the ones a clock
+// reaches — which is [retentionShortfall]'s list and a different check.
+const reopenShortfall = "guarantee 3 is that a completed append means every entry up to that seqno is " +
+	"durable, which is a claim about storage and not about the value that acked. An ack into memory, " +
+	"into a transaction nothing committed, or into a buffer nothing flushed each break it — and a " +
+	"reopen is the only thing in this package that can ask, every other case reading back through " +
+	"the value that appended"
+
 // reopenEntries is how many entries the check writes before closing. More than
 // one, so that a backend which persists the entry it is still holding — a buffer
 // flushed on close, a transaction committed there — is still caught by the ones
@@ -96,9 +106,8 @@ func CheckReopen(
 	}
 	defer again.Close()
 
-	if err := requireRun(ctx, again, shard, want, "after the log was reopened"); err != nil {
-		return fmt.Errorf("%w — and a reopen is the only thing in this package that can ask it, "+
-			"every other case reading back through the value that appended", err)
+	if err := requireRun(ctx, again, shard, want, "after the log was reopened", reopenShortfall); err != nil {
+		return err
 	}
 
 	// Before the re-fence below, which is what would put back an ownership the
@@ -132,7 +141,7 @@ func CheckReopen(
 			"or starts over at the first seqno and overwrites what it inherited: %w", shard, next, err)
 	}
 	want = append(want, wal.Entry{Seqno: next, Epoch: epoch, Payload: []byte("reopen check, after the reopen")})
-	return requireRun(ctx, again, shard, want, "after the reopened log was appended to")
+	return requireRun(ctx, again, shard, want, "after the reopened log was appended to", reopenShortfall)
 }
 
 // writeThenClose is the first half: one fence, a short run, a readback that makes
@@ -167,7 +176,7 @@ func writeThenClose(
 		}
 		want = append(want, wal.Entry{Seqno: seqno, Epoch: epoch, Payload: payload})
 	}
-	if err := requireRun(ctx, log, shard, want, "before the log was closed"); err != nil {
+	if err := requireRun(ctx, log, shard, want, "before the log was closed", reopenShortfall); err != nil {
 		return nil, err
 	}
 	return want, nil
