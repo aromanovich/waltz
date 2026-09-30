@@ -503,6 +503,31 @@ func TestAConflictResolvesCurrentMutationNeedsAWindowStateItCanMergeWith(t *test
 	})
 }
 
+// TestASnapshotOverAContinuedAsNewPairIsRefused is the same family as the case
+// above and the one whose absence loses data rather than panicking. A Set of a run
+// whose pending update also continued-as-new would have to strip one run out of a
+// request carrying two: dropping that request takes the *new* run's snapshot with
+// it while the window's entry for that run still points at it, so the drain emits
+// the Set and never the creation — an acked start gone, with nothing that says so.
+//
+// The refusal hands the window to the next one instead, where the Set is a head.
+func TestASnapshotOverAContinuedAsNewPairIsRefused(t *testing.T) {
+	a := fold.New(shard)
+	can := mkUpdate(runX, 2)
+	newSnap := snapshot(runY, 1)
+	can.Update.NewWorkflowSnapshot = &newSnap
+	add(t, a, can)
+
+	require.ErrorIs(t, a.Add(2, mkSet(runX, 3)), fold.ErrRefused)
+
+	// And the refusal left the window exactly as it was, which is what makes
+	// drain-and-retry safe: both runs are still there to emit.
+	out := reqs(a.Drain())
+	require.Len(t, out, 1, "one request owns both runs")
+	require.Contains(t, out[0].RunAssertions(), runX)
+	require.Contains(t, out[0].RunAssertions(), runY)
+}
+
 func TestEveryKindIsRefusedAfterATombstone(t *testing.T) {
 	// A conflict-resolve's current mutation must land on a run whose window state
 	// is an update it can merge with, so that arm needs two runs: one tombstoned
