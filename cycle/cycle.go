@@ -213,6 +213,15 @@ func (c Config) cadence() trim.Cadence {
 // shard over [Config.MaxShards] shards must fit in [Config.TailBudgetBytes],
 // which [Defaults] does exactly. It bounds encoded bytes, not RSS — what is
 // resident is decoded protos plus the accumulator's indices.
+//
+// [Config.MaxShards] is a premise and not a limit: nothing here refuses the
+// shard past it, and an acquire is the wrong place to — a node over its share is
+// a cluster that has just lost hosts, which is when a shard nobody owns costs
+// most. So the arithmetic holds while the assignment does, and a node holding
+// twice its share holds twice this budget. The bound that is still enforced
+// there is the per-shard one: I10 refuses writes at [Config.HardMaxBytes] on
+// every shard independently, so the overrun is bounded by how many shards
+// arrived rather than unbounded.
 func (c Config) CheckBudget() error {
 	cfg := c
 	cfg.fill()
