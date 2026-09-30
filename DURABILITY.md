@@ -1250,12 +1250,18 @@ page's strict ascent, and the length check in front of `basePage[0]` — the las
 one a panic rather than a wrong answer. A chosen list cannot make that claim,
 which is the argument for generating a class rather than writing one down.
 
-The twenty-one that were dismissed are recorded here so the next pass does not
-re-triage them — **as dismissals owing a `--confirm` run**, which is the debt that
-run's own lesson leaves: they were judged with `internal/verify/` dropped from the
-inner loop, and the acceptance is in there. Each was read and argued rather than
-counted, so the reasoning below is what to check rather than the verdict; a
-confirmed one moves out of this paragraph. They came in four shapes. **A `len()` compared against zero
+**The dismissals were confirmed, and one of them was wrong.** Re-run with every
+package in the judge, 8 of the 28 are caught: seven by the tests this branch added,
+which is what a fix landing looks like, and one — the conflict-resolve refusal's
+`parts > 1` — by `cycle`'s own recovery test, a package the narrow judge had
+dropped. So that one was guarded all along and the *argument* for dismissing it was
+the thing that was wrong, which is the failure mode a confirm run exists to catch:
+a plausible reason is not evidence. `fold/histtasks.go`'s inclusive minimum is worth
+a footnote the other way — the differential oracle catches it too, so the boundary
+test this branch added names the bound rather than being the only thing holding it.
+
+The **twenty** that are still green under the whole set are recorded here so the
+next pass does not re-triage them, in the four shapes they came in. **A `len()` compared against zero
 or against a magic prefix's length**, where the adjacent form is a tautology or
 names a value no encoder produces — both page tokens, `bounded`'s second conjunct,
 `mutation/encode.go`'s pre-allocation. **A switch arm the case above already
@@ -1264,8 +1270,7 @@ where assigning on equality assigns the same value — the attribution's cut seq
 and its workflow slices. **And a difference a later line absorbs**: `memwal`'s read
 offset and trim length both end in an empty slice either way, the history merge's
 reach filter is deduplicated by the merge itself, `Manager.ShardAcquired`'s epoch
-comparison is preceded by the equal case returning, the conflict-resolve refusal
-over-refuses where drain-and-retry absorbs it, and the history page's `cut` is
+comparison is preceded by the equal case returning, and the history page's `cut` is
 capped by `min(cut, pageSize)` — that last one provable from the branch's own
 arithmetic, since the branch implies an ask of one, hence a single base row, hence
 a first key equal to the last.
@@ -1344,10 +1349,12 @@ so a green found that way may be a green the dropped package would have caught �
 which is fine for deciding what to look at and wrong for deciding what to ignore.
 Shorten the acceptance stream by volume rather than by dropping its package, and
 re-run the greens with everything in the judge before writing any of them down:
-that is what `--confirm` is for. The first exhaustive run above did not, which is
-why its dismissals are recorded as owing one — the lesson cost that run its own
-conclusion rather than a defect, since every green it *acted* on was proved red
-against a test that is in the whole set. What a run found belongs
+that is what `--confirm` is for. The first exhaustive run above did not, and going
+back to do it cost one of its twenty-one dismissals: the argument was wrong and the
+line was guarded by a package the narrow judge had dropped. Nothing it *acted* on
+moved, every green there having been proved red against a test in the whole set —
+so the price of a narrowed judge is paid in false dismissals rather than in false
+fixes, which is the shape to expect. What a run found belongs
 here; what it found and dismissed belongs beside the code.
 
 It is also not a substitute for the reasoning. Each entry is a pointer: the
