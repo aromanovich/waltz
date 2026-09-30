@@ -150,6 +150,10 @@ func testReadFromAnyPosition(f *fixture) {
 	f.expectEntries(shard, wal.FirstSeqno+2, 10, entriesFrom(epoch, wal.FirstSeqno+2, count-2))
 	f.expectEntries(shard, last, 10, entriesFrom(epoch, last, 1))
 	f.expectEntries(shard, last+1, 10, nil)
+	// Well past the end and not merely one past it: a backend indexing its rows
+	// by distance from the log's lower end has a slice bound here, and one past
+	// the end is the value that bound happens to admit.
+	f.expectEntries(shard, last+5, 10, nil)
 
 	// The window after a limit starts where the limit stopped.
 	f.expectEntries(shard, wal.FirstSeqno, 2, entriesFrom(epoch, wal.FirstSeqno, 2))
@@ -173,6 +177,15 @@ func testTrimRemovesUpToAndNothingElse(f *fixture) {
 	f.expectLog(shard, entriesFrom(epoch, wal.FirstSeqno, count))
 
 	f.trim(shard, last-2)
+	f.expectLog(shard, entriesFrom(epoch, last-1, 2))
+
+	// A trim *below* the lower end a previous trim left removes nothing. It is
+	// the same claim as the one above at a seqno the contract admits rather than
+	// refuses, and it is the one worth driving: a backend computing how many rows
+	// to drop as `upTo - base + 1` underflows on it — unsigned, so the answer is
+	// enormous — and takes the whole log. Acked entries, no error, nothing that
+	// says so.
+	f.trim(shard, wal.FirstSeqno)
 	f.expectLog(shard, entriesFrom(epoch, last-1, 2))
 
 	// Repeating a trim is harmless, and the shard is still this epoch's.
