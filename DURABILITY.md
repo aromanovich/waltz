@@ -194,6 +194,37 @@ judges the create's own must-not-exist against the window's tombstone, not again
 the pre-window row) and the drain is the half that fails. An entry marked unknown
 is a question worth driving rather than a guess worth refining.
 
+**An entry that appends, acks, and decodes for nobody** (rung 4). The closed entry
+*A request the write path accepts and the replay path cannot fold*, one field along
+and found the same way — by asking which of a package's refusals no valid stream
+reaches. `Decode` parses exactly two of the blobs a record carries, the execution
+info's and the state's, and it admits **proto3 alone**: any other encoding is
+`unexpected blob encoding`. `Encode` took any encoding at all.
+
+So a mutation whose state blob arrived in another encoding was appended, acked and
+durable, and then failed to decode for **every owner that inherited it**: each
+reads the tail, fails at that blob, leaves the cycle unstarted, and the next
+request retries it. Severity: **unavailable**, for good, on a shard whose log and
+cold store are both healthy — which the first rule admits only where nothing was
+acked, and here the caller has been told the write succeeded.
+
+The refusal is `Encode`'s now (`mutation.ErrBlobEncoding`), for exactly
+[ErrUncarriedProto]'s reason: this is the last place that can refuse, and before
+the append refusing writes nothing. The decoder's own refusal stays where it is,
+for a record some older binary wrote.
+`TestABlobEncodingDecodeCannotParseIsRefusedBeforeTheAppend`
+(`mutation/mutation_test.go`), red in both of its cases with the check removed.
+
+*Reachable or not, and why it did not matter.* Temporal's own `ProtoEncode`
+produces proto3, so no stream this layer sees today carries anything else — which
+is the same claim that was made about the parsed-struct-without-a-blob shape in the
+entry above, where two fixtures in this repository were found building it. The
+codec already refuses a Cassandra-shaped CHASM blob at encode for the identical
+reason; this was the one blob field where the refusal sat on the far side of the
+ack.
+
+[ErrUncarriedProto]: mutation/mutation.go
+
 **A batch that lands half-applied.** One drain is one transaction, and a batch
 that landed in pieces would leave rows no replay can reconstruct — the mutations
 behind it were acked, folded and collapsed. `cold.Applier`'s first obligation;

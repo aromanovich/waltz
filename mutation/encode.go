@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/service/history/tasks"
@@ -195,7 +196,25 @@ func refuseUncarried(
 	case state != nil && stateBlob == nil:
 		return fmt.Errorf("%w: execution state", ErrUncarriedProto)
 	}
-	return nil
+	// And the encoding of the two blobs [Decode] parses, for the same reason one
+	// step along: the decoder admits proto3 alone, so any other encoding is an
+	// entry that appends, acks, and then refuses to decode for every owner that
+	// inherits it. The refusal belonged on this side all along — on the other it
+	// arrives after the ack, where the only choices left are a crash loop and a
+	// silent hole.
+	if err := refuseEncoding("execution info", infoBlob); err != nil {
+		return err
+	}
+	return refuseEncoding("execution state", stateBlob)
+}
+
+// refuseEncoding refuses a blob [Decode] would not parse. A nil blob is not one:
+// absent is the ordinary case, and the pair rule above is what covers it.
+func refuseEncoding(what string, b *commonpb.DataBlob) error {
+	if b == nil || b.EncodingType == enumspb.ENCODING_TYPE_PROTO3 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s in %v", ErrBlobEncoding, what, b.EncodingType)
 }
 
 func encodeBlob(b *commonpb.DataBlob) *Blob {
