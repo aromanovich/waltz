@@ -422,6 +422,28 @@ func TestClearBufferedEventsDropsEarlierBatches(t *testing.T) {
 	require.True(t, out[0].Request.Update.UpdateWorkflowMutation.ClearBufferedEvents)
 }
 
+// TestAClearFoldingIntoASnapshotHasNoSlotToMark is the other arm of the same
+// rule, and the one nothing drove: where the run's window state is a *snapshot*,
+// the clear has no merged mutation to set the flag on — the snapshot's own write
+// replaces the run's rows wholesale, so there is nothing for a flag to ask for.
+// Without the nil check that absence is a dereference, and a panic in Add is on
+// the shard's own goroutine.
+func TestAClearFoldingIntoASnapshotHasNoSlotToMark(t *testing.T) {
+	a := fold.New(shard)
+	add(t, a,
+		mkCreate(runX),
+		mkUpdate(runX, 2, withBuffered("stale")),
+		mkUpdate(runX, 3, withClearBuffered(), withBuffered("fresh")),
+	)
+
+	out := reqs(a.Drain())
+	require.Len(t, out, 1)
+	require.Equal(t, mutation.KindCreate, out[0].Request.Kind(),
+		"the snapshot heads the window whatever folds into it")
+	require.Len(t, out[0].BufferedBatches, 1, "the clear dropped the batch before it")
+	require.Equal(t, "fresh", string(out[0].BufferedBatches[0].Blob.Data))
+}
+
 // TestTombstone: a deletion collapses the run's pending state into the
 // Delete; the collapsed mutations' tasks survive as orphans (I7).
 func TestTombstone(t *testing.T) {
