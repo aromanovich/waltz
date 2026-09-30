@@ -74,6 +74,7 @@ open. Read it before trusting a green run, and add to it before fixing anything 
 ```sh
 git clone https://github.com/aromanovich/waltz && cd waltz
 make test    # go test ./... -count=1
+make race    # the same under -race, on a tenth of the acceptance stream
 make lint    # golangci-lint plus gopls's modernize, both pinned in the Makefile
 ```
 

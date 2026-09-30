@@ -21,5 +21,10 @@ subsystem.
   reason at each one, and the two rules about the tree. Read it before adding an import: nothing
   will fail if you break it.
 
-The gate is `make test` and `make lint` — `make check` is both. Neither needs anything installed:
-no cluster, no container, no fixed port, no cgo.
+The gate is `make test`, `make race` and `make lint` — `make check` is all three. None of them
+needs anything installed: no cluster, no container, no fixed port, no cgo.
+
+`make race` is separate from `make test` because only one of the two is cheap, and it is the one
+that cannot answer for the shipped concurrency: a goroutine per shard owning an accumulator and a
+drain, two mirrors published for readers off it, a trim beside it. It shortens the acceptance
+stream to a tenth, the volume claim being `make test`'s.

@@ -527,9 +527,19 @@ Two things worth knowing about that, both of which are limits rather than featur
   `internal/verify/e2e` is the in-tree version of the same idea at a fraction of the coverage: one
   server, one workflow, no installation.
 
-`make lint` is the other check — golangci-lint and gopls's `modernize`, both pinned in the
+`make race` is the second check and the one the first cannot stand in for. Everything on the write
+path is one goroutine per shard owning the accumulator and the drain, with two mirrors published for
+the readers that are off it and a trim running beside it — so whether that concurrency holds is a
+question a run without the detector does not ask at all, and it stays unasked however green the run
+is. It is its own target because the cost is not symmetric: under `-race` the acceptance stream is
+25× its own wall clock, so this target runs it at a tenth of the length. Nothing the detector looks
+for needs the extra volume; the volume claim is `make test`'s.
+
+`make lint` is the third — golangci-lint and gopls's `modernize`, both pinned in the
 Makefile — and `.golangci.yml` says which linters are deliberately off and why: a check switched off
 in silence is one somebody re-enables and then disables again.
+
+`make check` is all three.
 
 ---
 
@@ -546,6 +556,13 @@ in silence is one somebody re-enables and then disables again.
   so a many-core machine runs that many of them side by side and the kernel kills one. You will see
   `signal: killed` with no `--- FAIL` line anywhere, which reads like a hang rather than like a
   resource limit. Lower `-p` until the run fits.
+
+* **A claim about a cycle's state, read off `Cycle.State` right after a call that did not wait for
+  the loop, is a race in the test rather than in the layer.** `State` is a bare load of the mirrored
+  atomic and `Stats` is a job behind the drain, so only the second one orders a read after the
+  decision a drain makes. One test read the first and was green on twelve cores and red under
+  `-race` every time, which is the shape to expect: the detector's slowdown is what lets the loop
+  lose the race it was always in.
 
 ---
 

@@ -112,7 +112,11 @@ func TestAnAmbiguousDrainIsResolvedOffTheWritersDeadline(t *testing.T) {
 
 		_ = e.c.write(e.writeCtx, mkCreate(ns, wf, run), e.rows)
 
-		require.Equal(t, StateHaltedInvariant, e.c.State(),
+		// Off Stats and not State: the applier cancelled this caller's context
+		// mid-drain, so the write returned without waiting for the loop, and
+		// State is a bare load of the mirror. Stats is a job behind the drain,
+		// which is what orders this read after the halt that drain decides on.
+		require.Equal(t, StateHaltedInvariant, e.c.Stats().State,
 			"the watermark answered, so this is a divergence and not a shard that cannot say what it did")
 	})
 }

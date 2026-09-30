@@ -17,6 +17,21 @@ MODERNIZE := golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@
 test: ## Run every test in the module (default target)
 	go test ./... -count=1
 
+# The race detector, as its own target rather than a flag on the one above,
+# because the two answer different questions and only one of them is cheap. This
+# layer is a goroutine per shard owning an accumulator and a drain, two mirrors
+# published for readers off that goroutine, a trim beside it and four reads
+# served on it — so "does the shipped concurrency hold" is a question `test`
+# cannot answer at all, and a green run without this says nothing about it.
+#
+# The stream is shortened to a tenth: under -race the acceptance is 25× its own
+# wall clock and nothing this target looks for needs the extra length, a
+# concurrent access being reached by a short stream as well as by a long one.
+# What the shortening costs is the volume claim, which `test` already makes.
+.PHONY: race
+race: ## Run every test under the race detector
+	WAL_ACCEPTANCE_MUTATIONS=10000 go test ./... -race -count=1
+
 # Two of them, because they answer different questions and neither contains the
 # other: golangci-lint is the idiom and correctness set, and modernize is "the
 # stdlib grew a way to say this" — it ships with gopls rather than with
@@ -67,7 +82,7 @@ proto: ## Regenerate mutation.pb.go from mutation.proto (needs protoc)
 	status=$$?; rm -rf $$tmp; exit $$status
 
 .PHONY: check
-check: test lint ## The whole gate: the tests and the linters
+check: test race lint ## The whole gate: the tests, the race detector and the linters
 
 .PHONY: help
 help: ## List the targets
