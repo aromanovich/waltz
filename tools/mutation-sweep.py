@@ -47,7 +47,14 @@ way a sweep lies:
     those apart as BROKEN and stops after three in a row, because by then it is
     measuring the machine. All three of these were found by using this script.
 
-Every file is restored in a `finally`, so an interrupt leaves the tree as it was.
+Every file is restored in a `finally`, so an interrupt leaves the tree as it was —
+and that covers an interrupt and not a kill. A `SIGKILL` leaves the file mutated,
+which is the worst state to resume from: the next run's *baseline* is the mutation,
+so every result is about a tree nobody has. **Before starting a run, check the tree
+against the commit it is supposed to be** — `git status` in a checkout, or a
+checksum against the original where the sweep runs on a copy — and run the judge
+once to see the baseline green. Both take seconds and both were learnt the other
+way.
 
 Usage:
 
