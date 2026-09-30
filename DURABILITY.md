@@ -165,6 +165,35 @@ the current row naming a run with no execution row.
 each arm separately, over `mutbuild.Builder.ConflictResolve` — added for it, which
 is the caller that package's doc said the shape was waiting for.
 
+**A run recreated behind its own tombstone, asserted twice** (rung 4). Not a loss
+and in this file for the reason the refusals above are: a halted shard is the
+outcome, and the shard halts over a stream `fold` admits by design, with every row
+in the database exactly where the stream put it and nothing for a replay to fix.
+
+A window that updates a run, deletes it and creates it again is the only one that
+emits two requests naming one run. The head-of-window run assertion is the
+*window's* claim about the pre-window row, and it rode both: at the Delete it holds
+(the row is there at v2), and at the Create it is judged against the row that
+delete removed a statement earlier inside the same transaction, so it answers
+*must exist* and the drain is classified `ClassInvariantViolated`. `Drain` places
+it at the first emitted request naming the run now, on the rule the workflow
+record's own assertions already had.
+`TestARunRecreatedBehindItsOwnTombstoneIsAssertedOnce`
+(`cold/memcold/apply_test.go`) is the drain half and
+`TestCreateBehindTombstone` (`fold/fold_test.go`) the shape half — that one existed
+and asserted the defect, with the reason beside it: "the Create keeps the
+head-of-window run assertion, because at apply time the pre-window row is still
+there", which is true of the delete's placement and false of the create's. The same
+sentence stood in `.claude/rules/fold.md`.
+
+*Where it came from.* This is the Unknown entry that read "the assertion a create
+behind a tombstone registers", and it is worth recording that neither side of the
+line that entry named was the answer. It predicted the drain would plausibly pass
+and the pre-append check would plausibly refuse; the check passes (`decideRun`
+judges the create's own must-not-exist against the window's tombstone, not against
+the pre-window row) and the drain is the half that fails. An entry marked unknown
+is a question worth driving rather than a guess worth refining.
+
 **A batch that lands half-applied.** One drain is one transaction, and a batch
 that landed in pieces would leave rows no replay can reconstruct — the mutations
 behind it were acked, folded and collapsed. `cold.Applier`'s first obligation;
@@ -900,28 +929,11 @@ replay settles it.
 
 ## Unknown
 
-**The assertion a create behind a tombstone registers.** `adopt` keeps a run's
-existing head assertion and drops the fallback it is handed, so the fallback is
-`nil` at the sites whose branch already has one — and the create-behind-a-
-tombstone site is written as one of them. It is not: a `Delete` registers
-`asserted{}`, so a window whose only touches of a run are a delete and the
-create behind it leaves that run with **no** head, and the fallback there is
-live. Handing it `want.forRun(...)` — must-not-exist — instead of `nil` left the
-whole of `go test ./...` green.
-
-What was not established is which side of the line that lands on. At the drain
-it plausibly passes: the emitted requests are driven in tail-seqno order, so the
-delete has already removed the row when the create's assertion is placed. At the
-**pre-append** check it plausibly refuses, because the condition authority
-judges the head assertion against the *pre-window* row, which is still there —
-and that is what `fold`'s own notes say the `nil` is for. A refusal there is a
-legitimate delete-then-create stream rejected before it is ever appended, which
-is workflow-id reuse traffic.
-
-Settling it needs one case driving a delete and a create of the same run in one
-window through the condition authority and then through a real drain, with the
-pre-window row present. Until then this is open, which is what this section
-means.
+**Nothing.** The one entry here — the assertion a create behind a tombstone
+registers — was settled by the run it asked for, and neither side of the line it
+named was the answer. It is closed above, under *a run recreated behind its own
+tombstone, asserted twice*; what the driving found was a third thing, which is
+what such an entry is for.
 
 ---
 

@@ -449,11 +449,17 @@ func TestTombstone(t *testing.T) {
 }
 
 // TestCreateBehindTombstone: the only mutation that gives a tombstoned run row
-// state again. A second delete of that run is an idempotent no-op, and neither
-// the current row nor the task kinds are checked against a run's tombstone at
-// all. Both requests emit in window order, and the Create keeps the
-// head-of-window run assertion, because at apply time the pre-window row is
-// still there.
+// state again, and so the only window that emits two requests naming one run. A
+// second delete of that run is an idempotent no-op, and neither the current row
+// nor the task kinds are checked against a run's tombstone at all.
+//
+// The head-of-window assertion is the window's, so it is placed once — at the
+// first request naming the run. Placed on both, the second placement is judged
+// against a row the first request's own delete has already removed inside the
+// same transaction: a head at v1 holds at the delete and reports *must exist* at
+// the create, which halts the shard over a window this package admits by design.
+// That it read the other way round for a while is why the claim now names which
+// request carries it.
 func TestCreateBehindTombstone(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,
@@ -467,8 +473,10 @@ func TestCreateBehindTombstone(t *testing.T) {
 	require.Equal(t, mutation.KindDelete, out[0].Request.Kind())
 	require.Equal(t, mutation.KindCreate, out[1].Request.Kind())
 	require.Less(t, out[0].TailSeqno, out[1].TailSeqno, "apply must keep this order")
-	require.Equal(t, fold.RunAssertion{BaseVersion: 1}, out[1].RunAssertions()[runX],
-		"the head of the window asserted v1, and that is what holds at apply time")
+	require.Equal(t, fold.RunAssertion{BaseVersion: 1}, out[0].RunAssertions()[runX],
+		"the head of the window asserted v1, against the row that is still there when the delete runs")
+	require.NotContains(t, out[1].RunAssertions(), runX,
+		"and nothing is asserted about the run again: the delete above removed the row")
 }
 
 // TestContinueAsNewFoldsIntoOneRequest: one request owns both runs, and a later

@@ -242,6 +242,35 @@ func TestARunTombstonedAndRecreatedInOneWindow(t *testing.T) {
 	require.Equal(t, second, current.RunID, "the current row names the run the window's tail created")
 }
 
+// TestARunRecreatedBehindItsOwnTombstoneIsAssertedOnce is the same window one run
+// id narrower, and it is the one that reaches the double placement: a run the
+// window updated, deleted and created again emits two requests naming that run,
+// and the head-of-window assertion belongs to the window rather than to either of
+// them.
+//
+// Placed on both, the second is judged against a row the first request's own
+// delete removed a statement earlier, inside this transaction: the head at v2
+// holds at the delete and answers *must exist* at the create. That is a halted
+// shard — [apply.ClassInvariantViolated] — over a stream `fold` documents as
+// legal, with every row in the database exactly where the stream put it and
+// nothing to recover.
+func TestARunRecreatedBehindItsOwnTombstoneIsAssertedOnce(t *testing.T) {
+	h := newDrains(t)
+	wf, run := uuid.NewString(), uuid.NewString()
+
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.create(wf, run))))
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(h.update(wf, run, 2))))
+
+	require.NoError(t, h.store.Apply(h.ctx, h.shard, h.epoch, h.fold(
+		h.update(wf, run, 3),
+		h.build.Delete(h.namespaceID, wf, run),
+		h.create(wf, run),
+	)))
+
+	require.EqualValues(t, 1, h.runVersion(wf, run),
+		"the run lives again at the version its create writes, the tombstone's rows gone")
+}
+
 // upsertOf is the entry each of the seven collections carries here, hand-written
 // because what a store will take is not derivable from a type: a CHASM node is
 // two blobs, a signal id is a row with no payload of its own. There is no second
