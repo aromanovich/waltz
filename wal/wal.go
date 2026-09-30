@@ -10,7 +10,14 @@
 //  2. [Log.Fence] atomically cuts off appends of all lower epochs.
 //  3. Cumulative ack: a successful [Log.Append] up to seqno n means every entry
 //     ≤ n is durable, so "confirmed ⟺ seqno ≤ commitSeqno" is inherited rather
-//     than implemented.
+//     than implemented. Durable is a claim about storage and not about the value
+//     that acked, which wal/waltest's suite cannot ask: every case there reads
+//     back through that same value, so a backend acking into memory it never gets
+//     out of the process passes all of them. waltest.CheckReopen is that
+//     obligation as a check a deployment runs — open the storage a second time and
+//     ask the fresh value — and guarantee 2 has the same blind spot one clause
+//     over, an owning epoch that never leaves the process fencing nobody at a
+//     failover.
 //  4. Gap-freedom: an append never skips a seqno, so a shard's log is one
 //     unbroken run. [Log.Trim] moves its lower end and [Log.Append] its upper
 //     end; nothing puts a hole in the middle, so replay needs no hole tracking.

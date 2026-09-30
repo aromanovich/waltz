@@ -181,9 +181,15 @@ type Emitted struct {
 
 // RunAssertions is the head-of-window state of each run this request touches,
 // by run id, which apply's transaction wrapper substitutes for the assertions
-// the store would derive from the versions the request writes. A run with no
-// entry came in asserting nothing (a Delete-headed window). The map is the
+// the store would derive from the versions the request writes. The map is the
 // batch's own: writing to it rewrites what the drain stands on.
+//
+// Two kinds of run have no entry, and a consumer needs neither apart: one that
+// came in asserting nothing (a Delete-headed window), and one whose head an
+// earlier request of this batch already carries. The head is the *window's*
+// claim about the pre-window row, so it is placed once — see [Accumulator.Drain],
+// where the only window that can emit two requests for one run is also the one
+// where placing it twice contradicts itself.
 func (e *Emitted) RunAssertions() map[string]RunAssertion { return e.runs }
 
 // OrphanedTasks are tasks from mutations a tombstone collapsed, which only a
@@ -290,6 +296,14 @@ func New(shard wal.ShardID) *Accumulator {
 type wfKey struct {
 	namespaceID string
 	workflowID  string
+}
+
+// runKey names one run of one workflow inside a drain. The workflow is the
+// record pointer rather than its ids: [Drain] has the record in hand where it
+// uses this, and two workflows cannot share one.
+type runKey struct {
+	workflow *WorkflowRecord
+	runID    string
 }
 
 type workflowAcc struct {
@@ -606,12 +620,31 @@ func (a *Accumulator) Drain() Batch {
 	slices.SortFunc(out, func(a, b Emitted) int { return cmp.Compare(a.TailSeqno, b.TailSeqno) })
 	// After the sort, so that "first request naming this record" is a position
 	// in the order apply drives rather than in the order the map ranged.
+	//
+	// A run's head assertion is the same kind of claim and is dropped from every
+	// request past the first naming that run, for a reason the record's does not
+	// have: the only window that emits two requests for one run is a tombstone
+	// with a create behind it, and the delete between them has already removed
+	// the row the assertion is about. Placed twice, the second placement
+	// contradicts the first — a head at v2 holds at the delete and reports
+	// *must exist* at the create, halting the shard over a window this package
+	// admits by design.
 	named := make(map[*WorkflowRecord]struct{}, len(a.workflows))
+	placed := make(map[runKey]struct{}, len(out))
 	for i := range out {
 		rec := out[i].workflow
 		_, seen := named[rec]
 		out[i].first = !seen
 		named[rec] = struct{}{}
+
+		for run := range out[i].runs {
+			key := runKey{rec, run}
+			if _, seen := placed[key]; seen {
+				delete(out[i].runs, run)
+				continue
+			}
+			placed[key] = struct{}{}
+		}
 	}
 
 	work := a.drainTasks()
@@ -675,9 +708,14 @@ func (w *workflowAcc) currentTainted() bool {
 }
 
 // adopt registers a new pending request as the owner of a run. An existing run
-// state keeps its head assertion, which is what makes a Create behind a
-// tombstone assert the pre-window row rather than absence; a fresh run gets
+// state keeps its head assertion and the fallback is dropped, which is what makes
+// a Create behind a tombstone stand on what the window's *head* asserted rather
+// than on absence — nothing at all where a Delete was that head. A fresh run gets
 // fallback as its head.
+//
+// Where that head is then placed is [Accumulator.Drain]'s: the assertion rides
+// the first emitted request naming the run and not this one, the Delete between
+// them having removed the row it is about.
 func (w *workflowAcc) adopt(pr *pendingReq, run string, part partKind, fallback *RunAssertion) {
 	rs := w.heldRun(run)
 	if rs == nil {
@@ -908,10 +946,7 @@ func (a *Accumulator) addConflictResolve(seqno wal.Seqno, req *p.InternalConflic
 		return err
 	}
 
-	cw, err := currentWriteOfConflictResolve(req)
-	if err != nil {
-		return err
-	}
+	cw := currentWriteOfConflictResolve(req)
 
 	w = a.acc(reset.NamespaceID, reset.WorkflowID)
 

@@ -198,6 +198,13 @@ func (t *Tail) Stalled() (Unresolved, bool) {
 // One above it is another owner's and ends the stall in a halt instead, which is
 // why this may not be reached on it — applied would move to a seqno this shard's
 // own drains never committed, and the trim goes to applied.
+//
+// The zero check is not redundancy against the caller that already makes it
+// ([cycle.Cycle.resolveStalled] returns before this on an unstalled tail). What it
+// costs is the whole shard: resolving nothing would assign zero to both applied
+// and resolved, which is the watermark going backwards and the entire log back
+// under the tail — so I10 refuses every write on the shard over memory nobody
+// holds. A guard whose absence costs that stays whatever its callers do.
 func (t *Tail) Resolve() {
 	if t.stalled == 0 {
 		return

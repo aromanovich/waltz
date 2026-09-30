@@ -78,7 +78,7 @@ func CheckRetention(
 	}
 	// Before the wait, so that a failure after it is about time and not about
 	// an append that never landed.
-	if err := requireRun(ctx, log, shard, want, "before the wait"); err != nil {
+	if err := requireRun(ctx, log, shard, want, "before the wait", retentionShortfall); err != nil {
 		return err
 	}
 
@@ -93,7 +93,7 @@ func CheckRetention(
 	if err := log.Fence(ctx, shard, epoch); err != nil {
 		return fmt.Errorf("waltest: re-fencing shard %d at epoch %d after %s: %w", shard, epoch, window, err)
 	}
-	if err := requireRun(ctx, log, shard, want, fmt.Sprintf("after %s", window)); err != nil {
+	if err := requireRun(ctx, log, shard, want, fmt.Sprintf("after %s", window), retentionShortfall); err != nil {
 		return err
 	}
 
@@ -107,18 +107,26 @@ func CheckRetention(
 	return nil
 }
 
-// requireRun reads the shard's whole log and holds it against want.
-func requireRun(ctx context.Context, log wal.Log, shard wal.ShardID, want []wal.Entry, when string) error {
+// retentionShortfall is what a run short of its entries means where the wait is
+// what came between: the causes are the ones a clock reaches.
+const retentionShortfall = "what a completed append acked stays readable until a trim takes it, and " +
+	"nothing here trimmed. A retention window, a TTL on the log's table or a compaction that drops " +
+	"old records each break that, and each takes acked data the cold store does not hold"
+
+// requireRun reads the shard's whole log and holds it against want. shortfall is
+// what fewer entries than were appended means for the caller's check — the two
+// callers are asking about different causes, and a shortfall reported with the
+// other one's diagnosis sends a deployment to look at the wrong thing.
+func requireRun(
+	ctx context.Context, log wal.Log, shard wal.ShardID, want []wal.Entry, when, shortfall string,
+) error {
 	got, err := readAll(ctx, log, shard, len(want)+1)
 	if err != nil {
 		return fmt.Errorf("waltest: reading shard %d back %s: %w", shard, when, err)
 	}
 	if len(got) < len(want) {
-		return fmt.Errorf("waltest: shard %d holds %d of its %d entries %s: what a completed append "+
-			"acked stays readable until a trim takes it, and nothing here trimmed. A retention "+
-			"window, a TTL on the log's table or a compaction that drops old records each break "+
-			"that, and each takes acked data the cold store does not hold",
-			shard, len(got), len(want), when)
+		return fmt.Errorf("waltest: shard %d holds %d of its %d entries %s: %s",
+			shard, len(got), len(want), when, shortfall)
 	}
 	for i, w := range want {
 		switch g := got[i]; {

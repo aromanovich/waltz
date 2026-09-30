@@ -120,12 +120,34 @@ back door — which is why `memwal` deliberately has no knobs and no injection p
 
 `RunContractSuite` drives **one** `wal.Log` value, in one process. A displaced owner is therefore
 refused by the same in-process object its successor has just fenced — so **a backend whose `Fence`
-records the epoch in memory and never gets it into storage passes every fencing case here.** Only a
-failover between two processes can see that, and this repository has no second process to run.
+records the epoch in memory and never gets it into storage passes every fencing case here.** The same
+value is also what every case reads back through, so **a backend whose `Append` acks into memory it
+never gets out of the process passes all 21 of them** — and that is guarantee 3, the one the whole
+library rests on.
 
 That is the single most important thing for a deployment to know about the suite it is about to run
 against its own log: a green contract suite says the log's *logic* is right and says nothing about
-whether the fence reaches another machine. Whoever supplies the log owes that test to themselves.
+whether either the entries or the fence ever reached storage.
+
+**Half of that has an instrument, and the half it is needs no second process.** `waltest.CheckReopen`
+takes a way of *opening* a log rather than a log: it fences, appends a short run, closes, opens the
+storage again, and asks the fresh value three things — are all the entries there, is a fence *below*
+the owning epoch refused, and does the log continue at the next seqno. A backend whose appends never
+left the process fails the first; one whose epoch never left it fails the second; one that starts over
+at the first seqno fails the third. None of it needs a kill, a second process, or a judge outside
+both.
+
+It is a function rather than a suite case for a reason that is not `CheckRetention`'s: `memwal` cannot
+be reopened at all, being a map in this process, so the suite has no log to run it against. And it is
+proved rather than assumed, in `memwal`'s own tests, against three backend shapes — a `Backend` handed
+back twice (storage that outlived the value, which must pass), a fresh `Backend` per open (appends that
+never left the process), and a `Backend` behind `waltest.Unfenced`, whose entries persist while its
+epoch lives in this process only. That last one is exactly the backend the paragraph above says passes
+every fencing case in the suite.
+
+**What is still the author's own test** is a fence *racing* a displaced owner's append: two writers
+sharing no memory, each reading the outcome off the log rather than off itself. Whoever supplies the
+log owes that one to themselves.
 
 **The second blind spot is time, and it is the one a managed backend walks into.** Guarantee 5 says
 `ReadFrom` returns every entry a completed append acked *and no trim has removed*, so a trim is the

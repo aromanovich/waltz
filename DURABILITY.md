@@ -165,6 +165,66 @@ the current row naming a run with no execution row.
 each arm separately, over `mutbuild.Builder.ConflictResolve` — added for it, which
 is the caller that package's doc said the shape was waiting for.
 
+**A run recreated behind its own tombstone, asserted twice** (rung 4). Not a loss
+and in this file for the reason the refusals above are: a halted shard is the
+outcome, and the shard halts over a stream `fold` admits by design, with every row
+in the database exactly where the stream put it and nothing for a replay to fix.
+
+A window that updates a run, deletes it and creates it again is the only one that
+emits two requests naming one run. The head-of-window run assertion is the
+*window's* claim about the pre-window row, and it rode both: at the Delete it holds
+(the row is there at v2), and at the Create it is judged against the row that
+delete removed a statement earlier inside the same transaction, so it answers
+*must exist* and the drain is classified `ClassInvariantViolated`. `Drain` places
+it at the first emitted request naming the run now, on the rule the workflow
+record's own assertions already had.
+`TestARunRecreatedBehindItsOwnTombstoneIsAssertedOnce`
+(`cold/memcold/apply_test.go`) is the drain half and
+`TestCreateBehindTombstone` (`fold/fold_test.go`) the shape half — that one existed
+and asserted the defect, with the reason beside it: "the Create keeps the
+head-of-window run assertion, because at apply time the pre-window row is still
+there", which is true of the delete's placement and false of the create's. The same
+sentence stood in `.claude/rules/fold.md`.
+
+*Where it came from.* This is the Unknown entry that read "the assertion a create
+behind a tombstone registers", and it is worth recording that neither side of the
+line that entry named was the answer. It predicted the drain would plausibly pass
+and the pre-append check would plausibly refuse; the check passes (`decideRun`
+judges the create's own must-not-exist against the window's tombstone, not against
+the pre-window row) and the drain is the half that fails. An entry marked unknown
+is a question worth driving rather than a guess worth refining.
+
+**An entry that appends, acks, and decodes for nobody** (rung 4). The closed entry
+*A request the write path accepts and the replay path cannot fold*, one field along
+and found the same way — by asking which of a package's refusals no valid stream
+reaches. `Decode` parses exactly two of the blobs a record carries, the execution
+info's and the state's, and it admits **proto3 alone**: any other encoding is
+`unexpected blob encoding`. `Encode` took any encoding at all.
+
+So a mutation whose state blob arrived in another encoding was appended, acked and
+durable, and then failed to decode for **every owner that inherited it**: each
+reads the tail, fails at that blob, leaves the cycle unstarted, and the next
+request retries it. Severity: **unavailable**, for good, on a shard whose log and
+cold store are both healthy — which the first rule admits only where nothing was
+acked, and here the caller has been told the write succeeded.
+
+The refusal is `Encode`'s now (`mutation.ErrBlobEncoding`), for exactly
+[ErrUncarriedProto]'s reason: this is the last place that can refuse, and before
+the append refusing writes nothing. The decoder's own refusal stays where it is,
+for a record some older binary wrote.
+`TestABlobEncodingDecodeCannotParseIsRefusedBeforeTheAppend`
+(`mutation/mutation_test.go`), red in both of its cases with the check removed.
+
+*Reachable or not, and why it did not matter.* Temporal's own `ProtoEncode`
+produces proto3, so no stream this layer sees today carries anything else — which
+is the same claim that was made about the parsed-struct-without-a-blob shape in the
+entry above, where two fixtures in this repository were found building it. The
+codec already refuses a Cassandra-shaped CHASM blob at encode for the identical
+reason; this was the one blob field where the refusal sat on the far side of the
+ack.
+
+[ErrUncarriedProto]: mutation/mutation.go
+
 **A batch that lands half-applied.** One drain is one transaction, and a batch
 that landed in pieces would leave rows no replay can reconstruct — the mutations
 behind it were acked, folded and collapsed. `cold.Applier`'s first obligation;
@@ -549,6 +609,64 @@ is a pointer to 1970. `TestACurrentRowConflictCarriesTheStartTimeOrNothing`
 (`fold/check_test.go`). Found by a sweep that deletes a guard clause rather than a
 write — the mutation for an assertion being to make its condition always pass.
 
+**A window's conflict that invents a start time** (rung 4). The entry above one
+house along, and the commoner of the two here: a layer that has acked a start into
+its log answers the retry out of the *window*, the row the delegated side would
+read not existing yet. That conflict is built from the blob the window will write
+(`fold.currentConflict`), and it carried no start time at all — so the reuse check
+above read the zero time and the minimal-interval refusal never fired, for the
+whole of a window's life and again at every window that writes the row.
+`TestTheWindowsCurrentRowConflictCarriesTheStartTimeOrNothing` (`fold/check_test.go`),
+red without the field. It was not found by a sweep: it was written down as a known
+shortfall in the comment above that function, which is where a defect goes to be
+read past.
+
+**A current row written without the start time the policy above it measures**
+(rung 4). What the two entries above are about, in the row rather than in the
+error, and it outlives both: `currentWriteOfConflictResolve` rendered a
+conflict-resolve's current row from four fields — run id, create request id, state
+and status — where both upstream plugins pass the snapshot's own execution-state
+blob through. `memcold`'s `writeCurrentRow` recovers the row's columns from exactly
+that blob, so `start_time` landed NULL and the reduced state landed in `data`.
+Durably, and nothing back-fills a start time: every later reader, the sequential
+path included, measures against a run that began at the zero time, so
+`WorkflowIdReuseMinimalInterval` never fires again for that workflow — the reuse
+arm skips its *Too many starts* refusal and the terminate arm terminates a live run
+instead of answering `ResourceExhausted`. The request-id half is narrower and real:
+`WorkflowExecutionStateFromBlob` back-fills `RequestIds[CreateRequestId]`, so an
+ordinary retried start still deduplicates, while every id `AttachRequestID`
+accumulated — an attached start, an update-with-start — is gone, and `FAIL` then
+raises a false *already started* where `TERMINATE_EXISTING` terminates a live run.
+
+The rendering now collapses to the snapshot upstream's own arms pick (`newWorkflow`
+when there is one, else `resetWorkflow`) handed to `currentWriteOfSnapshot`, which
+is *less* code than the four-field build.
+`TestCurrentWriteTracksTheLastWriter/a conflict-resolve keeps the start time and
+every request id` (`fold/currentwrite_test.go`) is the blob half, and
+`TestTheCurrentRowsColumnsComeFromItsBlob` (`cold/memcold/currentrow_internal_test.go`)
+is the column half — a separate test because that column is derived from the blob
+by a line of its own, and every read in this repository answers blob-first, so the
+line can be deleted with the whole of `go test ./...` green.
+
+*Why nothing here caught it, and what changed.* The oracle that ships drives one
+stream folded and unfolded, and a window of one still renders the row through the
+same function, so both arms carried the reduced blob and it cancelled — this file's
+standing caveat about that instrument. Beside it sat a fixture gap: `mutbuild`'s
+`runningState` carried no start time, where upstream's mutable state fills one at
+creation and never unsets it, so no hand-built fixture could tell a rendering that
+carries the field from one that drops it. It carries one now.
+
+*What this cost to establish, and it is the entry's point.* The divergence was
+recorded as **deliberate** in three documents — ADR 0012, handbook 13, handbook 15
+— and none of the three said what it bought; the ADR gave its address ("that is
+what fold hands the applier") where a reason should have been. Handbook 15 even
+listed it as the one of its four differences that did *not* follow from the layer
+having already acked the write. A list of deliberate divergences is worth
+re-reading for exactly that shape: a row that cannot say what it buys is a defect
+that has been written down. All three documents now say so, and
+`fold/currentwrite_test.go`'s assertion that upstream "writes run, create request,
+state and status — nothing else" is gone, it having been false about both plugins.
+
 **A refusal the caller cannot act on.** Not a loss of data, and in this file
 because the effect on a caller is the same: a current-row conflict carrying no run
 id is one the history service declines to resolve, so a retried start that
@@ -617,73 +735,11 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-**A current row written without the start time the policy above it measures.**
-The same failure as the closed entry *A delegated conflict that invents a start
-time*, one house along: that one was the conflict error this layer **hands back**,
-and this is the row it **writes**. Closing the messenger left the record itself
-short, so the store answers honestly ever after and every later reader — the
-sequential path included — measures against a run that began at the zero time.
-
-`currentWriteOfConflictResolve` (`fold/assert.go`) renders a conflict-resolve's
-current row from four fields — run id, create request id, state, status — and
-`memcold`'s `writeCurrentRow` derives the row's columns from exactly that blob,
-so `start_time` lands NULL and `data` holds the reduced state. Durably. Both
-upstream plugins pass the snapshot's **own** blob through instead
-(`sql/execution.go`'s `ConflictResolveWorkflowModeUpdateCurrent` arm and
-`cassandra/mutable_state_store.go`'s), which is where the divergence is.
-
-What it costs is a namespace policy that silently stops working. Upstream computes
-`timeSinceStart := now.Sub(currentWorkflowStartTime.UTC())` in
-`ResolveWorkflowIDReusePolicy` and in `resolveDuplicateWorkflowStart`
-(`service/history/api/workflow_id_dedup.go`); against the zero time every interval
-is ~2000 years, so `minimalReuseInterval < timeSinceStart` always holds.
-`WorkflowIdReuseMinimalInterval` never fires again for that workflow — the reuse
-arm skips its *Too many starts* refusal and the terminate arm terminates instead of
-answering `ResourceExhausted`. No start time is ever restored: nothing back-fills
-that field, unlike the request ids below.
-
-**The request-id half is strictly narrower, and the difference matters.**
-`WorkflowExecutionStateFromBlob` back-fills `RequestIds[CreateRequestId]`
-(`common/persistence/serialization/blob.go`), and the reduced rendering keeps the
-create request id — so an ordinary retried start still deduplicates. What is lost
-is every **non-create** id, the ones `AttachRequestID` accumulates for an
-attached start or an update-with-start. For those the dedup misses, and the two
-conflict policies answer accordingly: `FAIL` raises a false *already started*, and
-`TERMINATE_EXISTING` terminates a live run and starts another. Reachable where the
-run whose state becomes the current row has accumulated such ids — a replication
-conflict-resolve over a rebuilt run, not a flat reset, whose fresh run carries only
-its create id and which upstream renders the same way.
-
-*Why no instrument here catches it:* the oracle that ships in this repository
-drives one stream folded and unfolded, and a window of one still renders the row
-through the same function — so both arms carry the reduced blob and it cancels,
-which is this file's own standing caveat about that instrument. Handbook 13
-credits "a differential run against the incumbent" with having found the
-rendering, and such a run — the layer against an unwrapped store — could see it;
-the run described two paragraphs later, folded against unfolded, could not. Worth
-resolving when that chapter is next touched, since only one of the two is the
-oracle that still exists here.
-
-*What the tree says about it now.* The divergence is recorded as deliberate in
-three places — ADR 0012, the table in handbook 15, handbook 13 — and none of them
-records this consequence; the ADR gives its address rather than a reason ("that is
-what fold hands the applier"), and handbook 15 lists it as the one of its four
-differences that does **not** follow from the layer having already acked the write.
-Beside them sits one assertion that is simply false about upstream:
-`fold/currentwrite_test.go` pins the reduced form with "the store's
-conflict-resolve path writes run, create request, state and status — nothing else",
-where both plugins write the snapshot's whole blob and its start time. The comment
-at `fold/assert.go` is the one that states the situation correctly.
-
-*What closing it takes:* the rendering collapses to the snapshot the upstream arms
-pick (`newWorkflow` when there is one, else `resetWorkflow`) handed to the existing
-`currentWriteOfSnapshot`, which is **less** code than the four-field build; the
-columns then come right by themselves, since `writeCurrentRow` already recovers
-them from the blob. Two tests, each watched red against this defect: a conflict
-carrying the start time, and the drained row carrying it in its column. Then the
-four documents, because the divergence stops existing and two of the claims are
-wrong independently of the fix. It is a **reverse of a recorded decision**, so it
-is the owner's call rather than a hardening session's.
+**Nothing. The one entry here was closed this pass** — a current row written
+without the start time the policy above it measures — and the section being empty
+is a statement about the entries that have been named, never about the code:
+"What this file is not" below is the standing note on that, and the discovery
+sweeps it prescribes are how the next entry arrives.
 
 ---
 
@@ -724,30 +780,52 @@ boots over the library in `go test` with nothing installed. A second
 implementation a deployment could run would be a different library, and a suite
 over it would judge that library's storage rather than this layer.
 
-*What a deployment owes in its place:* `waltest.RunContractSuite` and
-`waltest.CheckRetention` against its own log, Temporal's four persistence suites
-against its own store, and the folded-against-sequential comparison rebuilt over
-that store rather than over `cold/memcold`.
+*What a deployment owes in its place:* `waltest.RunContractSuite`,
+`waltest.CheckReopen` and `waltest.CheckRetention` against its own log, Temporal's
+four persistence suites against its own store, and the folded-against-sequential
+comparison rebuilt over that store rather than over `cold/memcold`.
 
-**A backend whose `Fence` never reaches storage.** `RunContractSuite` drives one
+**A backend whose `Fence` never reaches storage** — *narrowed, and the narrowing
+is worth reading before the rest of this entry.* `RunContractSuite` drives one
 `wal.Log` value in one process, so a displaced owner is refused by the same
 in-process object its successor has just fenced, and a backend that records the
 owning epoch in a process-local field passes every fencing case here — the
 contention test included. Severity: silent, and the worst shape on this page —
 two writers at one seqno, each told its append is durable.
 
-*What is accepted* is that a green contract suite is a statement about a log's
-**logic** and not about whether its fence reaches another machine, and that
-nothing here instruments the difference — where the suite's other blind spot,
-time, has `waltest.CheckRetention`.
+*What was wrongly accepted, and the argument that did it.* This entry used to say
+the narrower form — one process, a second handle over the same storage — "cannot be
+had either: `memwal.New` makes its own map, so the only backend in this tree cannot
+supply the second handle, and a case added for it would be skipped by the one
+backend that could ever watch it go red." Both halves are true and the conclusion
+does not follow: the same two facts are true of *time*, and the answer there was not
+a suite case but a **function a deployment calls, proved in-tree against a
+decorator** — `CheckRetention` against `Expiring`. The entry even names that
+instrument, two paragraphs up, as what the other blind spot has. So the shape was
+sitting in the file and was read past.
 
-*Why it stays accepted:* it needs two writers that share no memory. Two processes
-is the honest form and there is none here. The narrower form — one process, two
-independently constructed handles over one storage — would catch a process-local
-epoch, and cannot be had either: `memwal.New` makes its own map, so the only
-backend in this tree cannot supply the second handle, and a case added for it
-would be skipped by the one backend that could ever watch it go red. A case no
-implementation here can fail is the shape this file's procedure exists to refuse.
+`waltest.CheckReopen` is that shape applied here. It takes a way of *opening* a log
+rather than a log: fence, append a run, close, open the storage again, and ask the
+fresh value for the entries, for who owns the shard, and for the position to
+continue at. `waltest.Unfenced` — a log whose epoch lives in this process while its
+entries are the wrapped log's — is the double it is proved against, and
+`TestTheReopenCheckIsNotVacuous` watches both halves go red, the ownership half
+against exactly the backend this entry describes. Its *other* half closes something
+this page had not named at all: guarantee 3 says an acked append is durable, every
+case in the suite reads back through the value that appended, so a backend acking
+into memory it never gets out of the process passed all 21 — and nothing anywhere
+asked.
+
+*What stays accepted* is the part that genuinely needs two processes: a fence
+**racing** a displaced owner's append. A reopen asks a quiescent question — who owns
+this shard now — and cannot ask whether the fence and the append are ordered against
+each other under contention. Two writers sharing no memory is the honest form of
+that and there is none here.
+
+*What is accepted* is therefore narrower than it was: a green contract suite plus a
+green reopen says the log's logic is right *and* that its entries and its epoch are
+in storage, and still says nothing about the ordering of a fence against a
+concurrent append on another machine.
 
 *What a deployment owes in its place:* stage the displaced owner against the
 storage the log actually runs on — fence at a higher epoch from a second process,
@@ -904,28 +982,11 @@ replay settles it.
 
 ## Unknown
 
-**The assertion a create behind a tombstone registers.** `adopt` keeps a run's
-existing head assertion and drops the fallback it is handed, so the fallback is
-`nil` at the sites whose branch already has one — and the create-behind-a-
-tombstone site is written as one of them. It is not: a `Delete` registers
-`asserted{}`, so a window whose only touches of a run are a delete and the
-create behind it leaves that run with **no** head, and the fallback there is
-live. Handing it `want.forRun(...)` — must-not-exist — instead of `nil` left the
-whole of `go test ./...` green.
-
-What was not established is which side of the line that lands on. At the drain
-it plausibly passes: the emitted requests are driven in tail-seqno order, so the
-delete has already removed the row when the create's assertion is placed. At the
-**pre-append** check it plausibly refuses, because the condition authority
-judges the head assertion against the *pre-window* row, which is still there —
-and that is what `fold`'s own notes say the `nil` is for. A refusal there is a
-legitimate delete-then-create stream rejected before it is ever appended, which
-is workflow-id reuse traffic.
-
-Settling it needs one case driving a delete and a create of the same run in one
-window through the condition authority and then through a real drain, with the
-pre-window row present. Until then this is open, which is what this section
-means.
+**Nothing.** The one entry here — the assertion a create behind a tombstone
+registers — was settled by the run it asked for, and neither side of the line it
+named was the answer. It is closed above, under *a run recreated behind its own
+tombstone, asserted twice*; what the driving found was a third thing, which is
+what such an entry is for.
 
 ---
 
@@ -1209,6 +1270,145 @@ and the sync-mode page above — and the rest were equivalences worth naming: an
 adjacent range that merges or does not cover the same keys either way, an assignment
 of an equal value, a switch arm the case above it already matched.
 
+**Run exhaustively it is a different instrument, and the second run says so.** The
+fifty-one were chosen; `tools/mutation-sweep.py` enumerates the class instead, and
+**111** comparisons over the whole layer — `fold`, `cycle` and its three
+sub-packages, `apply`, `wrapper`, `baserow`, `mutation`, `wal`, `walmetrics` and the
+root — plus the two shipped implementations, `memwal` and `memcold`, left **28** green, of which **seven** were boundaries nothing drove:
+the window's byte watermark and its age, the trim cadence's time half, a task
+range's inclusive minimum, the task page's own range on both halves, the history
+page's strict ascent, and the length check in front of `basePage[0]` — the last
+one a panic rather than a wrong answer. A chosen list cannot make that claim,
+which is the argument for generating a class rather than writing one down.
+
+**The dismissals were confirmed, and one of them was wrong.** Re-run with every
+package in the judge, 8 of the 28 are caught: seven by the tests this branch added,
+which is what a fix landing looks like, and one — the conflict-resolve refusal's
+`parts > 1` — by `cycle`'s own recovery test, a package the narrow judge had
+dropped. So that one was guarded all along and the *argument* for dismissing it was
+the thing that was wrong, which is the failure mode a confirm run exists to catch:
+a plausible reason is not evidence. `fold/histtasks.go`'s inclusive minimum is worth
+a footnote the other way — the differential oracle catches it too, so the boundary
+test this branch added names the bound rather than being the only thing holding it.
+
+The **twenty** that are still green under the whole set are recorded here so the
+next pass does not re-triage them, in the four shapes they came in. **A `len()` compared against zero
+or against a magic prefix's length**, where the adjacent form is a tautology or
+names a value no encoder produces — both page tokens, `bounded`'s second conjunct,
+`mutation/encode.go`'s pre-allocation. **A switch arm the case above already
+matched** — both merges' `c < 0` behind a `c == 0`. **A minimum-picking idiom**,
+where assigning on equality assigns the same value — the attribution's cut seqno
+and its workflow slices. **And a difference a later line absorbs**: `memwal`'s read
+offset and trim length both end in an empty slice either way, the history merge's
+reach filter is deduplicated by the merge itself, `Manager.ShardAcquired`'s epoch
+comparison is preceded by the equal case returning, and the history page's `cut` is
+capped by `min(cut, pageSize)` — that last one provable from the branch's own
+arithmetic, since the branch implies an ask of one, hence a single base row, hence
+a first key equal to the last.
+
+**The second class, run the same way, and it does not stop where the first did.**
+`guard` over the same set is a partial run in two segments — 151 of 331 through
+`cycle`, its three sub-packages and most of `fold`, then 10 of the 195 that were
+left, which reached the rest of `fold`'s task page — with **25** greens, and the two
+halves of it read differently enough to be worth separating.
+
+Over `cycle` it found nothing that was a hole, which is a result rather than an
+absence: a state check a second check downstream repeats (`Cycle.startForRead`,
+`Manager.ShardAcquired`'s epoch, `trim.Trimmer.Force`'s `CheckTrim`, which `start`'s
+own `upTo <= doneUpTo` refuses anyway), a fast path whose own comment already
+predicts the green (`fold`'s `want.empty()`), and three where the guard is
+load-bearing and the caller happens to check too — `Cycle.halt`, `Cycle.refold` and
+`tailstate.Tail.Resolve`. The last is the one to read: resolving an unstalled tail
+assigns zero to `applied` **and** `resolved`, which is the watermark going backwards
+and the whole log back under the tail, so I10 refuses every write on the shard. All
+three now say at the guard what its absence costs.
+
+**Over `fold` it found six, and the fold's refusals are where this class earns its
+keep.** `ErrAfterTombstone` is raised at four sites and exactly one had a test; the
+other three each hide a nil dereference, because a delete leaves the run's state
+with no owner and a handler that folds onto it walks into that — a panic on the
+shard's own goroutine, which takes the process rather than halting one shard. Two
+more are `ErrRefused` sites, where the stream is legal and this accumulator cannot
+express it: a conflict-resolve's current mutation landing on a run the window holds
+as a snapshot or as an update that continued-as-new, and **a Set over a
+continued-as-new pair, which is the one that loses data rather than panicking** —
+dropping the pending request takes the new run's snapshot with it while the
+window's entry still points at it, so the drain emits the Set and never the
+creation. An acked start gone, with nothing that says so. The sixth is on the read
+path: a delete-current over a workflow the cold store has no current row for, whose
+guard would otherwise be compared against a row that is not there.
+
+Two things to take from the split. **A refusal is a guard**, and a tree whose
+decision paths are well driven can still have every one of its "this cannot be
+expressed" arms unreached — they are the arms no valid stream produces, which is
+exactly why nothing drives them and exactly why `Add` needs them, being where a
+replay arrives with no `Check` in front of it. And **a panic ends the test binary**,
+so the subtests after it never run: a sweep whose count looks one short may be
+reporting one mutation's blast radius rather than a miscount. **The second segment's one finding is the same shape at a seam rather than in the
+fold.** A foreign page token is refused by the frame this layer puts on its own —
+and the test for it used the base store's token, which fails the frame *and* the
+parse, so it said nothing about which did the work. Removing the frame check left
+everything green. What the frame buys over the parse is a token whose body happens
+to unmarshal into this layer's own: four bytes of somebody else's followed by valid
+JSON is adopted as ours at whatever cursor it decodes to, which restarts the
+pagination inside the window, leaves the base's cursor behind, and hands the range
+the reader completes the acked rows that were in it. That is the closed entry above
+about the two token spaces, proved at last against the thing it is actually about.
+
+**The third segment took the advice and is the whole of the cheap end**: the
+shipped store, the shipped log, the wrapper, the root package and the emitter —
+**94 mutations in six minutes**, against two minutes *each* in `fold`, because a
+mutation high in the import graph rebuilds almost nothing. Sweep from the top down
+when the budget is short; the number is that stark.
+
+Twenty-seven candidates, and `--confirm` settles them: **six are caught** and
+twenty-one are still green under the whole set. Of the six, three were already
+guarded by the packages a narrow judge drops — two by panics inside the drain's
+transaction (`applyCurrentRow`'s absent row, `applyHistory`'s tree row for a branch
+that is not new) and one by the in-process server (`applyTasks` handed an empty
+list). The other three are the tests this pass added: the store's own
+`startTimeOf`, which is `fold`'s twin and had no test because every fixture fills
+the field, and two **contract** claims that were missing from the conformance suite
+rather than from a backend — a trim below the lower end a previous trim left, where
+`upTo - base + 1` underflows and takes the whole log, and a read well past the end,
+where indexing from the lower end is a slice bound. Both now sit in
+`RunContractSuite`, so every backend meets them.
+
+Of the twenty-one still green, eighteen are `if err != nil` on a call no fixture
+can fail — the untested-error-path class this file already names as coverage rather
+than a defect — and three are `len(x) == 0` or nil early returns the next line
+no-ops through. `memwal`'s `CheckTrim` is the one worth naming: its absence is
+covered by the `upTo < base` check two lines later, which is the guard that does
+the work and is now driven.
+
+**The fourth segment is measured rather than finished, and the measurement is the
+useful part.** `apply`, `baserow`, `mutation`, `wal` and what was left of `fold` are
+92 mutations, and they ran in **207 seconds** — against 85 seconds *each* under a
+judge of ten packages. The difference is entirely in what gets linked: a mutation in
+a package everything imports rebuilds that package either way, and the ten test
+binaries above it are the cost. But the judge that bought the speed was narrowed to
+`./mutation/ ./fold/`, and for these files that is **not a filter at all**: what
+guards `apply`, `wal` and `baserow` is each one's *own* tests, which were the ones
+dropped. It returned 40 greens and the first three confirmed all came back caught.
+
+So the rule for a package low in the import graph is narrower than "narrow the
+judge": narrow it to **that package's own tests and its direct consumers**, never to
+two arbitrary ones. And know the price of getting it wrong — a `--confirm` over the
+whole set costs about ten minutes *per candidate* down there, so forty candidates is
+a session of its own rather than a step at the end of one.
+
+**Re-run that way, `apply`, `baserow` and `wal` come back with nothing**: their 14
+mutations, judged by their own tests plus `cycle`, `wrapper`, `memcold` and `fold`,
+are all caught — where the same 14 under the two-package judge had returned greens.
+So those three are swept and closed, with no candidates to confirm, and the pair of
+runs is the cleanest statement of the rule there is: **the judge decides the
+finding, so a green is about the judge until the judge contains whatever guards the
+line.** What is left unswept is `mutation` alone, 72 mutations, and its consumers are
+`fold`, `cycle`, `apply` and `memcold`.
+
+On the evidence of every segment, the interesting question in what remains is the
+same one: **which of its refusals no valid stream reaches.**
+
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence
 changes what the store holds — the two entries above, and the conflict that invents
@@ -1224,10 +1424,27 @@ meet them — otherwise every pass re-triages the same forty lines.
 
 It is not a suite and should not become one: a mutation run is a thing a session
 does, and a target that had to stay green would be a second copy of the applier.
-The mechanical half is `tools/mutation-run.py` — a runner, with no make target
-and no checked-in list of mutations, for that same reason: a committed manifest
-reads as coverage and leaves the next session re-running the last one's list
-instead of inventing the mutations it did not think of. What a run found belongs
+The mechanical half is two scripts and the split between them is the point.
+`tools/mutation-run.py` applies mutations a session thought of, one manifest entry
+at a time — with no make target and no checked-in manifest, because a committed
+list reads as coverage and leaves the next session re-running the last one's.
+`tools/mutation-sweep.py` *generates* a class instead and leaves nothing in it out,
+which is the half a manifest cannot be: "every adjacent comparison under `fold/`"
+means the same thing after the code moves, and a green from it is a line nothing
+drives rather than a line nobody thought of.
+
+**A narrowed judge is a candidate filter and a dismissal made on one is unsound.**
+Dropping packages from the inner loop turns red into green and never the other way,
+so a green found that way may be a green the dropped package would have caught —
+which is fine for deciding what to look at and wrong for deciding what to ignore.
+Shorten the acceptance stream by volume rather than by dropping its package, and
+re-run the greens with everything in the judge before writing any of them down:
+that is what `--confirm` is for. The first exhaustive run above did not, and going
+back to do it cost one of its twenty-one dismissals: the argument was wrong and the
+line was guarded by a package the narrow judge had dropped. Nothing it *acted* on
+moved, every green there having been proved red against a test in the whole set —
+so the price of a narrowed judge is paid in false dismissals rather than in false
+fixes, which is the shape to expect. What a run found belongs
 here; what it found and dismissed belongs beside the code.
 
 It is also not a substitute for the reasoning. Each entry is a pointer: the
@@ -1252,6 +1469,16 @@ progress.**
    the argument and how it was established.
 3. **Accepted** — it can happen, nobody will close it, and the owner has said so
    in the entry with the reason. An accepted risk is a finished entry.
+
+**What a green run means got wider, and every rung below rests on it.** Until the
+`race` target existed, nothing in this repository had ever run the detector — so
+every "a test holds this" above was a claim made by a run that could not see a
+data race, in a layer that is a goroutine per shard, two mirrors published for
+readers off it and a trim beside the loop. It comes back clean, which is the
+reassuring half; the half worth keeping is that it was *unasked* for as long as
+the closures were being written. A sweep that reports a mutant green should say
+which targets it ran, and `make check` is now four of them — the tests, the
+detector, the linters and the advisories.
 
 **Say which rung a closure stands on.** They are not equal, and "there is a test"
 hides the difference:
@@ -1278,11 +1505,14 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**The floor is signed. Open was empty and is not.** One adversarial pass on a
-fresh context put an entry back — a current row written without its start time —
-which is what the paragraph below says such a pass is for, and the first time it
-has happened rather than been anticipated. The floor itself is unchanged: every
-entry that was closed, refuted or accepted still is. Three of the acceptances are
+**The floor is signed. Open went empty, took an entry back, and is empty again.**
+One adversarial pass on a fresh context put an entry there — a current row written
+without its start time — which is what the paragraph below says such a pass is for,
+and the first time it had happened rather than been anticipated. It is closed now,
+along with a second one the same reading turned up beside it, and what closing it
+took is on the entry: a reverse of a decision three documents recorded as
+deliberate, none of which said what the divergence bought. The floor itself is
+unchanged: every entry that was closed, refuted or accepted still is. Three of the acceptances are
 the harness this
 library does not build — a durable log, two processes, a kill, and a judge outside
 all three — and the change that would reopen all three at once is durable storage

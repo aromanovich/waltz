@@ -265,6 +265,21 @@ var ErrCassandraBlob = errors.New("mutation: CHASM node carries a Cassandra blob
 // that is a crash loop or a silent hole; before it, refusing writes nothing.
 var ErrUncarriedProto = errors.New("mutation: parsed execution info or state with no blob carrying it")
 
+// ErrBlobEncoding is what [Encode] returns for an execution info or state blob
+// in an encoding [Decode] cannot parse. Those two are the only blobs this codec
+// *reads* — every other one is carried as bytes and handed back untouched — so
+// they are the two whose encoding has to be one the decoder admits.
+//
+// It is [ErrUncarriedProto]'s failure one field along, and the reason it is
+// refused here is the same and is the whole of why this error exists: past the
+// append the entry is acked, durable and inherited by every owner, and an entry
+// no owner can decode is a shard that never starts again. Each one reads the
+// tail, fails at this blob, leaves the cycle unstarted, and the next request
+// retries it — so the write is not lost, it is unavailable for good, which the
+// first rule admits only when nothing was acked. Before the append, refusing
+// writes nothing at all.
+var ErrBlobEncoding = errors.New("mutation: execution info or state blob in an encoding Decode cannot parse")
+
 // Encode turns a mutation into the bytes of a WAL entry's payload, carrying
 // whatever event batches the mutation still holds. The same mutation always
 // encodes to the same bytes, across processes as well.

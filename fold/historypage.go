@@ -115,6 +115,7 @@ func encodeHistoryToken(t *historyPageToken) []byte {
 	}
 	body, err := json.Marshal(t)
 	if err != nil {
+		// Unreachable: the struct is four scalars and a byte slice.
 		panic(fmt.Sprintf("fold: encoding a history page token: %v", err))
 	}
 	return append(historyTokenMagic[:], body...)

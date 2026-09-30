@@ -68,7 +68,14 @@ How to read this: everything on the left is already running and already recordin
 handler — before anything on the right happens. That has two consequences.
 
 * A binary running several services in one process reports **every** series to the handler of
-  whichever service built persistence first. The list is not split across two of them.
+  whichever service built persistence first. The list is not split across two of them — which is the
+  half that was chosen, since the alternative is the wrapper's counters on one service's handler and
+  the cycles' on another's. The half that follows rather than being chosen is the **tags**: a
+  Temporal handler carries its service's own, so in a single-binary deployment these series may
+  arrive labelled `frontend` or `worker` while being entirely about history shards. Do not filter a
+  dashboard or an alert on the service — filter on the series names, which are this layer's and
+  nobody else's. A deployment running the history service in a process of its own does not meet this
+  at all.
 * A layer whose `Use` is never called works perfectly and emits nothing. A store wrapper built by
   hand with `wrapper.Options.Metrics` nil silences the three series the wrapper raises, and
   permanently: it records into a private noop emitter that nothing can later replace, while the

@@ -46,6 +46,53 @@ func TestTheRetentionCheckIsNotVacuous(t *testing.T) {
 			"is about an append that never landed, which is a different fault and not this one's")
 }
 
+// TestTheReopenCheckIsNotVacuous is where waltest.CheckReopen is proved, for
+// TestTheRetentionCheckIsNotVacuous's reason: a deployment reading a green check
+// cannot tell it from one that would have passed anything.
+//
+// Three directions, because the check makes two claims and they fail apart. A
+// Backend handed back twice is storage that outlived the value, which is what a
+// real backend is and what must pass. An opener minting a fresh Backend each time
+// is a log whose appends never left the process — the failure this whole check
+// exists for, and the one no case in the suite can reach, since every other case
+// reads back through the value that appended. And a Backend behind
+// waltest.Unfenced keeps its entries while its epoch lives in this process only,
+// which is exactly the backend RunContractSuite's own doc says passes every
+// fencing case it has.
+func TestTheReopenCheckIsNotVacuous(t *testing.T) {
+	ctx := context.Background()
+	const shard, epoch = wal.ShardID(9), wal.Epoch(4)
+
+	t.Run("storage that outlives the value passes", func(t *testing.T) {
+		// Close is a no-op here, so one Backend handed back twice is the whole of
+		// what "reopened" means for a log that is a map in this process.
+		b := memwal.New()
+		require.NoError(t, waltest.CheckReopen(ctx, func() (wal.Log, error) { return b, nil }, shard, epoch))
+	})
+
+	t.Run("a log whose appends never left the process fails", func(t *testing.T) {
+		err := waltest.CheckReopen(ctx, func() (wal.Log, error) { return memwal.New(), nil }, shard, epoch)
+		require.Error(t, err, "a fresh backend per open passed a check for entries that survive an open")
+		require.Contains(t, err.Error(), "holds 0 of its 3 entries after the log was reopened",
+			"the failure has to name the moment as well as the shortfall: one raised before the close "+
+				"is about an append that never landed, which is a different fault")
+	})
+
+	t.Run("a log whose epoch never left the process fails", func(t *testing.T) {
+		b := memwal.New()
+		err := waltest.CheckReopen(ctx, func() (wal.Log, error) { return waltest.Unfenced(b), nil }, shard, epoch)
+		require.Error(t, err, "a log with a process-local epoch passed a check for an epoch in storage")
+		require.Contains(t, err.Error(), "admitted a fence at epoch 3 after being reopened at epoch 4",
+			"the entries are all there, so the failure must be about ownership and name both epochs")
+	})
+
+	t.Run("an epoch with nothing below it is refused rather than half-checked", func(t *testing.T) {
+		b := memwal.New()
+		err := waltest.CheckReopen(ctx, func() (wal.Log, error) { return b, nil }, shard, 1)
+		require.ErrorContains(t, err, "has nothing below it to fence at")
+	})
+}
+
 // TestATrimmedLogRemembersWhereItIs pins the next seqno surviving a trim that
 // takes every entry. That such an append is refused at all is the suite's claim
 // now; what is here is this backend's answer to it — every seqno the log gave

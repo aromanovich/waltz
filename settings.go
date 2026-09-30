@@ -72,7 +72,10 @@ would be that refusal with nothing behind it.`)
 	MaxShards = dynamicconfig.NewGlobalIntSetting(
 		"wal.maxShards", measured.MaxShards,
 		`MaxShards is what one node may own at once — not the cluster's shard count: the default
-256 is 128 in steady state, doubled for a failover. READ AT START-UP.`)
+256 is 128 in steady state, doubled for a failover. It is a premise of the budget assertion and not
+a limit anything enforces: no acquire is refused past it, deliberately, since a node over its share
+is a cluster that has just lost hosts. Size it for the worst assignment you intend to survive, not
+for the steady one. READ AT START-UP.`)
 
 	TailBudgetBytes = dynamicconfig.NewGlobalIntSetting(
 		"wal.tailBudgetBytes", measured.TailBudgetBytes,

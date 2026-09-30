@@ -426,6 +426,22 @@ func TestTheNodeBudgetIsAStartupAssertion(t *testing.T) {
 		require.ErrorIs(t, cfg.CheckBudget(), ErrBudget)
 	})
 
+	// The arithmetic is the assertion, so a product that does not fit has to be
+	// refused rather than compared. Signed overflow wraps, and it wraps to a
+	// number below any budget: a bound typed with a few zeroes too many passed
+	// this check, and a node that starts on it runs with I10's per-shard bound at
+	// that value — which is the bound gone, and an unbounded tail is the one
+	// thing the budget exists to make impossible before a connection is made.
+	t.Run("a product that does not fit is refused, not wrapped", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.HardMaxBytes = 1 << 60
+
+		err := cfg.CheckBudget()
+		require.ErrorIs(t, err, ErrBudget)
+		require.ErrorContains(t, err, "overflows",
+			"the message has to say why, since the numbers alone look like they fit")
+	})
+
 	t.Run("a bound left at zero takes the measured one", func(t *testing.T) {
 		// Neither reading of a zero is safe — "refuse everything" stops the
 		// shard, "hold everything" is the unbounded tail — so it is filled.

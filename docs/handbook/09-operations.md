@@ -93,6 +93,19 @@ limit.
 A drain the budget cuts short is **not** data loss: the entries are in the log, acked, and the next
 owner replays them. It costs that owner a read loop and a transaction before it serves anything.
 
+**The budget bounds the drains `Shutdown` issues and not the whole call, so size a stop timeout above
+it.** Two waits sit outside it, both deliberately. A drain already running on the loop — an age tick's,
+or a size watermark's — carries earlier writers' acked mutations on a context of its own with no
+deadline, and stopping the cycle waits for the loop to come back; the only bound on that is the cold
+store's own, which is why
+[04-contracts.md](04-contracts.md#apply--what-a-drains-outcome-demands) states bounding `Apply` as an
+obligation of the store rather than something this layer can impose — a drain this layer cut short is
+an unknown outcome, which stalls the shard. And a trim in flight is waited for unconditionally, since
+the log is closed after the drains and closing it under a trim would fail one: that wait is bounded by
+the trimmer's own one minute, per shard. So a node whose cold store has wedged does not return from
+`Shutdown` on schedule, and what happens next is the supervisor's `SIGKILL` — which costs exactly what
+a budget that ran out costs, a replay by the next owner, and nothing more.
+
 That holds while there *is* a next owner, so `Shutdown` names what it could not empty rather than
 returning nothing. Given a budget it can use, its error is a `*waltz.UndrainedError` and nothing
 else, carrying one `cycle.Residue` per shard — the shard, its epoch, how many acked entries the tail
@@ -527,9 +540,26 @@ Two things worth knowing about that, both of which are limits rather than featur
   `internal/verify/e2e` is the in-tree version of the same idea at a fraction of the coverage: one
   server, one workflow, no installation.
 
-`make lint` is the other check — golangci-lint and gopls's `modernize`, both pinned in the
+`make race` is the second check and the one the first cannot stand in for. Everything on the write
+path is one goroutine per shard owning the accumulator and the drain, with two mirrors published for
+the readers that are off it and a trim running beside it — so whether that concurrency holds is a
+question a run without the detector does not ask at all, and it stays unasked however green the run
+is. It is its own target because the cost is not symmetric: under `-race` the acceptance stream is
+25× its own wall clock, so this target runs it at a tenth of the length. Nothing the detector looks
+for needs the extra volume; the volume claim is `make test`'s.
+
+`make lint` is the third — golangci-lint and gopls's `modernize`, both pinned in the
 Makefile — and `.golangci.yml` says which linters are deliberately off and why: a check switched off
 in silence is one somebody re-enables and then disables again.
+
+`make vuln` is the fourth: govulncheck over the module, pinned there too. It reports an advisory only
+where a call path from this module's own code reaches the vulnerable symbol, so a green run is a claim
+about what waltz calls rather than about what it requires — and the two halves of the answer land in
+different places for a deployment. The module versions `go.mod` requires are what a consumer inherits
+through MVS; the standard library is whatever toolchain that consumer builds with, and the `toolchain`
+line here is only what waltz's own builds and CI use.
+
+`make check` is all four.
 
 ---
 
@@ -546,6 +576,13 @@ in silence is one somebody re-enables and then disables again.
   so a many-core machine runs that many of them side by side and the kernel kills one. You will see
   `signal: killed` with no `--- FAIL` line anywhere, which reads like a hang rather than like a
   resource limit. Lower `-p` until the run fits.
+
+* **A claim about a cycle's state, read off `Cycle.State` right after a call that did not wait for
+  the loop, is a race in the test rather than in the layer.** `State` is a bare load of the mirrored
+  atomic and `Stats` is a job behind the drain, so only the second one orders a read after the
+  decision a drain makes. One test read the first and was green on twelve cores and red under
+  `-race` every time, which is the shape to expect: the detector's slowdown is what lets the loop
+  lose the race it was always in.
 
 ---
 

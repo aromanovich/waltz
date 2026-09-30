@@ -81,10 +81,19 @@ no build tag:
 
 ```sh
 make test            # go test ./... -count=1; the default target
+make race            # the same under -race, on a tenth of the acceptance stream
 make lint            # golangci-lint plus gopls's modernize, both pinned there
-make check           # both
+make vuln            # govulncheck over the module and the toolchain
+make check           # all four
 go test ./wal/...    # the contract and its conformance suite; milliseconds
 ```
+
+`make race` is separate from `make test` and is the one `make test` cannot stand in for: the whole
+write path is a goroutine per shard owning the accumulator and the drain, with two mirrors published
+for the readers off it and a trim beside it, so a run without the detector never asks whether that
+holds. It is also where a **test's** own race shows up — a claim read off `Cycle.State` right after a
+call that did not wait for the loop is green on twelve cores and red under `-race` every time, `State`
+being a bare atomic load where `Stats` is a job behind the drain.
 
 There is no `-p 1` and its absence is deliberate: every backend is in this
 process and every database is keyed by a name minted per store, so the packages

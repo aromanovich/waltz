@@ -213,10 +213,30 @@ func (c Config) cadence() trim.Cadence {
 // shard over [Config.MaxShards] shards must fit in [Config.TailBudgetBytes],
 // which [Defaults] does exactly. It bounds encoded bytes, not RSS — what is
 // resident is decoded protos plus the accumulator's indices.
+//
+// [Config.MaxShards] is a premise and not a limit: nothing here refuses the
+// shard past it, and an acquire is the wrong place to — a node over its share is
+// a cluster that has just lost hosts, which is when a shard nobody owns costs
+// most. So the arithmetic holds while the assignment does, and a node holding
+// twice its share holds twice this budget. The bound that is still enforced
+// there is the per-shard one: I10 refuses writes at [Config.HardMaxBytes] on
+// every shard independently, so the overrun is bounded by how many shards
+// arrived rather than unbounded.
 func (c Config) CheckBudget() error {
 	cfg := c
 	cfg.fill()
 	held := int64(cfg.HardMaxBytes) * int64(cfg.MaxShards)
+	// A product that does not fit is refused rather than compared, and this is
+	// the arm that keeps the assertion an assertion: signed overflow wraps, and
+	// what it wraps to is a number below any budget — so a bound typed with a few
+	// zeroes too many would *pass* here and leave the node running with I10's
+	// per-shard bound at that value, which is the bound gone. Both factors are
+	// above zero past fill, so the division is safe.
+	if held/int64(cfg.MaxShards) != int64(cfg.HardMaxBytes) {
+		return fmt.Errorf("%w: %d shards × %d bytes overflows a signed 64-bit count, so no node holds "+
+			"it and the budget of %d is not the reason",
+			ErrBudget, cfg.MaxShards, cfg.HardMaxBytes, cfg.TailBudgetBytes)
+	}
 	if held > int64(cfg.TailBudgetBytes) {
 		return fmt.Errorf("%w: %d shards × %d bytes is %d bytes of tail, over the node's budget of %d",
 			ErrBudget, cfg.MaxShards, cfg.HardMaxBytes, held, cfg.TailBudgetBytes)
@@ -586,6 +606,19 @@ func (s *state) counted() *Counters {
 	return &s.Counters
 }
 
+// run is the loop. Nothing recovers a panic on it, and that is a decision rather
+// than an omission: the process goes down, which the first rule admits and which
+// leaves every acked entry in the log for a successor to replay. The containing
+// alternative — recover, halt the cycle, keep the node — is the unsafe one, and
+// the reason is what a halt then answers with. A halted-invariant cycle routes a
+// mutable-state read on its *tail*, and an empty tail is passthrough to the cold
+// store; a panic is by definition a moment when this loop's beliefs are wrong, so
+// a tail that reads empty because the panic left it half-moved would have the
+// shard answer reads out of a store that is missing acked entries. That is the
+// first rule broken to save one node's availability.
+//
+// What the deferred close does buy is that nothing hangs: every later call sees a
+// stopped cycle and gets [ErrHalted] rather than blocking on a loop that is gone.
 func (c *Cycle) run() {
 	defer close(c.done)
 
@@ -876,7 +909,11 @@ func (c *Cycle) settleAppend(ctx context.Context, s *state, cause error, payload
 func (c *Cycle) refold(s *state, m mutation.Mutation, kind mutation.Kind, size int) {
 	if s.st != StateRunning {
 		// The drain halted: its window is dropped and everything acked behind it
-		// is the next owner's to replay.
+		// is the next owner's to replay. Folding into a halted cycle's
+		// accumulator is not a loss — nothing will ever drain it and the entry is
+		// in the log — but the counters and the window it moves are what
+		// [Cycle.residue] reports, and a shutdown naming bytes no drain could
+		// ever take is a shard an operator reads as unsafe to leave.
 		return
 	}
 	if err := s.acc.Add(s.tail.Commit(), m); err != nil {
@@ -1310,6 +1347,17 @@ func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause er
 
 // halt is where a cycle stops for good. Both halts keep the log: the entries
 // are the evidence, and the next owner fences and continues it.
+//
+// The first halt is the one that stands, and the early return is what makes that
+// true rather than incidental. A second would overwrite `cause`, which is the only
+// record of what diverged, and — worse — the *class*: halted-lost is fencing
+// working and the next owner's to continue, halted-invariant is a divergence this
+// process owns and may never be handed on as an ordinary failover, so a later halt
+// turning one into the other changes what the layer tells a server about a
+// failover. Nothing reaches it twice today, every door a caller has refusing
+// through [Cycle.halted] once the first has landed, which is why no test drives
+// it; it stays because "unreachable" is a claim about today's callers and this one
+// costs a comparison.
 func (c *Cycle) halt(s *state, st State, cause error) {
 	if s.st != StateRunning {
 		return

@@ -293,6 +293,61 @@ func TestCassandraBlobIsRefused(t *testing.T) {
 	require.ErrorIs(t, err, ErrCassandraBlob)
 }
 
+// TestABlobEncodingDecodeCannotParseIsRefusedBeforeTheAppend is the side the
+// refusal has to be on, and it was on the other one. [Decode] admits proto3 alone
+// for the two blobs it parses — the execution info and the execution state — and
+// [Encode] took any encoding at all. So a mutation carrying a JSON-encoded state
+// appended, acked, and then failed to decode for every owner that inherited it:
+// each reads the tail, fails at this blob, leaves the cycle unstarted, and the
+// next request retries it. The write is not lost, it is unavailable for good.
+//
+// Which is [ErrUncarriedProto]'s failure one field along, and this test is that
+// one's shape too: the refusal is checked where it still writes nothing, and the
+// decoder's own refusal stays where it is for a record some older binary wrote.
+func TestABlobEncodingDecodeCannotParseIsRefusedBeforeTheAppend(t *testing.T) {
+	state := &persistencespb.WorkflowExecutionState{RunId: "run"}
+	stateBytes, err := proto.Marshal(state)
+	require.NoError(t, err)
+	info := &persistencespb.WorkflowExecutionInfo{WorkflowId: "wf"}
+	infoBytes, err := proto.Marshal(info)
+	require.NoError(t, err)
+
+	mutationWith := func(stateEnc, infoEnc enumspb.EncodingType) Mutation {
+		return Mutation{Update: &p.InternalUpdateWorkflowExecutionRequest{
+			ShardID: 1,
+			UpdateWorkflowMutation: p.InternalWorkflowMutation{
+				RunID:              "run",
+				ExecutionState:     state,
+				ExecutionStateBlob: &commonpb.DataBlob{Data: stateBytes, EncodingType: stateEnc},
+				ExecutionInfo:      info,
+				ExecutionInfoBlob:  &commonpb.DataBlob{Data: infoBytes, EncodingType: infoEnc},
+			},
+		}}
+	}
+
+	const proto3 = enumspb.ENCODING_TYPE_PROTO3
+	payload, err := Encode(mutationWith(proto3, proto3))
+	require.NoError(t, err, "the ordinary encoding is the one Temporal produces")
+	_, err = Decode(payload, registry())
+	require.NoError(t, err)
+
+	for _, c := range []struct {
+		name  string
+		state enumspb.EncodingType
+		info  enumspb.EncodingType
+		which string
+	}{
+		{"the state's", enumspb.ENCODING_TYPE_JSON, proto3, "execution state"},
+		{"the info's", proto3, enumspb.ENCODING_TYPE_JSON, "execution info"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Encode(mutationWith(c.state, c.info))
+			require.ErrorIs(t, err, ErrBlobEncoding)
+			require.ErrorContains(t, err, c.which, "the refusal names which of the two")
+		})
+	}
+}
+
 // Unknown fields are refused rather than skipped, at the top level and nested:
 // an entry from a newer codec would otherwise replay with a piece missing.
 func TestUnknownFieldIsRefused(t *testing.T) {

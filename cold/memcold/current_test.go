@@ -75,6 +75,21 @@ func TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs(t *testing.T) {
 	require.Contains(t, row.ExecutionState.RequestIds, snapshot.ExecutionState.CreateRequestId)
 }
 
+// A malformed namespace id is a bad request and not a bad process. The read this
+// one is derived from asserts the uuid (primitives.MustParseUUID) and panics, and
+// this read is the one obligation the layer puts on the store below — it stands
+// in front of every delegated condition check — so a panic here takes the node
+// down on a path a request reaches.
+func TestAMalformedNamespaceIsRefusedRatherThanFatal(t *testing.T) {
+	f := newWorkflow(t)
+	request := f.request()
+	request.NamespaceID = "not-a-uuid"
+
+	_, _, err := f.store.GetCurrentExecutionWithLastWriteVersion(f.ctx, request)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "not-a-uuid")
+}
+
 func TestVersionMovesWithTheWrite(t *testing.T) {
 	f := newWorkflow(t)
 	snapshot := f.create(t, 41)

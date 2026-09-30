@@ -422,6 +422,28 @@ func TestClearBufferedEventsDropsEarlierBatches(t *testing.T) {
 	require.True(t, out[0].Request.Update.UpdateWorkflowMutation.ClearBufferedEvents)
 }
 
+// TestAClearFoldingIntoASnapshotHasNoSlotToMark is the other arm of the same
+// rule, and the one nothing drove: where the run's window state is a *snapshot*,
+// the clear has no merged mutation to set the flag on — the snapshot's own write
+// replaces the run's rows wholesale, so there is nothing for a flag to ask for.
+// Without the nil check that absence is a dereference, and a panic in Add is on
+// the shard's own goroutine.
+func TestAClearFoldingIntoASnapshotHasNoSlotToMark(t *testing.T) {
+	a := fold.New(shard)
+	add(t, a,
+		mkCreate(runX),
+		mkUpdate(runX, 2, withBuffered("stale")),
+		mkUpdate(runX, 3, withClearBuffered(), withBuffered("fresh")),
+	)
+
+	out := reqs(a.Drain())
+	require.Len(t, out, 1)
+	require.Equal(t, mutation.KindCreate, out[0].Request.Kind(),
+		"the snapshot heads the window whatever folds into it")
+	require.Len(t, out[0].BufferedBatches, 1, "the clear dropped the batch before it")
+	require.Equal(t, "fresh", string(out[0].BufferedBatches[0].Blob.Data))
+}
+
 // TestTombstone: a deletion collapses the run's pending state into the
 // Delete; the collapsed mutations' tasks survive as orphans (I7).
 func TestTombstone(t *testing.T) {
@@ -448,12 +470,131 @@ func TestTombstone(t *testing.T) {
 	require.Equal(t, 3, stats.MutationsIn, "the failed add does not count; the idempotent delete does")
 }
 
+// TestEveryKindIsRefusedAfterATombstone: four sites raise ErrAfterTombstone and
+// one of them was driven. The other three are not decoration — a run's state after
+// a delete has no owner, so a handler that folds onto it dereferences nil: the
+// refusal is what stands between an impossible stream and a panic on the shard's
+// own goroutine, which takes the process with it.
+//
+// Impossible is the right word and is exactly why the refusal exists rather than
+// a guess: the single writer would have seen its assertion fail. But [Add] is also
+// where a replay arrives, with no [Accumulator.Check] in front of it, so what
+// reaches it is what some previous owner acked rather than what this one validated.
+// TestAConflictResolvesCurrentMutationNeedsAWindowStateItCanMergeWith drives the
+// refusal beside the tombstone ones, and it is a different rule: the run is live,
+// and what the fold cannot do is merge this request's mutation of it with the state
+// the window already holds. Nothing drove it either, and without it the merge runs
+// on a state it cannot express — a nil dereference where the window holds a
+// snapshot, and a request carrying somebody else's envelope where it holds an
+// update that continued-as-new.
+//
+// ErrRefused rather than ErrInvalidStream, because the stream is legal and it is
+// this accumulator that cannot express it: the drain empties the window and the
+// retry folds it as a head.
+func TestAConflictResolvesCurrentMutationNeedsAWindowStateItCanMergeWith(t *testing.T) {
+	// The reset and the current run are different runs of one workflow, which is
+	// what a conflict-resolve with a current mutation is.
+	current := func() *p.InternalWorkflowMutation {
+		return &p.InternalWorkflowMutation{
+			NamespaceID: nsID, WorkflowID: wfID, RunID: runX, DBRecordVersion: 3,
+			ExecutionInfoBlob:  blob("info-v3"),
+			ExecutionStateBlob: blob("state-v3"),
+			ExecutionState:     &persistencespb.WorkflowExecutionState{RunId: runX},
+		}
+	}
+
+	t.Run("the window holds that run as a snapshot", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkSet(runX, 2))
+
+		m := mkConflictResolve(runY, 3)
+		m.ConflictResolve.CurrentWorkflowMutation = current()
+		require.ErrorIs(t, a.Add(2, m), fold.ErrRefused)
+	})
+
+	t.Run("the window holds that run as an update that continued-as-new", func(t *testing.T) {
+		a := fold.New(shard)
+		can := mkUpdate(runX, 2)
+		newSnap := snapshot("run-z", 1)
+		can.Update.NewWorkflowSnapshot = &newSnap
+		add(t, a, can)
+
+		m := mkConflictResolve(runY, 3)
+		m.ConflictResolve.CurrentWorkflowMutation = current()
+		require.ErrorIs(t, a.Add(2, m), fold.ErrRefused)
+	})
+}
+
+// TestASnapshotOverAContinuedAsNewPairIsRefused is the same family as the case
+// above and the one whose absence loses data rather than panicking. A Set of a run
+// whose pending update also continued-as-new would have to strip one run out of a
+// request carrying two: dropping that request takes the *new* run's snapshot with
+// it while the window's entry for that run still points at it, so the drain emits
+// the Set and never the creation — an acked start gone, with nothing that says so.
+//
+// The refusal hands the window to the next one instead, where the Set is a head.
+func TestASnapshotOverAContinuedAsNewPairIsRefused(t *testing.T) {
+	a := fold.New(shard)
+	can := mkUpdate(runX, 2)
+	newSnap := snapshot(runY, 1)
+	can.Update.NewWorkflowSnapshot = &newSnap
+	add(t, a, can)
+
+	require.ErrorIs(t, a.Add(2, mkSet(runX, 3)), fold.ErrRefused)
+
+	// And the refusal left the window exactly as it was, which is what makes
+	// drain-and-retry safe: both runs are still there to emit.
+	out := reqs(a.Drain())
+	require.Len(t, out, 1, "one request owns both runs")
+	require.Contains(t, out[0].RunAssertions(), runX)
+	require.Contains(t, out[0].RunAssertions(), runY)
+}
+
+func TestEveryKindIsRefusedAfterATombstone(t *testing.T) {
+	// A conflict-resolve's current mutation must land on a run whose window state
+	// is an update it can merge with, so that arm needs two runs: one tombstoned
+	// and one carrying the reset.
+	conflictOverCurrent := func() mutation.Mutation {
+		m := mkConflictResolve(runY, 3)
+		m.ConflictResolve.CurrentWorkflowMutation = &p.InternalWorkflowMutation{
+			NamespaceID: nsID, WorkflowID: wfID, RunID: runX, DBRecordVersion: 2,
+			ExecutionInfoBlob:  blob("info-v2"),
+			ExecutionStateBlob: blob("state-v2"),
+			ExecutionState:     &persistencespb.WorkflowExecutionState{RunId: runX},
+		}
+		return m
+	}
+
+	for _, c := range []struct {
+		name string
+		m    mutation.Mutation
+	}{
+		{"an update", mkUpdate(runX, 3)},
+		{"a set", mkSet(runX, 3)},
+		{"a conflict-resolve of the deleted run", mkConflictResolve(runX, 3)},
+		{"a conflict-resolve mutating the deleted run as current", conflictOverCurrent()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := fold.New(shard)
+			add(t, a, mkUpdate(runX, 2), mkDelete(runX))
+
+			require.ErrorIs(t, a.Add(3, c.m), fold.ErrAfterTombstone)
+		})
+	}
+}
+
 // TestCreateBehindTombstone: the only mutation that gives a tombstoned run row
-// state again. A second delete of that run is an idempotent no-op, and neither
-// the current row nor the task kinds are checked against a run's tombstone at
-// all. Both requests emit in window order, and the Create keeps the
-// head-of-window run assertion, because at apply time the pre-window row is
-// still there.
+// state again, and so the only window that emits two requests naming one run. A
+// second delete of that run is an idempotent no-op, and neither the current row
+// nor the task kinds are checked against a run's tombstone at all.
+//
+// The head-of-window assertion is the window's, so it is placed once — at the
+// first request naming the run. Placed on both, the second placement is judged
+// against a row the first request's own delete has already removed inside the
+// same transaction: a head at v1 holds at the delete and reports *must exist* at
+// the create, which halts the shard over a window this package admits by design.
+// That it read the other way round for a while is why the claim now names which
+// request carries it.
 func TestCreateBehindTombstone(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,
@@ -467,8 +608,10 @@ func TestCreateBehindTombstone(t *testing.T) {
 	require.Equal(t, mutation.KindDelete, out[0].Request.Kind())
 	require.Equal(t, mutation.KindCreate, out[1].Request.Kind())
 	require.Less(t, out[0].TailSeqno, out[1].TailSeqno, "apply must keep this order")
-	require.Equal(t, fold.RunAssertion{BaseVersion: 1}, out[1].RunAssertions()[runX],
-		"the head of the window asserted v1, and that is what holds at apply time")
+	require.Equal(t, fold.RunAssertion{BaseVersion: 1}, out[0].RunAssertions()[runX],
+		"the head of the window asserted v1, against the row that is still there when the delete runs")
+	require.NotContains(t, out[1].RunAssertions(), runX,
+		"and nothing is asserted about the run again: the delete above removed the row")
 }
 
 // TestContinueAsNewFoldsIntoOneRequest: one request owns both runs, and a later

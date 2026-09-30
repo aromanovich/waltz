@@ -667,3 +667,42 @@ func TestACurrentRowConflictCarriesTheStartTimeOrNothing(t *testing.T) {
 				"start this policy forbids is admitted")
 	})
 }
+
+// The same claim for the other evaluator, and a separate test for the same
+// reason the payload claim is two: this conflict is built out of the blob the
+// window will write rather than out of a row the store returned. It is also the
+// commoner of the two in this layer — a start retried against a run the window
+// acked and has not drained is answered from the window, and the row the
+// delegated side would have read does not exist yet.
+func TestTheWindowsCurrentRowConflictCarriesTheStartTimeOrNothing(t *testing.T) {
+	began := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+
+	conflictOf := func(t *testing.T, startTime *timestamppb.Timestamp) *p.CurrentWorkflowConditionFailedError {
+		t.Helper()
+		a := fold.New(shard)
+		add(t, a, mkCreate(runX, func(s *p.InternalWorkflowSnapshot) {
+			st := realState(t, runX, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING)
+			st.StartTime = startTime
+			b, err := serialization.WorkflowExecutionStateToBlob(st)
+			require.NoError(t, err)
+			s.ExecutionState, s.ExecutionStateBlob = st, b
+		}))
+
+		err := check(t, a, mkCreate(runY))
+		var conflict *p.CurrentWorkflowConditionFailedError
+		require.ErrorAs(t, err, &conflict,
+			"a brand-new create over a workflow the window holds is a current-row conflict, got %T: %v", err, err)
+		return conflict
+	}
+
+	t.Run("a state that has one carries it", func(t *testing.T) {
+		got := conflictOf(t, timestamppb.New(began))
+		require.NotNil(t, got.StartTime,
+			"the window's own blob carries the start time, and the reuse check above measures against it")
+		require.True(t, got.StartTime.Equal(began), "got %v", got.StartTime)
+	})
+
+	t.Run("a state with none carries none", func(t *testing.T) {
+		require.Nil(t, conflictOf(t, nil).StartTime, "and a state without one must not have one invented")
+	})
+}

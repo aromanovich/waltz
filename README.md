@@ -74,7 +74,9 @@ open. Read it before trusting a green run, and add to it before fixing anything 
 ```sh
 git clone https://github.com/aromanovich/waltz && cd waltz
 make test    # go test ./... -count=1
+make race    # the same under -race, on a tenth of the acceptance stream
 make lint    # golangci-lint plus gopls's modernize, both pinned in the Makefile
+make vuln    # govulncheck over the module and the toolchain
 ```
 
 No cluster, no container, no fixed port, no cgo, no build tag. A fresh clone runs everything there
@@ -197,6 +199,16 @@ func TestMyBackendKeepsTheContract(t *testing.T) {
 	waltest.RunContractSuite(t, myBackend())
 }
 ```
+
+**Two obligations the suite cannot ask about, and both matter more than any case in it.** Every case
+drives one `wal.Log` value in one process, so it reads back through the thing that appended: a backend
+acking into memory it never gets out of the process passes all twenty-one, and so does one whose owning
+epoch is a field rather than a row. `waltest.CheckReopen` asks the half that needs no second process —
+it takes a way of *opening* your log, writes a run, closes it, opens the storage again and asks the
+fresh value for the entries, for who owns the shard, and for the position to continue at. And
+`waltest.CheckRetention` asks the half that needs the clock, since a trim is the only removal the
+contract excuses and the suite runs in milliseconds. Both return an error rather than taking a
+`*testing.T`, so a deployment runs them from whatever harness it has.
 
 `cold.Store` is two methods: `Apply`, which commits a folded window as one transaction, and
 `Watermark`, which reads back the seqno that transaction carried. It is one interface rather than

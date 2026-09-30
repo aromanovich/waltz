@@ -67,6 +67,30 @@ func TestTheCadenceAlsoCountsTime(t *testing.T) {
 	require.Equal(t, []wal.Seqno{2}, backend.Trims(), "drains or seconds, whichever trips first")
 }
 
+// TestTheTimeHalfIsDueAtItsOwnInterval drives the age comparison at the value it
+// is configured with, which the case above does not: it advances two minutes
+// against a one-minute interval, so moving that comparison to `<=` left the whole
+// of `go test ./...` green. The count half's boundary was already driven — a
+// cadence of three, reached at three — and this is the other one.
+//
+// A trim one tick late costs a log that stays one cadence longer than the
+// configured one, which is the number an operator sizing the log's storage reads.
+func TestTheTimeHalfIsDueAtItsOwnInterval(t *testing.T) {
+	trimmer, backend, ts := start(t)
+	rarely := trim.Cadence{Every: 1 << 20, After: time.Minute}
+
+	ts.Update(ts.Now().Add(time.Minute - time.Nanosecond))
+	trimmer.Drained(1, rarely)
+	trimmer.Wait()
+	require.Empty(t, backend.Trims(), "a nanosecond short of the interval has not reached it")
+
+	ts.Update(ts.Now().Add(time.Nanosecond))
+	trimmer.Drained(2, rarely)
+	trimmer.Wait()
+	require.Equal(t, []wal.Seqno{2}, backend.Trims(),
+		"and the configured interval is reached, not passed")
+}
+
 func TestACadenceDueWhileATrimIsInFlightIsSkipped(t *testing.T) {
 	trimmer, backend, _ := start(t)
 	fault, hold := holding()

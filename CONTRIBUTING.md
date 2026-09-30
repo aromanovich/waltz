@@ -21,5 +21,15 @@ subsystem.
   reason at each one, and the two rules about the tree. Read it before adding an import: nothing
   will fail if you break it.
 
-The gate is `make test` and `make lint` — `make check` is both. Neither needs anything installed:
-no cluster, no container, no fixed port, no cgo.
+The gate is `make test`, `make race`, `make lint` and `make vuln` — `make check` is all four. None
+of them needs anything installed: no cluster, no container, no fixed port, no cgo.
+
+`make race` is separate from `make test` because only one of the two is cheap, and it is the one
+that cannot answer for the shipped concurrency: a goroutine per shard owning an accumulator and a
+drain, two mirrors published for readers off it, a trim beside it. It shortens the acceptance
+stream to a tenth, the volume claim being `make test`'s.
+
+`make vuln` is govulncheck over the module, pinned in the Makefile like the linters. It is a
+reachability check and not a dependency inventory: an advisory counts where a call path from this
+module reaches the vulnerable symbol. What a consumer inherits is the versions `go.mod` requires,
+raised through MVS; the `toolchain` line is only what builds here.

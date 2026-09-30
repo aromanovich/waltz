@@ -121,7 +121,16 @@ thing to keep in mind below. What to know before changing the fold itself:
   idempotent no-op, because deleting an absent row succeeds sequentially too; and
   a Create begins the run's next life behind the tombstone, emitted as its own
   request after the Delete, keeping the head-of-window run assertion rather than
-  must-not-exist, because at apply time the pre-window row is still there.
+  must-not-exist — the head being what the window stands on, which for a
+  Delete-headed window is nothing at all.
+  **Where that head is placed is the half this got wrong**: it is the *window's*
+  claim about the pre-window row, so `Drain` puts it on the first emitted request
+  naming the run and on no later one. This is the only window that emits two, and
+  the Delete between them removes the row the assertion is about — so placed on
+  both, the second contradicts the first: a head at v2 holds at the delete and
+  answers *must exist* at the create, halting the shard over a stream this list
+  admits by design. It read "at apply time the pre-window row is still there" for
+  a while, which is true of the delete's placement and false of the create's.
   `DeleteCurrentWorkflowExecution` is **not** a run tombstone: it removes only
   the current row, so later mutations of the run stay legal;
 

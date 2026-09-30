@@ -2,13 +2,19 @@
 // it [Faulty]: a backend that keeps the contract, wrapped so that a chosen call
 // fails.
 //
-// [CheckRetention] is the obligation the suite cannot express, because what it
-// is about is time; a deployment runs it against its own storage, and
-// [Expiring] is the log it is proved against.
+// Two obligations the suite cannot express have instruments beside it, each a
+// function a deployment runs against its own storage rather than a case here, and
+// each proved against a decorator that breaks exactly the guarantee it is about.
+// [CheckRetention] is the one about *time*, which the suite has none of — a run
+// takes milliseconds — and [Expiring] is the log it is proved against.
+// [CheckReopen] is the one about *storage*: every case here drives one value and
+// reads back through it, so an acked append that never left the process and an
+// owning epoch that never left it both pass everything, and reopening the storage
+// is what asks. [Unfenced] is the log its ownership half is proved against.
 //
-// The suite's other blind spot has no instrument and cannot be given one here,
-// because what it is about is a second process. [RunContractSuite] states it
-// where the green result is claimed.
+// What is left has no instrument and cannot be given one here, because what it is
+// about is two writers sharing no memory: a fence *racing* a displaced owner's
+// append. [RunContractSuite] states it where the green result is claimed.
 //
 // It asserts external behaviour of [wal.Log] only, and imports the contract
 // and an assertion library but never a backend.
@@ -144,6 +150,10 @@ func testReadFromAnyPosition(f *fixture) {
 	f.expectEntries(shard, wal.FirstSeqno+2, 10, entriesFrom(epoch, wal.FirstSeqno+2, count-2))
 	f.expectEntries(shard, last, 10, entriesFrom(epoch, last, 1))
 	f.expectEntries(shard, last+1, 10, nil)
+	// Well past the end and not merely one past it: a backend indexing its rows
+	// by distance from the log's lower end has a slice bound here, and one past
+	// the end is the value that bound happens to admit.
+	f.expectEntries(shard, last+5, 10, nil)
 
 	// The window after a limit starts where the limit stopped.
 	f.expectEntries(shard, wal.FirstSeqno, 2, entriesFrom(epoch, wal.FirstSeqno, 2))
@@ -167,6 +177,15 @@ func testTrimRemovesUpToAndNothingElse(f *fixture) {
 	f.expectLog(shard, entriesFrom(epoch, wal.FirstSeqno, count))
 
 	f.trim(shard, last-2)
+	f.expectLog(shard, entriesFrom(epoch, last-1, 2))
+
+	// A trim *below* the lower end a previous trim left removes nothing. It is
+	// the same claim as the one above at a seqno the contract admits rather than
+	// refuses, and it is the one worth driving: a backend computing how many rows
+	// to drop as `upTo - base + 1` underflows on it — unsigned, so the answer is
+	// enormous — and takes the whole log. Acked entries, no error, nothing that
+	// says so.
+	f.trim(shard, wal.FirstSeqno)
 	f.expectLog(shard, entriesFrom(epoch, last-1, 2))
 
 	// Repeating a trim is harmless, and the shard is still this epoch's.

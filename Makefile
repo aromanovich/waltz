@@ -6,6 +6,7 @@
 # requirements into the file a Temporal bump has to be readable in.
 GOLANGCI := github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 MODERNIZE := golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.23.0
+GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.8.0
 
 # No `-p 1` here, and its absence is the deliberate half: nothing in this module
 # wants a cluster, a container or a fixed port. Every backend lives in the test
@@ -16,6 +17,26 @@ MODERNIZE := golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@
 .PHONY: test
 test: ## Run every test in the module (default target)
 	go test ./... -count=1
+
+# The race detector, as its own target rather than a flag on the one above,
+# because the two answer different questions and only one of them is cheap. This
+# layer is a goroutine per shard owning an accumulator and a drain, two mirrors
+# published for readers off that goroutine, a trim beside it and four reads
+# served on it — so "does the shipped concurrency hold" is a question `test`
+# cannot answer at all, and a green run without this says nothing about it.
+#
+# The stream is shortened to a tenth: under -race the acceptance is 25× its own
+# wall clock and nothing this target looks for needs the extra length, a
+# concurrent access being reached by a short stream as well as by a long one.
+# What the shortening costs is the volume claim, which `test` already makes.
+#
+# What this target does not vary is the scheduler, and a race whose outcome turns
+# on it needs that: `GOMAXPROCS=2 go test <pkg> -race -count=3` is the follow-up
+# for anything timing-shaped, since a two-core runner and a twelve-core laptop
+# hand the same race to different winners.
+.PHONY: race
+race: ## Run every test under the race detector
+	WAL_ACCEPTANCE_MUTATIONS=10000 go test ./... -race -count=1
 
 # Two of them, because they answer different questions and neither contains the
 # other: golangci-lint is the idiom and correctness set, and modernize is "the
@@ -66,8 +87,19 @@ proto: ## Regenerate mutation.pb.go from mutation.proto (needs protoc)
 		--go_opt=module=github.com/aromanovich/waltz mutation/mutation.proto; \
 	status=$$?; rm -rf $$tmp; exit $$status
 
+# Reachability, not a dependency inventory: govulncheck reports an advisory only
+# where a call path from this module's own code reaches the vulnerable symbol, so
+# a green run is a claim about what waltz calls rather than about what it
+# requires. Both halves of the answer matter to a deployment — what reaches one is
+# the module versions this go.mod requires, raised through MVS, while the
+# standard-library half is the toolchain they build with and the `toolchain` line
+# here is only what waltz's own builds and CI use.
+.PHONY: vuln
+vuln: ## Check the module and the toolchain against the Go vulnerability database
+	go run $(GOVULNCHECK) ./...
+
 .PHONY: check
-check: test lint ## The whole gate: the tests and the linters
+check: test race lint vuln ## The whole gate: the tests, the race detector, the linters and the advisories
 
 .PHONY: help
 help: ## List the targets

@@ -155,6 +155,36 @@ func TestASharedFirstKeyStillAdvancesThePagination(t *testing.T) {
 	require.Equal(t, []int64{1, 2, 3, 9}, taskIDs(pages))
 }
 
+// TestThePageHoldsTheWindowToTheRangeItWasAsked drives both bounds of the window
+// half's filter at the keys they are. Nothing did: every case in this file asks
+// for the widest range a queue could ask for, so a window task outside the
+// request was never one the filter had to exclude, and moving either comparison
+// left the whole of `go test ./...` green.
+//
+// The base is held to this by a refusal — a row outside the range asked for fails
+// the page ([fold.ErrBaseRowOutsideRange]) — so the window half owes the same
+// answer, and for the same reason: its caller is a queue processor that completes
+// the range it asked for. A row above the exclusive maximum is one the caller acks
+// past having been shown it, and the next range it asks for starts below what it
+// has already completed.
+func TestThePageHoldsTheWindowToTheRangeItWasAsked(t *testing.T) {
+	a := fold.New(shard)
+	cold := coldtasks.New()
+	// A cold row at the minimum too, because the refusal that holds the *base* to
+	// the range has the same boundary from the other side: a row at the inclusive
+	// minimum is inside it, and a check off by one there refuses a page every queue
+	// asks for — it reads from its own checkpoint, so the first row is at the
+	// minimum whenever there is a task there at all.
+	cold.Hold(tasks.CategoryTransfer, keyed(3, "cold at the minimum"), keyed(4, "cold inside"))
+	add(t, a, mkAddTasks(keyed(2, "below"), keyed(3, "the minimum"), keyed(5, "inside"),
+		keyed(6, "the maximum"), keyed(7, "above")))
+
+	pages, _ := paginate(t, a, cold,
+		taskReq(tasks.CategoryTransfer, tasks.NewImmediateKey(3), tasks.NewImmediateKey(6), 100))
+	require.Equal(t, []int64{3, 4, 5}, taskIDs(pages),
+		"the minimum is inclusive and the maximum is exclusive, on the window's half as on the base's")
+}
+
 // TestABaseRowAndAWindowTaskWithOneKeyAreEmittedOnce is the dedup, a safety net
 // rather than a mechanism: the two sources are disjoint by construction, a task
 // reaching the cold store only in the drain that stops the window holding it.
@@ -332,6 +362,20 @@ func TestAForeignPageTokenIsRefused(t *testing.T) {
 	_, _, err := a.TaskPage(req, basePage(cold, req))
 	require.ErrorIs(t, err, fold.ErrForeignPageToken)
 	require.Zero(t, cold.Calls, "a refused page must not reach the store below either")
+
+	// The base's token above is refused by the frame *and* by the parse, so it
+	// says nothing about which of the two did the work — and the rule is that the
+	// frame answers whether a token is ours at all. This one parses: four bytes of
+	// somebody else's followed by a body that unmarshals into this layer's token.
+	// Without the frame it is adopted as ours at the cursor those bytes decode to,
+	// which restarts the pagination inside the window and leaves the base's own
+	// cursor behind — and the range the reader completes at the end takes the
+	// acked rows that were in it.
+	req.NextPageToken = []byte(`abcd{"after":true,"afterTaskId":99}`)
+	_, _, err = a.TaskPage(req, basePage(cold, req))
+	require.ErrorIs(t, err, fold.ErrForeignPageToken,
+		"a token whose body parses is still not ours: the frame is what answers that")
+	require.Zero(t, cold.Calls)
 }
 
 // TestABaseErrorFailsThePageUnwrapped: a base that cannot be read fails the
