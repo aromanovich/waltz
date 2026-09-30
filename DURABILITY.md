@@ -1271,8 +1271,8 @@ arithmetic, since the branch implies an ask of one, hence a single base row, hen
 a first key equal to the last.
 
 **The second class, run the same way, and it does not stop where the first did.**
-`guard` over the same set is a partial run — 141 of 331 at this writing, through
-`cycle`, its three sub-packages and into `fold` — with **25** greens, and the two
+`guard` over the same set is a partial run — 151 of 331, stopped there rather than
+finished, through `cycle`, its three sub-packages and most of `fold` — with **25** greens, and the two
 halves of it read differently enough to be worth separating.
 
 Over `cycle` it found nothing that was a hole, which is a result rather than an
@@ -1307,8 +1307,12 @@ expressed" arms unreached — they are the arms no valid stream produces, which 
 exactly why nothing drives them and exactly why `Add` needs them, being where a
 replay arrives with no `Check` in front of it. And **a panic ends the test binary**,
 so the subtests after it never run: a sweep whose count looks one short may be
-reporting one mutation's blast radius rather than a miscount. Finishing the run is
-the next pass's, and so is the `--confirm` the paragraph above owes.
+reporting one mutation's blast radius rather than a miscount. Finishing the run is the next pass's,
+and so is the `--confirm` the paragraph above owes. What is left unswept by this
+class is the rest of `fold`'s page merges, `apply`, `wrapper`, `baserow`,
+`mutation`, `wal`, `memwal`, `memcold` and `walmetrics` — and on the evidence above
+the interesting question there is the same one: which of their *refusals* no valid
+stream reaches.
 
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence
