@@ -47,6 +47,15 @@ const reopenShortfall = "guarantee 3 is that a completed append means every entr
 	"reopen is the only thing in this package that can ask, every other case reading back through " +
 	"the value that appended"
 
+// continuedShortfall is the shortfall of the last read, where no open came between:
+// the value that appended is the value being read, so what it means is the
+// readback guarantee and not the durability one. Separate from the two above
+// because the whole reason a shortfall carries a diagnosis is that it points at
+// what to go and look at.
+const continuedShortfall = "this is the same value that appended, with no open in between, so what it " +
+	"says is guarantee 5: ReadFrom returns every entry a completed append acked and no trim has " +
+	"removed. RunContractSuite's first case is the narrower form of it"
+
 // reopenEntries is how many entries the check writes before closing. More than
 // one, so that a backend which persists the entry it is still holding — a buffer
 // flushed on close, a transaction committed there — is still caught by the ones
@@ -141,7 +150,7 @@ func CheckReopen(
 			"or starts over at the first seqno and overwrites what it inherited: %w", shard, next, err)
 	}
 	want = append(want, wal.Entry{Seqno: next, Epoch: epoch, Payload: []byte("reopen check, after the reopen")})
-	return requireRun(ctx, again, shard, want, "after the reopened log was appended to", reopenShortfall)
+	return requireRun(ctx, again, shard, want, "after the reopened log was appended to", continuedShortfall)
 }
 
 // writeThenClose is the first half: one fence, a short run, a readback that makes
