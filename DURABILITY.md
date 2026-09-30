@@ -1270,6 +1270,23 @@ capped by `min(cut, pageSize)` — that last one provable from the branch's own
 arithmetic, since the branch implies an ask of one, hence a single base row, hence
 a first key equal to the last.
 
+**The second class, run the same way, and what a hardened tree looks like from
+it.** `guard` over the same set is a partial run — the first 80 of 331, through
+`cycle`, its three sub-packages and into `fold` — and it returned **eight** greens,
+none of them a hole. That is worth recording as a result rather than as an absence:
+the shapes were a state check a second check downstream repeats
+(`Cycle.startForRead`, `Manager.ShardAcquired`'s epoch, `trim.Trimmer.Force`'s
+`CheckTrim`, which `start`'s own `upTo <= doneUpTo` refuses anyway), a fast path
+whose own comment already predicts the green (`fold`'s `want.empty()`), and three
+where the guard is load-bearing and the caller happens to check too — `Cycle.halt`,
+`Cycle.refold` and `tailstate.Tail.Resolve`. The last of those is the one to read:
+resolving an unstalled tail assigns zero to `applied` **and** `resolved`, which is
+the watermark going backwards and the whole log back under the tail, so I10 refuses
+every write on the shard. All three now say at the guard what its absence costs,
+which is what this file means by "what it found and dismissed belongs beside the
+code". Finishing the run is the next pass's, and so is the `--confirm` the
+paragraph above owes.
+
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence
 changes what the store holds — the two entries above, and the conflict that invents

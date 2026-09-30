@@ -108,6 +108,13 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 	}
 
 	if s.counted().Replayed == 0 {
+		// A clean acquire: nothing above the watermark, so there is nothing to
+		// drain and nothing to say. Both halves matter and neither is arithmetic.
+		// The line below is what an operator reads as "this shard changed hands
+		// with writes in flight", and one printed on every acquire is one nobody
+		// reads; the drain below it would take an empty window, which settles
+		// nothing and reaches no store, so what it costs is the reading rather
+		// than the work.
 		return nil
 	}
 	c.deps.Logger.Info("apply cycle: replaying the tail a previous owner left",
