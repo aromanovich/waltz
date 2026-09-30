@@ -52,6 +52,7 @@ package mutbuild
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	commonpb "go.temporal.io/api/common/v1"
@@ -61,6 +62,7 @@ import (
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/serialization"
 	"go.temporal.io/server/service/history/tasks"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/aromanovich/waltz/mutation"
 )
@@ -365,14 +367,26 @@ func (b Builder) validateCreate(req *p.InternalCreateWorkflowExecutionRequest) {
 // built at. Temporal admits a status of RUNNING for every state but COMPLETED,
 // so a fixture closing a run moves both through [WithState] or the validators
 // refuse it.
+//
+// The start time is here because upstream's mutable state fills it at the moment
+// a run is created and never leaves it unset, and it is the field a current-row
+// rendering can drop with every other column still right — the reuse check above
+// this layer measures against it, and reads an absent one as the zero time. A
+// fixture without one cannot tell a rendering that carries it from one that does
+// not.
 func runningState(run string) *persistencespb.WorkflowExecutionState {
 	return &persistencespb.WorkflowExecutionState{
 		CreateRequestId: uuid.NewString(),
 		RunId:           run,
 		State:           enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING,
 		Status:          enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		StartTime:       timestamppb.New(startedAt),
 	}
 }
+
+// startedAt is every fixture's start time: fixed, because a builder whose output
+// depends on the clock makes two builds of one shape differ.
+var startedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // stateBlob serialises an execution state the way the ExecutionManager does
 // before the store sees the request.

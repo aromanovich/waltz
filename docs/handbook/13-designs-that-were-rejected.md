@@ -405,9 +405,9 @@ keys, right types, wrong value. `fold.WorkflowRecord.CurrentWrite` exists to car
 separately from the kind.
 
 The second is *in what form*. Each kind writes the row differently: the update path re-serialises the
-full execution state, a conflict-resolve writes a reduced one — run id, create request id, state and
-status — and a continue-as-new passes the new run's own blob through untouched. A fold that used one
-rendering for all three produces a row that is correct in every field a reader would check and
+mutation's own execution state, while every kind carrying a whole run — a create, a set, a
+conflict-resolve, a continue-as-new — passes that snapshot's blob through untouched. A fold that used
+one rendering for all of them produces a row that is correct in every field a reader would check and
 different in bytes.
 
 Neither turned a suite red until a differential run against the incumbent found it. Both are pinned
@@ -417,8 +417,23 @@ survives a set-headed window and each kind's rendering byte for byte. The order 
 happened is the argument: the rule was written from the divergence, not the divergence found from the
 rule.
 
-The differential run that found both is the **oracle**: one stream applied twice, once mutation by
-mutation and once folded, with the two stores required to end up identical. One runs here —
+**The second one was answered wrongly for a while, and how it was wrong is the reason this section
+names two instruments below rather than one.** A conflict-resolve was read as writing a *reduced*
+state — run id, create request id, state and status — where upstream passes the snapshot's own blob,
+and the wrong reading was written down as a deliberate divergence in three documents. What it cost was
+a `start_time` column that lands NULL and every non-create request id dropped, durably: nothing
+back-fills either, so the namespace policy above measures every reuse interval against the zero time
+and never refuses again. The rendering it should always have had is the one that needed *less* code —
+`currentWriteOfSnapshot`, which every other snapshot-bearing kind was already using. A divergence is
+worth writing down only with what it buys beside it; this one had an address where a reason should
+have been.
+
+The differential run that found both is a **layer against an unwrapped store**: the same stream
+driven through the fold and through the incumbent's own write path, which is the only arm that can see
+a rendering, a fold of one mutation still going through the same function. That is not the run that
+ships here, and the difference is exactly what let the reduced rendering stand. What ships is the
+**oracle**: one stream applied twice, once mutation by mutation and once folded, with the two stores
+required to end up identical. One runs here —
 `TestFoldingChangesNothingButTheNumberOfTransactions` drives one generated stream into two real
 databases, at the shipped window and at a window of one mutation, and diffs what they hold
 afterwards ([chapter 11](11-verification.md#the-fold-against-not-folding)). What it cannot reach is

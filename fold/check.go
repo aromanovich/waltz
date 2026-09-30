@@ -460,10 +460,13 @@ func runVersionMismatch(workflowID string, want, actual int64) error {
 }
 
 // currentConflict is the plugin's own extractCurrentWorkflowConflictError, built
-// from the window instead of from a row read back. Two fields fall short of the
-// store's: StartTime is never carried at all, and RequestIDs are empty when the
-// window's last current-row writer was a conflict-resolve, whose rendering holds
-// none ([currentWriteOfConflictResolve]).
+// from the window instead of from a row read back — so every field comes out of
+// the blob the window will write, which is the blob the store would have read.
+// The start time included: it is what the reuse check above measures against, and
+// an absent one there is read as a run that began at the zero time, so the
+// minimal-interval refusal never fires again for that workflow. This is the
+// commoner of the two sites in a layer that answers a retried start out of its own
+// window rather than out of a row.
 func currentConflict(msg string, cw *CurrentWrite) error {
 	st, err := serialization.WorkflowExecutionStateFromBlob(cw.StateBlob)
 	if err != nil {
@@ -476,6 +479,7 @@ func currentConflict(msg string, cw *CurrentWrite) error {
 		State:            st.State,
 		Status:           st.Status,
 		LastWriteVersion: cw.LastWriteVersion,
+		StartTime:        startTimeOf(st),
 	}
 }
 

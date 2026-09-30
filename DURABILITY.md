@@ -549,6 +549,64 @@ is a pointer to 1970. `TestACurrentRowConflictCarriesTheStartTimeOrNothing`
 (`fold/check_test.go`). Found by a sweep that deletes a guard clause rather than a
 write — the mutation for an assertion being to make its condition always pass.
 
+**A window's conflict that invents a start time** (rung 4). The entry above one
+house along, and the commoner of the two here: a layer that has acked a start into
+its log answers the retry out of the *window*, the row the delegated side would
+read not existing yet. That conflict is built from the blob the window will write
+(`fold.currentConflict`), and it carried no start time at all — so the reuse check
+above read the zero time and the minimal-interval refusal never fired, for the
+whole of a window's life and again at every window that writes the row.
+`TestTheWindowsCurrentRowConflictCarriesTheStartTimeOrNothing` (`fold/check_test.go`),
+red without the field. It was not found by a sweep: it was written down as a known
+shortfall in the comment above that function, which is where a defect goes to be
+read past.
+
+**A current row written without the start time the policy above it measures**
+(rung 4). What the two entries above are about, in the row rather than in the
+error, and it outlives both: `currentWriteOfConflictResolve` rendered a
+conflict-resolve's current row from four fields — run id, create request id, state
+and status — where both upstream plugins pass the snapshot's own execution-state
+blob through. `memcold`'s `writeCurrentRow` recovers the row's columns from exactly
+that blob, so `start_time` landed NULL and the reduced state landed in `data`.
+Durably, and nothing back-fills a start time: every later reader, the sequential
+path included, measures against a run that began at the zero time, so
+`WorkflowIdReuseMinimalInterval` never fires again for that workflow — the reuse
+arm skips its *Too many starts* refusal and the terminate arm terminates a live run
+instead of answering `ResourceExhausted`. The request-id half is narrower and real:
+`WorkflowExecutionStateFromBlob` back-fills `RequestIds[CreateRequestId]`, so an
+ordinary retried start still deduplicates, while every id `AttachRequestID`
+accumulated — an attached start, an update-with-start — is gone, and `FAIL` then
+raises a false *already started* where `TERMINATE_EXISTING` terminates a live run.
+
+The rendering now collapses to the snapshot upstream's own arms pick (`newWorkflow`
+when there is one, else `resetWorkflow`) handed to `currentWriteOfSnapshot`, which
+is *less* code than the four-field build.
+`TestCurrentWriteTracksTheLastWriter/a conflict-resolve keeps the start time and
+every request id` (`fold/currentwrite_test.go`) is the blob half, and
+`TestTheCurrentRowsColumnsComeFromItsBlob` (`cold/memcold/currentrow_internal_test.go`)
+is the column half — a separate test because that column is derived from the blob
+by a line of its own, and every read in this repository answers blob-first, so the
+line can be deleted with the whole of `go test ./...` green.
+
+*Why nothing here caught it, and what changed.* The oracle that ships drives one
+stream folded and unfolded, and a window of one still renders the row through the
+same function, so both arms carried the reduced blob and it cancelled — this file's
+standing caveat about that instrument. Beside it sat a fixture gap: `mutbuild`'s
+`runningState` carried no start time, where upstream's mutable state fills one at
+creation and never unsets it, so no hand-built fixture could tell a rendering that
+carries the field from one that drops it. It carries one now.
+
+*What this cost to establish, and it is the entry's point.* The divergence was
+recorded as **deliberate** in three documents — ADR 0012, handbook 13, handbook 15
+— and none of the three said what it bought; the ADR gave its address ("that is
+what fold hands the applier") where a reason should have been. Handbook 15 even
+listed it as the one of its four differences that did *not* follow from the layer
+having already acked the write. A list of deliberate divergences is worth
+re-reading for exactly that shape: a row that cannot say what it buys is a defect
+that has been written down. All three documents now say so, and
+`fold/currentwrite_test.go`'s assertion that upstream "writes run, create request,
+state and status — nothing else" is gone, it having been false about both plugins.
+
 **A refusal the caller cannot act on.** Not a loss of data, and in this file
 because the effect on a caller is the same: a current-row conflict carrying no run
 id is one the history service declines to resolve, so a retried start that
@@ -617,73 +675,11 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-**A current row written without the start time the policy above it measures.**
-The same failure as the closed entry *A delegated conflict that invents a start
-time*, one house along: that one was the conflict error this layer **hands back**,
-and this is the row it **writes**. Closing the messenger left the record itself
-short, so the store answers honestly ever after and every later reader — the
-sequential path included — measures against a run that began at the zero time.
-
-`currentWriteOfConflictResolve` (`fold/assert.go`) renders a conflict-resolve's
-current row from four fields — run id, create request id, state, status — and
-`memcold`'s `writeCurrentRow` derives the row's columns from exactly that blob,
-so `start_time` lands NULL and `data` holds the reduced state. Durably. Both
-upstream plugins pass the snapshot's **own** blob through instead
-(`sql/execution.go`'s `ConflictResolveWorkflowModeUpdateCurrent` arm and
-`cassandra/mutable_state_store.go`'s), which is where the divergence is.
-
-What it costs is a namespace policy that silently stops working. Upstream computes
-`timeSinceStart := now.Sub(currentWorkflowStartTime.UTC())` in
-`ResolveWorkflowIDReusePolicy` and in `resolveDuplicateWorkflowStart`
-(`service/history/api/workflow_id_dedup.go`); against the zero time every interval
-is ~2000 years, so `minimalReuseInterval < timeSinceStart` always holds.
-`WorkflowIdReuseMinimalInterval` never fires again for that workflow — the reuse
-arm skips its *Too many starts* refusal and the terminate arm terminates instead of
-answering `ResourceExhausted`. No start time is ever restored: nothing back-fills
-that field, unlike the request ids below.
-
-**The request-id half is strictly narrower, and the difference matters.**
-`WorkflowExecutionStateFromBlob` back-fills `RequestIds[CreateRequestId]`
-(`common/persistence/serialization/blob.go`), and the reduced rendering keeps the
-create request id — so an ordinary retried start still deduplicates. What is lost
-is every **non-create** id, the ones `AttachRequestID` accumulates for an
-attached start or an update-with-start. For those the dedup misses, and the two
-conflict policies answer accordingly: `FAIL` raises a false *already started*, and
-`TERMINATE_EXISTING` terminates a live run and starts another. Reachable where the
-run whose state becomes the current row has accumulated such ids — a replication
-conflict-resolve over a rebuilt run, not a flat reset, whose fresh run carries only
-its create id and which upstream renders the same way.
-
-*Why no instrument here catches it:* the oracle that ships in this repository
-drives one stream folded and unfolded, and a window of one still renders the row
-through the same function — so both arms carry the reduced blob and it cancels,
-which is this file's own standing caveat about that instrument. Handbook 13
-credits "a differential run against the incumbent" with having found the
-rendering, and such a run — the layer against an unwrapped store — could see it;
-the run described two paragraphs later, folded against unfolded, could not. Worth
-resolving when that chapter is next touched, since only one of the two is the
-oracle that still exists here.
-
-*What the tree says about it now.* The divergence is recorded as deliberate in
-three places — ADR 0012, the table in handbook 15, handbook 13 — and none of them
-records this consequence; the ADR gives its address rather than a reason ("that is
-what fold hands the applier"), and handbook 15 lists it as the one of its four
-differences that does **not** follow from the layer having already acked the write.
-Beside them sits one assertion that is simply false about upstream:
-`fold/currentwrite_test.go` pins the reduced form with "the store's
-conflict-resolve path writes run, create request, state and status — nothing else",
-where both plugins write the snapshot's whole blob and its start time. The comment
-at `fold/assert.go` is the one that states the situation correctly.
-
-*What closing it takes:* the rendering collapses to the snapshot the upstream arms
-pick (`newWorkflow` when there is one, else `resetWorkflow`) handed to the existing
-`currentWriteOfSnapshot`, which is **less** code than the four-field build; the
-columns then come right by themselves, since `writeCurrentRow` already recovers
-them from the blob. Two tests, each watched red against this defect: a conflict
-carrying the start time, and the drained row carrying it in its column. Then the
-four documents, because the divergence stops existing and two of the claims are
-wrong independently of the fix. It is a **reverse of a recorded decision**, so it
-is the owner's call rather than a hardening session's.
+**Nothing. The one entry here was closed this pass** — a current row written
+without the start time the policy above it measures — and the section being empty
+is a statement about the entries that have been named, never about the code:
+"What this file is not" below is the standing note on that, and the discovery
+sweeps it prescribes are how the next entry arrives.
 
 ---
 
@@ -1278,11 +1274,14 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**The floor is signed. Open was empty and is not.** One adversarial pass on a
-fresh context put an entry back — a current row written without its start time —
-which is what the paragraph below says such a pass is for, and the first time it
-has happened rather than been anticipated. The floor itself is unchanged: every
-entry that was closed, refuted or accepted still is. Three of the acceptances are
+**The floor is signed. Open went empty, took an entry back, and is empty again.**
+One adversarial pass on a fresh context put an entry there — a current row written
+without its start time — which is what the paragraph below says such a pass is for,
+and the first time it had happened rather than been anticipated. It is closed now,
+along with a second one the same reading turned up beside it, and what closing it
+took is on the entry: a reverse of a decision three documents recorded as
+deliberate, none of which said what the divergence bought. The floor itself is
+unchanged: every entry that was closed, refuted or accepted still is. Three of the acceptances are
 the harness this
 library does not build — a durable log, two processes, a kill, and a judge outside
 all three — and the change that would reopen all three at once is durable storage

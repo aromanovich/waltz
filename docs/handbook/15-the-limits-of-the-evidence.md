@@ -185,21 +185,29 @@ twice with the *windows* cut differently, not with the fold taken out of one arm
 the folding does not depend on where a window ends — which is the property a crash tests, since a
 crash cuts one — and leaves whether folding at all agrees with not folding to the run above.
 
-Four places where the folded path knowingly answers differently from upstream's sequential path are
+Three places where the folded path knowingly answers differently from upstream's sequential path are
 known and deliberate, and each is written down beside the code it is about:
 
 | the difference | recorded in |
 |---|---|
 | upstream's `dbRecordVersion == 0` fallback, which compares `next_event_id` against the request's condition, has no analogue: a run assertion here is always `DBRecordVersion − 1` | `cold/memcold/rows.go` |
 | a create's current-row assertion is compared against `current_executions.last_write_version`, where upstream joins and compares `executions.last_write_version` | `cold/memcold/rows.go` |
-| a conflict-resolve's current row carries a reduced execution state, because that is what fold hands the applier | `fold/assert.go` |
 | a row count other than one on an execution-row write is a condition failure here rather than upstream's `NotFound` | `cold/memcold/rows.go` |
 
-Three of the four follow from the layer having already acknowledged the write: what fold checked
-before the ack and what the drain asserts have to be the same question asked twice, so the fold's
-shape reaches the store — and the column is that rule at its sharpest, since reading upstream's
-would let the layer ack against one value and refuse against another. A deployment's applier meets
-the same four questions.
+All three follow from the layer having already acknowledged the write: what fold checked before the
+ack and what the drain asserts have to be the same question asked twice, so the fold's shape reaches
+the store — and the column is that rule at its sharpest, since reading upstream's would let the layer
+ack against one value and refuse against another. A deployment's applier meets the same three
+questions.
+
+**There were four, and the fourth is the one worth having seen go.** A conflict-resolve's current row
+carried a *reduced* execution state — run id, create request id, state and status — on the grounds
+that it was what fold handed the applier. It was the one difference on the list that did not follow
+from the ack, and it was not a difference anybody had a reason to want: the row's other columns are
+recovered from that blob, so `start_time` landed NULL and stayed NULL, which is a namespace's
+`WorkflowIdReuseMinimalInterval` measuring every interval against the zero time and never firing
+again for that workflow. A list of deliberate divergences is worth re-reading for exactly that: a row
+that cannot say what it buys is a defect that has been written down.
 
 ## Where event history lands is the cold store's, and neither path is measured
 

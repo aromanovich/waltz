@@ -908,10 +908,7 @@ func (a *Accumulator) addConflictResolve(seqno wal.Seqno, req *p.InternalConflic
 		return err
 	}
 
-	cw, err := currentWriteOfConflictResolve(req)
-	if err != nil {
-		return err
-	}
+	cw := currentWriteOfConflictResolve(req)
 
 	w = a.acc(reset.NamespaceID, reset.WorkflowID)
 

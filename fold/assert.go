@@ -3,7 +3,6 @@ package fold
 import (
 	"fmt"
 
-	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/serialization"
 
@@ -151,19 +150,16 @@ func assertSet(req *p.InternalSetWorkflowExecutionRequest) asserted {
 }
 
 // The current-row write each kind performs, rendered the way the store's own
-// path for that kind renders it ([CurrentWrite]) — except
-// [currentWriteOfConflictResolve], where both plugins pass the snapshot's own
-// execution-state blob through and this renders a reduced one, so the row that
-// lands carries no request ids and no start time. Set and the four kinds that
+// path for that kind renders it ([CurrentWrite]). Set and the four kinds that
 // assert nothing write nothing, so they have none.
 //
 // The execution state is dereferenced rather than checked: a request without one
 // cannot reach the store, and tolerating a nil would record no current-row write
 // where the sequential path made one.
 //
-// The two fallible ones must be called before [Accumulator.acc], both because an
+// The fallible one must be called before [Accumulator.acc], both because an
 // error past it leaves the window changed by a mutation that was refused, and
-// because the fold merges requests in place: what they read is the arriving
+// because the fold merges requests in place: what it reads is the arriving
 // request's own state.
 
 // currentWriteOfSnapshot is the row a snapshot writes: the store passes the
@@ -210,25 +206,23 @@ func currentWriteOfUpdate(req *p.InternalUpdateWorkflowExecutionRequest) (*Curre
 	}, nil
 }
 
-// currentWriteOfConflictResolve: a reduced state — run, create request id, state
-// and status — taken from the new run when there is one, else from the reset.
-func currentWriteOfConflictResolve(req *p.InternalConflictResolveWorkflowExecutionRequest) (*CurrentWrite, error) {
+// currentWriteOfConflictResolve: the row the store's conflict-resolve path
+// writes, off the snapshot both plugins pick — the new run when there is one,
+// else the reset.
+//
+// Rendering a reduced state here instead — run, create request id, state and
+// status — left the row's `start_time` NULL and dropped every non-create request
+// id, both durably: the columns are recovered from this blob, and nothing
+// back-fills a start time. What that costs is a namespace policy that silently
+// stops working, `WorkflowIdReuseMinimalInterval` measuring every interval
+// against the zero time.
+func currentWriteOfConflictResolve(req *p.InternalConflictResolveWorkflowExecutionRequest) *CurrentWrite {
 	if req.Mode != p.ConflictResolveWorkflowModeUpdateCurrent {
-		return nil, nil
+		return nil
 	}
-	reset := &req.ResetWorkflowSnapshot
-	st, lwv := reset.ExecutionState, reset.LastWriteVersion
+	snap := &req.ResetWorkflowSnapshot
 	if ns := req.NewWorkflowSnapshot; ns != nil {
-		st, lwv = ns.ExecutionState, ns.LastWriteVersion
+		snap = ns
 	}
-	blob, err := serialization.WorkflowExecutionStateToBlob(&persistencespb.WorkflowExecutionState{
-		RunId:           st.RunId,
-		CreateRequestId: st.CreateRequestId,
-		State:           st.State,
-		Status:          st.Status,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("fold: serialising the current state of run %s: %w", st.RunId, err)
-	}
-	return &CurrentWrite{RunID: st.RunId, StateBlob: blob, LastWriteVersion: lwv, State: st.State}, nil
+	return currentWriteOfSnapshot(snap)
 }

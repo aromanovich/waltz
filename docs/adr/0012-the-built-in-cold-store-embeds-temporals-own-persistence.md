@@ -90,9 +90,15 @@ Four differences are known and deliberate, and each is recorded where the code i
   `GetCurrentExecutionWithLastWriteVersion`, `baserow` and fold's pre-ack check all read, and
   matching upstream here would let the layer acknowledge a write the drain then refuses — a halted
   shard over a write the layer promised;
-* a conflict-resolve's current row carries a reduced execution state, because that is what fold
+* ~~a conflict-resolve's current row carries a reduced execution state, because that is what fold
   hands the applier. Upstream writes the full state's blob and start time. This is a fold-level
-  shape and not something the applier can repair;
+  shape and not something the applier can repair;~~ **reversed.** The address was right and the
+  conclusion was wrong: what fold hands the applier is fold's to choose, and the reduced state cost
+  a `start_time` that lands NULL and every non-create request id, both durably and neither
+  back-filled. `currentWriteOfConflictResolve` now renders the snapshot upstream's own arm picks,
+  through the same `currentWriteOfSnapshot` every other snapshot-bearing kind uses — less code than
+  the four-field build, and the row's columns come right by themselves, `writeCurrentRow` already
+  recovering them from the blob. So this is no longer a difference from upstream at all;
 * a row count other than one on an execution-row write is a condition failure here rather than
   upstream's `NotFound`, because `NotFound` classifies as an unknown outcome and would leave the
   caller retrying something no retry can make true. The row is uniquely keyed and this drain

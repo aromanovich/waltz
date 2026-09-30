@@ -9,6 +9,7 @@ package fold_test
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -16,7 +17,7 @@ import (
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/serialization"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/aromanovich/waltz/fold"
 	"github.com/aromanovich/waltz/mutation"
@@ -126,7 +127,7 @@ func TestCurrentWriteTracksTheLastWriter(t *testing.T) {
 		require.Equal(t, []byte("state-v1"), cw.StateBlob.Data, "via its snapshot's blob slot")
 	})
 
-	t.Run("a conflict-resolve writes the reduced state", func(t *testing.T) {
+	t.Run("a conflict-resolve passes the reset snapshot's blob through", func(t *testing.T) {
 		cr := mkConflictResolve(runX, 3, func(s *p.InternalWorkflowSnapshot) {
 			s.ExecutionState = stateOf(runX, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING)
 		})
@@ -135,20 +136,40 @@ func TestCurrentWriteTracksTheLastWriter(t *testing.T) {
 		cw := wr(b, 0).CurrentWrite
 		require.NotNil(t, cw)
 		require.Equal(t, runX, cw.RunID)
+		require.Equal(t, []byte("state-v3"), cw.StateBlob.Data,
+			"the store's conflict-resolve path writes the snapshot's own state blob, like every other path that carries one")
+	})
 
-		var got persistencespb.WorkflowExecutionState
-		require.NoError(t, proto.Unmarshal(cw.StateBlob.Data, &got))
-		require.Equal(t, runX, got.RunId)
-		require.Equal(t, "create-"+runX, got.CreateRequestId)
-		want, err := serialization.WorkflowExecutionStateToBlob(&persistencespb.WorkflowExecutionState{
-			RunId:           runX,
-			CreateRequestId: "create-" + runX,
-			State:           enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING,
-			Status:          enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
-		})
+	// The fields a rendering of four scalars dropped. Both are durable: the
+	// row's columns are recovered from this blob, and of the two only the
+	// create request id is ever back-filled by a later read — so a start time
+	// short here is a namespace's reuse interval measured against the zero time
+	// ever after, and an attached start's request id short here is a dedup that
+	// misses.
+	t.Run("a conflict-resolve keeps the start time and every request id", func(t *testing.T) {
+		began := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+		st := stateOf(runX, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING)
+		st.StartTime = timestamppb.New(began)
+		st.RequestIds = map[string]*persistencespb.RequestIDInfo{
+			"create-" + runX: {EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED},
+			"attached":       {EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_OPTIONS_UPDATED},
+		}
+		stBlob, err := serialization.WorkflowExecutionStateToBlob(st)
 		require.NoError(t, err)
-		require.Equal(t, want.Data, cw.StateBlob.Data,
-			"the store's conflict-resolve path writes run, create request, state and status — nothing else")
+
+		b := drainOne(t, mkConflictResolve(runX, 3, func(s *p.InternalWorkflowSnapshot) {
+			s.ExecutionState, s.ExecutionStateBlob = st, stBlob
+		}))
+		require.Equal(t, 1, b.Len())
+		cw := wr(b, 0).CurrentWrite
+		require.NotNil(t, cw)
+
+		got, err := serialization.WorkflowExecutionStateFromBlob(cw.StateBlob)
+		require.NoError(t, err)
+		require.NotNil(t, got.StartTime, "the row's start_time column is derived from this blob")
+		require.True(t, got.StartTime.AsTime().Equal(began), "got %v", got.StartTime.AsTime())
+		require.Contains(t, got.RequestIds, "attached",
+			"a non-create request id is never back-filled, so dropping it here loses the dedup for good")
 	})
 
 	t.Run("an update after a conflict-resolve wins over its reduced form", func(t *testing.T) {
