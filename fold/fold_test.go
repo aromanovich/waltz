@@ -458,6 +458,51 @@ func TestTombstone(t *testing.T) {
 // a guess: the single writer would have seen its assertion fail. But [Add] is also
 // where a replay arrives, with no [Accumulator.Check] in front of it, so what
 // reaches it is what some previous owner acked rather than what this one validated.
+// TestAConflictResolvesCurrentMutationNeedsAWindowStateItCanMergeWith drives the
+// refusal beside the tombstone ones, and it is a different rule: the run is live,
+// and what the fold cannot do is merge this request's mutation of it with the state
+// the window already holds. Nothing drove it either, and without it the merge runs
+// on a state it cannot express — a nil dereference where the window holds a
+// snapshot, and a request carrying somebody else's envelope where it holds an
+// update that continued-as-new.
+//
+// ErrRefused rather than ErrInvalidStream, because the stream is legal and it is
+// this accumulator that cannot express it: the drain empties the window and the
+// retry folds it as a head.
+func TestAConflictResolvesCurrentMutationNeedsAWindowStateItCanMergeWith(t *testing.T) {
+	// The reset and the current run are different runs of one workflow, which is
+	// what a conflict-resolve with a current mutation is.
+	current := func() *p.InternalWorkflowMutation {
+		return &p.InternalWorkflowMutation{
+			NamespaceID: nsID, WorkflowID: wfID, RunID: runX, DBRecordVersion: 3,
+			ExecutionInfoBlob:  blob("info-v3"),
+			ExecutionStateBlob: blob("state-v3"),
+			ExecutionState:     &persistencespb.WorkflowExecutionState{RunId: runX},
+		}
+	}
+
+	t.Run("the window holds that run as a snapshot", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkSet(runX, 2))
+
+		m := mkConflictResolve(runY, 3)
+		m.ConflictResolve.CurrentWorkflowMutation = current()
+		require.ErrorIs(t, a.Add(2, m), fold.ErrRefused)
+	})
+
+	t.Run("the window holds that run as an update that continued-as-new", func(t *testing.T) {
+		a := fold.New(shard)
+		can := mkUpdate(runX, 2)
+		newSnap := snapshot("run-z", 1)
+		can.Update.NewWorkflowSnapshot = &newSnap
+		add(t, a, can)
+
+		m := mkConflictResolve(runY, 3)
+		m.ConflictResolve.CurrentWorkflowMutation = current()
+		require.ErrorIs(t, a.Add(2, m), fold.ErrRefused)
+	})
+}
+
 func TestEveryKindIsRefusedAfterATombstone(t *testing.T) {
 	// A conflict-resolve's current mutation must land on a run whose window state
 	// is an update it can merge with, so that arm needs two runs: one tombstoned

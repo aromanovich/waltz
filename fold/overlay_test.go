@@ -677,6 +677,22 @@ func TestTheCurrentRowIsAnsweredInOrder(t *testing.T) {
 		require.Equal(t, runY, resp.RunID)
 	})
 
+	t.Run("a guard over a workflow with no current row at all", func(t *testing.T) {
+		// The absence arm of the same rule, which nothing drove: a delete-current
+		// in the window over a workflow the cold store has no row for. It is the
+		// ordinary shape of a deletion that races the drain applying the create,
+		// and without the nil check the guard is compared against a row that is
+		// not there — a nil dereference on the shard's own goroutine, answering a
+		// read.
+		a := fold.New(shard)
+		add(t, a, mkDeleteCurrent(runX))
+
+		resp, found, shape := renderCurrent(t, a, nil)
+		require.Equal(t, fold.CurrentGuarded, shape)
+		require.False(t, found, "there is no row, so the delete's guard has nothing to match")
+		require.Nil(t, resp)
+	})
+
 	t.Run("two guards, either of which removes the row", func(t *testing.T) {
 		// Sequentially the second delete sees whatever the first left, so the
 		// row is gone if the base names either run.
