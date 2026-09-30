@@ -29,13 +29,20 @@ sweep's greens with every package in the judge and reports which of them the who
 suite catches. Shorten the acceptance stream by volume (`WAL_ACCEPTANCE_MUTATIONS`)
 rather than by dropping its package.
 
-Two failure modes of the harness itself, both of which quietly invert the result:
+Three failure modes of the harness itself, each of which quietly inverts the
+result — a broken run reads as a tree where nothing is unguarded, which is the one
+way a sweep lies:
 
-  * **a full disk reds every mutant**, so every remaining line reads as guarded.
-    The run stops rather than reporting that, and it drops the build cache on a
-    cadence, since a sweep adds a cache entry set per mutation;
+  * **a full disk reds every mutant.** The run stops rather than reporting that,
+    and it drops the build cache on a *cadence* — never "whenever space is short",
+    which would make every build a cold one and every cold build of the whole set
+    outrun any sane timeout;
   * **a mutant that hangs is not a mutant that passed.** A flipped loop bound can
-    loop for ever; the run times it out and counts it red.
+    loop for ever; the run times it out and counts it red. The timeout is therefore
+    sized for a cold build of the whole judge and is not a knob to shorten;
+  * **a red with no test named is the harness, not the tree.** `--confirm` counts
+    those apart as BROKEN and stops after three in a row, because by then it is
+    measuring the machine. All three of these were found by using this script.
 
 Every file is restored in a `finally`, so an interrupt leaves the tree as it was.
 
@@ -70,9 +77,13 @@ LOW_FREE_MB = 2500
 CACHE_EVERY = 40
 
 FULL_JUDGE = "./..."
-# Each mutation is one build of the packages under it; two minutes is far above
-# the whole suite and well below a loop that will not end.
-TIMEOUT_S = 300
+# Each mutation is a build of the packages under the judge plus a run of them, and
+# the first of those dominates on a cold cache — which is every mutation, a
+# mutation being a cache miss by construction. Sized for the whole set from cold
+# and still far below a loop that will not end. **It is not a knob to shorten:**
+# a timeout below the cold build time turns every mutation into a HUNG, and the
+# whole run then reads as a tree where nothing is unguarded.
+TIMEOUT_S = 1800
 
 FLIPS = [("<=", "<"), (">=", ">"), ("<", "<="), (">", ">=")]
 
@@ -83,7 +94,15 @@ def free_mb(path="/"):
 
 
 def housekeep(n):
-    if n and n % CACHE_EVERY == 0 or free_mb() < LOW_FREE_MB:
+    """Drop the cache on a cadence, and stop rather than run out.
+
+    The cadence is deliberately not "whenever space is short": clearing before
+    every mutation makes every build a cold one, and a cold build of the whole set
+    outruns any sane timeout — so the run would report HUNG for everything, which
+    reads as a tree where nothing is unguarded. That failure was found by using
+    this script, not by reasoning about it.
+    """
+    if n and n % CACHE_EVERY == 0:
         subprocess.run("go clean -cache", cwd=REPO, shell=True, capture_output=True)
     if free_mb() < MIN_FREE_MB:
         raise SystemExit(f"stopping: {free_mb():.0f} MB free, and a full disk reds every mutation")
@@ -312,14 +331,29 @@ def confirm(sweeppath, outpath):
 
         rc, out = apply_and_judge(path, mutate, FULL_JUDGE)
         failing = sorted({m for m in re.findall(r"^--- FAIL: (\w+)", out, re.M)})
-        results.append(dict(r, verdict="STILL GREEN" if rc == 0 else "CAUGHT", failing=failing[:6]))
-        print(f"  {results[-1]['verdict']:<11} {r['file']}:{r['line']} {r['label']}"
+        if rc == 0:
+            state = "STILL GREEN"
+        elif failing:
+            state = "CAUGHT"
+        else:
+            # A red with no named failure is the harness rather than the tree: a
+            # build that would not compile, a timeout, a full disk. Calling it
+            # CAUGHT is how a broken run comes to read as a guarded tree, so it is
+            # named and counted apart — and several in a row stop the run, because
+            # by then it is measuring the machine.
+            state = "BROKEN"
+        results.append(dict(r, verdict=state, failing=failing[:6]))
+        print(f"  {state:<11} {r['file']}:{r['line']} {r['label']}"
               + (f"  by {','.join(failing[:3])}" if failing else ""), flush=True)
         json.dump(results, open(outpath, "w"), indent=1)
+        if len(results) >= 3 and all(x["verdict"] == "BROKEN" for x in results[-3:]):
+            raise SystemExit("stopping: three runs failed with no test named, so this is the harness")
 
     caught = sum(1 for x in results if x["verdict"] == "CAUGHT")
-    print(f"done: {caught} of {len(results)} were caught by the packages the sweep dropped, "
-          f"{time.time() - t0:.0f}s", flush=True)
+    broken = sum(1 for x in results if x["verdict"] == "BROKEN")
+    print(f"done: {caught} of {len(results)} were caught by the packages the sweep dropped"
+          + (f", {broken} could not be judged" if broken else "")
+          + f", {time.time() - t0:.0f}s", flush=True)
 
 
 def main():
