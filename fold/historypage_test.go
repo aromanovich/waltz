@@ -127,6 +127,39 @@ func TestAPageDropsWindowNodesOutsideTheRange(t *testing.T) {
 	require.Equal(t, []historyKey{{5, 500}}, keysOf(page))
 }
 
+// TestAWindowOverflowingThePageWithNothingUnderItPaginates drives the one branch
+// where the base page is empty and the window alone is longer than the page.
+// Nothing did: every overflow case in this file has base rows, and the guard that
+// keeps the branch from reading basePage[0] could therefore be removed with the
+// whole of `go test ./...` green — and what it does instead is panic, inside a
+// history read, on the shard's own goroutine.
+//
+// It is reachable rather than defensive: the base answers an empty page for a
+// branch whose nodes are all still in the window, which is every branch of a
+// workflow whose events this shard has acked and not yet drained.
+func TestAWindowOverflowingThePageWithNothingUnderItPaginates(t *testing.T) {
+	acc := New(7)
+	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{
+		node(1, 100), node(2, 200), node(3, 300),
+	})
+
+	req := request(2)
+	var got []historyKey
+	var token []byte
+	for range 10 {
+		req.NextPageToken = token
+		resp, err := acc.HistoryPage(req, "tree", noBaseRows)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(resp.Nodes), 2)
+		got = append(got, keysOf(resp.Nodes)...)
+		if token = resp.NextPageToken; len(token) == 0 {
+			break
+		}
+	}
+	require.Equal(t, []historyKey{{1, 100}, {2, 200}, {3, 300}}, got,
+		"every window node, once, in order, with no base page to rest the cut on")
+}
+
 func TestMetadataOnlyStripsTheWindowsBlobsToo(t *testing.T) {
 	acc := New(7)
 	windowHolds(acc, "tree", "b", []p.InternalHistoryNode{node(1, 100)})
@@ -162,6 +195,12 @@ func TestABasePageTheMergeCannotRestOnIsRefused(t *testing.T) {
 	}{
 		"empty beside a token": {nil, []byte("more"), ErrBasePageEmptyBesideAToken},
 		"not ascending":        {[]p.InternalHistoryNode{node(3, 300), node(1, 100)}, nil, ErrBasePageNotAscending},
+		// Ascending means strictly, and only this row says so: the case above
+		// stages a descending pair, so the comparison could be moved to `>` with
+		// the whole of `go test ./...` green. What an equal pair costs is a node
+		// the merge emits twice — mergeHistoryNodes deduplicates *between* the two
+		// sources and walks each of them as a strictly ascending run.
+		"a key twice": {[]p.InternalHistoryNode{node(2, 200), node(2, 200)}, nil, ErrBasePageNotAscending},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

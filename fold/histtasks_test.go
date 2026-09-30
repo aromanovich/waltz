@@ -320,6 +320,48 @@ func TestAScheduledRangeComparesAtTheStoresResolution(t *testing.T) {
 	})
 }
 
+// TestARangeCoversItsOwnMinimumAndNotItsOwnMaximum drives both bounds of
+// [fold.TaskRange.Covers] at the keys they are, in both category types. The
+// maximum's boundary was already driven; the minimum's was not, and moving that
+// comparison to `<` left the whole of `go test ./...` green.
+//
+// It is the bound most often landed on exactly. A queue completes to a key and
+// the next range starts at it, so ranges arrive butt-joined and a task sitting
+// at a range's inclusive minimum is the ordinary case rather than the edge. What
+// reading it as outside the range costs is both directions of the asymmetry this
+// predicate exists to reproduce: the drain writes a task row the queue has
+// already acked past, so nothing will ever process or delete it, and the merged
+// read hands a reader a row the store's own DELETE has taken — which the reader
+// completes the range over and acks past a second time.
+func TestARangeCoversItsOwnMinimumAndNotItsOwnMaximum(t *testing.T) {
+	t.Run("an immediate category", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkRangeComplete(3, 6))
+
+		work := a.Drain().Tasks()
+		require.Len(t, work.Delete, 1)
+		r := work.Delete[0]
+		require.False(t, r.Covers(tasks.NewImmediateKey(2)), "below the minimum is outside")
+		require.True(t, r.Covers(tasks.NewImmediateKey(3)), "the minimum is inside: it is inclusive")
+		require.True(t, r.Covers(tasks.NewImmediateKey(5)))
+		require.False(t, r.Covers(tasks.NewImmediateKey(6)), "the maximum is exclusive")
+	})
+
+	t.Run("a scheduled category", func(t *testing.T) {
+		a := fold.New(shard)
+		add(t, a, mkTimerRange(time.Hour, 2*time.Hour))
+
+		work := a.Drain().Tasks()
+		require.Len(t, work.Delete, 1)
+		r := work.Delete[0]
+		at := func(d time.Duration) tasks.Key { return tasks.NewKey(tasks.DefaultFireTime.Add(d), 0) }
+		require.False(t, r.Covers(at(time.Hour-time.Microsecond)), "below the minimum is outside")
+		require.True(t, r.Covers(at(time.Hour)), "the minimum is inside: it is inclusive")
+		require.True(t, r.Covers(at(2*time.Hour-time.Microsecond)))
+		require.False(t, r.Covers(at(2*time.Hour)), "the maximum is exclusive")
+	})
+}
+
 // TestTheRangesAReaderSubtractsAreTheUndrainedOnes: what a merged read hides
 // from the cold store's page is exactly the ranges the drain has not applied.
 // Asserted through the drain's [TaskWork], since the window's pending ranges

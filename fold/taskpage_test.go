@@ -155,6 +155,30 @@ func TestASharedFirstKeyStillAdvancesThePagination(t *testing.T) {
 	require.Equal(t, []int64{1, 2, 3, 9}, taskIDs(pages))
 }
 
+// TestThePageHoldsTheWindowToTheRangeItWasAsked drives both bounds of the window
+// half's filter at the keys they are. Nothing did: every case in this file asks
+// for the widest range a queue could ask for, so a window task outside the
+// request was never one the filter had to exclude, and moving either comparison
+// left the whole of `go test ./...` green.
+//
+// The base is held to this by a refusal — a row outside the range asked for fails
+// the page ([fold.ErrBaseRowOutsideRange]) — so the window half owes the same
+// answer, and for the same reason: its caller is a queue processor that completes
+// the range it asked for. A row above the exclusive maximum is one the caller acks
+// past having been shown it, and the next range it asks for starts below what it
+// has already completed.
+func TestThePageHoldsTheWindowToTheRangeItWasAsked(t *testing.T) {
+	a := fold.New(shard)
+	cold := coldtasks.New()
+	add(t, a, mkAddTasks(keyed(2, "below"), keyed(3, "the minimum"), keyed(5, "inside"),
+		keyed(6, "the maximum"), keyed(7, "above")))
+
+	pages, _ := paginate(t, a, cold,
+		taskReq(tasks.CategoryTransfer, tasks.NewImmediateKey(3), tasks.NewImmediateKey(6), 100))
+	require.Equal(t, []int64{3, 5}, taskIDs(pages),
+		"the minimum is inclusive and the maximum is exclusive, on the window's half as on the base's")
+}
+
 // TestABaseRowAndAWindowTaskWithOneKeyAreEmittedOnce is the dedup, a safety net
 // rather than a mechanism: the two sources are disjoint by construction, a task
 // reaching the cold store only in the drain that stops the window holding it.
