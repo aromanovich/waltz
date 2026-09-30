@@ -200,6 +200,16 @@ func TestMyBackendKeepsTheContract(t *testing.T) {
 }
 ```
 
+**Two obligations the suite cannot ask about, and both matter more than any case in it.** Every case
+drives one `wal.Log` value in one process, so it reads back through the thing that appended: a backend
+acking into memory it never gets out of the process passes all twenty-one, and so does one whose owning
+epoch is a field rather than a row. `waltest.CheckReopen` asks the half that needs no second process —
+it takes a way of *opening* your log, writes a run, closes it, opens the storage again and asks the
+fresh value for the entries, for who owns the shard, and for the position to continue at. And
+`waltest.CheckRetention` asks the half that needs the clock, since a trim is the only removal the
+contract excuses and the suite runs in milliseconds. Both return an error rather than taking a
+`*testing.T`, so a deployment runs them from whatever harness it has.
+
 `cold.Store` is two methods: `Apply`, which commits a folded window as one transaction, and
 `Watermark`, which reads back the seqno that transaction carried. It is one interface rather than
 the two halves it is made of because **one value has to answer both** — a watermark is only
