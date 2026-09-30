@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""Enumerate one mutation class over the tree, run the suite against each, report
+the greens.
+
+The other half of [mutation-run.py]. That one applies mutations a session thought
+of, one manifest entry at a time; this one *generates* a whole class and leaves
+nothing in it out. The difference is the reason the manifest is deliberately not
+checked in: a list goes stale and reads as coverage, where a class does neither —
+"every adjacent comparison in `fold/`" means the same thing after the code moves,
+and a green from it is a line nothing drives rather than a line nobody thought of.
+
+Three classes, and they find different things:
+
+  * `cmp` — move each `<`, `<=`, `>`, `>=` to its adjacent form. Finds the
+    off-by-one, which the deletions cannot see: the line is present and wrong by
+    one. Most of its greens are equivalences and the triage is the work.
+  * `guard` — delete an `if cond { return … }` block, so the condition always
+    passes. That is what a failed assertion looks like: a write acked whose
+    condition did not hold.
+  * `write` — delete a statement that writes: a bare call, or an assignment into a
+    field or an element. Finds acked data that reaches no storage. It finds
+    nothing at all in a module that only decides, there being no write in it.
+
+**A narrowed judge is a candidate filter and nothing more.** Dropping packages
+from the inner loop turns red into green and never the other way, so a green found
+with `--judge` is a *candidate* — and a dismissal made on one is unsound, because
+the package that was dropped may be the one that catches it. `--confirm` re-runs a
+sweep's greens with every package in the judge and reports which of them the whole
+suite catches. Shorten the acceptance stream by volume (`WAL_ACCEPTANCE_MUTATIONS`)
+rather than by dropping its package.
+
+Two failure modes of the harness itself, both of which quietly invert the result:
+
+  * **a full disk reds every mutant**, so every remaining line reads as guarded.
+    The run stops rather than reporting that, and it drops the build cache on a
+    cadence, since a sweep adds a cache entry set per mutation;
+  * **a mutant that hangs is not a mutant that passed.** A flipped loop bound can
+    loop for ever; the run times it out and counts it red.
+
+Every file is restored in a `finally`, so an interrupt leaves the tree as it was.
+
+Usage:
+
+    tools/mutation-sweep.py cmp   'fold/*.go,cycle/*.go' out.json
+    tools/mutation-sweep.py guard 'cycle/*.go'           out.json --judge './cycle/... ./fold/'
+    tools/mutation-sweep.py --confirm out.json confirmed.json
+
+It is not a suite and must not become one, for [mutation-run.py]'s reason: what a
+run found belongs in DURABILITY.md, and what it found and dismissed belongs beside
+the code.
+
+[mutation-run.py]: mutation-run.py
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Below this the run stops rather than reporting every remaining mutation as
+# caught. mutation-run.py's figure, for its reason.
+MIN_FREE_MB = 700
+# Above this the cache is dropped before the next mutation, and every 40th
+# mutation drops it anyway: a sweep's mutations are all cache misses.
+LOW_FREE_MB = 2500
+CACHE_EVERY = 40
+
+FULL_JUDGE = "./..."
+# Each mutation is one build of the packages under it; two minutes is far above
+# the whole suite and well below a loop that will not end.
+TIMEOUT_S = 300
+
+FLIPS = [("<=", "<"), (">=", ">"), ("<", "<="), (">", ">=")]
+
+
+def free_mb(path="/"):
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize / (1 << 20)
+
+
+def housekeep(n):
+    if n and n % CACHE_EVERY == 0 or free_mb() < LOW_FREE_MB:
+        subprocess.run("go clean -cache", cwd=REPO, shell=True, capture_output=True)
+    if free_mb() < MIN_FREE_MB:
+        raise SystemExit(f"stopping: {free_mb():.0f} MB free, and a full disk reds every mutation")
+
+
+def sources(patterns):
+    import pathlib
+
+    out = []
+    for pattern in patterns:
+        for path in sorted(pathlib.Path(REPO).glob(pattern)):
+            name = str(path)
+            if name.endswith("_test.go") or ".pb.go" in name:
+                continue
+            out.append(name)
+    return out
+
+
+def comparisons(path):
+    """Each flippable operator, one at a time, as (line index, old line, new line)."""
+    out = []
+    for i, line in enumerate(open(path).read().split("\n")):
+        code = line.split("//")[0]
+        if "<-" in code:  # a channel operation is not a comparison
+            continue
+        for old, new in FLIPS:
+            for m in re.finditer(re.escape(old), code):
+                j = m.start()
+                # Scanning for `<` must not match `<=`, `<<` or `<-`; same for `>`.
+                if old in "<>" and (code[j : j + 2] in (old + "=", old + old) or code[j - 1 : j + 1] == old + old):
+                    continue
+                out.append((i, line, line[:j] + new + line[j + len(old) :], f"{old}->{new}@{j}"))
+    return out
+
+
+def guards(path):
+    """`if cond { return … }` blocks, as (first line index, last line index).
+
+    An `if` with an init statement is skipped: deleting it takes the binding with
+    it, which is a build error rather than a finding.
+    """
+    lines = open(path).read().split("\n")
+    out = []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\t*)if (.+) \{$", line)
+        if not m or ":=" in m.group(2):
+            continue
+        indent = m.group(1)
+        close = None
+        for j in range(i + 1, min(i + 12, len(lines))):
+            if lines[j] == indent + "}":
+                close = j
+                break
+            if lines[j].startswith(indent + "} else"):
+                break
+        if close is None:
+            continue
+        body = [x.strip() for x in lines[i + 1 : close] if x.strip() and not x.strip().startswith("//")]
+        if body and re.match(r"^(return|panic\(|continue|break)", body[0]):
+            out.append((i, close))
+    return out
+
+
+# A statement that is a whole call, and an assignment into a field or an element.
+# A plain local assignment is left out: deleting it is a build error.
+CALL = re.compile(r"^(\t+)[A-Za-z_][\w.]*\([^;]*\)$")
+ASSIGN = re.compile(r"^(\t+)[A-Za-z_][\w.]*(\[[^\]]*\])?(\.[\w.]+)?\s*(=|\+=|-=)\s")
+
+
+def statements(path):
+    out = []
+    for i, line in enumerate(open(path).read().split("\n")):
+        if "//" in line or line.strip().startswith("return"):
+            continue
+        if CALL.match(line):
+            # `go` and `defer` change a lifetime rather than a write, and a panic
+            # is not one either.
+            if not re.match(r"^\t+(go |defer |panic\()", line):
+                out.append(i)
+        elif ASSIGN.match(line) and "." in line.split("=")[0]:
+            out.append(i)
+    return out
+
+
+def judged(judge):
+    cmd = f"WAL_ACCEPTANCE_MUTATIONS=10000 go test {judge} -count=1"
+    try:
+        p = subprocess.run(cmd, cwd=REPO, shell=True, capture_output=True, text=True, timeout=TIMEOUT_S)
+        return p.returncode, (p.stdout + p.stderr)[-4000:]
+    except subprocess.TimeoutExpired:
+        # Red, and named: a flipped loop bound that never ends is a finding of its
+        # own kind rather than a harness failure.
+        return 124, "HUNG"
+
+
+BUILD_MARKERS = ("build failed", "declared and not used", "missing return", "cannot use", "undefined:", "syntax error")
+
+
+def verdict(rc, out):
+    if rc == 0:
+        return "GREEN"
+    return "BUILD" if any(s in out for s in BUILD_MARKERS) else "red"
+
+
+def apply_and_judge(path, mutate, judge):
+    """mutate takes the file's lines and returns them changed; the file is always
+    restored."""
+    orig = open(path).read()
+    try:
+        open(path, "w").write("\n".join(mutate(orig.split("\n"))))
+        return judged(judge)
+    finally:
+        open(path, "w").write(orig)
+
+
+def sweep(kind, patterns, outpath, judge):
+    items = []
+    for path in sources(patterns):
+        if kind == "cmp":
+            items += [(path, c) for c in comparisons(path)]
+        elif kind == "guard":
+            items += [(path, g) for g in guards(path)]
+        elif kind == "write":
+            items += [(path, i) for i in statements(path)]
+        else:
+            raise SystemExit(f"unknown class {kind}")
+    print(f"{len(items)} mutations of class {kind}, judged by {judge}", flush=True)
+
+    results = []
+    t0 = time.time()
+    for n, (path, item) in enumerate(items):
+        housekeep(n)
+        rel = os.path.relpath(path, REPO)
+        if kind == "cmp":
+            i, old, new, label = item
+
+            def mutate(lines, i=i, new=new):
+                lines[i] = new
+                return lines
+
+            record = dict(file=rel, line=i + 1, label=label, orig=old.strip(), mutated=new.strip())
+        elif kind == "guard":
+            a, b = item
+
+            def mutate(lines, a=a, b=b):
+                lines[a : b + 1] = ["// MUTANT " + x for x in lines[a : b + 1]]
+                return lines
+
+            record = dict(file=rel, line=a + 1, label="guard", orig=open(path).read().split("\n")[a].strip())
+        else:
+            i = item
+
+            def mutate(lines, i=i):
+                lines[i] = "// MUTANT " + lines[i]
+                return lines
+
+            record = dict(file=rel, line=i + 1, label="write", orig=open(path).read().split("\n")[i].strip())
+
+        rc, out = apply_and_judge(path, mutate, judge)
+        record["status"] = verdict(rc, out)
+        results.append(record)
+        if record["status"] == "GREEN":
+            print(f"  GREEN {rel}:{record['line']} {record['label']}  {record['orig'][:110]}", flush=True)
+        if n % 25 == 0:
+            print(f"  .. {n}/{len(items)} ({time.time() - t0:.0f}s)", flush=True)
+        json.dump(results, open(outpath, "w"), indent=1)
+
+    greens = [r for r in results if r["status"] == "GREEN"]
+    print(f"done: {len(results)} mutations, {len(greens)} green, {time.time() - t0:.0f}s", flush=True)
+    if judge != FULL_JUDGE and greens:
+        print(f"the judge was narrowed, so those {len(greens)} are candidates: "
+              f"tools/mutation-sweep.py --confirm {outpath} <out.json>", flush=True)
+
+
+def confirm(sweeppath, outpath):
+    """Re-run a sweep's greens with every package in the judge."""
+    greens = [r for r in json.load(open(sweeppath)) if r["status"] == "GREEN"]
+    print(f"{len(greens)} candidates, judged by {FULL_JUDGE}", flush=True)
+
+    results = []
+    t0 = time.time()
+    for n, r in enumerate(greens):
+        housekeep(n)
+        path = os.path.join(REPO, r["file"])
+        i = r["line"] - 1
+        if open(path).read().split("\n")[i].strip() != r["orig"]:
+            results.append(dict(r, verdict="MOVED"))
+            print(f"  MOVED       {r['file']}:{r['line']} — not the line the sweep saw", flush=True)
+            continue
+
+        def mutate(lines, i=i, r=r):
+            lines[i] = lines[i].replace(r["orig"], r["mutated"], 1) if "mutated" in r else "// MUTANT " + lines[i]
+            return lines
+
+        rc, out = apply_and_judge(path, mutate, FULL_JUDGE)
+        failing = sorted({m for m in re.findall(r"^--- FAIL: (\w+)", out, re.M)})
+        results.append(dict(r, verdict="STILL GREEN" if rc == 0 else "CAUGHT", failing=failing[:6]))
+        print(f"  {results[-1]['verdict']:<11} {r['file']}:{r['line']} {r['label']}"
+              + (f"  by {','.join(failing[:3])}" if failing else ""), flush=True)
+        json.dump(results, open(outpath, "w"), indent=1)
+
+    caught = sum(1 for x in results if x["verdict"] == "CAUGHT")
+    print(f"done: {caught} of {len(results)} were caught by the packages the sweep dropped, "
+          f"{time.time() - t0:.0f}s", flush=True)
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "--confirm":
+        if len(args) != 3:
+            raise SystemExit(__doc__)
+        return confirm(args[1], args[2])
+    if len(args) < 3:
+        raise SystemExit(__doc__)
+    kind, patterns, outpath = args[0], args[1].split(","), args[2]
+    judge = FULL_JUDGE
+    if "--judge" in args:
+        judge = args[args.index("--judge") + 1]
+    sweep(kind, patterns, outpath, judge)
+
+
+if __name__ == "__main__":
+    main()
