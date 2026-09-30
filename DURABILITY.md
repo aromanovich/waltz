@@ -1283,6 +1283,16 @@ progress.**
 3. **Accepted** — it can happen, nobody will close it, and the owner has said so
    in the entry with the reason. An accepted risk is a finished entry.
 
+**What a green run means got wider, and every rung below rests on it.** Until the
+`race` target existed, nothing in this repository had ever run the detector — so
+every "a test holds this" above was a claim made by a run that could not see a
+data race, in a layer that is a goroutine per shard, two mirrors published for
+readers off it and a trim beside the loop. It comes back clean, which is the
+reassuring half; the half worth keeping is that it was *unasked* for as long as
+the closures were being written. A sweep that reports a mutant green should say
+which targets it ran, and `make check` is now four of them — the tests, the
+detector, the linters and the advisories.
+
 **Say which rung a closure stands on.** They are not equal, and "there is a test"
 hides the difference:
 
