@@ -6,6 +6,7 @@
 # requirements into the file a Temporal bump has to be readable in.
 GOLANGCI := github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 MODERNIZE := golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.23.0
+GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.8.0
 
 # No `-p 1` here, and its absence is the deliberate half: nothing in this module
 # wants a cluster, a container or a fixed port. Every backend lives in the test
@@ -81,8 +82,19 @@ proto: ## Regenerate mutation.pb.go from mutation.proto (needs protoc)
 		--go_opt=module=github.com/aromanovich/waltz mutation/mutation.proto; \
 	status=$$?; rm -rf $$tmp; exit $$status
 
+# Reachability, not a dependency inventory: govulncheck reports an advisory only
+# where a call path from this module's own code reaches the vulnerable symbol, so
+# a green run is a claim about what waltz calls rather than about what it
+# requires. Both halves of the answer matter to a deployment — what reaches one is
+# the module versions this go.mod requires, raised through MVS, while the
+# standard-library half is the toolchain they build with and the `toolchain` line
+# here is only what waltz's own builds and CI use.
+.PHONY: vuln
+vuln: ## Check the module and the toolchain against the Go vulnerability database
+	go run $(GOVULNCHECK) ./...
+
 .PHONY: check
-check: test race lint ## The whole gate: the tests, the race detector and the linters
+check: test race lint vuln ## The whole gate: the tests, the race detector, the linters and the advisories
 
 .PHONY: help
 help: ## List the targets

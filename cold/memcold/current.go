@@ -17,7 +17,6 @@ import (
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/serialization"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
-	"go.temporal.io/server/common/primitives"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -33,13 +32,25 @@ import (
 // *serviceerror.Unavailable. The caller separates them — the first is "no such
 // workflow", the second is a failure — and a store answering absence any other
 // way makes the layer treat a live workflow as unstarted.
+//
+// The namespace id is parsed rather than asserted, which is where this departs
+// from the read it is derived from: upstream's own uses primitives.MustParseUUID
+// and panics on a malformed one. Every write path in this store already parses
+// through the same helper, and this read is the one obligation the layer puts on
+// the store below — it runs on every delegated condition check — so a panic here
+// is the process rather than the call. That the id cannot be malformed today is a
+// claim about today's callers.
 func (s *Store) GetCurrentExecutionWithLastWriteVersion(
 	ctx context.Context,
 	request *p.GetCurrentExecutionRequest,
 ) (*p.InternalGetCurrentExecutionResponse, int64, error) {
+	ns, err := parseNamespace(request.NamespaceID)
+	if err != nil {
+		return nil, 0, err
+	}
 	row, err := s.db.SelectFromCurrentExecutions(ctx, sqlplugin.CurrentExecutionsFilter{
 		ShardID:     request.ShardID,
-		NamespaceID: primitives.MustParseUUID(request.NamespaceID),
+		NamespaceID: ns,
 		WorkflowID:  request.WorkflowID,
 	})
 	if err != nil {

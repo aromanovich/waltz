@@ -539,7 +539,14 @@ for needs the extra volume; the volume claim is `make test`'s.
 Makefile — and `.golangci.yml` says which linters are deliberately off and why: a check switched off
 in silence is one somebody re-enables and then disables again.
 
-`make check` is all three.
+`make vuln` is the fourth: govulncheck over the module, pinned there too. It reports an advisory only
+where a call path from this module's own code reaches the vulnerable symbol, so a green run is a claim
+about what waltz calls rather than about what it requires — and the two halves of the answer land in
+different places for a deployment. The module versions `go.mod` requires are what a consumer inherits
+through MVS; the standard library is whatever toolchain that consumer builds with, and the `toolchain`
+line here is only what waltz's own builds and CI use.
+
+`make check` is all four.
 
 ---
 

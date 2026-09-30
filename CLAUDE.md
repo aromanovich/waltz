@@ -83,7 +83,8 @@ no build tag:
 make test            # go test ./... -count=1; the default target
 make race            # the same under -race, on a tenth of the acceptance stream
 make lint            # golangci-lint plus gopls's modernize, both pinned there
-make check           # all three
+make vuln            # govulncheck over the module and the toolchain
+make check           # all four
 go test ./wal/...    # the contract and its conformance suite; milliseconds
 ```
 
