@@ -1239,6 +1239,36 @@ and the sync-mode page above — and the rest were equivalences worth naming: an
 adjacent range that merges or does not cover the same keys either way, an assignment
 of an equal value, a switch arm the case above it already matched.
 
+**Run exhaustively it is a different instrument, and the second run says so.** The
+fifty-one were chosen; `tools/mutation-sweep.py` enumerates the class instead, and
+**111** comparisons over `fold`, `cycle`, `apply`, `wrapper`, `mutation`, `memwal`
+and the root left **28** green, of which **seven** were boundaries nothing drove:
+the window's byte watermark and its age, the trim cadence's time half, a task
+range's inclusive minimum, the task page's own range on both halves, the history
+page's strict ascent, and the length check in front of `basePage[0]` — the last
+one a panic rather than a wrong answer. A chosen list cannot make that claim,
+which is the argument for generating a class rather than writing one down.
+
+The twenty-one that were dismissed are recorded here so the next pass does not
+re-triage them — **as dismissals owing a `--confirm` run**, which is the debt that
+run's own lesson leaves: they were judged with `internal/verify/` dropped from the
+inner loop, and the acceptance is in there. Each was read and argued rather than
+counted, so the reasoning below is what to check rather than the verdict; a
+confirmed one moves out of this paragraph. They came in four shapes. **A `len()` compared against zero
+or against a magic prefix's length**, where the adjacent form is a tautology or
+names a value no encoder produces — both page tokens, `bounded`'s second conjunct,
+`mutation/encode.go`'s pre-allocation. **A switch arm the case above already
+matched** — both merges' `c < 0` behind a `c == 0`. **A minimum-picking idiom**,
+where assigning on equality assigns the same value — the attribution's cut seqno
+and its workflow slices. **And a difference a later line absorbs**: `memwal`'s read
+offset and trim length both end in an empty slice either way, the history merge's
+reach filter is deduplicated by the merge itself, `Manager.ShardAcquired`'s epoch
+comparison is preceded by the equal case returning, the conflict-resolve refusal
+over-refuses where drain-and-retry absorbs it, and the history page's `cut` is
+capped by `min(cut, pageSize)` — that last one provable from the branch's own
+arithmetic, since the branch implies an ask of one, hence a single base row, hence
+a first key equal to the last.
+
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence
 changes what the store holds — the two entries above, and the conflict that invents
@@ -1254,10 +1284,25 @@ meet them — otherwise every pass re-triages the same forty lines.
 
 It is not a suite and should not become one: a mutation run is a thing a session
 does, and a target that had to stay green would be a second copy of the applier.
-The mechanical half is `tools/mutation-run.py` — a runner, with no make target
-and no checked-in list of mutations, for that same reason: a committed manifest
-reads as coverage and leaves the next session re-running the last one's list
-instead of inventing the mutations it did not think of. What a run found belongs
+The mechanical half is two scripts and the split between them is the point.
+`tools/mutation-run.py` applies mutations a session thought of, one manifest entry
+at a time — with no make target and no checked-in manifest, because a committed
+list reads as coverage and leaves the next session re-running the last one's.
+`tools/mutation-sweep.py` *generates* a class instead and leaves nothing in it out,
+which is the half a manifest cannot be: "every adjacent comparison under `fold/`"
+means the same thing after the code moves, and a green from it is a line nothing
+drives rather than a line nobody thought of.
+
+**A narrowed judge is a candidate filter and a dismissal made on one is unsound.**
+Dropping packages from the inner loop turns red into green and never the other way,
+so a green found that way may be a green the dropped package would have caught —
+which is fine for deciding what to look at and wrong for deciding what to ignore.
+Shorten the acceptance stream by volume rather than by dropping its package, and
+re-run the greens with everything in the judge before writing any of them down:
+that is what `--confirm` is for. The first exhaustive run above did not, which is
+why its dismissals are recorded as owing one — the lesson cost that run its own
+conclusion rather than a defect, since every green it *acted* on was proved red
+against a test that is in the whole set. What a run found belongs
 here; what it found and dismissed belongs beside the code.
 
 It is also not a substitute for the reasoning. Each entry is a pointer: the
