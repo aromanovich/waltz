@@ -229,7 +229,7 @@ def judged(judge):
                          stderr=subprocess.STDOUT, text=True, start_new_session=True)
     try:
         out, _ = p.communicate(timeout=timeout_for(judge))
-        return p.returncode, out[-4000:]
+        return p.returncode, out[-20000:]
     except subprocess.TimeoutExpired:
         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
         p.communicate()
@@ -373,7 +373,12 @@ def confirm(sweeppath, outpath):
         failing = sorted({m for m in re.findall(r"^--- FAIL: (\w+)", out, re.M)})
         if rc == 0:
             state = "STILL GREEN"
-        elif failing:
+        elif failing or "panic: " in out:
+            # A panic counts, and has to be asked for separately: it is the
+            # loudest way the tree catches a mutation, and its stack is long
+            # enough to push the name of the failing test out of the tail kept
+            # here — so judging on the name alone reads the loudest catch there
+            # is as a harness that broke.
             state = "CAUGHT"
         else:
             # A red with no named failure is the harness rather than the tree: a
