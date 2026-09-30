@@ -1241,8 +1241,9 @@ of an equal value, a switch arm the case above it already matched.
 
 **Run exhaustively it is a different instrument, and the second run says so.** The
 fifty-one were chosen; `tools/mutation-sweep.py` enumerates the class instead, and
-**111** comparisons over `fold`, `cycle`, `apply`, `wrapper`, `mutation`, `memwal`
-and the root left **28** green, of which **seven** were boundaries nothing drove:
+**111** comparisons over the whole layer — `fold`, `cycle` and its three
+sub-packages, `apply`, `wrapper`, `baserow`, `mutation`, `wal`, `walmetrics` and the
+root — plus the two shipped implementations, `memwal` and `memcold`, left **28** green, of which **seven** were boundaries nothing drove:
 the window's byte watermark and its age, the trim cadence's time half, a task
 range's inclusive minimum, the task page's own range on both halves, the history
 page's strict ascent, and the length check in front of `basePage[0]` — the last
