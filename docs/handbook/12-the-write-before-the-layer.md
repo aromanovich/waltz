@@ -333,7 +333,8 @@ Almost nothing in this chapter is code in this repository, and that is the point
 thing waltz sits in front of. Three files here are where the description touches the layer.
 
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — `appendEvents`, which
-  keeps the history stage exactly where it was when the layer is present.
+  keeps the history stage where it was when the cold store does not declare `cold.HistoryApplier`;
+  `cold/memcold` declares it, so over the one store here the batches ride the record instead.
 * [`../../wal/wal.go`](../../wal/wal.go) — the contract that exists so the log's class can change.
   Read it for what it does not say: no method's documentation mentions what an append costs.
 * [`../../apply/failure.go`](../../apply/failure.go) — the five outcome classes a caller branches on

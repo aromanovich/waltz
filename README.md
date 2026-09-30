@@ -1,8 +1,8 @@
 # waltz
 
 The logic of a write-ahead log for the Temporal server's history shards. **You bring the storage —
-both ends of it**: the log, [`wal.Log`](wal/wal.go#L148), and the database,
-[`cold.Store`](cold/cold.go#L67). Five methods on the log and two on the database are nearly the
+both ends of it**: the log, [`wal.Log`](wal/wal.go#L154), and the database,
+[`cold.Store`](cold/cold.go#L97). Five methods on the log and two on the database are nearly the
 whole of what waltz asks you to implement.
 
 Temporal's history service is write-heavy: one workflow moves through hundreds of state transitions,
@@ -15,8 +15,8 @@ transaction instead of a hundred — whatever an append costs.
 **waltz is not a persistence implementation, and that is the first thing to understand about it.**
 It writes to no disk, opens no connection and speaks no wire protocol; it contains no line of code
 that would. What it is, is everything between two interfaces you implement: the log an
-acknowledgement lands in ([`wal.Log`](wal/wal.go#L148)) and the database a fold lands on
-([`cold.Store`](cold/cold.go#L67)). Both are yours to write over whatever storage you run. What
+acknowledgement lands in ([`wal.Log`](wal/wal.go#L154)) and the database a fold lands on
+([`cold.Store`](cold/cold.go#L97)). Both are yours to write over whatever storage you run. What
 waltz owns is the part that is genuinely hard — the window, the fold, the fencing, the replay, the
 bound on unapplied work, and what each of them must do when a write, a process or a shard handover
 fails.
@@ -157,6 +157,10 @@ func main() {
 		// After the server has stopped: the shutdown drain still needs a store
 		// to write to. `defer release()` above runs after this one, which is the
 		// order that leaves the drain a database.
+		//
+		// An error here names acked entries no drain applied: they are in the
+		// log for the next owner, and nothing replays them if this node comes
+		// back without the wal section.
 		if err := layer.Shutdown(context.Background(), 30*time.Second); err != nil {
 			panic(err)
 		}
@@ -172,9 +176,11 @@ func main() {
 ```
 
 The lifecycle brackets the server's, and both ends matter. `Compose` opens nothing and reaches
-nothing, so a policy whose memory budget does not add up stops a process that has connected to
-nothing yet, rather than a node already serving. `Layer.Shutdown` runs last so that every window
-still open has somewhere to drain.
+nothing — the backends it is handed are already open — and it checks the policy's tail budget
+before anything else is built, so a budget whose encoded bytes do not add up stops a process whose
+server has not started, rather than a node already serving. `Layer.Shutdown` runs after the server
+has stopped and before the store is released, so that every window still open has somewhere to
+drain.
 
 Configuration is a `wal` section inside the custom datastore's own options: absent means
 passthrough, malformed means a refusal to start rather than a node quietly running the other mode.
@@ -188,8 +194,8 @@ waltz sits between two things it does not own, and a deployment replaces both.
 
 | | the contract | shipped here | what judges your implementation |
 |---|---|---|---|
-| the log | [`wal.Log`](wal/wal.go#L148) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: twenty-one cases, one call |
-| the database | [`cold.Store`](cold/cold.go#L67) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
+| the log | [`wal.Log`](wal/wal.go#L154) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: twenty-one cases, one call |
+| the database | [`cold.Store`](cold/cold.go#L97) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
 
 `wal.Log` is an append-only, fenced, gap-free sequence of entries per shard — five methods, opaque
 payloads, no Temporal type anywhere in it. Running the suite against your backend is one call:

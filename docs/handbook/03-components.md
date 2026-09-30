@@ -73,7 +73,7 @@ and the cycle have handed it on.
 | `cycle/window` | The size and age of what a cycle folded since its last drain, as a type whose counters cannot be written from outside. | `Window`, `Taken`, `Watermarks`, `Trip` | `fold`, `walmetrics` — the window counts, it does not fold, and it publishes nothing |
 | `cycle/tailstate` | The tail's arithmetic in one place: everything invariant [I10](02-concepts-and-invariants.md#the-invariants) bounds, plus the off-loop mirror of it. | `Tail`, `Mirror`, `New`, `NewMirror`, `WatermarkMove`, `Unresolved` | `fold` — the tail is arithmetic over what the loop acked, not the log those seqnos index nor the window they outlive |
 | `cycle/trim` | The lazy deletion of entries the cold store already holds: the cadence, the one trim in flight, the two counters. | `Trimmer`, `New`, `Cadence` | `fold`, `cycle/tailstate` — a cadence over a watermark it is handed; it may reach neither the thing that moves that watermark nor the thing that folds |
-| `cycle` | The state machine: one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the four reads and replay, plus the node's registry of them. | `Cycle`, `Manager`, `NewManager`, `Deps`, `Config`, `Defaults`, `Policy`, `Fixed`, `Live`, `Moving`, `State`, `Stats`, `Totals`, `Counters` | any persistence implementation — the cold store arrives as `cold.Applier` and `cold.Watermarker`, and there may be no second door |
+| `cycle` | The state machine: one goroutine per (shard, epoch) owning the accumulator, the drain, the trim's cadence, the four reads and replay, plus the node's registry of them. | `Cycle`, `Manager`, `NewManager`, `Deps`, `Config`, `Defaults`, `Policy`, `Fixed`, `Live`, `Moving`, `State`, `Stats`, `Totals`, `Counters` | any persistence implementation — the cold store arrives as `cold.Applier` and `cold.Watermarker`, and there may be no second door |
 | `wrapper` | The seam into a running server: a decorator over a base data store factory whose `ExecutionStore` and `ShardStore` the history service talks to. | `Options`, `ShardLayer`, `ShardObserver`, `ShardWriter`, `ShardReader`, `MetricsSink`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory`, `DataStoreFactory`, `NewDataStoreFactory`, `ErrCompleteHistoryTaskUnsupported` | any persistence implementation, and `cycle` — wrap, don't fork: the decorator is defined over upstream's interface, and composing it with a base store is the binary's job |
 | `waltz` (the module root) | The composition a server builds: the `wal` config section, the dynamic-config settings, the components they name, the lifecycle, and the factory that is the door out. | `Compose`, `Layer`, `Backends`, `Config`, `WAL`, `Parse`, `Registry`, `TaskCategories`, `DefaultTaskCategories`, `NewPolicy`, `AbstractFactory` | — (it composes everything, which is the point) |
 | `walmetrics` | Where the numbers go: the metric definitions and the emitter, on the server's own handler. | `Emitter`, `New`, and the `metrics.*Def` values (`InterceptedWrites`, `Drains`, `TailBytes`, …) | `wal`, `fold`, `apply`, `cycle`, `wrapper`, `mutation` — the metric names are the layer's vocabulary, so nothing that can be measured may be imported here |
@@ -122,7 +122,7 @@ graph TD
   SS -->|"ShardAcquired: fence and create"| MGR
   SS -->|"the shard row itself"| CS
   ES -->|"mutation.Mutation plus the base reads"| MGR
-  ES -->|"the other sixteen methods"| CS
+  ES -->|"the other fifteen methods"| CS
   MGR -->|"resolves the shard, checks the epoch"| CY
   CY -->|"Append, ReadFrom"| LOG
   CY -->|"Add, Drain, TaskPage"| ACC
@@ -141,7 +141,7 @@ the cold store through an interface the layer names, and both are the deployment
 drain committed when its outcome was unknown. The wrapper's own arrows to the cold store are the
 transits. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers twelve of them itself — the
 eight writes and the four reads on the diagram — refuses a thirteenth, `CompleteHistoryTask`, with
-`wrapper.ErrCompleteHistoryTaskUnsupported`, and hands the other sixteen straight to the store below.
+`wrapper.ErrCompleteHistoryTaskUnsupported`, and hands the other fifteen straight to the store below.
 
 The two mutable-state reads the write path makes against the cold store — `baserow.Rows.Run` for one
 run's row and `baserow.Rows.Current` for the current-execution row — are missing from the diagram on
@@ -188,6 +188,7 @@ graph LR
     C --> A
     N --> C
     N --> WR
+    WR --> W
   end
   STORE["any persistence implementation"]
   MET["walmetrics"]
@@ -291,8 +292,8 @@ that range. Both consequences are [chapter
 | `tailstate.Mirror` | published by every `Tail` mutator | atomics; read by `Cycle.write` *before* it queues anything, and by a retired cycle's read path |
 | `Cycle.State()` | the loop writes, and `Cycle.Retire` as it stops one; anyone reads | one `atomic.Int32`, so a stopped cycle still reports the state it stopped in |
 | `Cycle.finished` | written by the loop on its way out | read by `Cycle.Retire` only after the loop's `done` channel is closed — that is the happens-before, and the reason there is no lock |
-| `trim.Trimmer` | its own goroutine, beside the loop | a `Trimmer` is handed a watermark *by value*; one trim in flight at a time; `Trimmer.Wait` is how a caller waits for it |
-| `walmetrics.Emitter` | shared, one per node | every method is an atomic load and a `Record`; `Emitter.Use` is the only mutation and takes the first handler it is given |
+| `trim.Trimmer` | its own goroutine, beside the loop | a `Trimmer` is handed a watermark *by value*; one mutex of its own over the one trim in flight and the one follow-up queued behind it; `Trimmer.Wait` is how a caller waits for it |
+| `walmetrics.Emitter` | shared, one per node | every method is an atomic load and a `Record`; `Emitter.Use` is the only mutation and takes the first non-nil handler it is given |
 | the shard map | `cycle.held` | one mutex; every method finishes its map arithmetic and returns without touching a `*Cycle` |
 
 Two of those need more than a table cell.
@@ -340,7 +341,8 @@ graph TD
 ```
 
 How to read this. The only shared mutable state on the node is the shard map behind `held`'s mutex
-and the emitter, which is lock-free. Everything else is per-shard and single-threaded.
+and the emitter, which is lock-free. Everything else is per-shard: the loop's alone, or one of the
+off-loop things in the table above.
 
 ### Lifetimes
 
@@ -374,7 +376,8 @@ second. It opens nothing, reaches nothing and takes no context. It takes five in
 * a `cycle.Policy`;
 * a `waltz.Registry` of task categories;
 * an optional `log.Logger`, which nil replaces with a noop;
-* an optional `metrics.Handler`, which nil replaces with a noop.
+* an optional `metrics.Handler`, and nil is the production value: the server's own arrives after
+  `Compose` has run, as described below.
 
 That is the whole of the door in, and deliberately the only one: there is no second constructor that
 opens a client from a config file. Everything that talks to a cluster has already happened by the

@@ -18,8 +18,9 @@ _Avoid_: operation, write, update (ambiguous about granularity)
 The two mutations that are about a queue rather than about a workflow:
 AddHistoryTasks and RangeCompleteHistoryTasks. They name no run, assert nothing,
 and are the reason the word "mutation" no longer implies "mutable state". Both
-travel through the log, and that is one decision rather than two: a road each
-would put the delete's effect at a different moment than the writes it covers.
+travel through the log, and that is one decision rather than two: routing the
+two differently would put the delete's effect at a different moment than the
+writes it covers.
 A delete that transits runs before the drain writes the rows it was meant to
 cover and leaves them behind; a delete deferred alone covers a timer created
 after the caller's checkpoint, the store's range delete being by fire-time
@@ -89,19 +90,23 @@ ascending, deduplicated, inside the requested range and no longer than the
 caller's batch size, with the window's undrained deletion ranges subtracted from
 the cold store's half of it. The dedup is a safety net rather than the
 mechanism: the two sources are disjoint by construction, and what makes the page
-honest is the order they are emitted in.
+honest is where it may cut — at the end of a base page or below its first row,
+never inside one, since the base's token is the plugin's own bytes.
 _Avoid_: overlay for tasks (the overlay renders one run's state; this
 concatenates two sources and paginates)
 
 **Apply**:
-The cycle that writes folded summary updates into the cold store in one
-transaction with the appliedSeqno bump and an epoch CAS.
+The step that writes folded summary updates into the cold store in one
+transaction with the appliedSeqno bump and an epoch CAS, over whatever event
+history the batch carries, durable no later than that transaction.
 
 **Drain**:
-One pass of that cycle: fold a window, write it in a single transaction, move
-appliedSeqno. A drain is all-or-nothing — a rejected one leaves the cold store
-exactly as a drain that never ran would, so appliedSeqno is the only witness to
-whether it happened.
+One pass of the apply cycle: fold a window, write it in a single transaction,
+move appliedSeqno — or, for a window that folded to no database work, settle its
+entries in memory with no transaction and no move. A transactional drain is
+all-or-nothing over everything it publishes — event history excepted, which a
+store may make durable before the transaction opens — so appliedSeqno is the
+only witness to whether it committed.
 
 **Base version**:
 The `DBRecordVersion` of a run's row in the cold store as of the last
@@ -127,15 +132,16 @@ The highest seqno a partial re-drain may acknowledge after a condition failure:
 one below the lowest entry answering for any diverged row. Nothing re-drains
 partially, so `apply.InvariantViolationError.CutSeqno` is forensic — and a zero
 there is not a position but "acknowledge nothing", covering three cases at once:
-no divergence was found, the window's first entry diverged, and the readback
-failed with rows unread. Applying anything above a cut point would leave entries
+no divergence was found, the log's first entry (`wal.FirstSeqno`) diverged,
+and the readback failed with rows unread. Applying anything above a cut point would leave entries
 applied above any watermark the drain could set.
 
 **Replay**:
 What a new owner does with the tail it inherits: read
 `(appliedSeqno, commitSeqno]`, fold it into a fresh accumulator, drain. It runs
 on the shard's first request rather than inside the acquire, and that request is
-served behind it — so "readiness" is that placement rather than a gate — and it
+served behind it — that placement is the readiness gate, and there is no flag
+to check — and it
 is triggered by a read as much as by a write.
 _Avoid_: recovery (the layer's other recovery is one drain whose outcome was
 lost, and the rule they share is the interesting part: read the watermark
@@ -192,7 +198,7 @@ matches concrete types and anything it does not recognise becomes a background
 re-acquire; never raised on a read as a size bound, though the unresolved
 refusal is raised there too, and never on the ShardStore path, since refusing a
 rangeID renewal would turn degradation into a lost shard. Degradation, not loss.
-_Avoid_: throttling, rate limit (both name a pace; this is a bound on memory)
+_Avoid_: throttling, rate limit (both name a pace; this is a bound on the tail)
 
 **Epoch**:
 The shard-ownership token carried by every WAL append and checked by apply.
@@ -242,9 +248,9 @@ it is given at the append)
 What a running server composes the layer out of: the `wal` section of the
 custom datastore's options — the mode — plus the nine policy
 settings the server's dynamic config carries, the backends they run over and
-the registry a tail is decoded with. A composition, not a cluster member —
+the task-category registry a tail is decoded with. A composition, not a cluster member —
 the server is the node, this is what it builds. It is the root package,
-`waltz`, and `waltz.Layer` is what a composition hands back.
+`waltz`: `waltz.Compose` is the call, and `waltz.Layer` is what it hands back.
 
 **Checker (проверяльщик)**:
 The record a driver writes of the calls it made and what it was told: two
@@ -343,7 +349,7 @@ Names that are taken, and by what:
 |---|---|---|
 | **Drain** | one pass of the apply cycle (above) | stopping a layer or a node — that is `Shutdown`, which drains *and* closes |
 | **Watermark** | appliedSeqno (above) | the age/size drain triggers, which are triggers |
-| **Registry** | `cycle.Manager`, the shards this node holds | `waltz.Registry`, which is task categories |
+| **Registry** | `cycle.Manager`, the shards this node holds | `waltz.Registry`, which is task categories and is written qualified: the task-category registry |
 | **Held** | a read: the window has something to say about this row | carrying a head assertion, which is `asserts*` |
 | **Policy** | `cycle.Policy`, a source of `Config` read at the decision | `WAL.StaticConfig()`, which is a `Config` value |
 | **Take** | `Window.Take`, which *empties* the window | building a read's view, which is `takeView` |

@@ -3,8 +3,9 @@
 ## One write, three moments of certainty
 
 Start with one `UpdateWorkflowExecution`. The history service has produced new events and a
-mutable-state update. The wrapper writes the history nodes through to the cold store, turns the
-persistence request into one mutation, and hands that mutation to the shard's cycle. So far the
+mutable-state update. The wrapper turns the persistence request into one mutation — writing the
+history nodes through to the cold store first, unless that store takes them in the drain — and hands
+that mutation to the shard's cycle. So far the
 layer has promised the caller nothing.
 
 Three questions come before anything is logged. Is the write still stamped with the epoch this node
@@ -84,6 +85,7 @@ sequenceDiagram
   MG->>CY: write(mutation, baseRows)
   CY->>CY: off-loop tail check against I10's bound
   Note over CY: from here the work runs on the cycle's own goroutine
+  CY->>CY: the tail check again, now in the loop
   CY->>ACC: CheckOrDrain(mutation) — the condition authority
   ACC-->>CY: delegated assertions the window cannot settle
   CY->>CS: read the pre-window rows the delegation named
@@ -91,7 +93,8 @@ sequenceDiagram
   Note over LOG: one immediate write over adjacent keys (I9)
   LOG-->>CY: acked
   Note over CY: commitSeqno = seqno, tail grows by the payload's bytes
-  CY->>ACC: Add(seqno, mutation) — merged into the window
+  CY->>ACC: AddOrDrain(commitSeqno, mutation) — merged into the window
+  Note over CY: no drain trigger trips
   CY-->>MG: nil
   MG-->>ES: nil
   ES-->>HS: nil
@@ -104,8 +107,9 @@ true. This is the run-time call graph; the cycle makes that call through a `*bas
 wrapper handed it, and imports nothing that reaches a store.
 
 The caller's answer is the **append**, not the drain. When `UpdateWorkflowExecution` returns nil,
-three things are true and no more: the request's new history events are in the cold store, the
-mutation is one durable entry of the shard's log, and the accumulator holds it. The workflow's
+three things are true and no more: the request's new history events are in the cold store or
+carried in the entry itself, the mutation is one durable entry of the shard's log, and the
+accumulator holds it. The workflow's
 mutable-state rows still hold what they held before, and any read those rows would now answer
 wrongly is answered by the layer instead ([chapter 07](07-read-path.md)).
 
@@ -117,8 +121,9 @@ They run in `Delegated.Settle`'s order and stop at the first refusal, so a faili
 pays less than a succeeding one. In sync mode none is taken at all: the drain that asserts
 everything runs inside the same call, so the round trip would buy nothing.
 
-**When the append itself has no answer.** The three refusals `wal` names each say the write is whole
-one way or the other, and everything else — every transport failure — says nothing at all. The cycle
+**When the append itself has no answer.** The three append refusals the cycle reads by name —
+`wal.ErrGap`, `wal.ErrFenced`, `wal.ErrAlreadyWritten` — each say the write is whole one way or the
+other, and everything else — every transport failure — says nothing at all. The cycle
 does not read that as "wrote nothing": it reads the seqno back, which is the log answering for an
 append the way the cold store's watermark answers for a drain
 ([chapter 06](06-shard-lifecycle.md)). Three outcomes, and the third is where this parts from the
@@ -152,11 +157,11 @@ sequenceDiagram
   CY->>ACC: Drain()
   ACC-->>CY: batch — one merged request per dirty workflow, plus its assertions
   CY->>AP: Apply(shard, epoch, batch)
-  AP->>CS: the batch's event history made durable, then one transaction — epoch CAS, the folded task ranges deleted, the requests, the task rows, the watermark
+  AP->>CS: one transaction — epoch CAS, the batch's event history, the folded task ranges deleted, the requests, the task rows, the watermark
   CS-->>AP: committed
   AP-->>CY: nil
   Note over CY: appliedSeqno = batch.Watermark(), tail releases the window's bytes
-  CY->>CY: trimmer.Drained(appliedSeqno) — trims every 16 drains or 60 seconds
+  CY->>CY: trimmer.Drained(appliedSeqno) — trims every 16 drains or 60 seconds, or at once under storage pressure
 ```
 
 **Who blocks.** The write that trips a trigger pays for the drain inside its own call: the drain
@@ -170,7 +175,8 @@ drain included. That cost was accepted knowingly and has never been measured
 ## 2. The drain itself
 
 One drain is one publication: the merged requests, the task work and the watermark in one
-transaction, over event history already durable. This is what it does, in order.
+transaction, together with the window's event history where the batch carries it. This is what it
+does, in order, against `memcold`.
 
 ```mermaid
 sequenceDiagram
@@ -185,8 +191,9 @@ sequenceDiagram
   ACC-->>CY: batch, or empty
   Note over CY: an empty batch settles what it acked, moves no watermark, and returns here
   CY->>AP: Apply(shard, epoch, batch)
-  AP->>AP: refuse epoch 0, an empty batch, or a batch folded for another shard
+  AP->>AP: refuse epoch 0, an empty batch, a batch folded for another shard, or a kind it has no arm for
   AP->>CS: the transaction opens on the epoch CAS — ownership loss shadows every other failure
+  AP->>CS: the batch's event-history rows, before anything that points at them
   AP->>CS: the folded task ranges deleted, ahead of every task row this drain writes
   AP->>CS: per request, in the batch's tail-seqno order — the first request naming a workflow carries that workflow's current-row assertion and current-row write
   AP->>CS: then, still per request: its run assertions in run-id order, then its merged rows
@@ -196,7 +203,7 @@ sequenceDiagram
   AP-->>CY: nil
   Note over CY: appliedSeqno moves, the tail releases the taken window's bytes
   CY->>CY: count the drain, emit wal_drains and wal_window_age
-  CY->>CY: trimmer.Drained — a detached goroutine trims the log at the cadence
+  CY->>CY: trimmer.Drained — a detached goroutine trims the log at the cadence (Force under storage pressure)
 ```
 
 How to read this. Statement order is the mechanism, because the transaction reports the **first
@@ -279,7 +286,7 @@ flowchart TD
   W --> P["the backend reports storage pressure: trigger=storage_pressure"]
   T["the age timer ticks"] --> A["window older than Age: trigger=age"]
   T --> P
-  RP["a new owner replays a tail"] --> R["a size trigger trips, or the tail runs out: trigger=replay"]
+  RP["a new owner replays a tail"] --> R["a size trigger trips, a provisional entry is met, or the tail runs out: trigger=replay"]
   X["Close or drainNow"] --> E["shutdown, or a test: trigger=explicit"]
   RD["a read, with drain_on_read on"] --> D["the window is emptied first: trigger=read"]
   S["every write, with sync on"] --> Y["one write, one drain: trigger=sync"]
@@ -309,10 +316,10 @@ on the `mutations`, `bytes`, `age` and `storage_pressure` series; the one other 
 same code — the halts, replay, the trim, backpressure and every counter.
 
 What sync mode changes is whose answer a failed drain is. Beside its trigger, each drain carries a
-`callerRule`: the legal (trigger, rule) pairs are a fixed list of ten values in `cycle/cycle.go`
-with no constructor, because an attribution that is too permissive reports a failure to a caller who
-did not write the mutation. Seven of the nine answer nobody, so a condition failure inside one halts
-the shard. `drainSync` answers its caller. A lone replayed provisional entry drops instead. That is
+`callerRule`: the legal `drainCause` values — trigger, rule, and whether the drain is detached from
+its caller's clock — are a fixed list of ten in `cycle/cycle.go` with no constructor, because an
+attribution that is too permissive reports a failure to a caller who did not write the mutation.
+Eight of the ten answer nobody, so a condition failure inside one halts the shard. `drainSync` answers its caller. A lone replayed provisional entry drops instead. That is
 also why sync mode's ack is *provisional*: the entry is encoded with `mutation.EncodeProvisional`
 rather than `mutation.Encode`, and replay reads that bit back to know it may drop such an entry
 rather than halt on it. Because the window is empty at every call boundary, a node killed in sync
@@ -343,7 +350,8 @@ sequenceDiagram
   participant LOG as wal.Log
 
   HS->>ES: UpdateWorkflowExecution(request)
-  ES->>CY: Write(mutation, epoch, baseRows)
+  ES->>CY: Write(mutation, epoch, baseRows), through cycle.Manager
+  CY->>CY: the tail checks against I10's bound pass
   CY->>ACC: CheckOrDrain(mutation)
   Note over ACC: an earlier mutation of this window already heads this run
   ACC-->>CY: the condition is false against the window's own state
@@ -405,9 +413,9 @@ sequenceDiagram
   participant LOG as wal.Log
 
   HS->>ES: UpdateWorkflowExecution(request)
-  ES->>CY: Write(mutation, epoch, baseRows)
+  ES->>CY: Write(mutation, epoch, baseRows), through cycle.Manager
   CY->>CY: read the mirrored tail before queueing anything
-  Note over CY: 8192 entries, or 8 MiB, or an unresolved drain
+  Note over CY: 8192 entries, or 8 MiB, or an unresolved drain, or the backend's pressure stop
   CY-->>ES: serviceerror.ResourceExhausted, unwrapped
   ES-->>HS: ResourceExhausted
   Note over LOG: nothing appended, no seqno consumed
@@ -472,7 +480,7 @@ sequenceDiagram
   AP-->>CY: ShardOwnershipLostError — apply.ClassShardLost
   Note over CY: halt, state = halted-lost — the window is dropped, nothing is trimmed
   Note over CY: wal_halts{state="halted-lost"} + 1
-  CY-->>CY: every later write is refused, and the two mutable-state reads while the tail is non-empty
+  CY-->>CY: every later write and task read is refused, and the two mutable-state reads while the tail is non-empty
   NX->>CS: read the watermark, the log already fenced at the new epoch
   NX->>NX: replay every entry above appliedSeqno, then drain
 ```
@@ -613,12 +621,12 @@ sequenceDiagram
   participant AP as cold.Applier
   participant LOG as wal.Log
 
-  CY->>ACC: Add(seqno, mutation)
-  ACC-->>CY: fold.ErrRefused — the accumulator is exactly as it was
-  Note over CY: the recovery is one drain, counted as trigger=refusal
+  CY->>ACC: AddOrDrain(commitSeqno, mutation, drain)
+  ACC->>ACC: Add refuses with fold.ErrRefused — the accumulator is exactly as it was
+  ACC->>CY: drain() — the recovery is one drain, counted as trigger=refusal
   CY->>ACC: Drain()
   CY->>AP: Apply — the window in front of it commits
-  CY->>ACC: Add(seqno, mutation) again, at the head of a fresh window
+  ACC->>ACC: Add retried once, at the head of a fresh window
   ACC-->>CY: folded
   Note over LOG: the entry was already durable — the refusal is about the window, never the caller
 ```
@@ -646,7 +654,7 @@ One row per thing the caller can be told, and what it means everywhere else.
 
 | Symptom at the caller | `apply.Class` | What the cycle does | What the operator sees |
 |---|---|---|---|
-| nil | —, or `ClassCommitted` if this call triggered a drain | acked and folded; possibly drained before return | `wal_intercepted_writes`, `wal_tail_entries`; a triggering call also emits `wal_drains{trigger="mutations"\|"bytes"\|"storage_pressure"}` |
+| nil | —, or `ClassCommitted` if this call triggered a drain | acked and folded; possibly drained before return | `wal_intercepted_writes`, `wal_tail_entries`; a triggering call also emits `wal_drains{trigger="mutations"\|"bytes"\|"refusal"\|"storage_pressure"}`, or `trigger="sync"` on every call in sync mode |
 | `WorkflowConditionFailedError` / `CurrentWorkflowConditionFailedError` / `ConditionFailedError` | — (never appended); `ClassInvariantViolated` in sync mode, where the drain answered its own writer | nothing acked, nothing folded, no seqno consumed — in sync mode the entry stays acked and is settled without moving the watermark | nothing in the windowed modes, where `wal_answered_condition_failures` stays 0; in sync mode it counts every answer |
 | `ResourceExhausted` | — (refused before the append) | nothing acked | `wal_backpressure_refusals{limit="entries"\|"bytes"\|"unresolved"\|"storage_pressure"}` |
 | `ShardOwnershipLost` | `ClassShardLost` | halt-lost: window dropped, tail kept, nothing trimmed | `wal_halts{state="halted-lost"}`; warn *"apply cycle halted"* |
@@ -663,17 +671,19 @@ rather than an operational state.
 
 State this exactly, because it is the whole trade:
 
-* the request's new history events are in the cold store, and the mutation is one durable log entry,
-  at a seqno no other entry has, under a fenced epoch. The log does not carry event history, so the
-  wrapper writes the events through the base store *before* the append;
+* the mutation is one durable log entry, at a seqno no other entry has, under a fenced epoch, and
+  the request's new history events are durable with it. Where the cold store declares
+  `cold.HistoryApplier` — `memcold` does — the entry carries them and the drain writes them, ahead of
+  the mutable state that points at them; otherwise the wrapper writes them through the base store
+  *before* the append;
 * the mutable-state rows, the task rows and the watermark are not. They arrive at a later drain;
   until then the layer answers reads over them itself. `commitSeqno − appliedSeqno` is the
   log-to-watermark distance; the outstanding tail is `commitSeqno − resolved`, because an empty
   batch can settle entries without moving the persisted watermark.
 
-Because the events go first, a **refused** write leaves them behind: batches of history events that
-nothing references, since the mutable state that would have pointed at them was never written. Every
-pre-append refusal in this chapter has that residue — a condition failure, backpressure, a lost
+Where the wrapper writes the events first, a **refused** write leaves them behind: batches of
+history events that nothing references, since the mutable state that would have pointed at them was
+never written. Every pre-append refusal in this chapter has that residue — a condition failure, backpressure, a lost
 shard — even though the layer's own accounting is exact, with nothing in the log and no seqno
 consumed. It is the safe direction of the two: an event tree ahead of confirmed state is inert,
 while confirmed state pointing at events that do not exist is a broken workflow.

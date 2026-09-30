@@ -105,7 +105,7 @@ two disagree in either direction.
 
 It does not say the invariants were worthless — every one of them is still a
 rule, written where it is read. If one earns a mechanism again it earns option 1
-or option 2 above, not an eighth check.
+or option 2 above, not an eleventh check.
 
 This rule also does not reach reflection. `cycle/surface_test.go`,
 `cycle/counters_test.go` and the wrapper's two reflective files

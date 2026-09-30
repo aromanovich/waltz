@@ -17,28 +17,28 @@ changing either:
   switch — no layer is passthrough, a layer is intercept — and there is no
   flag beside it, because a flag and a nil layer could disagree. `Options.Layer`
   is **the only field of it that is a mode**, and it holds `ShardObserver`,
-  `ShardWriter`, `ShardReader` and `MetricsSink` together (#44, #78). That too is a decision,
+  `ShardWriter`, `ShardReader` and `MetricsSink` together. That too is a decision,
   made twice for the same reason: a writer with no reader is exactly the
   configuration that reads stale, and a write path nobody told about the acquire
   refuses every write for a shard it never got — a misconfiguration the layer
   cannot detect, since that refusal is indistinguishable from fencing. Separate
   fields put both mistakes one config line away; one field makes them
-  unrepresentable. `ShardLayer` held one more face until #142 — the layer being
+  unrepresentable. `ShardLayer` once held one more face — the layer being
   told what its queues had deleted — and that is gone with the compensation it
   existed for. Consequence for the tests: a fake that fills one half now owes
   the interface the others, so **embed `ShardLayer` and leave it nil** rather
   than writing no-op methods — the fake satisfies the type, still answers only
   its own half, and panics by name if the wrapper ever reaches a half the test
   did not expect, which is the outcome a no-op would swallow;
-* **intercept takes twelve methods and refuses a thirteenth**: eight writes (#57,
-  #142) and four reads (#78, #80, ADR 0014), with `CompleteHistoryTask` answered
+* **intercept takes twelve methods and refuses a thirteenth**: eight writes and
+  four reads (the fourth since ADR 0014), with `CompleteHistoryTask` answered
   `Unimplemented`. (The partition is also described for a human in
   `docs/handbook/01-overview.md`, which goes stale the moment twelve stops
   being twelve.)
   Six of the writes are the four mutable-state ones and both deletes — the
-  deletes because #34 decided they are, since routing them around the log would
-  force a drain each (~1.8% of the stream) and an outbox would leave a deleted
-  execution readable, which #43 measured the suite noticing at call distance 1.
+  deletes because routing them around the log would force a drain each (~1.8%
+  of the stream) and an outbox would leave a deleted execution readable, which
+  the suite was measured noticing at call distance 1.
   The other two are `AddHistoryTasks` and `RangeCompleteHistoryTasks`, and they
   are **one decision**: a write deferred to a drain beside a delete that acts
   immediately is a delete that misses the row it was meant to cover, and for a
@@ -58,7 +58,7 @@ changing either:
   never saw, a read answered from a cold store the window is ahead of, a task
   page with the tail missing from it, or a range delete that removes rows the
   window has not written yet);
-* **`CompleteHistoryTask` is refused, in intercept mode only** (#142): the log's
+* **`CompleteHistoryTask` is refused, in intercept mode only**: the log's
   deletion record is a range per category and a single key is not one, and a
   second deletion shape would be a second thing every reader, every drain and
   every replay has to agree about. Its one caller in the server is the admin
@@ -77,7 +77,7 @@ changing either:
   mutation; over one that does, they ride the record and the drain writes them.
   Forget either half and the log holds a mutable state pointing at history nodes
   nobody wrote, or the drain writes rows the caller was already answered over;
-* **a write also hands the layer the store's own two reads** (#74): the condition
+* **a write also hands the layer the store's own two reads**: the condition
   authority verifies an assertion the window does not determine against the
   pre-window row, and this package may not name a cold store any more than
   `cycle` may. They are a `*baserow.Rows` over this store's own base, converted
@@ -95,7 +95,7 @@ changing either:
 * **errors are returned unwrapped, everywhere on this path.** The shard's write
   path switches on concrete error types, so one `fmt.Errorf("…: %w", err)` turns
   a recognised outcome into the default arm — for backpressure a self-inflicted
-  failover (#47), for ownership-lost a shard that does not know it lost. The
+  failover, for ownership-lost a shard that does not know it lost. The
   test asserts identity (`err == sentinel`), not `errors.Is`, because a wrapped
   error satisfies `errors.Is` and is exactly what is forbidden;
 * passthrough's claim is checked here by `TestEveryMethodTransits` (no cluster),
@@ -110,15 +110,15 @@ changing either:
   suite green and shows up only as missing rows;
 * `TestTheWholeSurfaceIsCovered` pins 28/6/10 method counts. The reflective test
   enumerates whatever the interface has, so a shrunken interface would still pass
-  it; if a temporal bump moves a count, the wrapper and #44's research note both
-  need rereading — do not just update the number;
+  it; if a temporal bump moves a count, what the wrapper owes needs rereading —
+  do not just update the number;
 * the ShardStore's one observation is `UpdateShard` with
   `RangeID != PreviousRangeID`. It fires **before** the base store call (I11: the
   log's epoch may never lag the database's) and its error aborts the acquire
   without the rangeID moving. `ShardObserver` is one face of `Options.Layer`
   rather than a field of its own, so the value that hears the acquire is the
-  value that takes the writes — in production the apply cycle's registry (#55),
-  which was its first implementation and is still the only one;
+  value that takes the writes — in production the apply cycle's registry, which
+  was its first implementation and is still the only one;
 * **a server does start here, and a green `make test` is still not "the server
   works".** `internal/verify/e2e` boots frontend, history, matching and worker in
   the test process over a composition, registers a namespace and runs a workflow
@@ -132,7 +132,7 @@ changing either:
   lets a caller wiring the layer into a test compose with a capture handler and
   read what *both* halves of the layer recorded through the one emitter that
   composition holds. A caller that wires its own emitter beside it has two;
-* the wrapper is where the server's `metrics.Handler` enters the layer (#59),
+* the wrapper is where the server's `metrics.Handler` enters the layer,
   and that is the whole of the metrics plumbing: `NewFactory` hands it to
   anything below implementing `wrapper.MetricsSink` and fills nothing in
   itself. **`Options.Metrics` is the layer's own `*walmetrics.Emitter`, not a
@@ -142,6 +142,6 @@ changing either:
   the cycles' to service 1's — which is exactly what a handler per `NewFactory`
   call did. Passthrough carries no emitter and needs none: every counter this
   package raises is on the intercepted path. `wal_transiting_writes` is gone
-  with the write it counted (#142): nothing on the intercepted side of the
+  with the write it counted: nothing on the intercepted side of the
   boundary goes around the log any more, and a series that can only be zero reads
   as a system doing no work.

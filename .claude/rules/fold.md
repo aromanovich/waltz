@@ -6,11 +6,11 @@ paths:
 # This repo: the accumulator
 
 `fold/` accumulates a window of mutations and emits, per dirty workflow,
-one merged request plus the assertions that request stands on (#13, prototype on
-branch `prototype/fold-emit`). The handbook's
+one merged request plus the assertions that request stands on. The handbook's
 [03-components.md](../../docs/handbook/03-components.md) says why it sits beside
 `wal/` rather than under it. The *read* side — the read-only-on-the-accumulator
-discipline that `overlay.go`, `check.go`, `tasks.go` and `taskpage.go` share —
+discipline that `overlay.go`, `check.go`, `tasks.go`, `taskpage.go` and
+`historypage.go` share —
 is judged by this package's own tests and by nothing above them, which is the
 thing to keep in mind below. What to know before changing the fold itself:
 
@@ -18,7 +18,7 @@ thing to keep in mind below. What to know before changing the fold itself:
   v2..v4 onto a base row at v1 must assert 1 and write 4, and no request type
   expresses that — every one derives its assertion from the version it writes.
   So the accumulator carries the assertion set (`Emitted.RunAssertions`) beside the merged
-  request and apply's transaction wrapper substitutes it (#24). Fold's whole job
+  request and apply's transaction wrapper substitutes it. Fold's whole job
   is to know what it asserted;
 
 * **that assertion set is derived once, in `assert.go`, and applied twice.**
@@ -94,8 +94,8 @@ thing to keep in mind below. What to know before changing the fold itself:
   unresolved, the store's own query ordering issues every upsert before every
   delete, so a key re-upserted after being deleted is written and then deleted
   again — an acked write gone, silently. The
-  current-execution row obeys the same rule since #54, when apply gained a
-  transactional delete for it: a window that writes the row and then removes it
+  current-execution row obeys the same rule, apply having a transactional
+  delete for it: a window that writes the row and then removes it
   emits the removal alone (`WorkflowRecord.CurrentRemoved`);
 
 * **buffered events do not merge.** There is one `NewBufferedEvents` slot per
@@ -114,8 +114,8 @@ thing to keep in mind below. What to know before changing the fold itself:
   where the sequential path updated it first. Whether unpaired deletes occur in
   acked streams is what a differential run against the sequential path judges;
 
-* **what arrives after a tombstone is decided here**, since §6 of the design
-  leaves it open. Such a mutation is impossible in an acked stream — the single
+* **what arrives after a tombstone is decided here.** Such a mutation is
+  impossible in an acked stream — the single
   writer would have seen its assertion fail — so fold returns `ErrAfterTombstone`
   rather than guessing, with two exceptions: another Delete of the same run is an
   idempotent no-op, because deleting an absent row succeeds sequentially too; and
@@ -147,8 +147,8 @@ thing to keep in mind below. What to know before changing the fold itself:
   stripped out of a request carrying several (a continue-as-new folded into
   somebody else's envelope, a delete of one half of such a pair) — and those
   return `ErrRefused` with the accumulator **exactly as it was**. That is what
-  makes drain-and-retry safe, and since #156 the loop is
-  `Accumulator.AddOrDrain` rather than one every consumer writes;
+  makes drain-and-retry safe, and the loop is `Accumulator.AddOrDrain` rather
+  than one every consumer writes;
 
 * **the request shapes are dereferenced, not checked.** A request whose
   `ExecutionState` is nil cannot reach the store, whose own validation
@@ -191,14 +191,16 @@ thing to keep in mind below. What to know before changing the fold itself:
   about the answer rather than a gap: `mutableStateOf` rebuilds it as a sorted
   slice, so that map never leaves the package;
 
-* **the contract with apply**: emitted requests carry no epoch, because
-  `mutation.Decode` dropped RangeID on the way in (I11) and apply stamps its
-  own. The collapse ratio — mutations in over dirty workflows out — is derivable
+* **the contract with apply**: an emitted request's RangeID is not the epoch
+  it is applied under — a replayed one lost it in `mutation.Decode` (I11), a
+  hot-path one carries the caller's — and the applier is handed the epoch
+  beside the batch (`cold.Applier.Apply`) and asserts that. The collapse
+  ratio — mutations in over dirty workflows out — is derivable
   from `Stats`; fold reports the two counts and emits no metric of its own;
 
 * **`Batch` is `Drain`'s to build and nobody else's**, which is why its fields
   are unexported and its consumers read it through `Each`, `Len`, `Empty`,
-  `Watermark`, `Stats`, `Tasks`, `Shard` and `Settles`. The last one is there because the
+  `Watermark`, `Stats`, `Tasks`, `History`, `Shard` and `Settles`. The last one is there because the
   apply cycle used to reconstruct "did this window ack entries whose fate this
   drain must settle" out of `Stats().MutationsIn` — a number whose purpose is
   the collapse ratio — and the rule it reconstructed lived in three places and

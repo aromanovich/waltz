@@ -159,7 +159,7 @@ theirs from their definitions — `wal_tail_entries` and `wal_unapplied_entries`
 | `wal_tail_entries` | histogram | dimensionless (entries) | none | `tailstate.Mirror.store`, reached by every tail move | Entries acked into the log and not yet settled, on one shard, observed at each append and each drain. One observation per shard per tail move. |
 | `wal_tail_bytes` | histogram | bytes | none | same call | Encoded bytes acked and not yet settled, on one shard. The second unit I10 bounds; not the window's byte count, which is a different number. |
 | `wal_unapplied_entries` | histogram | dimensionless (seqnos) | none | same call | `commitSeqno − appliedSeqno`: how far the cold store is behind the log, per shard. **Not** the tail — see §8. |
-| `wal_replayed_entries` | counter | entries | none | `Cycle.replay`, once the replay has finished | Entries a new owner read out of the tail a previous owner left, and applied. Emitted once per completed replay rather than per entry, because an attempt that failed part-way is retried whole from the watermark and would otherwise count its entries twice. A replay that found an empty tail — the ordinary case on a clean acquire — records nothing here and drains nothing either, so it draws no `wal_drains{trigger="replay"}` to go with it. |
+| `wal_replayed_entries` | counter | entries | none | `Cycle.replay`, once the replay has finished | Entries a new owner read out of the tail a previous owner left, and folded — the ones it then dropped included, so `wal_replay_dropped_entries` is a subset of this count. Emitted once per completed replay rather than per entry, because an attempt that failed part-way is retried whole from the watermark and would otherwise count its entries twice. A replay that found an empty tail — the ordinary case on a clean acquire — records nothing here and drains nothing either, so it draws no `wal_drains{trigger="replay"}` to go with it. |
 | `wal_replay_dropped_entries` | counter | entries | none | same call | Replayed entries dropped because their ack was provisional and their condition did not hold. Only sync mode acks provisionally — `mutation.EncodeProvisional` is reached under `wal.sync: true` and nowhere else — so a windowed node records zero here: its conditions are decided before the append, and a replay meets no provisional entry. Recorded only when above zero. |
 | `wal_dropped_tasks` | counter | task rows | `task_category` = the registry's category names. Upstream registers `transfer`, `timer`, `visibility`, `replication`, `outbound` unconditionally, plus the in-memory `memory-timer`, which persists no rows; `archival` only where archival is enabled. A deployment's own categories appear too. | `Cycle.countTasks`, after the transaction commits | Task rows a committed drain did **not** write, because their queue had already deleted the range they fall in (invariant I7). A batch that did not commit wrote no rows, so a drop counted for it would be a saving nobody made. |
 | `wal_written_tasks` | counter | task rows | same | same call | Task rows a committed drain wrote to the cold store. The drop's denominator. A category a drain did not carry emits nothing rather than a pair of zeroes. |
@@ -209,7 +209,7 @@ flowchart TD
     C -->|"allowed"| E["Log.Append, entry acked"]
     E --> F["tail moves: wal_tail_entries, wal_tail_bytes, wal_unapplied_entries"]
     F --> G["window folds the mutation"]
-    G --> H{"watermark tripped?"}
+    G --> H{"trigger tripped?"}
     H -->|"no"| I["caller returns"]
     H -->|"yes"| J["drain: apply transaction"]
 ```
@@ -234,7 +234,7 @@ flowchart TD
 
 How to read this: the four series on `L` come from **one** `Emitter.Drained` call, so a drain cannot
 be counted without its collapse pair and its age. The task pair on `M` comes from `Cycle.countTasks`,
-which runs only once the transaction has an outcome. The `R` arm emits nothing at the time; you see
+which runs only once the transaction has committed. The `R` arm emits nothing at the time; you see
 that stall later, on the writes it refuses, as `wal_backpressure_refusals{limit="unresolved"}`.
 
 The read path, which is shorter:
@@ -252,8 +252,9 @@ How to read this: only `wal_merged_task_collisions` says anything about what the
 the window at all. [07-read-path.md](07-read-path.md) has the merge itself.
 
 Replay sits outside all three diagrams. A replay that found entries emits `wal_replayed_entries` and
-`wal_replay_dropped_entries` once it has finished, plus a `wal_drains{trigger="replay"}` for the
-drain that ends it. A replay that found an empty tail emits none of the three, which is why most
+`wal_replay_dropped_entries` once it has finished, plus a `wal_drains{trigger="replay"}` for each
+drain it committed — the size triggers cut a long tail into several, and a provisional entry is
+drained alone. A replay that found an empty tail emits none of the three, which is why most
 acquires leave no trace here at all — [06-shard-lifecycle.md](06-shard-lifecycle.md) has the
 lifecycle.
 
@@ -286,7 +287,7 @@ separates them.
   only `age` is idle rather than behind. A node drawing `refusal` at any noticeable rate is hitting
   `fold.ErrRefused` often — a window the accumulator cannot express, or an assertion it cannot
   determine, each of which forces a drain and a retry of the mutation that caused it. Take the mix
-  over all eight trigger values, not just the windowed ones: a node under
+  over all nine trigger values, not just the windowed ones: a node under
   `wal.sync: true` draws `sync` for every write, so an expression that lists only the windowed
   triggers returns nothing at all there.
 
@@ -304,9 +305,9 @@ your own traffic.
 | `increase(wal_halts{state="halted-invariant"}) > 0` over any window | **page** | An assertion failed on the apply path and the failure could not be pinned on one caller — usually because the drained window held work from several. There is no retry and no failover — the layer deliberately does not convert this into an ownership-lost — so **nobody else picks it up**. | [runbook (b)](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes); capture the shard's log before anything trims it |
 | `increase(wal_merged_task_collisions) > 0` over any window | **page** | A merged task page found the same key in the window and in the cold store. The sources are disjoint by construction, so any non-zero value is a correctness signal: a second writer, or a window release that did not happen. | [runbook (f)](09-operations.md#f-merged-page-collisions-are-non-zero) |
 | `wal_backpressure_refusals{limit="unresolved"}` non-zero and sustained | page | The applier cannot read what its last drain did, so nothing may be applied over it. No size knob clears this. | [runbook (a)](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain) |
-| `rate(wal_backpressure_refusals{limit=~"entries\|bytes"})` above your normal floor, sustained | high | I10's per-shard bound is refusing writes: the tail reached its limit because the applier is behind. Refused writes provably wrote nothing. | [runbook (a)](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain) — fix the cold store |
+| `rate(wal_backpressure_refusals{limit=~"entries\|bytes"})` above your normal floor, sustained | high | I10's per-shard bound is refusing writes: `entries` is a tail grown because the applier is behind; `bytes` can also be a few very large entries, a workflow near the server's own blob limits. Refused writes provably wrote nothing. | [runbook (a)](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain) — fix the cold store |
 | high quantile of `wal_unapplied_entries` climbing and not returning | high | The cold store is falling behind; the runway before backpressure is what is left of the tail bound. | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
-| high quantile of `wal_window_age` well above `wal.windowAge` | medium | Drains are not keeping up with the age trigger that should be firing them. Check the unit first (§4). | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
+| high quantile of `wal_window_age` above twice `wal.windowAge` | medium | Drains are not keeping up with the age trigger that should be firing them. The timer ticks once per `wal.windowAge` and drains a window at least that old, so an ordinary age drain records between one and two of it. Check the unit first (§4). | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
 | `rate(wal_trims{outcome="failed"})` a sustained fraction of `started` | medium | The log is not being compacted. Halts nothing, degrades write latency over hours as the log grows. | [runbook (d)](09-operations.md#d-trims-are-failing) |
 | I7 drop share for one category stepping up and staying up | medium | More task work is being deleted under the window than before. That is a saving rather than a fault: a task row inserted and range-completed inside one window never reaches the cold store at all. Usually the window got bigger; occasionally the queues began completing ranges more often. | [runbook (e)](09-operations.md#e-task-drops-are-climbing) |
 | collapse ratio falling towards 1 | low / informational | The window has stopped saving work; drains cost what the writes would have. Not a fault, but it removes the layer's reason to be there. | [runbook (c)](09-operations.md#c-the-cold-store-is-falling-behind) |
@@ -355,10 +356,11 @@ empty window looks exactly like passthrough. `ReadsHeld` is the number that tell
 which is why a witness rests on it rather than on the series.
 
 **`wrapper.ExecutionStore.Counts()`** is the store wrapper's own small set: `Intercepted`,
-`TasksWritten`, `TasksCompleted`, `Overlaid`, `TaskReads` and `HistoryReads`. `Overlaid` and
-`TaskReads` are the in-process twins of `wal_overlaid_reads` and `wal_merged_task_pages`.
-`HistoryReads` is `ReadHistoryBranch` pages routed at the history merge, and it has no twin on the
-layer's own side: `cycle.Counters` deliberately carries no history-read field, for the reason
+`TasksWritten`, `TasksCompleted`, `Overlaid`, `TaskReads` and `HistoryReads`. `TaskReads` is
+the in-process twin of `wal_merged_task_pages`, and `Overlaid` plus `HistoryReads` is the twin of
+`wal_overlaid_reads`: `Overlaid` counts only the two mutable-state reads, and `HistoryReads` the
+`ReadHistoryBranch` pages routed at the history merge. `HistoryReads` has no twin on the layer's own
+side: `cycle.Counters` deliberately carries no history-read field, for the reason
 [chapter 07](07-read-path.md) gives.
 
 `internal/verify/witness` is what reads them: its `Observed` takes a `cycle.Totals` for the node and,

@@ -70,8 +70,10 @@ Two rules, and moving either is not a refactor:
 * **compose the layer before the server.** `waltz.Compose` runs before `temporal.NewServer`. The
   node-budget assertion is inside `Compose`, so numbers that do not fit stop the binary before it
   starts, rather than appearing as a log line behind a port that is already listening. `Compose`
-  opens nothing and dials nothing, so an operator whose numbers do not fit is told so without
-  waiting for a connection to any store.
+  takes backends the `main` has already opened, though, so by the time it refuses, the log and the
+  cold store have been connected to. A `main` that wants the refusal to cost no connection calls
+  `policy().CheckBudget()` itself, before it opens either
+  ([08-configuration.md](08-configuration.md#5-the-budget-refusal)).
 * **drain the layer after the server has stopped.** `Layer.Shutdown(ctx, budget)` is the shutdown
   drain: every shard that still holds a window is applied into the cold store, one transaction per
   shard, in sequence. It must run when the writers are gone, and `temporal.Server.Start` does not
@@ -95,7 +97,7 @@ owner replays them. It costs that owner a read loop and a transaction before it 
 
 **The budget bounds the drains `Shutdown` issues and not the whole call, so size a stop timeout above
 it.** Two waits sit outside it, both deliberately. A drain already running on the loop — an age tick's,
-or a size watermark's — carries earlier writers' acked mutations on a context of its own with no
+or a size trigger's — carries earlier writers' acked mutations on a context of its own with no
 deadline, and stopping the cycle waits for the loop to come back; the only bound on that is the cold
 store's own, which is why
 [04-contracts.md](04-contracts.md#apply--what-a-drains-outcome-demands) states bounding `Apply` as an
@@ -249,7 +251,7 @@ flowchart TD
     C -->|"storage_pressure"| SP["the backend is out of headroom: runbook (a)"]
     B -->|"ShardOwnershipLost"| F["wal_halts state=halted-lost: normal failover, runbook (b)"]
     B -->|"refusal matching ErrHalted"| G["wal_halts state=halted-invariant: page, runbook (b)"]
-    B -->|"condition failure"| H["expected traffic: answered before the append, not a layer fault"]
+    B -->|"condition failure"| H["expected traffic, not a layer fault: answered before the append, or by the drain in sync mode"]
     B -->|"none of these"| I["the cold store, or the log, on its own"]
     D --> J{"wal_unapplied_entries rising?"}
     J -->|"yes"| K["runbook (c): cold store behind"]
@@ -483,8 +485,9 @@ Three distinct refusals, all before anything listens:
   `waltz.Compose` asserts that before it builds anything — `cycle.Config.CheckBudget`, reached
   through `cycle.NewManager` — and the error wraps `cycle.ErrBudget` and spells the arithmetic out
   with the node's own numbers: *N shards × B bytes is that many bytes of tail, over the node's
-  budget of T*. `Compose` opens nothing, so this refusal costs no connection and no round trip. Fix
-  the arithmetic; all three settings are read once at start-up, so all three need a restart anyway.
+  budget of T*. The check itself is arithmetic and makes no round trip, but `Compose` runs after the
+  `main` has opened its backends; `policy().CheckBudget()` called before that refuses the node with
+  nothing connected. Fix the arithmetic; all three settings are read once at start-up, so all three need a restart anyway.
 * **A log that will not open.** This one is the composing binary's, not the layer's: `Compose` takes
   a `wal.Log` that already exists, so a log that cannot be constructed is a refusal in the `main`
   before the layer is reached, and its message is that binary's to write.

@@ -60,8 +60,9 @@ files, into `cold/memcold`;
   `TailEntries` is **not** `CommitSeqno − AppliedSeqno` in either — sync mode's
   expected condition failures legitimately leave those apart, and merging them
   is the same bug `cycle`'s own notes warn about;
-* the store's counter (`Counts.Overlaid`, `wal_overlaid_reads`) counts reads
-  *routed* rather than reads answered from the window — a counter that only
+* the store's counters (`Counts.Overlaid` plus `Counts.HistoryReads`, whose sum
+  is `wal_overlaid_reads`) count reads *routed* rather than reads answered from
+  the window — a counter that only
   fired on a hit would read zero on an idle cluster and zero on a layer wired up
   wrong. The same pair exists for task pages (`Counts.TaskReads`,
   `wal_merged_task_pages`), plus the direction the overlay's half does not need:

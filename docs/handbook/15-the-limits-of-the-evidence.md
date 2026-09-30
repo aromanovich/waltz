@@ -143,10 +143,12 @@ implementation runs. It is also **in one process's memory**, so:
   the reason it cannot be closed here: one process is all there is.
 
 A deployment's log is where the interesting failures live, and it is judged by
-`waltest.RunContractSuite` plus `waltest.CheckRetention` against its own storage, plus a two-process
-failover test the deployment writes. The middle one is the suite's other blind spot — time — as a
-check that can be run rather than a limit: it costs the window it is given, so only a deployment can
-spend it, and only a deployment knows what its storage was configured to expire.
+`waltest.RunContractSuite` plus `waltest.CheckReopen` and `waltest.CheckRetention` against its own
+storage, plus a two-process failover test the deployment writes. The two checks are the suite's blind
+spots as checks that can be run rather than limits. `CheckReopen` opens the storage a second time and
+asks the fresh value what it holds and who owns the shard — half of the fence's blind spot, needing no
+second process, and not one `memwal` can pass, since a map in this process has nothing to reopen. `CheckRetention` is time: it costs the window it is given, so only a deployment can spend it,
+and only a deployment knows what its storage was configured to expire.
 
 ## The cold store is real, and it is in memory
 
@@ -171,8 +173,8 @@ is the kill, not the replay.
 have left it is an oracle, and both of its arms land in `cold/memcold`.**
 `TestFoldingChangesNothingButTheNumberOfTransactions` drives one generated stream twice — once at
 the shipped window, once at a window of one mutation, where nothing is ever merged — and then diffs
-every run row, every current row and all four task categories' rows whole, between the two
-databases. So a merged request the schema *accepts* and which is nevertheless not what the
+every run row, every current row and the task IDs each of the four task categories holds, between
+the two databases. So a merged request the schema *accepts* and which is nevertheless not what the
 sequential path would have produced is caught. What is not caught is a defect the two arms
 **share** — the codec, the encoding of a request, an assertion neither arm makes — which cancels;
 and nothing in the comparison speaks for the schema, the row layouts or the condition failures of
@@ -191,7 +193,7 @@ known and deliberate, and each is written down beside the code it is about:
 | the difference | recorded in |
 |---|---|
 | upstream's `dbRecordVersion == 0` fallback, which compares `next_event_id` against the request's condition, has no analogue: a run assertion here is always `DBRecordVersion − 1` | `cold/memcold/rows.go` |
-| a create's current-row assertion is compared against `current_executions.last_write_version`, where upstream joins and compares `executions.last_write_version` | `cold/memcold/rows.go` |
+| a create's current-row assertion is compared against `current_executions.last_write_version`, where upstream joins and compares `executions.last_write_version` | `cold/memcold/apply.go` |
 | a row count other than one on an execution-row write is a condition failure here rather than upstream's `NotFound` | `cold/memcold/rows.go` |
 
 All three follow from the layer having already acknowledged the write: what fold checked before the
@@ -212,7 +214,9 @@ that cannot say what it buys is a defect that has been written down.
 ## Where event history lands is the cold store's, and neither path is measured
 
 An intercepted write's event batches always reach the layer; where they land is the cold store's own
-property (ADR 0014). Neither landing changes the **number** of history rows, and that is the bound:
+property — on the record and into the drain's publication when its applier declares
+`cold.HistoryApplier`, through the store below before the append when it does not. Neither landing
+changes the **number** of history rows, and that is the bound:
 **a workflow that makes hundreds of state transitions still writes hundreds of history rows, whatever
 the layer does with its mutable state.** History is append-only, so the fold has nothing to merge; a
 window holds those batches, it does not collapse them.
@@ -227,7 +231,7 @@ What *is* a gap is the difference between the two paths. Carrying the batches on
 foreground round trip per batch and lets a drain write a window's worth of nodes at once; it also
 spends I10's byte budget on event blobs, so the window holds fewer mutations and drains sooner. **No
 run here measures either side of that trade.** The shipped composition takes the batches
-(`cold/memcold` declares the marker), so every green target in this tree exercises that path — and
+(`cold/memcold` declares `cold.HistoryApplier`), so every green target in this tree exercises that path — and
 [chapter 14](14-where-the-defaults-came-from.md#the-drain-triggers-256-mutations-and-256-kib)'s two
 size triggers were derived on a corpus whose records carry no event blobs.
 
@@ -290,6 +294,9 @@ Stated exactly, a green `go test ./...` says this and no more:
 * the same stream driven twice — folded at the shipped window, and one mutation per transaction —
   left two databases holding identical rows: every run row, every current row, all four task
   categories;
+* a shard handed to successor after successor mid-window, each replaying the tail it inherited, left
+  the database an uninterrupted run of the same stream leaves; and a node parked inside its applier
+  while another took the shard was not told its write succeeded on the other's watermark;
 * the contract suite says `memwal` satisfies the five guarantees, and would say the same of any
   implementation a deployment passes it;
 * Temporal's own four persistence suites say `cold/memcold` is a store a server can be run on;
@@ -355,7 +362,7 @@ Where this chapter can say which is which, it says so:
 | no partition between layer nodes | 3 — the nodes speak only to the log and the store |
 | the number of history rows is untouched | 3 — history is append-only; there is nothing to fold |
 | neither history path is measured against the other | 1 — a measurement |
-| the saving on deferred work is unobservable from outside | 3 — I7's bound is not persisted |
+| the saving on deferred work is unobservable from outside | 3 — a row a drain never wrote exists nowhere |
 
 Mixing the three is what turns an honest limits section into an apology. A reader who cannot tell
 kind 3 from kind 1 reads a deliberate boundary as an unfinished task, and proposes closing something
@@ -369,10 +376,9 @@ that was chosen.
   interprets nothing, with the reason written at the top.
 * [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go) — the store that is not a double,
   what the embedding covers and what it does not;
-  [`apply.go`](../../cold/memcold/apply.go) is the drain's transaction statement by statement, and
-  [`rows.go`](../../cold/memcold/rows.go) carries two of the three places the folded path knowingly
-  answers differently from upstream's sequential path. The third is in
-  [`../../fold/assert.go`](../../fold/assert.go).
+  [`apply.go`](../../cold/memcold/apply.go) is the drain's transaction statement by statement and
+  carries one of the three places the folded path knowingly answers differently from upstream's
+  sequential path; [`rows.go`](../../cold/memcold/rows.go) carries the other two.
 * [`../../internal/verify/coldtasks/coldtasks.go`](../../internal/verify/coldtasks/coldtasks.go) — the two paginations
   it models, and the paragraph headed "what can make it a lie".
 * [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one log here: a map of shards

@@ -55,9 +55,9 @@ Four rules make that a shape rather than an accretion:
    cold store's in `internal/verify/`.
 4. **Neither may know waltz.** `memwal` knows the log contract and nothing else; `memcold` answers
    Temporal's interfaces and names no more of this module than the vocabulary the seam is stated
-   in — `fold`, `wal`, `apply`, `baserow`, `mutation` — never `cycle`, the wrapper, `walmetrics` or
-   the root package. A backend that could see the layer would be judged by the thing sitting on top
-   of it.
+   in — `cold`, `fold`, `wal`, `apply`, `baserow`, `mutation` — never `cycle`, the wrapper,
+   `walmetrics` or the root package. A backend that could see the layer would be judged by the thing
+   sitting on top of it.
 
 ## Consequences
 

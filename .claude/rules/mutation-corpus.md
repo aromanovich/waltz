@@ -15,8 +15,9 @@ by `internal/verify/mutbuild`. What to know before changing any of it:
 * **a suite that wants a corpus asks for one**: `mutgen.Corpus(cfg, n)` returns
   the mutations, their payloads and the report, and `Report.Missing()` is the
   coverage claim — a block several suites each maintained by hand. It is
-  config-aware, so a stream with the task rates off is not missing
-  history tasks, and it is judged in `mutgen`'s own tests rather than
+  config-aware, so a stream with a knob off is not missing the shape that knob
+  produces (a stream at `TaskDensity` 0 is not missing history tasks), and it
+  is judged in `mutgen`'s own tests rather than
   by suites agreeing with each other. A run of 10^5 and up still
   drives `Generator.Next` itself: materialising that stream is gigabytes of
   payload, and a consumer folding as it goes keeps none of it;

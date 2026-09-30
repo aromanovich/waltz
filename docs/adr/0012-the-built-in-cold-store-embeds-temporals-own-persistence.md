@@ -59,6 +59,10 @@ Beside that surface — never inside it — the store adds exactly what Temporal
   `GetCurrentExecution` selects `last_write_version` and then discards it for want of a field to
   hold it in, and a layer that cannot see that column can confirm a create's assertion but never
   refuse it.
+* **`AppliesHistory`**, added since by
+  [ADR 0014](0014-a-record-may-carry-the-event-batches-its-own-request-produced.md): the marker
+  that declares `cold.HistoryApplier`, so a window's event batches arrive in its batch and `Apply`
+  writes them as history node and tree rows inside the same transaction, through `TableCRUD`.
 
 **What judges the inherited surface is Temporal's own four exported suites** —
 `NewShardSuite`, `NewExecutionMutableStateSuite`, `NewExecutionMutableStateTaskSuite` and
@@ -68,6 +72,8 @@ store per suite. A suite written here would be this repository's opinion again, 
 ## Consequences
 
 **The hand-written store is deleted**, and what replaced it is wiring plus the apply path. The
+apply path is not upstream's to keep in step: upstream writes one workflow with unexported
+functions, so their statement sequences are copied into it, and `NOTICE` lists each one. The
 evidence that this is the right shape rather than a saving is that the four suites passed on the
 first wiring attempt with **no store code written at all**: everything that had to be chased was
 setup, not semantics.
@@ -77,13 +83,15 @@ point of the embedding and not a side effect: the three cannot drift into disagr
 of them is ours.
 
 **What waltz inherits, it also inherits the semantics of — and the drain cannot mirror all of them.**
-Four differences are known and deliberate, and each is recorded where the code is:
+Four differences were recorded as known and deliberate, each where the code is; the third has
+since been reversed, and three stand:
 
 * upstream's `dbRecordVersion == 0` fallback, which compares `next_event_id` against the request's
   condition, has no analogue: `fold.RunAssertion` carries a base version derived as
-  `DBRecordVersion - 1`, so a request at version 0 could only fail. Such a request halts the shard as
-  an invariant violation rather than being refused, which is a gap worth a ticket if pre-1.12
-  requests are ever in scope;
+  `DBRecordVersion - 1`, so a request at version 0 could only fail. The condition is decided
+  while the caller is still waiting, so such a request is answered with the store's own condition
+  failure rather than halting the shard, where upstream would have judged it on `next_event_id` —
+  a gap worth a ticket if pre-1.12 requests are ever in scope;
 * a create's `CurrentEqualsWithVersion` assertion is compared against
   **`current_executions.last_write_version`**, where upstream's sequential path joins and compares
   `executions.last_write_version`. This is deliberate: the first column is what

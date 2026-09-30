@@ -85,14 +85,16 @@ cold/memcold/current.go
     where it does not.
 
 cold/memcold/apply.go
-    One literal and its two statements: the sqlplugin.CurrentExecutionsRow that
-    writeCurrentRow builds is field-for-field the one execution.go's
-    createWorkflowExecutionTx builds, and the insert-or-update around it does
-    what execution_util.go's createOrUpdateCurrentExecution and
-    updateCurrentExecution do in their two writing modes — chosen here by
-    whether the row was found rather than by a create mode. The rest of the
-    file — the drain's transaction, its ordering, its assertions and its
-    refusals — is not derived.
+    Two places. The sqlplugin.CurrentExecutionsRow that writeCurrentRow builds
+    is field-for-field the one execution.go's createWorkflowExecutionTx builds,
+    and the insert-or-update around it does what execution_util.go's
+    createOrUpdateCurrentExecution and updateCurrentExecution do in their two
+    writing modes — chosen here by whether the row was found rather than by a
+    create mode. applyHistory's sqlplugin.HistoryNodeRow and HistoryTreeRow are
+    field-for-field the ones history_store.go's AppendHistoryNodes builds, and
+    it writes them as that function does: the node, and the tree beside it only
+    for a new branch. The rest of the file — the drain's transaction, its
+    ordering, its assertions and its refusals — is not derived.
 
 fold/check.go
     One error string, verbatim: "Encounter workflow db version mismatch,

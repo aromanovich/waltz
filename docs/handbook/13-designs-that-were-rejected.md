@@ -194,7 +194,7 @@ that does not answer reads breaks the server immediately — not subtly, and not
 
 The layer pays both prices explicitly. What it accumulates is durable before the caller is answered,
 which is what the log is for; and its window answers reads, which is what the overlay and the merged
-task page are for. That second obligation is the whole of [chapter 07](07-read-path.md).
+task and history pages are for. That second obligation is the whole of [chapter 07](07-read-path.md).
 
 ### A folded window as a concatenation of the store's own queries
 
@@ -232,7 +232,7 @@ applier substitutes for the conditions the store's own request shapes would have
 shape then depends on which kinds of assertion and which delete families the batch contains, never on
 how many mutations it folded. That property belongs to whichever applier a deployment runs rather
 than to anything in this repository, which is why [chapter 11](11-verification.md#the-guards) names
-a drain query-shape guard as one of the two a deployment has to rebuild for itself: drive a real
+a drain query-shape guard as one of the two a deployment has to build for itself: drive a real
 drain at a window of 64 and assert that its largest transaction stays a constant number of
 statements. A constant is the honest form of the claim that the shape does not grow.
 [Chapter 05](05-write-path.md#2-the-drain-itself) owns the drain.
@@ -405,8 +405,9 @@ keys, right types, wrong value. `fold.WorkflowRecord.CurrentWrite` exists to car
 separately from the kind.
 
 The second is *in what form*. Each kind writes the row differently: the update path re-serialises the
-mutation's own execution state, while every kind carrying a whole run — a create, a set, a
-conflict-resolve, a continue-as-new — passes that snapshot's blob through untouched. A fold that used
+mutation's own execution state, while every kind carrying a whole run that writes the row — a
+create, a conflict-resolve, a continue-as-new — passes that snapshot's blob through untouched, and a
+set does not write the row at all. A fold that used
 one rendering for all of them produces a row that is correct in every field a reader would check and
 different in bytes.
 
@@ -422,8 +423,8 @@ names two instruments below rather than one.** A conflict-resolve was read as wr
 state — run id, create request id, state and status — where upstream passes the snapshot's own blob,
 and the wrong reading was written down as a deliberate divergence in three documents. What it cost was
 a `start_time` column that lands NULL and every non-create request id dropped, durably: nothing
-back-fills either, so the namespace policy above measures every reuse interval against the zero time
-and never refuses again. The rendering it should always have had is the one that needed *less* code —
+back-fills either, so a namespace's `WorkflowIdReuseMinimalInterval` measures every reuse interval
+against the zero time and never refuses again. The rendering it should always have had is the one that needed *less* code —
 `currentWriteOfSnapshot`, which every other snapshot-bearing kind was already using. A divergence is
 worth writing down only with what it buys beside it; this one had an address where a reason should
 have been.
@@ -474,7 +475,7 @@ than against a stored value ([chapter
   ownership loss is discovered, and `Attribute`, which reads back every row a failed drain asserted
   and names the ones that diverged.
 * [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — `UpdateShard` observed
-  rather than intercepted, and why it cannot be logged.
+  rather than intercepted: the log fenced at the new epoch before the rangeID lands.
 * [`../../cycle/replay.go`](../../cycle/replay.go) — the successor folding and applying an
   inherited tail, which is what a second ownership token would have laundered a zombie's entry
   through.
@@ -482,7 +483,7 @@ than against a stored value ([chapter
   goroutine, and `startForRead`: the placement a readiness gate would have replaced with a flag.
 * [`../../fold/fold.go`](../../fold/fold.go) — `WorkflowRecord`, `CurrentWrite` and
   `Emitted.RunAssertions()`: the assertions a merged request cannot carry itself.
-* [`../../fold/assert.go`](../../fold/assert.go) — the three renderings of the
+* [`../../fold/assert.go`](../../fold/assert.go) — each kind's rendering of the
   current-execution row that a single rendering would have collapsed.
 * [`../../fold/overlay.go`](../../fold/overlay.go) — `RunView.Render`, which copies and
   discards rather than materialising.

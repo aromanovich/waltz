@@ -94,8 +94,8 @@ limit entries means the log ends there" is what a caller reading a whole log sto
 reaches. A backend that pages by rows *and* by a response size answers short for the size, and every
 other case passes because none of them weighs anything. So this one appends 24 entries of 256 KiB and
 requires all 24 back in one page: over a 4 MB message, and at an entry size a deployment's own writes
-reach, since the tail's bound is 8 MB rather than a count. Measured the same way — given `memwal` a
-4 MB response budget, every other case stays green and this one alone goes red.
+reach, since the tail is bounded in bytes (8 MB) as well as in entries. Measured the same way —
+given `memwal` a 4 MB response budget, every other case stays green and this one alone goes red.
 
 The layer does not leave that to the suite, because a suite case can only probe one budget and a
 backend with a larger one would pass it and still truncate a production tail. A replay therefore
@@ -190,13 +190,13 @@ persistence, embedded whole. That is what says the embedding ([chapter
 saving.
 
 **Those suites do not judge `Apply`**, and cannot: the folded window's transaction is a method
-upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is nine cases —
+upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is 23 tests —
 the ordering of the transaction, the refusals that must happen before it opens, the attribution a
 condition failure carries, and the rollback that undoes the requests that had already run — each
 proved by staging the defect that makes it red. `internal/verify/acceptance` is the volume half, below.
 
 **Nothing here judges somebody else's `cold.Applier`.** A deployment writing one gets the four
-obligations in [chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for), `memcold`
+obligations in [`cold`'s package doc](../../cold/cold.go), `memcold`
 as the worked example, and its own store's suites — and that gap is real, where the log seam's is
 covered by an exported suite.
 
@@ -249,7 +249,7 @@ the control's, which is what makes the ratio visibly a function of the knob.
 
 `internal/verify/mutgen` is the generator, deterministic from its seed: the same config and seed produce the
 same mutations byte for byte, so a failure reproduces from the seed alone. That determinism is a
-constraint on how it is written — no time, no UUIDs, no map iteration, no protobuf maps — and it is
+constraint on how it is written — no clock, no unseeded UUIDs, no map iteration, no protobuf maps — and it is
 the reason a red run here is a bug report rather than a mystery.
 
 ### The witness, and why a green intercept run proves nothing without it
@@ -360,7 +360,8 @@ run that drained everything those entries have been applied and the damage is in
 crash in the middle would have found it. So the run samples the invariant every 64 mutations inside
 the drive loop instead, reading the log's lower end first and the watermark second — the watermark
 only rises, so a drain committing between the two reads can only make the comparison stricter than
-the moment it is about.
+the moment it is about. Beside the sampling, every trim the run makes goes through a guard on the log
+that reads the committed watermark before the delete and fails the run on a trim past it.
 
 A sample can find the log holding nothing at all, and that is the same claim at its boundary rather
 than an exception to it: the legal trim reaches one past the last entry once the drain has caught up,
@@ -370,8 +371,8 @@ does not. Read as loss unconditionally, it was a sample that failed on the machi
 won the race and passed on the one where the writer did.
 
 `TestAShardThatLosesItsEpochMidRun` is invariant [I2](02-concepts-and-invariants.md#the-invariants)
-with both seams real. After 2,000 mutations another owner takes the shard in the database: the range
-id moves, which is all an acquire is from underneath. The log is left unfenced on purpose — fencing
+with both seams real. After 2,000 mutations another owner takes the shard in the database: the
+rangeID moves, which is all an acquire is from underneath. The log is left unfenced on purpose — fencing
 it would stop the appends and halt the cycle before any drain reached the database, which is the
 other half of fencing and not this run's subject. Here the loss is discovered inside the drain's own
 transaction, with a window of acknowledged mutations riding on it.
@@ -394,8 +395,8 @@ database Temporal's own write path would have left, one mutation at a time.
 real databases, once at the shipped window and once at `Mutations: 1` — a window that holds one
 request when the drain takes it, so no two mutations of a run ever meet and nothing is ever merged.
 Then every run row is read back and diffed whole, blobs included, over the union of both ledgers'
-keys; so is every workflow's current row, and so are all four task categories' rows, paged back out
-of each store in key order. The two arms must differ in transactions and in nothing else: 6,000
+keys; so is every workflow's current row, and so is the list of task IDs each of the four
+categories' queues holds, paged back out of each store in key order. The two arms must differ in transactions and in nothing else: 6,000
 mutations commit 77 transactions folded and 6,000 sequential, and leave 519 identical run rows and
 32 identical current rows.
 
@@ -417,7 +418,7 @@ not that anybody can turn them back into rows.
 
 `TestARecoveredShardHoldsWhatAnUninterruptedOneDoes` is that step. One seed is driven twice. The
 control run puts all 6,000 mutations through a single cycle. The second puts the same stream through
-six of them: five times, after a thousand mutations, the shard's range id moves and the cycle is
+six of them: five times, after a thousand mutations, the shard's rangeID moves and the cycle is
 superseded without draining — which is the whole of what this layer can observe of a process that
 died, the window going with it and the log keeping everything it acked. The successor finds those
 entries at replay or nowhere.
@@ -428,7 +429,7 @@ invisible to it; the uninterrupted run's own rows are the only expectation that 
 something the second run dropped. Every run row is read back through the store and diffed whole,
 blobs included, over the union of both ledgers' keys, and so is every workflow's current row. The
 watermark must stand at the stream's length, `Replayed` must be non-zero — without it the crashes
-cost the run nothing and it judges nothing — and `Dropped` must be zero, since no entry of an async
+cost the run nothing and it judges nothing — and `Dropped` must be zero, since no entry of a windowed
 stream is provisional and a drop would be a mutation silently forgotten.
 
 What it establishes beyond "recovery works" is that **the fold is boundary-independent**: the two
@@ -472,21 +473,21 @@ owner-scoped, with an applier that parks the drain and answers without passing t
 that shape has.
 
 The two fences each stop one of the two things such a node can still do, which is why either looks
-redundant from where the other stands. The log's stops the appends, and it is in place before the range
-id moves ([the order `UpdateShard`
+redundant from where the other stands. The log's stops the appends, and it is in place before the
+`rangeID` moves ([the order `UpdateShard`
 imposes](06-shard-lifecycle.md#what-managershardacquired-does-with-the-epoch-it-is-handed)), so a write
 by the old owner is refused while the database still names him owner. The cold store's epoch CAS stops
 the drains, which need neither an append nor a caller: a shutdown drain and the age timer both fire out
 of a full window on their own.
 
 `TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` is the first of them. The successor fences
-the log and takes the range id; the predecessor, holding a tail, writes. The write is refused, the
+the log and takes the `rangeID`; the predecessor, holding a tail, writes. The write is refused, the
 cycle is in `StateHaltedLost`, the watermark has not moved and the log has not grown by the entry it
 refused — the append is where this stopped, so the drain's own fence was never reached. Then the
 successor replays exactly the entries between the watermark and the last ack. What the run pins is the
 *translation*: staging a fenced append that raises no halt leaves the caller holding the log's own
 error, which the history service's write path does not recognise and answers with a background
-re-acquire rather than its own. The doomed write is drawn from a stream of its own, because a mutation
+re-acquire rather than the shutdown a `ShardOwnershipLostError` asks for. The doomed write is drawn from a stream of its own, because a mutation
 this run's generator handed out and the log refused would leave that generator's model of the run a
 version ahead of the database for every later mutation of it.
 
@@ -769,7 +770,7 @@ drive; they assert nothing. **Judgements** say yes or no.
 | `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, end up the same whether the stream crossed one owner or six, lose no row to an owner that kept draining after it had been fenced, and are the rows one mutation per transaction would have left |
 | `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
 | `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
-| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the nine cases over the one method those suites do not know about |
+| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the 23 tests over the one method those suites do not know about |
 | `wal/waltest` | an implementation of `wal.Log` satisfies the five guarantees — the one judgement here written to be run against somebody else's code |
 
 Who judges what. Circles are judgements, boxes are what they are stated over.

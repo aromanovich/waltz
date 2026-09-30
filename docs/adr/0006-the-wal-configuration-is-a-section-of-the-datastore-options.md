@@ -79,8 +79,9 @@ the `mapstructure` tags rather than `cycle.Config` doing so: the key names are a
 whoever wrote the file, while the cycle's field names are the layer's own and get renamed when the
 layer learns something.
 
-**Configuration errors are refusals to start.** The parse runs before `temporal.NewServer`, so an
-unknown key or a tail budget the node cannot hold is a non-zero exit and no listening port, rather
+**Configuration errors are refusals to start.** The parse and the composition both run before
+`temporal.NewServer`, so an unknown key or (since the amendment below, at the composition) a tail
+budget the node cannot hold is a non-zero exit and no listening port, rather
 than a log line from a server that is already serving.
 
 **A second custom datastore is out of scope.** The layer reads the *default* store's options,
@@ -134,7 +135,8 @@ would be that refusal with nothing behind it; `hardMaxEntries` is I10's other un
 same statement as `hardMaxBytes`. Their descriptions carry `READ AT START-UP` and
 `TestAStartOnlySettingDoesNotMoveUnderTheNode` holds it. The refusal itself is `cycle.NewManager`'s,
 reached through `Compose`, which opens nothing and reaches nothing — so it is still a binary that
-does not start rather than a connection attempt followed by a complaint.
+does not start. But `Compose` is handed backends its caller has already opened; a `main` that wants
+the refusal with nothing connected calls `policy().CheckBudget()` itself, before it opens either.
 
 **They moved; they never gained a second home.** A key that used to be in the section is refused by
 name, and the message says which setting to write instead and whether it needs a restart
@@ -146,9 +148,10 @@ a precedence rule to argue over, with one spelling silently ignored.
 is one statement carrying the operator-facing name, the default and the description — which for a
 section key were a `knobs` row, a `cycle.Defaults()` entry and a doc comment on `waltz.WAL`, in
 three places, agreeing by hand. The defaults are `cycle.Defaults()` by reference, not by copy. And
-the zero-means-default rule disappeared with the numbers: it existed only because a decoded struct
+the blanket zero-means-default rule left with the numbers: it existed only because a decoded struct
 cannot tell "not written" from "written as zero", while an unset setting is a key the file does not
-have.
+have. What `cycle.Config.fill` still reads as a default is narrower and has another reason — the
+window age and the four start-up bounds, whose zero no policy means.
 
 **The reference is the deliverable.** The handbook's configuration chapter
 ([08-configuration.md](../handbook/08-configuration.md)) carries a table per surface — the section's

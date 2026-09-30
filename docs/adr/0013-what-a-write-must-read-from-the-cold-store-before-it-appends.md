@@ -8,26 +8,30 @@ Date: 2026-09-28
 directory records a call somebody will otherwise try to reverse; this one records a question
 that was asked carefully, answered in part, and left open on purpose — the part that is
 settled is what the pre-append reads *are for*, and the part that is not is what to do about
-their cost. It is here rather than in the handbook because the handbook says what is true of
-the shipped layer, and this is about what the layer might become.
+their cost. None of the options under *Consequences* is built: the reads are still the ones
+*Context* describes. It is here rather than in the handbook because the handbook says what is
+true of the shipped layer, and this is about what the layer might become.
 
-The durability half is not restated here. It lives in `DURABILITY.md` beside the accepted
-entry *A backend whose `Fence` never reaches storage*, because that is the entry it changes.
+The durability half is not restated here. It lives in `DURABILITY.md` beside the entry
+*A backend whose `Fence` never reaches storage*, because that is the entry it changes.
 
 ## Context
 
-An intercepted write reaches the cold store twice before its entry is durable, and the two
-are unrelated to each other.
+An intercepted write can reach the cold store twice before its entry is durable, and the two
+visits are unrelated to each other.
 
-**The first is the events.** `ExecutionStore.write` calls `appendEvents` before
+**The first is the events, and only over some stores.** Over a cold store that does not
+declare `cold.HistoryApplier`, `ExecutionStore.write` calls `appendEvents` before
 `layer.Write`, and that walks every slot's every batch through `base.AppendHistoryNodes`
 serially. The ordering is deliberate and is the reason the tree is never behind the tail:
-the payload drops the events (ADR 0008, D3), so a mutation acked before them would point at
-history nodes nobody wrote.
+on that path the record carries no events, so a mutation acked before them would point at
+history nodes nobody wrote. Over a store that declares it — `cold/memcold` does — the batches
+ride the record and the drain writes them (ADR 0014), and this visit does not happen.
 
 **The second is the conditions.** `Cycle.check` runs the condition authority before the
-append, and whatever the window cannot determine is delegated: `checkDelegated` reads the
-pre-window rows the assertions stand on. The reason it happens *before* the append is the
+append, and in a windowed mode whatever the window cannot determine is delegated:
+`checkDelegated` reads the pre-window rows the assertions stand on. In sync mode the drain
+inside the call asserts them and the reads are skipped. The reason it happens *before* the append is the
 whole of it — the ack is the answer, so a condition this layer means to answer has to be
 evaluated while the caller is still on the line. After the ack a refusal has no addressee and
 no undo.
@@ -38,9 +42,11 @@ Three facts about that second cost, each checked rather than assumed:
   `peek(namespaceID, workflowID)` first; a workflow the window already holds is answered from
   memory. So the fold's collapse already amortises it — `Delegated.Any()` is documented as the
   test for "this mutation costs a cold-store read";
-* **it is up to three round trips.** `Delegated.Settle` walks the current row, then each run
-  row, one store call each, in order — the order being load-bearing, since the store reports
-  the first failing assertion and upstream's suites assert on the error's type;
+* **it is up to four round trips.** `Delegated.Settle` walks the current row, then each run
+  row, one store call each, in order (three for an update that continues as new, four for a
+  conflict-resolve carrying a current mutation and a new run) — the order being load-bearing,
+  since the store reports the first failing assertion and upstream's suites assert on the
+  error's type;
 * **it is far wider than the question.** `RunAssertion.VerifyRow` needs the row's existence
   and `db_record_version` and nothing else — its own comment says so — while `Rows.Run` reads
   the whole `executions` row, blobs included. The current-row read needs run id, state and
@@ -75,7 +81,7 @@ belongs in code.
 The options, sorted by that line.
 
 **Narrow the read (free side).** One batched call answering every delegated assertion of one
-mutation, returning only the scalars the predicates read: three round trips become one, and a
+mutation, returning only the scalars the predicates read: up to four round trips become one, and a
 multi-kilobyte row read becomes an index-only lookup. No invariant moves — same question, same
 moment, same answer — and the conflict payload stays on the failing path where it already is.
 It would be the first *optional* extension of `baserow.Store`, and optional is the point: the
@@ -83,12 +89,13 @@ versioned current-row read is required at construction because without it the la
 confirm `CurrentEqualsWithVersion` and never refuse it, which is a correctness hole. A narrow
 read's absence costs latency only.
 
-**Overlap the events with the reads (free side).** The two cold-store visits are independent,
-so the events could travel while the conditions are being checked. The join has to be before
+**Overlap the events with the reads (free side).** Over a store that does not declare
+`cold.HistoryApplier` the two cold-store visits are independent, so the events could travel
+while the conditions are being checked. The join has to be before
 the append, not merely before the drain, or the ack would outrun the events — so `Write` grows
 a "work that must finish before the append" seam and a new invariant to guard. Nothing about
 orphaned nodes changes: a refused condition already leaves the events written, since they go
-first today.
+first on that path today.
 
 **Remember the versions this layer wrote (costly side).** The accumulator computes exactly
 what the run-row reads ask for and discards it at every drain, which is why the read is per

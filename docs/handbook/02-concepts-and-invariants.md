@@ -21,7 +21,7 @@ does — so its entries are finished, but there was no transaction in which to a
 watermark.
 
 This third position prevents two tempting mistakes. Measuring the tail as
-`commitSeqno - appliedSeqno` charges already-settled entries against the memory bound. Advancing
+`commitSeqno - appliedSeqno` charges already-settled entries against the tail bound. Advancing
 `appliedSeqno` without a transaction lets trimming erase entries that a new owner still needs for
 replay. The tail is consequently the interval `(resolved, commitSeqno]`: durable work whose outcome
 is still open.
@@ -39,7 +39,7 @@ sense, then states every numbered invariant with the file that enforces it and t
 catch a violation. Three things to know before reading it:
 
 * The vocabulary here is the repository's own, kept in [`../../CONTEXT.md`](../../CONTEXT.md) beside
-  its Russian aliases; the entries below are that glossary translated rather than paraphrased.
+  its Russian aliases; the entries below say what that glossary says, at more length.
 * It is the vocabulary of the **layer**. What judges the layer from outside — the checker and the
   witness — is [chapter 11](11-verification.md#the-words-for-what-judges-the-layer).
 * When two words look interchangeable in this repository they usually are not, and the last section
@@ -107,7 +107,7 @@ because it rides a transaction that had to happen anyway. Why not a lease with a
 [chapter 13](13-designs-that-were-rejected.md#a-lease-with-a-timer).
 
 *Not to be confused with:* term, generation — the same concept in other literature, and neither word
-is used here.
+is used for it here.
 
 **seqno (`wal.Seqno`).** The position of an entry in one shard's log: a per-shard LSN the single
 writer assigns itself. Total order within a shard and no gaps, both contractual. The first entry
@@ -226,13 +226,14 @@ pass and measures nothing.
 **Drain.** One pass of the apply cycle over a folded window. A non-empty batch is written in one
 transaction and moves appliedSeqno; an empty batch writes no transaction and settles its entries in
 memory without moving the watermark. A transactional drain is all-or-nothing over everything it
-publishes — event history excepted, which is durable before the transaction opens — and appliedSeqno is
+publishes — event history excepted, which may be written ahead of the transaction and must be durable no
+later than it — and appliedSeqno is
 the witness to whether that transaction committed. *Not to be confused with:* stopping a layer or a
 node, which is `Shutdown` (it drains *and* closes).
 
 **Apply.** The step that turns folded summary updates into cold-store writes: one transaction
 carrying the merged requests, the appliedSeqno bump and the epoch compare-and-swap, over event history
-the batch carried and the store has already made durable. Who performs it
+the batch carried, which the store makes durable in that transaction or before it. Who performs it
 is `cold.Applier`, which no package of the layer implements — the drain hands over a `fold.Batch` and
 never a column. What the layer keeps of it is `apply`, the package that says what a drain's outcome
 demands of its caller: the five classes an error sorts into — committed, refused, shard lost,
@@ -332,7 +333,8 @@ the retained log, fold it into a fresh accumulator, drain. Three things about wh
 lost; what the two share is the rule "read the watermark first, never re-derive from base versions".
 Nor with Temporal's own **workflow replay**, which re-executes workflow code against an event history
 and is the thing determinism is about: that happens above persistence, while this executes no user
-code, reads no event history and carries acknowledged log entries into the cold store.
+code, reads no event history back from the store and carries acknowledged log entries — with any
+event batches they carry — into the cold store.
 
 **Trim.** Lazy deletion of log entries at or below appliedSeqno, with no safety lag — recovery reads
 the watermark rather than the log. It runs beside the cycle rather than in it; a failed trim is
@@ -362,7 +364,7 @@ Three things about how the refusal is raised:
   lost shard. Neither size bound is ever raised on a read either. `unresolved` is: a cycle that
   cannot say what its last drain did has nothing to answer a read from.
 
-*Not to be confused with:* throttling, rate limit — both name a pace, and this is a bound on memory.
+*Not to be confused with:* throttling, rate limit — both name a pace, and this is a bound on the tail.
 
 **Overlay.** The read interface of the fold accumulator: a read is the base row from the cold store
 plus what the window holds for that workflow, gated at commitSeqno. `fold.RunShape` — absent,
@@ -384,7 +386,7 @@ two sources and paginates.
 **Cold store.** Whatever a deployment's persistence implementation writes its rows into: the
 permanent target of apply, reached only through `cold.Applier` and `cold.Watermarker`. No package of
 the layer names a column, and none may name a store. `cold/memcold` is the one implementation of
-those two interfaces here: Temporal's own SQL persistence, embedded whole, over a SQLite database
+those two interfaces shipped here (`internal/verify/coldtest` is the double beside it): Temporal's own SQL persistence, embedded whole, over a SQLite database
 that lives in this process and dies with it. Everything above the seam is exercised against it, and
 it is a real store rather than a stub — Temporal's own persistence suites judge it exactly as they
 judge a plugin. A deployment supplies its own as one `cold.Store` — one value answering both halves
@@ -519,7 +521,7 @@ the right.
 * **The `settled, not applied` box** is why **tail is not `commitSeqno − appliedSeqno`**. A drain
   whose batch carries no transaction — an `AddHistoryTasks` with no rows is the one mutation that
   folds to such a batch — still releases the entries its window folded, and those entries are acked
-  and dead. Counting them would make the memory bound guard memory nobody holds; moving
+  and dead. Counting them would make the tail bound guard entries nobody holds; moving
   `appliedSeqno` over them would strand a recovering owner, since a trim goes to `appliedSeqno`. So a
   third position, `resolved`, sits between them, and the tail is `commitSeqno − resolved`.
 * **A condition that did not hold at the drain settles the same way**, and it is the other shape of
@@ -608,11 +610,11 @@ because the deployment that supplies those things is the only place they can hol
 half and I5 are both obligations on the `cold.Applier` a deployment supplies, and a deployment that
 breaks either loses acknowledged data: nothing here can check them, and the "how it is verified"
 column says so rather than naming a suite that does not judge them. I9 is the same shape one seam
-lower, on the log.
+lower, on the log, except that a backend breaking it is slow rather than wrong.
 
 | # | What it claims | Enforced in | How it is verified |
 |---|---|---|---|
-| **I1** | A mutation is one log entry, whole. No path writes parts of a mutation as separate entries. | [`mutation/mutation.go`](../../mutation/mutation.go) — one `oneof`, one payload | `mutation`'s field-set and kind guards; `wrapper/intercept_test.go` asserts the record format has exactly eight shapes |
+| **I1** | A mutation is one log entry, whole. No path writes parts of a mutation as separate entries. | [`mutation/mutation.go`](../../mutation/mutation.go) — exactly one request per mutation, one `oneof` in `mutation.proto`, one payload | `mutation`'s field-set and kind guards; `wrapper/intercept_test.go` asserts the record format has exactly eight shapes |
 | **I2** | A mutation is confirmed to its caller ⟺ its seqno ≤ commitSeqno. No ack before durability. | [`wal/wal.go`](../../wal/wal.go) guarantee 3 (cumulative ack); the cycle answers after `Append` returns | the log conformance suite [`wal/waltest`](../../wal/waltest/waltest.go), which every implementation runs |
 | **I3** | Readers see state as of commitSeqno: everything confirmed, nothing unconfirmed. | [`fold/overlay.go`](../../fold/overlay.go) and [`cycle/read.go`](../../cycle/read.go) — reads run on the cycle's own goroutine | `cycle`'s read tests over a window that is deliberately left undrained |
 | **I4** | Fencing is end to end: the log append is protected by the contract's fence semantics, and the cold-store write by the same epoch in the same transaction. | [`wal/wal.go`](../../wal/wal.go) (`Log.Fence`); the cold-store half is the applier's, which is handed the epoch on every `Apply` | `waltest`'s `FenceCutsOffLowerEpochs` (the zombie ex-owner) and `TwoWritersContendForOneShard` cover the log half; the applier's half is a deployment's obligation and nothing here judges it |
@@ -694,8 +696,8 @@ known.
 ### I10, at more length
 
 The bound has two units — entries and bytes — and both come off `tailstate.Tail`, not off the
-window. They are not two spellings of one budget: **bytes bound memory**, the resident cost of an
-unapplied tail in the heap of the process that also runs the history service, and **entries bound
+window. They are not two spellings of one budget: **bytes stand in for memory** — encoded bytes, a proxy
+for the resident cost of an unapplied tail in the heap of the process that also runs the history service, and **entries bound
 recovery time**, since a successor must decode and fold every inherited entry and that work is per
 entry rather than per byte. Whichever trips first raises the refusal, and the `limit` tag says
 which. Why neither unit works alone, and where the two defaults come from, is [chapter
@@ -778,7 +780,7 @@ The words that are already taken:
 
 | word | it is | it is not |
 |---|---|---|
-| **Registry** | `cycle.Manager`, the shards this node holds | `waltz.Registry`, which is task categories |
+| **Registry** | `cycle.Manager`, the shards this node holds | `waltz.Registry`, which is task categories and is written qualified: the task-category registry |
 | **Held** | a read: the window has something to say about this row | carrying a head assertion, which is `asserts*` |
 | **Policy** | `cycle.Policy`, a source of `Config` read at the decision | `WAL.StaticConfig()`, which is a `Config` value |
 | **Take** | `Window.Take`, which *empties* the window | building a read's view, which is `takeView` |

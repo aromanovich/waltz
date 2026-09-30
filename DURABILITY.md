@@ -149,7 +149,9 @@ watermark zero, which tells the store every entry below it is applied and the tr
 behind it takes them out of the log. **A batch folded for another shard** lands one
 shard's rows under another's id, and both are wrong afterwards with nothing in
 either saying so. `TestTheDrainRefusesWhatItCannotWrite`
-(`cold/memcold/apply_test.go`), red in all three of its cases.
+(`cold/memcold/apply_test.go`), red in all three of its cases; the other two refusals
+are default arms over values no fold can produce, unreachable from outside the
+package, and the test says so.
 
 **A reset's second and third runs, acked and never written** (rung 4). A
 conflict-resolve carries up to three runs — the run being reset, the run that was
@@ -316,7 +318,7 @@ the transaction rather than opening one.
 failure is how a committed batch is applied twice; rounding it up is how entries
 are trimmed that never landed. It is its own class (`apply.ClassUnknownOutcome`),
 answered by reading the watermark and nothing else, and until it is answered the
-tail carries a floor that refuses every write and both reads.
+tail carries a floor that refuses every write and every read.
 `TestAnUnresolvedDrainStaysInTheTail` (`cycle/backpressure_test.go`).
 
 **A collection of a run the drain acknowledged and never wrote.** Seven
@@ -354,7 +356,7 @@ produce an empty batch, and leaving those entries unsettled strands them.
 `TestADrainOfAnEmptyWindowSettlesNothing` (`cycle/tail_test.go`).
 
 **A buffered batch filed under the wrong run of the same workflow** (rung 4). The
-half the entry below could not reach: a row whose run comes off the batch and whose
+half the buffered-batch entry below could not reach: a row whose run comes off the batch and whose
 workflow comes off the emitted request is wrong in a way no single-run fixture sees.
 It needs one request owning two runs, which a continue-as-new is — the update
 carries the closing run's delta and the new run's whole snapshot, and each run
@@ -366,7 +368,8 @@ flushed into a run it was never sent to.
 every batch filed under the first one's run.
 
 **A delete of a run's collection the drain acknowledged and never applied**
-(rung 4). The entry above enumerates the `Upsert*` fields of a delta, so the
+(rung 4). *A collection of a run the drain acknowledged and never wrote*
+enumerates the `Upsert*` fields of a delta, so the
 delete half of the same seven collections was driven by nothing here — and by
 almost nothing anywhere: `mutgen` removes sub-entity keys from **activities and
 timers only**, so the differential oracle exercises two of the seven and the other
@@ -409,21 +412,20 @@ rows. An earlier pass recorded this as deliberately unguarded on the grounds tha
 a leak is not a loss; the leak is unbounded, which is enough.
 
 **A buffered-event batch the drain acknowledged and never wrote** (rung 4). The
-entry above covers the seven collections named in two literals, and a buffered
+entries above cover the seven collections named in the literals, and a buffered
 batch is none of them: batches never merge, so the fold strips each onto
 `fold.Emitted.BufferedBatches` with its run and the applier writes one row per
 batch. Nothing enumerated off a request shape reaches them, so the guard above
 was blind to the same failure it exists for — deleting the applier's loop over
-them left the whole of `go test ./...` green, 22 packages, the differential oracle
+them left the whole of `go test ./...` green, the differential oracle
 and the e2e server included. What is lost is not a stale answer: a buffered batch
 is what a signal became after its caller was told it had landed, and the run's
 history flushes without it.
 `TestEveryBufferedBatchReachesTheDatabase` (`cold/memcold/apply_test.go`), which
 drives two batches of one run through a real drain and reads them back through
-the store's own read. Its residue is named at the test: a batch filed under the
-wrong run *of the same workflow* is still unguarded, that needing a request which
-carries two runs at once — a continue-as-new or a conflict-resolve — which
-`internal/verify/mutbuild` does not build.
+the store's own read. It cannot see a batch filed under the wrong run *of the
+same workflow*, which needs a request carrying two runs at once; that half is
+*A buffered batch filed under the wrong run of the same workflow* above.
 
 **A snapshot's `Condition` dropped on replay** (rung 4). The codec carries it and
 the decoder reads it back, and for the snapshot shape that line was driven by
@@ -472,8 +474,10 @@ removed. Not hypothetical: two fixtures in this repository were building the
 shape, and both are now built through `internal/verify/mutbuild`.
 
 **Every event batch of a slot but the first, acked and never written** (rung 4).
-An intercepted write puts its own new history events down through the base store
-before the mutation naming them is acked, and the refuted entry below says the
+Over a cold store that does not declare `cold.HistoryApplier`, an intercepted
+write puts its own new history events down through the base store before the
+mutation naming them is acked (`appendEvents`; over one that does, the record
+carries them and the drain writes them), and the refuted entry below says the
 order cannot be got wrong. The *completeness* of that walk was a different
 matter: a slot is a list — upstream's `ExecutionManager` serialises one
 `InternalAppendHistoryNodesRequest` per `WorkflowEvents` it was handed, so a
@@ -498,9 +502,9 @@ one case it exists for — without the detach the read fails, and a failed read
 there is "an outcome nobody could read", which **halts the shard**. So every
 expiring deadline would stop a shard. `Cycle.drain` detaches for the causes
 whose window holds work whose callers were acked and have gone
-([`drainCause.detached`]), and flipping the mutations watermark or the
+([`drainCause.detached`]), and flipping the mutations trigger or the
 drain-and-retry to keep the caller's clock strands exactly those entries in a
-transaction abandoned on one writer's deadline. All four moves left the whole of
+transaction abandoned on one writer's deadline. All three moves left the whole of
 `go test ./...` green.
 `TestACallersClockCannotDecideADurableEntrysFate` (`cycle/cycle_test.go`)
 stages the deadline *inside* the append, through the log's own fault seam, and
@@ -583,8 +587,8 @@ or being skipped in silence by `queues/iterator.go`. Refused at the merge
 — the request's range, and the key this pagination last emitted, which no
 conforming store can answer below.
 `TestABaseThatBreaksTheRequirementsIsRefused` (`fold/taskpage_minimal_test.go`),
-red in all three cases without the check; it is the test that used to assert what
-each breach *cost*, over the same three staged breaches.
+red for all three breaches without the check, across its five cases; it is the
+test that used to assert what each breach *cost*, over the same three breaches.
 
 **A range delete that sweeps a row its reader was never shown.** The merge
 subtracts the window's undrained ranges from the cold store's page and from
@@ -718,7 +722,7 @@ request asserts one at all.
 
 **A shard-scoped read answered for a shard nobody holds** (rung 4). `ShardStats`
 and `RetireShard` both answer a shard this node does not hold, and the answer is
-the second return rather than a zero a caller could read as "held and empty". Every
+the `false` each returns rather than a zero a caller could read as "held and empty". Every
 existing case asks about a shard it has just acquired, so both not-held arms were
 reachable from nothing, and without them each dereferences the nil the registry
 hands back. Not a durability entry on its own; it is here because the shutdown's
@@ -735,11 +739,33 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-**Nothing. The one entry here was closed this pass** — a current row written
-without the start time the policy above it measures — and the section being empty
-is a statement about the entries that have been named, never about the code:
-"What this file is not" below is the standing note on that, and the discovery
-sweeps it prescribes are how the next entry arrives.
+**A tail whose records carry event batches, replayed over a store that never
+said it writes them.** Severity: silent — the mutable state lands, the events it
+points at do not, and the drain reports a commit. A record carries its request's
+event batches only where the store the writer was composed with declares
+`cold.HistoryApplier` (`wrapper/execution_store.go`, `Manager.WritesHistory`).
+Replay does not ask: `fold.Accumulator.addHistory` takes whatever the record held,
+so the batch the replay drain hands `cold.Applier.Apply` carries
+`fold.Batch.History` whatever the successor's store declares. A successor composed
+over a store that does not declare the marker — a deployment moving off
+`cold/memcold`, or two builds of one deployment disagreeing about their store —
+meets history on exactly the path the marker's own doc says such an applier never
+does, and nothing refuses it. Whether the rows are then lost turns on a sentence
+the contract states two ways: the package doc's first obligation owes
+`Batch.History` from every applier, while `HistoryApplier`'s doc describes an
+applier that would ignore the field and argues it is never handed one.
+
+*What would close it:* replay refusing — halting the shard as an invariant
+violation — an entry that carries event batches when `Manager.WritesHistory` is
+false, or writing those batches through the base store before the replay drain,
+the way a live write over such a store does; with a test that replays a
+history-carrying tail over an applier without the marker and is watched to go red
+without the refusal. And the contract saying one thing about an applier handed
+history it did not declare.
+
+Found by a documentation pass reading ADR 0014's "Changing stores" paragraph
+against `fold/history.go`, which is where that paragraph's "replays such a tail
+correctly anyway" stopped being true.
 
 ---
 
@@ -800,9 +826,9 @@ supply the second handle, and a case added for it would be skipped by the one
 backend that could ever watch it go red." Both halves are true and the conclusion
 does not follow: the same two facts are true of *time*, and the answer there was not
 a suite case but a **function a deployment calls, proved in-tree against a
-decorator** — `CheckRetention` against `Expiring`. The entry even names that
-instrument, two paragraphs up, as what the other blind spot has. So the shape was
-sitting in the file and was read past.
+decorator** — `CheckRetention` against `Expiring`. This page names that
+instrument, in the entry on expiring storage below, as what that blind spot has.
+So the shape was sitting in the file and was read past.
 
 `waltest.CheckReopen` is that shape applied here. It takes a way of *opening* a log
 rather than a log: fence, append a run, close, open the storage again, and ask the
@@ -893,7 +919,8 @@ cold store does not hold, which is the whole reason they were in the log.
 *What is accepted* is that no run in this repository can see it. The conformance
 suite finishes in milliseconds and cannot age an entry, so a backend whose storage
 expires rows passes every case of it. This one differs from the three above in
-having an instrument rather than only a boundary, and the instrument is not a
+having an instrument for the whole of what it accepts rather than only a boundary,
+and the instrument is not a
 suite case for a reason no design can remove: the check costs the window it is
 given in wall-clock time, and the length worth testing is the deployment's own.
 
@@ -910,7 +937,7 @@ mechanism at all: a policy nobody applied to this table today is one somebody
 applies to it next quarter.
 
 **A store whose execution state omits the request ids.** The conflict a refused
-write carries is built from what `baserow.Current` answered, so such a store gives
+write carries is built from what `baserow.Rows.Current` answered, so such a store gives
 a retried start nothing to deduplicate against — an opaque failure where the layer
 could have named the run it collided with. Not a loss of acked data; it is here
 for the reason the delegated-conflict entry above is, that the effect on a caller
@@ -948,7 +975,7 @@ that a current row's execution state carries the ids the create was issued with.
 
 **A windowed write whose drain loses the shard is told it definitely did not
 commit.** In a windowed mode the entry is appended and acked into the log before
-the watermark trips the drain, so when that drain's `Apply` answers
+a trigger trips the drain, so when that drain's `Apply` answers
 `*p.ShardOwnershipLostError` the error travels out to the writer whose mutation
 tripped it — and upstream reads that class as *guaranteed to have failed*,
 dropping the request's task keys from its tracker and skipping its notifications.
@@ -1022,8 +1049,10 @@ appends anything. `Cycle.Close` was the one door that skipped it, and that is th
 shutdown entry above. Moving the `start` call past the append is red.
 
 **No intercepted write acks before its events are down** (measured). All eight go
-through one `ExecutionStore.write`, which calls `appendEvents` before
-`layer.Write`; a kind with no interception row is refused rather than transited.
+through one `ExecutionStore.write`, which — over a store that does not declare
+`cold.HistoryApplier` — calls `appendEvents` before `layer.Write`, and otherwise
+leaves the batches on the record for the drain (the entry below); a kind with no
+interception row is refused rather than transited.
 There is no second door to keep in step. Swapping the two calls is red — which
 says only that the *order* is held: how much of each slot goes down was a
 separate question, and is the closed entry above about a slot's second batch.
@@ -1055,8 +1084,8 @@ either path, which is why this stays a read rather than an open entry.
 
 What is *not* closed by it and is named rather than counted: the three history
 methods that transit past a window which may hold their rows
-([ADR 0014](docs/adr/0014-a-record-may-carry-the-event-batches-its-own-request-produced.md)'s
-last consequence). A `DeleteHistoryNodes` from `TrimHistoryBranch` finds no row
+(named as an exposure in
+[ADR 0014](docs/adr/0014-a-record-may-carry-the-event-batches-its-own-request-produced.md)). A `DeleteHistoryNodes` from `TrimHistoryBranch` finds no row
 and the drain writes that node after it; a `DeleteHistoryBranch` cannot see a
 branch whose tree row is still in the window. Both leave rows behind rather than
 taking acked ones away — a leak on the same collector's path — and both are
@@ -1064,9 +1093,10 @@ accepted here because what a deletion aimed at an undrained node *should* do
 depends on where a deployment put its history, which is not this library's to
 decide.
 
-**No error is swallowed on the layer's write paths** (measured, by sweep). One
-discarded error exists — the age tick's drain, which has no caller to answer and
-whose outcome is on the state already.
+**No error is swallowed on the layer's write paths** (measured, by sweep). Two
+discarded errors exist, both on the age tick — its age drain and its
+storage-pressure drain — which have no caller to answer and whose outcome is on
+the state already.
 
 **The registry cannot deadlock a node through a cycle's loop** (read). Every
 `held` method finishes its map arithmetic and returns without calling into a
@@ -1082,8 +1112,8 @@ field that is neither carried nor recorded as deliberately dropped, and
 when the policy is built, not a dynamic setting, so no shard changes mode under a
 live cycle and "a window of one by construction" holds wherever it is relied on.
 
-**A queue reader does survive a range id renewal** (read, against upstream
-v1.29.6). `renewRangeLocked` drains in-flight task requests, bumps the range id,
+**A queue reader does survive a rangeID renewal** (read, against upstream
+v1.29.6). `renewRangeLocked` drains in-flight task requests, bumps the rangeID,
 updates the task key manager and unloads nothing. This is a premise rather than a
 hazard: it is what makes the task-page routing entry above reachable.
 
@@ -1106,7 +1136,8 @@ rather than closed.
 
 **`memcold` writes two columns it never reads back**, and this is the second: the
 current row's `start_time`. `currentRowResponse` builds its answer from the row's
-state blob and `last_write_version` and touches the column not at all, so whether a
+state blob and `last_write_version`, and reads the column only for a row with no
+blob, which neither this store nor the upstream code it embeds writes; so whether a
 state with no start time writes NULL or 1970 is invisible to every read this
 repository has — while for a deployment it is the value upstream's workflow-id
 reuse check measures against, the same hazard the delegated-conflict entry above is
@@ -1215,7 +1246,7 @@ range-delete ordering entry under *The drain* above sat unguarded at one of its
 three homes with every run green: moving the deletes past the request loop
 leaves the oracle alone green, where the buffered-batch ordering and the reset's
 clear beside it turn it red. The same measurement confirms what the collections
-entry below says by reading — swapping the applier's signal and request-cancel
+entry under *Refuted* says by reading — swapping the applier's signal and request-cancel
 *deletes* is invisible to it, those being two of the five the corpus never
 deletes from.
 
@@ -1232,7 +1263,7 @@ oracle is bounded by what its generator reaches, by what its arms share, and by
 what it reads back, and those are worth enumerating separately from the code's
 branches.**
 
-**A fourth class: cross two same-typed things.** The three above all remove
+**A fourth class: cross two same-typed things.** The other three all remove
 something — a write, a condition, a bound. This one leaves everything present
 and doing the wrong job: a field assigned from its neighbour, a case label on
 the arm beside it, an argument handed to the parameter next to it. It is what
@@ -1244,7 +1275,7 @@ every check of the form "is this filled" passes. Nine crossings in the read
 answer's mirrors left the whole of `go test ./...` green, against a guard
 written to enumerate that very answer off Temporal's type.
 
-Two things sharpen it. **Look for the repeated type**: four of the six
+Two things sharpen it. **Look for the repeated type**: four of the seven
 collections are `map[int64]*DataBlob` and five of the merge's scalars are
 `int64`, and those counts are exactly how many ways each line can be wrong while
 compiling. And **cross a fan-out's arms, not only its fields** — routing a
@@ -1275,7 +1306,7 @@ fifty-one were chosen; `tools/mutation-sweep.py` enumerates the class instead, a
 **111** comparisons over the whole layer — `fold`, `cycle` and its three
 sub-packages, `apply`, `wrapper`, `baserow`, `mutation`, `wal`, `walmetrics` and the
 root — plus the two shipped implementations, `memwal` and `memcold`, left **28** green, of which **seven** were boundaries nothing drove:
-the window's byte watermark and its age, the trim cadence's time half, a task
+the window's byte trigger and its age trigger, the trim cadence's time half, a task
 range's inclusive minimum, the task page's own range on both halves, the history
 page's strict ascent, and the length check in front of `basePage[0]` — the last
 one a panic rather than a wrong answer. A chosen list cannot make that claim,
@@ -1505,7 +1536,7 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**The floor is signed. Open went empty, took an entry back, and is empty again.**
+**The floor is signed. Open went empty, took an entry back, emptied, and holds one again.**
 One adversarial pass on a fresh context put an entry there — a current row written
 without its start time — which is what the paragraph below says such a pass is for,
 and the first time it had happened rather than been anticipated. It is closed now,

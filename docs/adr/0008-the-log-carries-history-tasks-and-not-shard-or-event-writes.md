@@ -48,13 +48,13 @@ Deferring it would reopen the double-write window the shard-acquire ordering exi
 would hand one range of task ids to two owners. It is also circular: the log entry carrying the
 bump would have to be appended under the epoch that bump establishes.
 
-### Why not event history
+### Why not event history (D3)
 
-Decision D3, unchanged: the question is revisited after mutable state **and tasks**, which is where
-this leaves it. Two things make it the wrong next step rather than merely a later one — I10's
-budget is denominated in bytes and event blobs are the bulk of them, and an intercepted write
-already puts its own events down through the base store before it acks, so the tree is never behind
-the tail.
+Decision D3 keeps event history out: the question is revisited after mutable state **and tasks**,
+which is where this leaves it. Two things make it the wrong next step rather than merely a later
+one — I10's budget is denominated in bytes and event blobs are the bulk of them, and an intercepted
+write already put its own events down through the base store before it acked, so the tree was never
+behind the tail.
 
 The replication DLQ is out for the ordinary reason: its writer is not one of the intercepted
 methods and nothing in the window can change its answer.

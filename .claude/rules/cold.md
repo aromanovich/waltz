@@ -5,9 +5,11 @@ paths:
 
 # This repo: the cold store seam and the store that ships at it
 
-`cold/` is the contract a drain lands on — `Applier`, `Watermarker`, and the four
-things an implementation owes — and `cold/memcold/` is the one implementation
-here. The four obligations are on the package doc and the handbook's
+`cold/` is the contract a drain lands on — `Store`, `Applier`, `Watermarker`, the
+`HistoryApplier` a store declares when it writes a batch's event history itself,
+and the four things an implementation owes, with the fifth that it bound its own
+calls — and `cold/memcold/` is the one implementation here. The obligations are
+on the package doc and the handbook's
 [04-contracts.md](../../docs/handbook/04-contracts.md) is their long form.
 
 What to know before changing any of it:
@@ -19,8 +21,9 @@ What to know before changing any of it:
   already answers**, and do not "fix" an inherited one — a divergence from
   upstream is a store that Temporal's suites judge and this repository's
   opinion overrules. What may be added beside them is what Temporal has no
-  method for, which today is three things: the folded window's transaction, the
-  watermark, and the current row's `last_write_version`;
+  method for, which today is three things: the folded window's transaction —
+  which, the store declaring `cold.HistoryApplier`, writes the batch's event
+  history too — the watermark, and the current row's `last_write_version`;
 * **what judges it is Temporal's four exported suites**
   (`conformance_test.go`), and a suite of ours at this seam would be this
   repository's opinion of what a store owes. `Apply` is the exception, because
@@ -52,7 +55,10 @@ What to know before changing any of it:
   second list for the snapshot arm or for the read-back, both of which reach the
   same collection by taking the `Upsert` prefix off. It is held to the type in
   both directions: an `Upsert*` with no entry, and an entry for a collection a
-  delta no longer has, each fail by name;
+  delta no longer has, each fail by name. A buffered batch is the eighth thing
+  with the same failure and neither literal names it: batches never merge, so
+  they travel on neither a delta nor a snapshot, and the applier's own loop
+  over them is what `TestEveryBufferedBatchReachesTheDatabase` holds;
 
 * **two orderings in `Apply` are the contract and not transcription** — the
   epoch CAS first, so a lost shard is reported as one rather than as the version

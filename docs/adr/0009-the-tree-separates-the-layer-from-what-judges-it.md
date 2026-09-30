@@ -36,9 +36,10 @@ and **the root package is the front door** — `Compose`, the configuration, the
 
 ## Consequences
 
-**The dependency order is documented, not nested.** `fold → cycle → apply → wrapper → waltz` is the
-direction the layer reads in, and nesting cannot express it: `cycle` imports `fold`, but `fold`
-stands alone, so putting it inside `cycle` would be a lie. The handbook's
+**The dependency order is documented, not nested.** Bottom-up it is `wal → fold → apply → cycle →
+waltz`, with `wrapper` a branch beside `cycle` that only `waltz` imports, and nesting cannot express
+it: `cycle` imports `fold`, but so does `apply`, and `fold` stands alone, so putting it inside `cycle`
+would be a lie. The handbook's
 [03-components.md](../handbook/03-components.md) carries the order. This is the one place where the
 tree's legibility rests on prose.
 
