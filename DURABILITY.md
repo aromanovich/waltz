@@ -1276,8 +1276,9 @@ arithmetic, since the branch implies an ask of one, hence a single base row, hen
 a first key equal to the last.
 
 **The second class, run the same way, and it does not stop where the first did.**
-`guard` over the same set is a partial run — 151 of 331, stopped there rather than
-finished, through `cycle`, its three sub-packages and most of `fold` — with **25** greens, and the two
+`guard` over the same set is a partial run in two segments — 151 of 331 through
+`cycle`, its three sub-packages and most of `fold`, then 10 of the 195 that were
+left, which reached the rest of `fold`'s task page — with **25** greens, and the two
 halves of it read differently enough to be worth separating.
 
 Over `cycle` it found nothing that was a hole, which is a result rather than an
@@ -1312,12 +1313,25 @@ expressed" arms unreached — they are the arms no valid stream produces, which 
 exactly why nothing drives them and exactly why `Add` needs them, being where a
 replay arrives with no `Check` in front of it. And **a panic ends the test binary**,
 so the subtests after it never run: a sweep whose count looks one short may be
-reporting one mutation's blast radius rather than a miscount. Finishing the run is the next pass's,
-and so is the `--confirm` the paragraph above owes. What is left unswept by this
-class is the rest of `fold`'s page merges, `apply`, `wrapper`, `baserow`,
-`mutation`, `wal`, `memwal`, `memcold` and `walmetrics` — and on the evidence above
-the interesting question there is the same one: which of their *refusals* no valid
-stream reaches.
+reporting one mutation's blast radius rather than a miscount. **The second segment's one finding is the same shape at a seam rather than in the
+fold.** A foreign page token is refused by the frame this layer puts on its own —
+and the test for it used the base store's token, which fails the frame *and* the
+parse, so it said nothing about which did the work. Removing the frame check left
+everything green. What the frame buys over the parse is a token whose body happens
+to unmarshal into this layer's own: four bytes of somebody else's followed by valid
+JSON is adopted as ours at whatever cursor it decodes to, which restarts the
+pagination inside the window, leaves the base's cursor behind, and hands the range
+the reader completes the acked rows that were in it. That is the closed entry above
+about the two token spaces, proved at last against the thing it is actually about.
+
+Finishing the run is the next pass's, and so is a `--confirm` over its greens. What
+is left unswept is `apply`, `wrapper`, `baserow`, `mutation`, `wal`, `memwal`,
+`memcold` and `walmetrics`. Two facts about the cost, since they decide how to run
+it: a mutation low in the import graph (`fold`, `wal`) rebuilds nearly everything
+and costs minutes, while one high in it (`memcold`, `walmetrics`) costs seconds —
+so sweep from the top down if the budget is short. And on the evidence above the
+interesting question in each is the same one: **which of their refusals no valid
+stream reaches.**
 
 **Not every green is a hole, and telling them apart is the work.** A sweep of the
 second kind returns three sorts of green. A *hole* is a condition whose absence
