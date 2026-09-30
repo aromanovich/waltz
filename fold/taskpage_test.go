@@ -170,12 +170,18 @@ func TestASharedFirstKeyStillAdvancesThePagination(t *testing.T) {
 func TestThePageHoldsTheWindowToTheRangeItWasAsked(t *testing.T) {
 	a := fold.New(shard)
 	cold := coldtasks.New()
+	// A cold row at the minimum too, because the refusal that holds the *base* to
+	// the range has the same boundary from the other side: a row at the inclusive
+	// minimum is inside it, and a check off by one there refuses a page every queue
+	// asks for — it reads from its own checkpoint, so the first row is at the
+	// minimum whenever there is a task there at all.
+	cold.Hold(tasks.CategoryTransfer, keyed(3, "cold at the minimum"), keyed(4, "cold inside"))
 	add(t, a, mkAddTasks(keyed(2, "below"), keyed(3, "the minimum"), keyed(5, "inside"),
 		keyed(6, "the maximum"), keyed(7, "above")))
 
 	pages, _ := paginate(t, a, cold,
 		taskReq(tasks.CategoryTransfer, tasks.NewImmediateKey(3), tasks.NewImmediateKey(6), 100))
-	require.Equal(t, []int64{3, 5}, taskIDs(pages),
+	require.Equal(t, []int64{3, 4, 5}, taskIDs(pages),
 		"the minimum is inclusive and the maximum is exclusive, on the window's half as on the base's")
 }
 
