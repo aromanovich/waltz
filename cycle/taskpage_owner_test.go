@@ -38,9 +38,10 @@ func windowed(c *Config) {
 // reports whether it ever did. It runs inside the base callback, which the loop
 // goroutine calls, so it may not fail the test itself: an unwind there kills the
 // loop the caller is waiting on. And it is bounded because ShardAcquired has
-// three early returns that install nothing — a fenced log, a closed registry, a
-// refused epoch — each of which an unbounded spin turns into go test's own
-// timeout at 100% CPU, with the acquire's answer unread in its channel.
+// four early returns that install nothing — an epoch already held, a refused
+// epoch, a fenced log, a closed registry — each of which an unbounded spin turns
+// into go test's own timeout at 100% CPU, with the acquire's answer unread in
+// its channel.
 func installed(m *Manager, was *Cycle) bool {
 	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); runtime.Gosched() {
 		if m.Shard(testShard) != was {
@@ -201,10 +202,9 @@ func TestAShardSupersededTwiceInOnePageIsDeclaredLost(t *testing.T) {
 
 // TestAnAcquireDoesNotHoldTheRegistryWhileItAsksASupersededCycle: nothing may
 // hold the registry's mutex across a cycle's loop, so [Manager.ShardAcquired]
-// must collect the superseded cycle's counters outside it. Since [held] owns
-// that mutex and hands it to nobody, this now fails only if a lock is
-// reintroduced on Manager itself — it is the behavioural half of a rule the
-// shape states.
+// must collect the superseded cycle's counters outside it. [held] owns that
+// mutex and hands it to nobody, so this fails only if Manager itself takes a
+// lock there — it is the behavioural half of a rule the shape states.
 //
 // It is a lock inversion and not only a long hold: the read path resolves
 // through [Manager.Shard], which wants that mutex, so a cycle parked in a base

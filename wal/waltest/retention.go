@@ -114,9 +114,9 @@ const retentionShortfall = "what a completed append acked stays readable until a
 	"old records each break that, and each takes acked data the cold store does not hold"
 
 // requireRun reads the shard's whole log and holds it against want. shortfall is
-// what fewer entries than were appended means for the caller's check — the two
-// callers are asking about different causes, and a shortfall reported with the
-// other one's diagnosis sends a deployment to look at the wrong thing.
+// what fewer entries than were appended means for the caller's check — the
+// callers are asking about different causes, and a shortfall reported with
+// another one's diagnosis sends a deployment to look at the wrong thing.
 func requireRun(
 	ctx context.Context, log wal.Log, shard wal.ShardID, want []wal.Entry, when, shortfall string,
 ) error {
@@ -146,9 +146,9 @@ func requireRun(
 // compaction that drops old records all have from above: the log answers reads
 // with less than it acked, and says nothing about it.
 //
-// It is what [CheckRetention] is proved against, and it is the one decorator
-// here that is *not* a log a backend may be — [Faulty] refuses calls, which is
-// something a correct backend does, while this one breaks the readback
+// It is what [CheckRetention] is proved against, and like [Unfenced] and
+// [Truncating] it is *not* a log a backend may be — [Faulty] refuses calls,
+// which is something a correct backend does, while this one breaks the readback
 // guarantee. A caller has no other use for it.
 //
 // Ages are measured from the append with the process's own clock, and the whole

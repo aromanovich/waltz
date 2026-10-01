@@ -18,8 +18,8 @@ import (
 //
 // It is not a log a backend may be, which is what tells it from [Faulty]:
 // a faulting log refuses calls, as a correct backend does under load, while this
-// one succeeds and answers less than it holds. [Expiring] is the other of its
-// kind. It is here so that a caller reading a whole log can be shown to check
+// one succeeds and answers less than it holds. [Expiring] and [Unfenced] are
+// the others of its kind. It is here so that a caller reading a whole log can be shown to check
 // that it reached the end rather than to trust a short page for it.
 type Truncating struct {
 	wal.Log

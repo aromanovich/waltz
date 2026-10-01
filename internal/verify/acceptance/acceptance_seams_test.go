@@ -40,7 +40,7 @@ import (
 	"github.com/aromanovich/waltz/wal/memwal"
 )
 
-// seamsShard is the one shard both cases drive. One shard is one accumulator
+// seamsShard is the one shard every seams run drives. One shard is one accumulator
 // and one apply transaction, so a second would add a second cycle and judge
 // nothing new here.
 const seamsShard = 1
@@ -130,7 +130,7 @@ func TestBothSeamsRealNoServer(t *testing.T) {
 }
 
 // TestAShardThatLosesItsEpochMidRun is I2 with both seams real. A second owner
-// takes the shard in the database — the range id moves, which is all an
+// takes the shard in the database — the rangeID moves, which is all an
 // acquire is from underneath — while this node's cycle keeps acking into a log
 // nobody fenced away from it. So the loss is discovered where it has to be
 // discovered, inside the drain's own transaction, with a window of acked
@@ -257,7 +257,7 @@ func newSeamsWith(t *testing.T, seed int64, policy cycle.Config) *seams {
 	return s
 }
 
-// takeShard takes the shard the way a history node arriving does: the range id
+// takeShard takes the shard the way a history node arriving does: the rangeID
 // moves in the database, and the cycle installed for it is fenced onto the log
 // at that same number (I11).
 func (s *seams) takeShard(t *testing.T) {
@@ -266,7 +266,7 @@ func (s *seams) takeShard(t *testing.T) {
 	require.NoError(t, s.mgr.ShardAcquired(s.ctx, seamsShard, s.epoch))
 }
 
-// anotherNodeTakesTheShard moves the range id and tells this node nothing,
+// anotherNodeTakesTheShard moves the rangeID and tells this node nothing,
 // which is what losing a shard is: an acquire is observable to the node that
 // makes it and to nobody else, so this cycle goes on acking under an epoch that
 // is already stale and finds out inside a drain.
@@ -316,8 +316,8 @@ func (s *seams) drive(t *testing.T, n int) error {
 // a trim that really did run ahead of the cold store and never two reads that
 // crossed.
 //
-// An empty log is that same claim at its boundary and not an exception to it. The
-// legal trim reaches applied+1, which is one past the last entry once the drain
+// An empty log is that same claim at its boundary and not an exception to it. A
+// legal trim leaves the lower end at applied+1, one past the last entry once the drain
 // has caught up — so a log holding nothing is allowed exactly when the cold store
 // holds everything acked, and a log that empties while the watermark is behind is
 // the loss this samples for. At a window of one mutation the drain does catch up
@@ -351,10 +351,10 @@ func (s *seams) logFirst(t *testing.T) (wal.Seqno, bool) {
 }
 
 // TestASampleOverAnEmptyLogIsTheBoundaryAndNotALoss stages the state
-// [seams.trimStaysBehind] read as a lost entry for four commits: the drain has
-// caught up and the trim has legally reached one past the last seqno. It was
-// reachable only by losing a race — at a window of one mutation, on a machine
-// where the drain wins — so it was red on CI and green here, four times.
+// [seams.trimStaysBehind] must not read as a lost entry: the drain has caught up
+// and a legal trim has taken the log's lower end one past the last seqno. A drive
+// reaches it only by a race — at a window of one mutation, where the drain wins —
+// so a green drive says nothing about it.
 //
 // Staged through the log directly rather than by driving a stream, since what is
 // judged is the sample and not the trim: the guard the drives run behind

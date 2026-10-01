@@ -29,7 +29,7 @@ const defaultAcceptanceMutations = 100_000
 // chains (MaxChainLength 8 at Default()) to land inside one window and merge —
 // measured: 256 leaves the fold ratio at 1.30 because a chain keeps straddling
 // the boundary — small enough that the accumulator's memory stays a window and
-// not a stream (a window is ~0.7 MB of encoded payload at Default()'s shapes).
+// not a stream (a window is ~0.56 MiB of encoded payload at Default()'s shapes).
 const acceptanceWindow = 1024
 
 // noClusterRun is what one stream through the path turned out to be. The

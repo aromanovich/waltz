@@ -386,16 +386,17 @@ two sources and paginates.
 **Cold store.** Whatever a deployment's persistence implementation writes its rows into: the
 permanent target of apply, reached only through `cold.Applier` and `cold.Watermarker`. No package of
 the layer names a column, and none may name a store. `cold/memcold` is the one implementation of
-those two interfaces shipped here (`internal/verify/coldtest` is the double beside it): Temporal's own SQL persistence, embedded whole, over a SQLite database
-that lives in this process and dies with it. Everything above the seam is exercised against it, and
-it is a real store rather than a stub — Temporal's own persistence suites judge it exactly as they
-judge a plugin. A deployment supplies its own as one `cold.Store` — one value answering both halves
-of the seam — and what it owes is four things: one drain is one publication (the merged requests, the
-task work and the watermark in one transaction, opened only once every history row the batch carried
-is durable), the watermark commits inside it, the epoch is asserted first, and the outcome comes back
-in `apply`'s five classes. What
-each demands of the cycle is [chapter 04](04-contracts.md#apply--what-a-drains-outcome-demands), and why
-the watermark has to ride that transaction is [the recovery
+those two interfaces shipped here (`internal/verify/coldtest` is the double beside it): Temporal's
+own SQL persistence, embedded whole, over a SQLite database that lives in this process and dies with
+it. Everything above the seam is exercised against it, and it is a real store rather than a stub —
+Temporal's own persistence suites judge it exactly as they judge a plugin. A deployment supplies its
+own as one `cold.Store` — one value answering both halves of the seam — and what it owes is four
+obligations: one drain is one publication (the merged requests, the task work and the watermark in
+one transaction, with every history row the batch carried durable no later than it), the watermark
+commits inside it, the epoch is asserted first, and the outcome comes back in `apply`'s five
+classes. A fifth thing is owed beside them: an applier bounds its own calls. What
+each demands of the cycle is [chapter 04](04-contracts.md#apply--what-a-drains-outcome-demands), and
+why the watermark has to ride that transaction is [the recovery
 rule](04-contracts.md#the-recovery-rule-the-watermark-exists-for) there. *Not to be confused with:*
 "main storage", "base" — both overloaded.
 
@@ -705,8 +706,8 @@ which. Why neither unit works alone, and where the two defaults come from, is [c
 
 * **entries** going up means the applier is behind, and that a failover would take longer than it
   should;
-* **bytes** going up means a workflow near the server's own blob limits: a large payload trips the
-  byte counter long before the entry counter.
+* **bytes** going up means the same, or a workflow near the server's own blob limits: a large
+  payload trips the byte counter long before the entry counter.
 
 Three properties matter more than the numbers:
 

@@ -163,8 +163,8 @@ func assertSet(req *p.InternalSetWorkflowExecutionRequest) asserted {
 // request's own state.
 
 // currentWriteOfSnapshot is the row a snapshot writes: the store passes the
-// snapshot's own state blob through, so both paths that carry one write the same
-// four fields off it.
+// snapshot's own state blob through, so every path that carries one writes the
+// same four fields off it.
 func currentWriteOfSnapshot(snap *p.InternalWorkflowSnapshot) *CurrentWrite {
 	return &CurrentWrite{
 		RunID:            snap.RunID,
@@ -211,8 +211,8 @@ func currentWriteOfUpdate(req *p.InternalUpdateWorkflowExecutionRequest) (*Curre
 // else the reset.
 //
 // Rendering a reduced state here instead — run, create request id, state and
-// status — left the row's `start_time` NULL and dropped every non-create request
-// id, both durably: the columns are recovered from this blob, and nothing
+// status — would leave the row's `start_time` NULL and drop every non-create
+// request id, both durably: the columns are recovered from this blob, and nothing
 // back-fills a start time. What that costs is a namespace policy that silently
 // stops working, `WorkflowIdReuseMinimalInterval` measuring every interval
 // against the zero time.

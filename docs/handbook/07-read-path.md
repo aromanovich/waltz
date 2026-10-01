@@ -172,7 +172,7 @@ may be one this layer wrote on an earlier page.
 
 An empty tail does not soften the task read's half of any of them, and the last row is why it cannot:
 a page the cold store answers carries **that store's own page token**. A shard re-acquired mid
-pagination — a range id renewal is one, and it unloads nothing, so the caller's reader keeps
+pagination — a rangeID renewal is one, and it unloads nothing, so the caller's reader keeps
 paginating — answers the next page from a cycle that merges, which cannot read a token this layer did
 not write and so finishes the pagination on the base alone. The window dropping out of it is acked
 task rows, and the range the reader completes on reaching the end deletes them.

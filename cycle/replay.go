@@ -9,7 +9,7 @@ package cycle
 //     triggers it as much as a write does, or a read on an inherited tail is
 //     answered from a cold store the log is ahead of;
 //   - it ends in a drain, so the window is empty when the first caller is
-//     served. Left to the ordinary watermarks it would mix entries whose
+//     served. Left to the ordinary triggers it would mix entries whose
 //     callers are gone with a fresh caller's write, where a condition failure
 //     is attributable to nobody and halts;
 //   - a provisional entry is carried alone and its condition failure is a drop
@@ -155,7 +155,7 @@ func (c *Cycle) fencedAway(e wal.Entry) error {
 }
 
 // replayEntry folds one entry of the tail, drains around it when it is
-// provisional, and lets the ordinary size watermarks cut the rest.
+// provisional, and lets the ordinary size triggers cut the rest.
 func (c *Cycle) replayEntry(
 	ctx context.Context, s *state, e wal.Entry, marks window.Watermarks,
 ) error {
@@ -200,9 +200,9 @@ func (c *Cycle) replayEntry(
 	if provisional {
 		return c.drain(ctx, s, drainReplayProvisional)
 	}
-	// The steady state's size watermarks, so a replayed transaction is the size
+	// The steady state's size triggers, so a replayed transaction is the size
 	// of an ordinary one: a tail at I10's bound applied whole would be a
-	// transaction nothing has ever executed. The age watermark is not consulted,
+	// transaction nothing has ever executed. The age trigger is not consulted,
 	// since every entry here is already as old as the incident — which is why
 	// the rule is asked for by name rather than off the whole policy.
 	if s.window.Trips(marks) != window.NoTrip {

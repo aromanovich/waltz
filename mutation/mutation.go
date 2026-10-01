@@ -207,12 +207,13 @@ func (m Mutation) TaskSlots() []*map[tasks.Category][]p.InternalHistoryTask {
 // order they must reach the store, and nil for a kind whose request carries
 // none.
 //
-// Which of the two writers puts them down is the cold store's, and both keep the same
-// rule: a mutation acked over history nodes nobody wrote is a mutable state the
-// cold store can never be brought to, and no functional suite sees it. The
+// Which of the two writers puts them down is the cold store's, and both keep the
+// same rule: a mutation acked over history nodes nobody wrote is a mutable state
+// the cold store can never be brought to, and no functional suite sees it. The
 // writer that puts them down through the store strips them off once they are
 // down, so a mutation still holding batches is one whose append is what makes
-// them durable — and the drain writes the nodes before it publishes the state.
+// them durable — and a cold store declaring cold.HistoryApplier writes the nodes
+// in the drain's transaction, beside the state that names them.
 func (m Mutation) EventSlots() [][]*p.InternalAppendHistoryNodesRequest {
 	kind := m.Kind()
 	if kind == KindInvalid {

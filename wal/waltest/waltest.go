@@ -1,6 +1,8 @@
 // Package waltest is the conformance suite for the [wal] contract, and beside
 // it [Faulty]: a backend that keeps the contract, wrapped so that a chosen call
-// fails.
+// fails. Three more decorators break the contract on purpose and are for proving
+// things against, never for running: [Expiring] and [Unfenced] for the two checks
+// below, and [Truncating] for a caller reading a whole log.
 //
 // Two obligations the suite cannot express have instruments beside it, each a
 // function a deployment runs against its own storage rather than a case here, and
@@ -163,7 +165,7 @@ func testReadFromAnyPosition(f *fixture) {
 	f.expectEntries(shard, 0, 10, entriesFrom(epoch, wal.FirstSeqno, count))
 }
 
-// The other half of guarantee 5: a trim removes exactly up to its watermark and
+// The other half of guarantee 5: a trim removes exactly up to its upTo and
 // leaves the log usable, the shard's ownership included.
 func testTrimRemovesUpToAndNothingElse(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(5)
@@ -967,9 +969,9 @@ func (f *fixture) readLog(shard wal.ShardID) ([]wal.Entry, error) {
 }
 
 // readAll drains a shard's whole log into a slice. Its two callers want the
-// entries rather than the iterator and fail in their own ways — this one through
-// a [testing.T], [CheckRetention] through an error — so what they share is the
-// drain and nothing past it.
+// entries rather than the iterator and fail in their own ways — [fixture.readLog]
+// for the suite's cases, [requireRun] through an error for [CheckRetention] and
+// [CheckReopen] — so what they share is the drain and nothing past it.
 func readAll(ctx context.Context, log wal.Log, shard wal.ShardID, page int) ([]wal.Entry, error) {
 	entries := make([]wal.Entry, 0, page)
 	for e, err := range wal.Entries(ctx, log, shard, wal.FirstSeqno, page) {

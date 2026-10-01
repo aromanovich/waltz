@@ -299,7 +299,7 @@ type wfKey struct {
 }
 
 // runKey names one run of one workflow inside a drain. The workflow is the
-// record pointer rather than its ids: [Drain] has the record in hand where it
+// record pointer rather than its ids: [Accumulator.Drain] has the record in hand where it
 // uses this, and two workflows cannot share one.
 type runKey struct {
 	workflow *WorkflowRecord
@@ -381,7 +381,7 @@ func (w *workflowAcc) recordCurrentWrite(cw *CurrentWrite) {
 // Whether the mutation stands on that row at all is this rule's own question and
 // not each handler's. A handler that carried the test itself and then dropped it
 // would record exactly the claim above, and nothing would say so: the authority
-// refuses it before the append, so only a replayed stream — which reaches [Add]
+// refuses it before the append, so only a replayed stream — which reaches [Accumulator.Add]
 // with no [Accumulator.Check] in front of it — would ever meet the difference.
 func currentTaintedRefusal(w *workflowAcc, want asserted) error {
 	if want.current == nil {
@@ -476,8 +476,8 @@ func (a *Accumulator) Stats() Stats {
 	return Stats{MutationsIn: a.mutationsIn, DirtyWorkflows: len(a.workflows)}
 }
 
-// Batch is one drain's whole output: these requests, this task work, and the
-// seqno a transaction that applied both may acknowledge.
+// Batch is one drain's whole output: these requests, this task work, these
+// event batches, and the seqno a transaction that applied them may acknowledge.
 //
 // Only [Accumulator.Drain] builds one, and that is what apply's write path
 // stands on rather than re-deriving: the requests are in tail-seqno order, they
@@ -649,9 +649,9 @@ func (a *Accumulator) Drain() Batch {
 
 	work := a.drainTasks()
 
-	// Above both halves: the folded requests, whose last tail seqno is the
-	// maximum because out is sorted, and the task work, whose seqnos are not in
-	// that ordering. The task work's tail counts even when the work is empty,
+	// Above all three: the folded requests, whose last tail seqno is the
+	// maximum because out is sorted, and the task work and the event batches,
+	// whose seqnos are not in that ordering. The task work's tail counts even when the work is empty,
 	// since a window whose task rows a range delete all dropped still folded
 	// those entries and a watermark below them would replay them.
 	var watermark wal.Seqno

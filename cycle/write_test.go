@@ -216,7 +216,7 @@ func TestAWindowedWriteRetainsTheCallersOwnRequest(t *testing.T) {
 	require.NoError(t, write(ctx, m, held, 7))
 	require.Empty(t, applier.drains, "the window holds it, and the caller is gone")
 
-	require.NoError(t, write(ctx, m, mkCreate(ids()), 7), "the second write trips the watermark")
+	require.NoError(t, write(ctx, m, mkCreate(ids()), 7), "the second write trips the mutations trigger")
 	require.Len(t, applier.drains, 1)
 	require.Same(t, held.Create, applier.drains[0][0].Request.Create,
 		"the drain must reach the caller's own request rather than a copy of it")

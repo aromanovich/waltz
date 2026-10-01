@@ -3,8 +3,8 @@
 // ShardStore the history service talks to in place of the plugin's own.
 //
 // [Options] is the whole of the mode switch: no layer is passthrough, where
-// every call transits; a layer is intercept, where eleven methods are answered
-// from the WAL and a twelfth is refused ([ErrCompleteHistoryTaskUnsupported]).
+// every call transits; a layer is intercept, where twelve methods are answered
+// through the WAL and a thirteenth is refused ([ErrCompleteHistoryTaskUnsupported]).
 //
 // [ADR 0003] is why this runs in the server's process.
 //
@@ -82,9 +82,10 @@ type ShardWriter interface {
 	// range delete carry none, and the drain's own CAS fences them instead.
 	//
 	// The error is the store's own (condition failure, fenced shard, tail at its
-	// bound), unwrapped, and is attributable to this caller only at a window of
-	// one. base is called inside the goroutine that owns the window, at most
-	// once per asserted row.
+	// bound), unwrapped, and a condition failure is this caller's own: a windowed
+	// write settles its conditions before the append, and a sync write's drain
+	// carries its mutation alone. base is called inside the goroutine that owns
+	// the window, at most once per asserted row.
 	Write(
 		ctx context.Context,
 		m mutation.Mutation,

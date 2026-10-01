@@ -542,12 +542,12 @@ own run id rather than reading it off a request that may not be there.
 
 `Accumulator.TaskPage(req, base BasePage)` is the merge-on-read for tasks, and
 `Accumulator.HistoryPage(req, treeID, base HistoryBasePage)` the same for one history branch.
-`BasePage` is `func(batch int, token []byte) ([]p.InternalHistoryTask, []byte, error)`: a batch
-size and a token rather than a request, since those are the only two things the merge decides — the range, the category and the
-shard stay the caller's. The token is the base's own bytes, passed through unparsed, and a
-zero-length one back means the base is exhausted. The base is called at most once per page, and not
-at all once its token says it is exhausted. Its error is returned unwrapped and never swallowed,
-because a page that quietly omitted the store's rows would lose them.
+`BasePage` is `func(batch int, token []byte) ([]p.InternalHistoryTask, []byte, error)`: a batch size
+and a token rather than a request, since those are the only two things the merge decides — the
+range, the category and the shard stay the caller's. The token is the base's own bytes, passed
+through unparsed, and a zero-length one back means the base is exhausted. The base is called at most
+once per page, and not at all once its token says it is exhausted. Its error is returned unwrapped
+and never swallowed, because a page that quietly omitted the store's rows would lose them.
 
 Four things are required of the base, the first three because the merge builds a page's reach out of
 what the base last returned rather than out of a cursor of its own. **Every row is inside the range asked
@@ -668,17 +668,17 @@ may be keyed on it.
 * **`ShardWriter`** — `WritesHistory() bool` and `Write(ctx context.Context, m mutation.Mutation,
   epoch wal.Epoch, base *baserow.Rows) error`. `WritesHistory` says whether an intercepted write's
   event batches ride the record; false means the store owes them to the base store before it calls
-  `Write`, and strips them off the mutation once they are down. The mutation names its own shard. **The layer takes ownership of `m`'s
-  request**: in a windowed mode it is retained past this call and merged in place with the window's
-  other requests, so a caller may not read or reuse it once `Write` has returned. `epoch` is the
-  rangeID the caller wrote under, so a write from a fenced-out shard context is refused rather than
-  re-stamped with this node's epoch; zero means "the caller named no epoch", not "epoch 0" — the two
-  deletes and the range delete carry none, and the drain's own epoch CAS fences them instead. The
-  error is the store's own — condition failure, fenced shard, tail at its bound — and comes back
-  unwrapped. In a windowed mode a condition failure is this caller's own, because fold's `Check`
-  decides it before the entry is appended; under `Sync` the drain decides it, and the window is one
-  mutation, so it is this caller's there too. `base` is called inside the goroutine that owns the
-  window, at most once per asserted row.
+  `Write`, and strips them off the mutation once they are down. The mutation names its own shard.
+  **The layer takes ownership of `m`'s request**: in a windowed mode it is retained past this call
+  and merged in place with the window's other requests, so a caller may not read or reuse it once
+  `Write` has returned. `epoch` is the rangeID the caller wrote under, so a write from a fenced-out
+  shard context is refused rather than re-stamped with this node's epoch; zero means "the caller
+  named no epoch", not "epoch 0" — the two deletes and the range delete carry none, and the drain's
+  own epoch CAS fences them instead. The error is the store's own — condition failure, fenced shard,
+  tail at its bound — and comes back unwrapped. In a windowed mode a condition failure is this
+  caller's own, because fold's `Check` decides it before the entry is appended; under `Sync` the
+  drain decides it, and the window is one mutation, so it is this caller's there too. `base` is
+  called inside the goroutine that owns the window, at most once per asserted row.
 * **`ShardReader`** — four reads, each taking the caller's request and the cold store's own answer
   as a closure, so the layer decides whether to call it. `GetWorkflowExecution` and
   `GetCurrentExecution` take `base func(context.Context) (…, error)`; `GetHistoryTasks` takes `base
@@ -725,17 +725,17 @@ The requests name no epoch the applier may use — a replayed one lost its range
 so the epoch every drain asserts under is the one `Apply` was handed.
 
 **An applier must bound its own calls, and this is the one obligation the layer cannot help with.**
-The context `Apply` receives often carries no deadline: five of the drains — the age tick's, both size
-triggers', the refusal drain's and the storage-pressure drain's — run detached, because what they
-carry is earlier writers' acked mutations and bounding the transaction by whichever caller happens to be on the line would turn one
-expired client deadline into a drain that did not commit. So an `Apply` that can block for ever will,
-and it blocks the shard's whole loop: that loop serves the shard's writes and all four of its reads,
-and stopping the cycle waits for it with no bound of its own, which is why a wedged store makes
-`Layer.Shutdown` outlast its budget ([09-operations.md](09-operations.md#2-start-and-stop-order)).
-The layer deliberately has no timeout to offer instead — a drain it cut short is an unknown outcome,
-which stalls the shard, so an imposed bound would trade a hang for the state this design treats as
-worst. Whatever the store's driver, statement or request timeout is, it is the only thing between a
-wedged store and a wedged node.
+The context `Apply` receives often carries no deadline: five of the drains — the age tick's, both
+size triggers', the refusal drain's and the storage-pressure drain's — run detached, because what
+they carry is earlier writers' acked mutations and bounding the transaction by whichever caller
+happens to be on the line would turn one expired client deadline into a drain that did not commit.
+So an `Apply` that can block for ever will, and it blocks the shard's whole loop: that loop serves
+the shard's writes and all four of its reads, and stopping the cycle waits for it with no bound of
+its own, which is why a wedged store makes `Layer.Shutdown` outlast its budget
+([09-operations.md](09-operations.md#2-start-and-stop-order)). The layer deliberately has no timeout
+to offer instead — a drain it cut short is an unknown outcome, which stalls the shard, so an imposed
+bound would trade a hang for the state this design treats as worst. Whatever the store's driver,
+statement or request timeout is, it is the only thing between a wedged store and a wedged node.
 
 ### What a drain asserts, and what it must not
 

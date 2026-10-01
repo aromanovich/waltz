@@ -155,7 +155,7 @@ func (r *Record) Close() error {
 // appended and fsynced per line, so a kill can at worst leave the last one
 // short — and a reader that treated a short last line as a broken file could
 // not read the record of a killed node, which is the case the record exists
-// for.
+// for. Any other line that does not parse is dropped the same way, silently.
 func ReadRecord(path string) ([]Line, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {

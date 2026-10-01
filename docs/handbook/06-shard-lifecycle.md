@@ -153,15 +153,17 @@ Four cases, in the order [`../../cycle/manager.go`](../../cycle/manager.go) take
 
 Nothing reaps an idle cycle, and that is deliberate rather than an omission. An acquire is observable
 and a close is not, so a cycle is retired only by a higher epoch superseding it, by the node
-shutting down, or by a caller naming its epoch to `Layer.RetireShard`. An idle one costs one goroutine and an empty accumulator: a leak bounded by the number
-of shards this node holds, since the registry keeps one cycle per shard.
+shutting down, or by a caller naming its epoch to `Layer.RetireShard`. An idle one costs one
+goroutine and an empty accumulator: a leak bounded by the number of shards this node holds, since
+the registry keeps one cycle per shard.
 
 ---
 
 ## 2. Use the ownership token Temporal already has
 
 `wal.Epoch` is not a token the layer mints. It **is** Temporal's `rangeID`, taken from the
-`UpdateShard` request and used as the log's fencing token, and that identity is invariant [I11](02-concepts-and-invariants.md#the-invariants).
+`UpdateShard` request and used as the log's fencing token, and that identity is invariant
+[I11](02-concepts-and-invariants.md#the-invariants).
 
 The reason is that a second, independent ownership token would be a second thing that can be right
 while the first is wrong. Temporal already fences the shard on `rangeID`: the shard context refuses
@@ -543,11 +545,11 @@ already holds — up to the committed watermark, with no safety lag, since recov
 rather than the log. A backend's reads get dearer as its log gets longer, so this is part of the
 latency budget rather than hygiene.
 
-* **The cadence is two numbers, whichever trips first** (storage pressure aside, below): `cycle.Config.TrimEvery` drains since the
-  last trim (16 by default) and `cycle.Config.TrimAfter` elapsed time (60 s by default). Both are
-  read at the decision, so they may move under a shard this node is already holding. There is a
-  cadence at all because a `DeleteRange` per drain would be a transaction per drain for no gain.
-  [Chapter 08](08-configuration.md) has the configuration keys.
+* **The cadence is two numbers, whichever trips first** (storage pressure aside, below):
+  `cycle.Config.TrimEvery` drains since the last trim (16 by default) and `cycle.Config.TrimAfter`
+  elapsed time (60 s by default). Both are read at the decision, so they may move under a shard this
+  node is already holding. There is a cadence at all because a `DeleteRange` per drain would be a
+  transaction per drain for no gain. [Chapter 08](08-configuration.md) has the configuration keys.
 * **It runs beside the loop, not in it.** `cycle/trim` is its own package for exactly that reason: a
   stuck log may not stop a shard from acking and applying. One trim runs at a time; a cadence that
   comes due while a trim is in flight is **skipped rather than queued**, since the next one takes a

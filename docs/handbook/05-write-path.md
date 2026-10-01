@@ -23,9 +23,9 @@ call that fills a window (or the age tick behind it) pays for the cold-store dra
 
 The third moment comes later. A drain writes a folded batch, together with a watermark saying how
 far it applied, in one transaction. Once that commits, the cold store itself holds the effect and
-the matching stretch of tail can be released. If the process never learns whether that transaction committed, it does not guess: it
-reads the watermark, which is the only witness. So the path makes three different claims, each
-resting on its own evidence:
+the matching stretch of tail can be released. If the process never learns whether that transaction
+committed, it does not guess: it reads the watermark, which is the only witness. So the path makes
+three different claims, each resting on its own evidence:
 
 | Moment | What is certain | Evidence |
 |---|---|---|
@@ -319,11 +319,12 @@ What sync mode changes is whose answer a failed drain is. Beside its trigger, ea
 `callerRule`: the legal `drainCause` values — trigger, rule, and whether the drain is detached from
 its caller's clock — are a fixed list of ten in `cycle/cycle.go` with no constructor, because an
 attribution that is too permissive reports a failure to a caller who did not write the mutation.
-Eight of the ten answer nobody, so a condition failure inside one halts the shard. `drainSync` answers its caller. A lone replayed provisional entry drops instead. That is
-also why sync mode's ack is *provisional*: the entry is encoded with `mutation.EncodeProvisional`
-rather than `mutation.Encode`, and replay reads that bit back to know it may drop such an entry
-rather than halt on it. Because the window is empty at every call boundary, a node killed in sync
-mode leaves at most the one entry whose call was in flight.
+Eight of the ten answer nobody, so a condition failure inside one halts the shard. `drainSync`
+answers its caller. A lone replayed provisional entry drops instead. That is also why sync mode's
+ack is *provisional*: the entry is encoded with `mutation.EncodeProvisional` rather than
+`mutation.Encode`, and replay reads that bit back to know it may drop such an entry rather than halt
+on it. Because the window is empty at every call boundary, a node killed in sync mode leaves at most
+the one entry whose call was in flight.
 
 ## 3. Failed write — the condition did not hold
 
@@ -433,7 +434,7 @@ Four things refuse a write here, and the metric says which through the `limit` t
 | `limit` | What ran out | What it means |
 |---|---|---|
 | `entries` | `HardMaxEntries`, 8192 by default | the applier is behind |
-| `bytes` | `HardMaxBytes`, 8 MiB by default | a workflow near the server's own blob limits |
+| `bytes` | `HardMaxBytes`, 8 MiB by default | an applier that is behind, or a workflow near the server's own blob limits |
 | `unresolved` | not a size at all | the cycle cannot read what its last drain did, so nothing may be applied over it |
 | `storage_pressure` | the backend's storage, not any bound of the layer's | the backend reports pressure at `wal.PressureStop` and takes no new appends until it lowers the level ([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)) |
 
@@ -486,14 +487,15 @@ sequenceDiagram
 ```
 
 This is fencing working, not an incident. The halted cycle **keeps its log entries** and trims
-nothing: those entries are exactly what the next owner replays. They are also why the two reads
-refuse here — a non-empty tail means the layer knows the cold store is incomplete and cannot say by
-what. A halted-lost cycle whose tail *is* empty passes a mutable-state read through to that store
-instead ([chapter 07](07-read-path.md#2-routing-a-read-and-drainonread)). A caller still on the
-line — the write whose drain this was — gets `*p.ShardOwnershipLostError`. `storeError` is the
-function that turns a cycle's answer into the store's own error type, and halted-lost is the one
-cycle state it translates, so the shard re-acquires. What the next owner does with the inherited
-tail is [chapter 06](06-shard-lifecycle.md).
+nothing: those entries are exactly what the next owner replays. They are also why the mutable-state
+reads, and the branch page that routes as one, refuse here — a non-empty tail means the layer knows
+the cold store is incomplete and cannot say by what. A halted-lost cycle whose tail *is* empty
+passes a mutable-state read through to that store instead ([chapter
+07](07-read-path.md#2-routing-a-read-and-drainonread)). A caller still on the line — the write whose
+drain this was — gets `*p.ShardOwnershipLostError`. `storeError` is the function that turns a
+cycle's answer into the store's own error type, and halted-lost is the one cycle state it
+translates, so the shard re-acquires. What the next owner does with the inherited tail is [chapter
+06](06-shard-lifecycle.md).
 
 ## 6. Failed drain — an invariant was violated
 
@@ -716,8 +718,9 @@ waits on the trim, which is detached, and nobody waits on another shard.
   delegated assertion costs.
 * [`../../apply/failure.go`](../../apply/failure.go) — `Classify`, `Refuse` and the
   attribution readback an applier hands back.
-* [`../../cold/cold.go`](../../cold/cold.go) — the four things a drain owes, the one part that may sit outside its transaction, `HistoryApplier`,
-  as the seam states them; [`../../cold/memcold/apply.go`](../../cold/memcold/apply.go) is
-  the applier this tree ships, whose doc comment is the statement order section 2 walks.
+* [`../../cold/cold.go`](../../cold/cold.go) — the four things a drain owes, the one part that may
+  sit outside its transaction, `HistoryApplier`, as the seam states them;
+  [`../../cold/memcold/apply.go`](../../cold/memcold/apply.go) is the applier this tree ships, whose
+  doc comment is the statement order section 2 walks.
 * [`../../cycle/replay.go`](../../cycle/replay.go) — what a new owner does with the tail
   this chapter's failures leave behind.

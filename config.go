@@ -74,7 +74,7 @@ var knobs = []knob{
 //
 // It is only the static half of what a node runs — [NewPolicy] is the whole —
 // so every field [settings] carries is at its default here. Assert a section
-// against this; read a live watermark off [NewPolicy].
+// against this; read a setting's value off [NewPolicy].
 func (w WAL) StaticConfig() cycle.Config {
 	c := cycle.Defaults()
 	for _, k := range knobs {
@@ -138,7 +138,7 @@ func checkSectionMiscased(options map[string]any) error {
 
 // decodeSection decodes the section's keys and refuses any key that is not one.
 // Separate from [Parse] so the guard over [knobs] can drive every key at once
-// without also satisfying the node-level checks Parse runs afterwards.
+// without an options map around them.
 func decodeSection(raw any) (WAL, error) {
 	// Before the decoder, so a key that moved is told where it went rather than
 	// reported as unrecognised ([movedKey]). It runs off the raw map because

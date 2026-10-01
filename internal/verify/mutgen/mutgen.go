@@ -113,7 +113,7 @@ type Config struct {
 // tasks in every category, snapshots inside chains, and deletions.
 //
 // It is a function rather than zero-value defaulting because 0 is a meaningful
-// value for four of the knobs — WorkflowReuse 0 is precisely the corpus an
+// value for most of the knobs — WorkflowReuse 0 is precisely the corpus an
 // acceptance must be able to recognise as worthless — and a Config that filled
 // zeros in would make that stream unaskable-for.
 func Default() Config {
@@ -263,8 +263,8 @@ type Report struct {
 // mutation count: a generator regression that quietly stopped producing
 // tombstones leaves every suite over it judging fold on creates, green.
 //
-// It asks only about what the config could produce, so a stream with the task
-// rates turned off — three suites need one — is not missing history tasks.
+// It asks only about what the config could produce, so a stream with
+// TaskDensity 0 is not missing history tasks.
 func (r Report) Missing() []string {
 	var missing []string
 	want := func(absent bool, what string) {
@@ -348,8 +348,9 @@ type Generator struct {
 	emitted map[int32]*emittedTasks
 	cats    []tasks.Category
 
-	// rep accumulates the stream's counters in place; the config echoes and
-	// the two derived ratios stay zero until [Generator.Report] fills them.
+	// rep accumulates the stream's counters in place; the config echoes,
+	// Workflows and the two derived ratios stay zero until [Generator.Report]
+	// fills them.
 	rep Report
 }
 

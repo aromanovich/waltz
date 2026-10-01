@@ -125,8 +125,8 @@ func (s *ExecutionStore) Counts() Counts {
 
 // interceptRow is the per-kind half of an intercepted write: the store method
 // the metrics are tagged with, and the counter it raises. Behaviour stays in
-// the methods; this is the bookkeeping, in the shape [mutation.kinds] already
-// states its own per-kind facts in.
+// the methods; this is the bookkeeping, in the shape the mutation package's own
+// kinds table states its per-kind facts in.
 type interceptRow struct {
 	op      string
 	counter func(*ExecutionStore) *atomic.Int64
@@ -154,13 +154,13 @@ var interception = [mutation.KindCount]interceptRow{
 }
 
 // write is intercept mode's whole write path: one mutation into the log, and
-// whatever the drain that carried it answered — preceded, where the record does
-// not carry them, by the request's new events into the cold store. All eight
-// intercepted writes come through here and read their own row off the kind, so
-// neither step is a method's to remember. The error is returned exactly as it
-// arrives, since
-// ContextImpl.handleWriteErrorLocked type-switches on these values and one %w
-// turns an expected condition failure into a background re-acquire.
+// whatever the layer answered, the drain's outcome in sync mode — preceded,
+// where the record does not carry them, by the request's new events into the
+// cold store. All eight intercepted writes come through here and read their own
+// row off the kind, so neither step is a method's to remember. The error is
+// returned exactly as it arrives, since ContextImpl.handleWriteErrorLocked
+// type-switches on these values and one %w turns an expected condition failure
+// into a background re-acquire.
 func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 	row := interception[m.Kind()]
 	if row.counter == nil {
@@ -186,8 +186,8 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 // mutation once they are down. It is the writer for records that do not carry
 // the batches: skipping them would ack a mutable state pointing at history nodes
 // nobody wrote — which no functional suite sees, the entry being durable and
-// correct. Where the record carries them the drain is the writer instead, under
-// the same rule (ADR 0014).
+// correct. Where the record carries them the drain is the writer instead, inside
+// the transaction that writes the mutable state naming them (ADR 0014).
 //
 // The strip is what lets everything below hold one invariant: a mutation
 // reaching the layer carries exactly the batches nobody has written yet. So the
@@ -216,8 +216,8 @@ func (s *ExecutionStore) GetHistoryBranchUtil() p.HistoryBranchUtil {
 
 // --- the four mutable-state writes: the WAL's traffic ---------------------
 //
-// Each hands its request to write, which puts the events down, acks the
-// mutation, and answers with what the drain said. The epoch is the request's own
+// Each hands its request to write, which puts the events down where the record
+// does not carry them, acks the mutation, and answers with what the layer said. The epoch is the request's own
 // rangeID, the token the plugin's own write would have conditioned its
 // transaction on (invariant I11).
 

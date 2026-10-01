@@ -35,10 +35,10 @@
 //
 // A client running against a real database does not use this and does not
 // subclass it. It supplies cold.Applier and cold.Watermarker over its own
-// store, and what it owes there is the four things the cold package's doc
-// states.
+// store, and what it owes there is what the cold package's doc states: four
+// obligations, and a bound on its own calls besides.
 //
-// This package is the worked example of all four — [Store.Apply] is where they
+// This package is the worked example of the four obligations — [Store.Apply] is where they
 // are stated statement by statement — and the shape it lands on is the
 // transferable part. persistence.ExecutionStore has nowhere to
 // declare a transaction spanning many workflows, so the store holds the

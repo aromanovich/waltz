@@ -6,8 +6,8 @@ package fold_test
 // not. taskpage_corpus_test.go checks the same rules over a stream; what a
 // shard does with a page is cycle's.
 //
-// The base is the plugin's own pagination (internal/verify/coldtasks) rather than a stub,
-// because the base's pagination is the merge's whole difficulty: a store that
+// The base is a model of a persistence plugin's pagination
+// (internal/verify/coldtasks) rather than a stub, because the base's pagination is the merge's whole difficulty: a store that
 // answered everything in one page would leave the cut untested.
 
 import (
@@ -156,10 +156,7 @@ func TestASharedFirstKeyStillAdvancesThePagination(t *testing.T) {
 }
 
 // TestThePageHoldsTheWindowToTheRangeItWasAsked drives both bounds of the window
-// half's filter at the keys they are. Nothing did: every case in this file asks
-// for the widest range a queue could ask for, so a window task outside the
-// request was never one the filter had to exclude, and moving either comparison
-// left the whole of `go test ./...` green.
+// half's filter at the keys they are.
 //
 // The base is held to this by a refusal — a row outside the range asked for fails
 // the page ([fold.ErrBaseRowOutsideRange]) — so the window half owes the same
@@ -250,7 +247,7 @@ func TestThePageHidesTheUndrainedRangesFromTheColdStoresHalfOnly(t *testing.T) {
 
 	t.Run("a scheduled range hides at the store's resolution", func(t *testing.T) {
 		// The read side of [TestAScheduledRangeComparesAtTheStoresResolution]:
-		// A stored fire time is microseconds, so a maximum a nanosecond above a
+		// a stored fire time is microseconds, so a maximum a nanosecond above a
 		// row's fire time truncates to that fire time and the store's DELETE
 		// removes nothing. A page that hid the row anyway would make it
 		// invisible and present, and nobody would ever fire it.
@@ -323,10 +320,10 @@ func TestTheResumeTokenCarriesTheBasesOwnBytes(t *testing.T) {
 // the ask being a cap. Where the window alone overflows the page the base is
 // asked for one row and exactly one is emitted, which is what lets that page's
 // cursor advance — so a second row sent unasked is one the cursor moves past
-// having emitted neither it nor anything above it. Measured before this was
-// refused: an ask of one answered with keys 40, 41 and 42 emitted 40 alone and
-// handed back a token resuming the base past 42, so 41 and 42 were returned by
-// no page of that pagination and deleted by the range its reader completed.
+// having emitted neither it nor anything above it. Unrefused, an ask of one
+// answered with keys 40, 41 and 42 emits 40 alone and hands back a token
+// resuming the base past 42, so 41 and 42 are returned by no page of that
+// pagination and deleted by the range its reader completes.
 func TestABaseThatAnswersWithMoreRowsThanItWasAskedForIsRefused(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a, mkAddTasks(keyed(50, "a"), keyed(60, "b"), keyed(70, "c")))

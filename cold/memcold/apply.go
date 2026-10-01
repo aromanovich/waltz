@@ -39,9 +39,9 @@ func (*Store) AppliesHistory() {}
 // Apply is the cold package's contract implemented, and the reference for a
 // client implementing it over another database.
 //
-// The order of the transaction is the contract, statement for statement:
+// The order of the transaction, statement for statement:
 //
-//  1. the epoch, as a compare-and-set on the shard's range id. First, so a
+//  1. the epoch, as a compare-and-set on the shard's rangeID. First, so a
 //     drain that lost the shard reports a lost shard rather than the version
 //     failure a fenced writer would find underneath it — the shard's new owner
 //     has been writing, and every version this drain stands on is stale for a
@@ -162,9 +162,10 @@ func refusals(shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 }
 
 // drain is everything the transaction carries, in the order the numbered list
-// above states — which is this store's, [cold.Applier] stating what a drain
-// must carry and not the sequence. A store ordering it otherwise would leak
-// every row the window's own range sweep took out.
+// above states — which is this store's: the cold package's doc pins what a
+// drain must carry, the epoch first and the history no later than what names
+// it, and not the rest of the sequence. A store running the range deletes after
+// the inserts would take away every task the window kept past its own sweep.
 //
 // It does not commit: the caller does, so that a failure here is always a
 // transaction still open and always rolled back.
@@ -183,8 +184,8 @@ func (s *Store) drain(
 
 	// Inside the transaction, which this store may do and a client with a
 	// separate bulk path may not: what the contract pins is that these rows are
-	// durable before the mutable state naming them is, and one transaction is
-	// the strongest way to keep that.
+	// durable no later than the mutable state naming them, and one transaction
+	// is the strongest way to keep that.
 	if err := applyHistory(ctx, tx, batch.History()); err != nil {
 		return err
 	}
@@ -208,7 +209,7 @@ func (s *Store) drain(
 	return SetWatermark(ctx, tx, shard, batch.Watermark())
 }
 
-// assertEpoch is the drain's fence: the shard's range id must still be the one
+// assertEpoch is the drain's fence: the shard's rangeID must still be the one
 // this writer holds. A shard with no row is a lost shard rather than a failure —
 // this writer cannot own a shard that is not there, and reporting an unknown
 // outcome would leave the caller retrying a drain that can never land.

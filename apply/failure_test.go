@@ -87,7 +87,6 @@ func TestClassify(t *testing.T) {
 // TestClassifyPrefersTheShardOverEverythingUnderIt is the order of that chain,
 // which the table above cannot see: every case there matches exactly one arm,
 // so each is judged alone and the precedence between them is judged by nothing.
-// Reversing two arms left the whole of `go test ./...` green.
 //
 // The order is not arbitrary and this repository's own store cannot show it.
 // memcold asserts the epoch first and returns a lost shard by itself, so its

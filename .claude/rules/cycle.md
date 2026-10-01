@@ -48,12 +48,13 @@ What to know before changing it:
   Before changing any rule about a page's contents, read that file: the cut has
   no freedom and its reasoning is stated there, at length;
 * a task read on a shard this node does not hold is **refused** with
-  `ShardOwnershipLost`, which is the opposite of what the two mutable-state
-  reads — and the branch page, which routes as one — do with the same case,
-  and is not an inconsistency: those have callers that legitimately do not own the shard, and this one has exactly one caller —
-  whose page, if it came back short a tail, would be completed and acked past.
-  That difference is one row of `readRoute` (below), which is where the whole
-  question "who may answer this read while the shard changes hands" lives;
+  `ShardOwnershipLost`, which is the opposite of what the two mutable-state reads — and
+  the branch page, which routes as one — do with the same case, and is not an
+  inconsistency: those have callers that legitimately do not own the shard, and this
+  one has exactly one caller — whose page, if it came back short a tail, would be
+  completed and acked past. That difference is one row of `readRoute` (below), which is
+  where the whole question "who may answer this read while the shard changes hands"
+  lives;
 * the cold store is reached through a **thunk the wrapper passes**, never named
   here — the store is the caller's, behind `cold.Applier`, and `wrapper` still
   may not name one. The routing rule for a **mutable-state** read turns on the
@@ -67,7 +68,7 @@ What to know before changing it:
   another owner's acks, which are in neither this tail nor the cold store. On
   halted-invariant an empty tail makes the page *correct* and the token it
   carries is still the base store's, so a shard re-acquired mid pagination — a
-  range id renewal unloads nothing — meets that token at a cycle that merges,
+  rangeID renewal unloads nothing — meets that token at a cycle that merges,
   cannot read it, and finishes the pagination on the base alone; the window that
   drops out is acked task rows, which the range the reader completes deletes. A
   retired cycle has no loop left to ask, so it reads the tail off the mirrored
@@ -425,7 +426,7 @@ What to know before changing it:
   the write path refuses with I10's own `ResourceExhausted` at both the moments
   it is answered at (the mirror carries the stall for the pre-queue one, because
   the loop a writer would queue behind is inside the very watermark read that is
-  failing), **both readers are refused with that same value** (the window
+  failing), **every read is refused with that same value** (the window
   is gone and the cold store's rows are exactly what could not be confirmed, so
   a merge answers a read out of neither source — a write undone rather than a
   stale one, and a task page short a drain's tasks to the caller that completes
@@ -443,18 +444,16 @@ What to know before changing it:
   the fold that was refused, whose recovery drain then failed, leaves an entry
   acked and durable in **no window at all**, which is a mutation the next
   watermark move steps over and the trim then deletes;
-* **a drain that folds to nothing still settles what it acked**, and the
-  guard on it reads in both directions — which is why it is `fold.Batch.Settles`
-  and not an `if` here: the drain asks the batch for the position it acked and
-  settles on the answer. A window can ack entries and produce an empty batch in
-  exactly one shape, and that shape is fold's property rather than this
-  package's: `fold/emptydrain_test.go` names it and holds every other kind
-  against it. Settling such a window unguarded is the bug in the other direction — a drain over a window that folded *nothing* carries
-  watermark zero, and `resolved` taken from it puts the whole log back under
-  the tail, so I10 refuses every write on the shard over memory nobody holds.
-  `TestADrainOfAnEmptyWindowSettlesNothing` is the one that says so by name;
-  before it, the guard was held only by an assertion inside a replay test about
-  something else;
+* **a drain that folds to nothing still settles what it acked**, and the guard on it reads in both
+  directions — which is why it is `fold.Batch.Settles` and not an `if` here: the drain asks the
+  batch for the position it acked and settles on the answer. A window can ack entries and produce an
+  empty batch in exactly one shape, and that shape is fold's property rather than this package's:
+  `fold/emptydrain_test.go` names it and holds every other kind against it. Settling such a window
+  unguarded is the bug in the other direction — a drain over a window that folded *nothing* carries
+  watermark zero, and `resolved` taken from it puts the whole log back under the tail, so I10
+  refuses every write on the shard over memory nobody holds.
+  `TestADrainOfAnEmptyWindowSettlesNothing` is the one that says so by name; before it, the guard
+  was held only by an assertion inside a replay test about something else;
 * **the tail's arithmetic has one owner, `cycle/tailstate`**, and it spans
   two goroutines on purpose: `tailstate.Tail` is loop-owned like the rest of
   `state`, `tailstate.Mirror` is the same numbers where `Cycle.write` and
@@ -513,11 +512,11 @@ What to know before changing it:
   does the same assignment through a `w := &s.window` — the alias that walked
   past the AST scan the bullet above buried;
 * **`Tail.Settle` takes `KeepWatermark`/`MoveWatermark` rather than being written
-  three times**: a committed drain moves `applied`, sync mode's answered
-  condition failure and replay's dropped provisional entry do not. That is
-  the same rule as the bullet above about the two counters, in the direction
-  that strands a recovering owner rather than the one that trips backpressure,
-  and it used to live in a comment on the copy that got it right;
+  four times**: a committed drain moves `applied`; a drain that folds to no
+  transaction, sync mode's answered condition failure and replay's dropped
+  provisional entry do not. That is the same rule as the bullet above about the
+  two counters, in the direction that strands a recovering owner rather than the
+  one that trips backpressure;
 * **three rules about the loop's ownership are prose, and two of them still have
   no mechanism**, which is a deliberate ending rather than a gap
   ([no-lint-in-tests.md](no-lint-in-tests.md)). A `*state` is a parameter and

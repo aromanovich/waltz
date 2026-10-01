@@ -321,9 +321,7 @@ func TestAScheduledRangeComparesAtTheStoresResolution(t *testing.T) {
 }
 
 // TestARangeCoversItsOwnMinimumAndNotItsOwnMaximum drives both bounds of
-// [fold.TaskRange.Covers] at the keys they are, in both category types. The
-// maximum's boundary was already driven; the minimum's was not, and moving that
-// comparison to `<` left the whole of `go test ./...` green.
+// [fold.TaskRange.Covers] at the keys they are, in both category types.
 //
 // It is the bound most often landed on exactly. A queue completes to a key and
 // the next range starts at it, so ranges arrive butt-joined and a task sitting
@@ -364,7 +362,7 @@ func TestARangeCoversItsOwnMinimumAndNotItsOwnMaximum(t *testing.T) {
 
 // TestTheRangesAReaderSubtractsAreTheUndrainedOnes: what a merged read hides
 // from the cold store's page is exactly the ranges the drain has not applied.
-// Asserted through the drain's [TaskWork], since the window's pending ranges
+// Asserted through the drain's [fold.TaskWork], since the window's pending ranges
 // are unexported and "undrained" and "carried by this drain" are the same set
 // from the two sides. What the page does with them is
 // [TestThePageHidesTheUndrainedRangesFromTheColdStoresHalfOnly].

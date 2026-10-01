@@ -8,8 +8,8 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// held is the cycles this node holds and the counters of the ones it has
-// retired, with the one mutex over both.
+// held is the cycles this node holds and the counters of the ones a higher
+// epoch has superseded, with the one mutex over both.
 //
 // A type rather than three fields on [Manager], for the reason the lock exists
 // and the reason it is dangerous: every read path resolves through

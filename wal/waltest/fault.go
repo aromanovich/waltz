@@ -105,7 +105,7 @@ func (f *Faulty) set(m method, fault Fault) {
 }
 
 // Fences are the epochs [Faulty.Fence] was called at, in order, the refused
-// calls included. Trims is the same for [Faulty.Trim]'s watermarks.
+// calls included. Trims is the same for [Faulty.Trim]'s upTo.
 //
 // Those two calls are recorded because the log cannot be asked about them
 // afterwards: fencing twice at one epoch leaves a log fenced once, and a trim

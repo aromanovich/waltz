@@ -99,8 +99,9 @@ given `memwal` a 4 MB response budget, every other case stays green and this one
 
 The layer does not leave that to the suite, because a suite case can only probe one budget and a
 backend with a larger one would pass it and still truncate a production tail. A replay therefore
-**confirms** the end of the log with a one-entry read rather than inferring it from a short page, and
-what that read finds halts the shard before it serves: [chapter 06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail) has it.
+**confirms** the end of the log with a one-entry read rather than inferring it from a short page,
+and what that read finds halts the shard before it serves: [chapter
+06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail) has it.
 
 Refusal *order* is a rule of the same kind, and it sits in the fencing row.
 `FencedOutranksAMissingPredecessor` puts an ex-owner's append two seqnos above the tail, where both
@@ -396,9 +397,9 @@ real databases, once at the shipped window and once at `Mutations: 1` — a wind
 request when the drain takes it, so no two mutations of a run ever meet and nothing is ever merged.
 Then every run row is read back and diffed whole, blobs included, over the union of both ledgers'
 keys; so is every workflow's current row, and so is the list of task IDs each of the four
-categories' queues holds, paged back out of each store in key order. The two arms must differ in transactions and in nothing else: 6,000
-mutations commit 77 transactions folded and 6,000 sequential, and leave 519 identical run rows and
-32 identical current rows.
+categories' queues holds, paged back out of each store in key order. The two arms must differ in
+transactions and in nothing else: 6,000 mutations commit 77 transactions folded and 6,000
+sequential, and leave 519 identical run rows and 32 identical current rows.
 
 Staging the merge's upsert-after-delete resolution — dropping the line that takes a re-upserted key
 back out of the delete set, so the store writes the row and then deletes it again — reddens this run
@@ -480,16 +481,17 @@ by the old owner is refused while the database still names him owner. The cold s
 the drains, which need neither an append nor a caller: a shutdown drain and the age timer both fire out
 of a full window on their own.
 
-`TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` is the first of them. The successor fences
-the log and takes the `rangeID`; the predecessor, holding a tail, writes. The write is refused, the
-cycle is in `StateHaltedLost`, the watermark has not moved and the log has not grown by the entry it
-refused — the append is where this stopped, so the drain's own fence was never reached. Then the
-successor replays exactly the entries between the watermark and the last ack. What the run pins is the
-*translation*: staging a fenced append that raises no halt leaves the caller holding the log's own
-error, which the history service's write path does not recognise and answers with a background
-re-acquire rather than the shutdown a `ShardOwnershipLostError` asks for. The doomed write is drawn from a stream of its own, because a mutation
-this run's generator handed out and the log refused would leave that generator's model of the run a
-version ahead of the database for every later mutation of it.
+`TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` is the first of them. The successor
+fences the log and takes the `rangeID`; the predecessor, holding a tail, writes. The write is
+refused, the cycle is in `StateHaltedLost`, the watermark has not moved and the log has not grown by
+the entry it refused — the append is where this stopped, so the drain's own fence was never reached.
+Then the successor replays exactly the entries between the watermark and the last ack. What the run
+pins is the *translation*: staging a fenced append that raises no halt leaves the caller holding the
+log's own error, which the history service's write path does not recognise and answers with a
+background re-acquire rather than the shutdown a `ShardOwnershipLostError` asks for. The doomed
+write is drawn from a stream of its own, because a mutation this run's generator handed out and the
+log refused would leave that generator's model of the run a version ahead of the database for every
+later mutation of it.
 
 `TestTheShutdownDrainOfALostShardCommitsNothing` is the composition: 2,000 mutations, a handover in the
 real order, 500 more through the successor — which replays the predecessor's window and writes past it
@@ -535,9 +537,10 @@ an activity through the SDK. Ports come from the OS, the databases are `memcold`
 visibility, and nothing is installed.
 
 **The green workflow is the weaker half.** A server whose layer fell out of the path completes the
-same workflow just as fast, which is exactly the failure [the witness](#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it)
-exists for. So the run has two arms, both of which *compose* a layer and differ only in the one
-value the server is handed:
+same workflow just as fast, which is exactly the failure [the
+witness](#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it) exists for. So the
+run has two arms, both of which *compose* a layer and differ only in the one value the server is
+handed:
 
 * `TestAWorkflowRunsThroughTheLayer` states `witness.Windowed`, shards acquired, mutable state,
   history tasks and merged task reads, plus the mutation kinds a workflow of that shape must

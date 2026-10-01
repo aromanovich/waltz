@@ -190,7 +190,7 @@ unit is a bound that admits the other unit's worst case unchecked.
 
 Which unit tripped is on the refusal's `limit` tag, and its two unit values are different operator
 sentences. `bytes` says this node is close to holding more than it should, which
-[`cycle/decide.go`](../../cycle/decide.go) reads as one workflow near the server's own blob limits.
+[`cycle/decide.go`](../../cycle/decide.go) reads as an applier behind or one workflow near the server's own blob limits.
 `entries` says a failover would take longer than it should, which the same file reads as an applier
 that is simply behind. The refusal itself is [chapter
 05](05-write-path.md#4-failed-write--backpressure-i10)'s.

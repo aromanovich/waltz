@@ -99,9 +99,7 @@ func TestAWholeLogIsReadInPagesUntilAShortOne(t *testing.T) {
 // the one the read began at, so a guard refusing `last == from` beside
 // `last < from` would refuse the first page — and with it every recovery a
 // sync-mode node makes, its window being one by construction. Every other case
-// in this file pages at 64, where a full page always ends far above its start,
-// and until this one the boundary was reached only through a caller whose page
-// size happened to equal that window.
+// in this file pages at 64, where a full page always ends far above its start.
 func TestAFullPageThatEndsWhereItBeganStillAdvances(t *testing.T) {
 	log := logOf(3)
 

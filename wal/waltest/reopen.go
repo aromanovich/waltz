@@ -14,9 +14,9 @@ package waltest
 // included, and in a deployment it is two writers acking at one seqno, each told
 // its entries are durable, with no error anywhere.
 //
-// That doc sends the author to a test between two processes, and the whole of it
-// does need two. Half of it does not: **open the storage a second time and ask
-// the fresh value what it holds and who owns the shard.** A backend whose appends
+// That doc sends the author to a test between two processes, and not the whole
+// of it needs two. Half of it needs only this: open the storage a second time and
+// ask the fresh value what it holds and who owns the shard. A backend whose appends
 // never left the process answers with nothing; one whose epoch never left it
 // admits a fence below the one that is supposed to have cut it off. Neither needs
 // a kill, a second process or a judge outside both.
@@ -25,8 +25,9 @@ package waltest
 // because what it takes is not a log but a way of opening one, which `memwal` —
 // the backend that ships here — cannot be: it is a map in this process and there
 // is nothing of it to reopen. `wal/memwal`'s own tests are where the check is
-// proved in both directions, against [Unfenced] for the ownership half and
-// against an opener that hands back a fresh backend for the other.
+// proved: it passes over storage that outlives the value, and fails against
+// [Unfenced] for the ownership half and against an opener that hands back a
+// fresh backend for the other.
 
 import (
 	"context"
@@ -49,8 +50,8 @@ const reopenShortfall = "guarantee 3 is that a completed append means every entr
 
 // continuedShortfall is the shortfall of the last read, where no open came between:
 // the value that appended is the value being read, so what it means is the
-// readback guarantee and not the durability one. Separate from the two above
-// because the whole reason a shortfall carries a diagnosis is that it points at
+// readback guarantee and not the durability one. Separate from [reopenShortfall]
+// and [retentionShortfall] because the whole reason a shortfall carries a diagnosis is that it points at
 // what to go and look at.
 const continuedShortfall = "this is the same value that appended, with no open in between, so what it " +
 	"says is guarantee 5: ReadFrom returns every entry a completed append acked and no trim has " +

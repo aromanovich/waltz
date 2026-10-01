@@ -243,10 +243,10 @@ func TestTheTaskViewIsReadOnlyOnTheAccumulator(t *testing.T) {
 	})
 
 	t.Run("and so is the page the merge built", func(t *testing.T) {
-		// [Accumulator.TaskPage] merges over the copy [Accumulator.Tasks] hands
-		// it, so the page comes back as storage of its own whichever branch built
-		// it. The base is empty here, so every row of the page came out of the
-		// window.
+		// [fold.Accumulator.TaskPage] merges over the copy
+		// [fold.Accumulator.Tasks] hands it, so the page comes back as storage of
+		// its own whichever branch built it. The base is empty here, so every row
+		// of the page came out of the window.
 		a := build()
 		empty := func(int, []byte) ([]p.InternalHistoryTask, []byte, error) { return nil, nil, nil }
 		resp, _, err := a.TaskPage(taskReq(tasks.CategoryTransfer,

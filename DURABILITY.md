@@ -560,9 +560,9 @@ continuing on the base alone drops the window out of every remaining page, and
 the range the reader completes at the end deletes the acked rows that were in it.
 No route hands out a foreign token any more, and one that arrives is refused
 (`fold.ErrForeignPageToken`). The premise is not hypothetical: upstream's
-`renewRangeLocked` (v1.29.6) drains in-flight task requests, bumps the range id
+`renewRangeLocked` (v1.29.6) drains in-flight task requests, bumps the rangeID
 and updates the task key manager, and unloads nothing — the shard context and its
-queue readers carry on, while `UpdateShard` with a moved range id is exactly what
+queue readers carry on, while `UpdateShard` with a moved rangeID is exactly what
 hands this layer a new epoch.
 
 **A cold store page larger than the batch it was asked for.** Where the window
@@ -749,23 +749,38 @@ so the batch the replay drain hands `cold.Applier.Apply` carries
 `fold.Batch.History` whatever the successor's store declares. A successor composed
 over a store that does not declare the marker — a deployment moving off
 `cold/memcold`, or two builds of one deployment disagreeing about their store —
-meets history on exactly the path the marker's own doc says such an applier never
-does, and nothing refuses it. Whether the rows are then lost turns on a sentence
-the contract states two ways: the package doc's first obligation owes
-`Batch.History` from every applier, while `HistoryApplier`'s doc describes an
-applier that would ignore the field and argues it is never handed one.
+meets history on a path nothing else ever hands it, and nothing refuses it. The
+contract is unambiguous — the package doc's first obligation owes `Batch.History`
+from every applier handed it, declared or not, and `HistoryApplier`'s doc now says
+so — but no suite hands a history-carrying batch to an applier without the marker,
+so one written against the live path alone, which never sees the field, passes
+everything here and drops the rows on its first replay of such a tail.
 
 *What would close it:* replay refusing — halting the shard as an invariant
 violation — an entry that carries event batches when `Manager.WritesHistory` is
 false, or writing those batches through the base store before the replay drain,
 the way a live write over such a store does; with a test that replays a
 history-carrying tail over an applier without the marker and is watched to go red
-without the refusal. And the contract saying one thing about an applier handed
-history it did not declare.
+without the refusal.
 
 Found by a documentation pass reading ADR 0014's "Changing stores" paragraph
 against `fold/history.go`, which is where that paragraph's "replays such a tail
 correctly anyway" stopped being true.
+
+**A field Temporal adds to an event batch, dropped from the record with every
+suite green.** Severity: silent, and only on the path where the record is the
+batch's one copy — a store that declares `cold.HistoryApplier`, `cold/memcold`
+included. `mutation/history.go` mirrors `InternalAppendHistoryNodesRequest`,
+`InternalHistoryNode`, `HistoryBranch` and `HistoryBranchRange` field by field,
+and the field-set guard that makes a new field of every other mirrored struct a
+named failure (`mutation/fieldset_test.go`'s `mirroredStructs`) walks none of
+them. A `go.temporal.io/server` bump that adds a field there compiles, encodes the
+batch without it, acks, and drains the batch as the record held it.
+
+*What would close it:* the four structs as rows of `mirroredStructs`, each field
+recorded as carried or derived with the reason, so a new one fails the guard the
+way a new field of the mutable-state requests does — watched to go red by adding a
+field to a copy of one of them.
 
 ---
 
@@ -1083,15 +1098,15 @@ storage leak on a path upstream already leaks on. Nothing acked is missing on
 either path, which is why this stays a read rather than an open entry.
 
 What is *not* closed by it and is named rather than counted: the three history
-methods that transit past a window which may hold their rows
-(named as an exposure in
-[ADR 0014](docs/adr/0014-a-record-may-carry-the-event-batches-its-own-request-produced.md)). A `DeleteHistoryNodes` from `TrimHistoryBranch` finds no row
-and the drain writes that node after it; a `DeleteHistoryBranch` cannot see a
-branch whose tree row is still in the window. Both leave rows behind rather than
-taking acked ones away — a leak on the same collector's path — and both are
-accepted here because what a deletion aimed at an undrained node *should* do
-depends on where a deployment put its history, which is not this library's to
-decide.
+methods that transit past a window which may hold their rows (named as an exposure
+in [ADR
+0014](docs/adr/0014-a-record-may-carry-the-event-batches-its-own-request-produced.md)).
+A `DeleteHistoryNodes` from `TrimHistoryBranch` finds no row and the drain writes
+that node after it; a `DeleteHistoryBranch` cannot see a branch whose tree row is
+still in the window. Both leave rows behind rather than taking acked ones away — a
+leak on the same collector's path — and both are accepted here because what a
+deletion aimed at an undrained node *should* do depends on where a deployment put
+its history, which is not this library's to decide.
 
 **No error is swallowed on the layer's write paths** (measured, by sweep). Two
 discarded errors exist, both on the age tick — its age drain and its
@@ -1301,16 +1316,15 @@ and the sync-mode page above — and the rest were equivalences worth naming: an
 adjacent range that merges or does not cover the same keys either way, an assignment
 of an equal value, a switch arm the case above it already matched.
 
-**Run exhaustively it is a different instrument, and the second run says so.** The
-fifty-one were chosen; `tools/mutation-sweep.py` enumerates the class instead, and
-**111** comparisons over the whole layer — `fold`, `cycle` and its three
-sub-packages, `apply`, `wrapper`, `baserow`, `mutation`, `wal`, `walmetrics` and the
-root — plus the two shipped implementations, `memwal` and `memcold`, left **28** green, of which **seven** were boundaries nothing drove:
-the window's byte trigger and its age trigger, the trim cadence's time half, a task
-range's inclusive minimum, the task page's own range on both halves, the history
-page's strict ascent, and the length check in front of `basePage[0]` — the last
-one a panic rather than a wrong answer. A chosen list cannot make that claim,
-which is the argument for generating a class rather than writing one down.
+**Run exhaustively it is a different instrument, and the second run says so.** The fifty-one were
+chosen; `tools/mutation-sweep.py` enumerates the class instead, and **111** comparisons over the
+whole layer — `fold`, `cycle` and its three sub-packages, `apply`, `wrapper`, `baserow`, `mutation`,
+`wal`, `walmetrics` and the root — plus the two shipped implementations, `memwal` and `memcold`,
+left **28** green, of which **seven** were boundaries nothing drove: the window's byte trigger and
+its age trigger, the trim cadence's time half, a task range's inclusive minimum, the task page's own
+range on both halves, the history page's strict ascent, and the length check in front of
+`basePage[0]` — the last one a panic rather than a wrong answer. A chosen list cannot make that
+claim, which is the argument for generating a class rather than writing one down.
 
 **The dismissals were confirmed, and one of them was wrong.** Re-run with every
 package in the judge, 8 of the 28 are caught: seven by the tests this branch added,
@@ -1375,16 +1389,17 @@ expressed" arms unreached — they are the arms no valid stream produces, which 
 exactly why nothing drives them and exactly why `Add` needs them, being where a
 replay arrives with no `Check` in front of it. And **a panic ends the test binary**,
 so the subtests after it never run: a sweep whose count looks one short may be
-reporting one mutation's blast radius rather than a miscount. **The second segment's one finding is the same shape at a seam rather than in the
-fold.** A foreign page token is refused by the frame this layer puts on its own —
-and the test for it used the base store's token, which fails the frame *and* the
-parse, so it said nothing about which did the work. Removing the frame check left
-everything green. What the frame buys over the parse is a token whose body happens
-to unmarshal into this layer's own: four bytes of somebody else's followed by valid
-JSON is adopted as ours at whatever cursor it decodes to, which restarts the
-pagination inside the window, leaves the base's cursor behind, and hands the range
-the reader completes the acked rows that were in it. That is the closed entry above
-about the two token spaces, proved at last against the thing it is actually about.
+reporting one mutation's blast radius rather than a miscount. **The second segment's
+one finding is the same shape at a seam rather than in the fold.** A foreign page
+token is refused by the frame this layer puts on its own — and the test for it used
+the base store's token, which fails the frame *and* the parse, so it said nothing
+about which did the work. Removing the frame check left everything green. What the
+frame buys over the parse is a token whose body happens to unmarshal into this
+layer's own: four bytes of somebody else's followed by valid JSON is adopted as ours
+at whatever cursor it decodes to, which restarts the pagination inside the window,
+leaves the base's cursor behind, and hands the range the reader completes the acked
+rows that were in it. That is the closed entry above about the two token spaces,
+proved at last against the thing it is actually about.
 
 **The third segment took the advice and is the whole of the cheap end**: the
 shipped store, the shipped log, the wrapper, the root package and the emitter —
@@ -1536,7 +1551,7 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**The floor is signed. Open went empty, took an entry back, emptied, and holds one again.**
+**The floor is signed. Open went empty, took an entry back, emptied, and holds two again.**
 One adversarial pass on a fresh context put an entry there — a current row written
 without its start time — which is what the paragraph below says such a pass is for,
 and the first time it had happened rather than been anticipated. It is closed now,

@@ -1,7 +1,8 @@
 // The contract is asserted by the suite in waltest and by nothing else. The
 // tests below it pin the promises this backend makes as a substitute, where it
 // could differ from every real backend in a way the contract has no words for —
-// and, in the retention case, prove an instrument the suite cannot carry.
+// and, in the retention and reopen cases, prove the instruments the suite
+// cannot carry.
 package memwal_test
 
 import (
@@ -94,8 +95,8 @@ func TestTheReopenCheckIsNotVacuous(t *testing.T) {
 }
 
 // TestATrimmedLogRemembersWhereItIs pins the next seqno surviving a trim that
-// takes every entry. That such an append is refused at all is the suite's claim
-// now; what is here is this backend's answer to it — every seqno the log gave
+// takes every entry. That such an append is refused at all is the suite's claim;
+// what is here is this backend's answer to it — every seqno the log gave
 // out is *taken*, which is what having the position rather than deriving it can
 // say, and what the contract leaves each backend to decide.
 func TestATrimmedLogRemembersWhereItIs(t *testing.T) {

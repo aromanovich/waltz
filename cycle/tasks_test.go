@@ -4,7 +4,7 @@ package cycle
 // about, the cases a generated stream cannot produce, and what a shard
 // this node does not own or no longer runs answers. The merge itself is
 // [fold.Accumulator.TaskPage], tested in fold; what is here drives the
-// whole route — loop, halt rule, counters and merge — since that is what a
+// whole route — loop, routing rule, counters and merge — since that is what a
 // queue gets.
 
 import (
@@ -252,7 +252,7 @@ func TestAHaltedShardRefusesATaskReadWithTheHaltItHolds(t *testing.T) {
 		require.IsType(t, &p.ShardOwnershipLostError{}, err,
 			"unwrapped: the shard's read path matches this one concrete type and nothing else, got %v", err)
 		require.Zero(t, cold.Calls,
-			"the cold store cannot be short of a tail it was never told about, and this one may be")
+			"the cold store cannot account for a tail it was never told about, and this one may be short of it")
 	})
 
 	t.Run("a tail on halted-lost is ShardOwnershipLost", func(t *testing.T) {
@@ -294,14 +294,14 @@ func TestAHaltedShardRefusesATaskReadWithTheHaltItHolds(t *testing.T) {
 //
 // The cold store could answer this page correctly — everything this cycle acked
 // is in it — and answering would still cost the shard rows, because the token
-// that page carries is the store's own. A range id renewal installs a fresh
+// that page carries is the store's own. A rangeID renewal installs a fresh
 // cycle without unloading the shard, so the next page of that same pagination
 // reaches a cycle that merges, and a token this layer did not write puts the
 // rest of the pagination on the base alone: the window drops out of it, and the
 // range the reader then completes deletes the acked task rows that were in it.
 //
-// So the rule is the one the other three routes already keep, and this was the
-// last way out of it: a task page is answered by a running cycle or not at all.
+// So the rule is the one every other route keeps: a task page is answered by a
+// running cycle or not at all.
 func TestATaskPageIsAnsweredByARunningCycleOrNotAtAll(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t, func(c *Config) { c.Mutations = 1 })
@@ -446,7 +446,7 @@ func TestTheCutIsNeverInsideABasePage(t *testing.T) {
 }
 
 // TestAForeignPageTokenIsRefused is the rule above held from the other end. No
-// route hands a caller the base store's token any more, so a token this layer
+// route hands a caller the base store's token, so a token this layer
 // did not write cannot be one of ours — and continuing on the base alone, which
 // is what a merge could do with it, would read correctly while the window
 // dropped out of the rest of that pagination, whose reader completes the range

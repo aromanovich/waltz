@@ -66,8 +66,8 @@ func (a *parkedApplier) Apply(ctx context.Context, shard wal.ShardID, epoch wal.
 	return errAmbiguous
 }
 
-// TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark is the second
-// candidate of the data-loss audit, staged rather than argued.
+// TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark is that question,
+// staged rather than argued.
 //
 // Node A runs sync mode, where the drain is what answers the caller and the ack
 // is therefore provisional: the condition has not been verified when the entry
@@ -120,9 +120,10 @@ func TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark(t *testing.T) {
 	epochA := takeShard(t, store)
 	require.NoError(t, nodeA.ShardAcquired(ctx, twoNodeShard, epochA))
 
-	// A create and an update of one run, from the generator, so both are
-	// requests the store below will actually execute. A writes only the update,
-	// against a run no create has landed for: its version assertion cannot hold.
+	// A create of one run and an update of another, from the generator, so both
+	// are requests the store below will actually execute. A writes only the
+	// update, against a run no create has landed for: its version assertion
+	// cannot hold.
 	create, update := twoUnrelatedRuns(t)
 	doomed := update
 
@@ -200,7 +201,7 @@ func twoUnrelatedRuns(t *testing.T) (create, update mutation.Mutation) {
 	return create, update
 }
 
-// takeShard moves the shard row's range id, which is what an acquire is from
+// takeShard moves the shard row's rangeID, which is what an acquire is from
 // underneath, and hands back the epoch that acquire is fenced at (I11).
 func takeShard(t *testing.T, store *memcold.Store) wal.Epoch {
 	t.Helper()

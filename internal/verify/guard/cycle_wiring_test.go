@@ -9,8 +9,8 @@ package guard
 //
 // wrapper.ShardLayer is the other direction and intercept mode's whole seam:
 // the ExecutionStore wrapper hands one mutable-state write down and asks the
-// same value for the three reads — the two mutable-state ones and the task
-// range; the registry routes each to the shard's cycle and translates what came
+// same value for the four reads — the two mutable-state ones, the task range
+// and the history branch; the registry routes each to the shard's cycle and translates what came
 // back into what the history service type-switches on.
 //
 // ShardLayer is the observer as well, so the line above it is the first of

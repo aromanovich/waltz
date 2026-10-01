@@ -141,10 +141,9 @@ func TestAThinStreamNamesWhatItLacks(t *testing.T) {
 	require.Contains(t, missing, "a tombstone")
 }
 
-// TestAShapeNobodyAskedForIsNotMissing: a caller that turns the task rates off
-// — as one whose claims are stated run by run must, because a task record is
-// neither a create nor an update — must not be told its stream lacks history
-// tasks.
+// TestAShapeNobodyAskedForIsNotMissing: a caller that turns TaskDensity off —
+// and with it every task the stream could carry, standalone adds included —
+// must not be told its stream lacks history tasks.
 func TestAShapeNobodyAskedForIsNotMissing(t *testing.T) {
 	quiet := config(12)
 	quiet.TaskDensity, quiet.AddTasksRate, quiet.RangeCompleteRate = 0, 0, 0

@@ -70,7 +70,7 @@ type Layer struct {
 	// it ([wal.Log.Close]).
 	log wal.Log
 	// metrics is this node's one emitter: the cycles record through it and so do
-	// the stores [Layer.Options] composes, so the server's handler reaches both
+	// the stores built over [Layer.Options], so the server's handler reaches both
 	// halves of the layer's numbers by being handed over once.
 	metrics *walmetrics.Emitter
 }
@@ -224,9 +224,8 @@ func AbstractFactory(base client.AbstractDataStoreFactory, opts wrapper.Options)
 }
 
 // AbstractFactory is [AbstractFactory] carrying this layer's own options, and
-// the reason it is a method: the pairing of a composition with the factory that
-// carries it was written out at every call site, and a layer composed but never
-// handed to one is a node running passthrough with a `wal` section that says
+// the reason it is a method: a layer composed but never handed to the factory
+// that carries it is a node running passthrough with a `wal` section that says
 // otherwise — which nothing reports, since that is what an empty layer looks
 // like from outside. So the whole of building a server over this library is
 //
@@ -269,8 +268,7 @@ func (l *Layer) ShardStats(shard wal.ShardID) (cycle.Stats, bool) {
 // Without it a late unload — a shard context cleaned up after the shard was
 // reacquired above it — stops the owner that superseded it, since the caller
 // has no other way to say which of the two it means. It is the check
-// [cycle.Manager.Write] makes for the same reason, in the one other door that
-// names an epoch.
+// [cycle.Manager.Write] makes, for the same reason.
 //
 // The stopped cycle stays the shard's, and that is not an omission: its tail is
 // acked entries still in the log, so [Layer.ShardStats] and [Layer.Totals] go

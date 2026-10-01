@@ -45,7 +45,7 @@ import (
 )
 
 const (
-	// The drain policy the numbers are measured at: [cycle.Defaults]' window.
+	// The drain policy the numbers are measured at: cycle.Defaults()' window.
 	taskCorpusWindow    = 256
 	taskCorpusBytes     = 256 << 10
 	taskCorpusMutations = 20_000
@@ -85,7 +85,7 @@ type taskCorpus struct {
 	// surfaced counts window tasks a read answered before their row existed.
 	surfaced int
 	// pending[categoryID] are the range deletes this window still owes the cold
-	// store, the set [Accumulator.TaskPage] subtracts from the base's page.
+	// store, the set [fold.Accumulator.TaskPage] subtracts from the base's page.
 	// Tracked from the stream rather than read off the accumulator, so the
 	// expectation is not computed by the code under test.
 	pending map[int32][]fold.TaskRange

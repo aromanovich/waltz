@@ -79,7 +79,7 @@ for the steady one. READ AT START-UP.`)
 
 	TailBudgetBytes = dynamicconfig.NewGlobalIntSetting(
 		"wal.tailBudgetBytes", measured.TailBudgetBytes,
-		`TailBudgetBytes is the RAM one node may hold as unapplied tail. hardMaxBytes × maxShards
+		`TailBudgetBytes is the encoded bytes one node may hold as unapplied tail. hardMaxBytes × maxShards
 must fit in it or the node refuses to start — cycle.Config.CheckBudget is run rather than
 written down, because a doc line does not survive a config edit. READ AT START-UP.`)
 )

@@ -107,10 +107,10 @@ puts the folded batch, the epoch check and the new `appliedSeqno` into a single 
    the window waits while its own call performs the resulting drain.
 6. A read during this interval combines the old cold row with the window. If the process disappears,
    the next owner reconstructs the same interval by replaying the log.
-7. Eventually a drain starts — fired by the mutation trigger, the byte trigger, the age
-   timer, a read, a replay, a window the accumulator cannot fold any further, a log asking for its
-   storage back, or an explicit call at shutdown. One transaction writes the folded requests and advances `appliedSeqno`. A later
-   trim may remove the log entries that transaction covered.
+7. Eventually a drain starts — fired by the mutation trigger, the byte trigger, the age timer, a
+   read, a replay, a window the accumulator cannot fold any further, a log asking for its storage
+   back, or an explicit call at shutdown. One transaction writes the folded requests and advances
+   `appliedSeqno`. A later trim may remove the log entries that transaction covered.
 
 Step 4 is the irreversible boundary. Before the append, an error still belongs to this caller: the
 write can be refused without consuming a seqno, and nothing is in the log. After the append,

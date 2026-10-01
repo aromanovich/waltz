@@ -247,8 +247,8 @@ func TestTheBoundIsAnsweredWhileTheApplierIsBusy(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		require.NoError(t, e.add(mkUpdate(ns, wf, run, int64(i))))
 	}
-	// The fourth reaches the window watermark, so the cycle's goroutine goes
-	// into the apply and stays there.
+	// The fourth trips the size trigger, so the cycle's goroutine goes into the
+	// apply and stays there.
 	fourth := make(chan error, 1)
 	go func() { fourth <- e.add(mkUpdate(ns, wf, run, 4)) }()
 	<-e.apply.entered
@@ -386,10 +386,10 @@ func TestBackpressureNeverCostsTheNodeItsShard(t *testing.T) {
 // The node's budget.
 // ---------------------------------------------------------------------------
 
-// TestTheNodeBudgetIsAStartupAssertion: the node's RAM goes as `hard_max ×
-// shards per node`, so raising the per-shard bound has to stop the node rather
-// than quietly overcommit it. The registry is where that happens, because a
-// composed binary has no cycle without one.
+// TestTheNodeBudgetIsAStartupAssertion: the node's tail, in encoded bytes, goes
+// as `hard_max × shards per node`, so raising the per-shard bound has to stop
+// the node rather than quietly overcommit it. The registry is where that
+// happens, because a composed binary has no cycle without one.
 func TestTheNodeBudgetIsAStartupAssertion(t *testing.T) {
 	deps := testDeps(memwal.New(), &heldApplier{})
 

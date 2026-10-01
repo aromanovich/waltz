@@ -56,10 +56,11 @@ func TestTheDrainEmitsItsRequestsInTailSeqnoOrder(t *testing.T) {
 }
 
 // The watermark is what the drain's transaction acks, so it may not sit below
-// anything that transaction applies — in either half of the batch. The task
-// half is the one outside the requests' ordering: it belongs to no workflow,
-// and a watermark taken from the requests alone would leave applied task rows
-// above the position a replay resumes from.
+// anything that transaction applies — requests, task work or history. The task
+// work is outside the requests' ordering: it belongs to no workflow, and a
+// watermark taken from the requests alone would leave applied task rows above
+// the position a replay resumes from. The history's part is
+// TestTheBatchCarriesEveryFoldedBatchInLogOrder's.
 func TestTheWatermarkCoversBothHalvesOfTheBatch(t *testing.T) {
 	t.Run("the requests", func(t *testing.T) {
 		a := fold.New(shard)

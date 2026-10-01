@@ -86,7 +86,7 @@ func (m *Manager) taskPage(
 // getHistoryTasks asks this cycle's goroutine for one merged page. Its one
 // caller is [Manager.taskPage], which is where the refusal a stopped cycle
 // gives — this cycle saying it is not the one to answer — is resolved by
-// re-issuing on the successor.
+// re-issuing on the successor where there is one.
 func (c *Cycle) getHistoryTasks(
 	ctx context.Context,
 	req *p.GetHistoryTasksRequest,

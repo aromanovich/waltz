@@ -9,9 +9,9 @@ package e2e
 //
 // The green workflow is the weaker half of what this file says. A server whose
 // layer fell out of the path completes the same workflow just as fast, which is
-// what verify/witness exists for: the intercept arm states what it was supposed
-// to be and hands over what the layer's own counters saw, and the control arm
-// states that the layer was empty — a claim that goes red if this "passthrough"
+// what internal/verify/witness exists for: the intercept arm states what it was
+// supposed to be and hands over what the layer's own counters saw, and the
+// control arm states that the layer was empty — a claim that goes red if this "passthrough"
 // run quietly still had a layer in it.
 
 import (
@@ -46,7 +46,7 @@ import (
 // context and [waltz.Layer.Shutdown] detaches from this one.
 const budget = 3 * time.Minute
 
-// drainWait is what the run gives the age watermark once the workflow is over.
+// drainWait is what the run gives the age trigger once the workflow is over.
 // The shipped age is 5s and every writer is idle by then, so this is generous
 // against a slow machine rather than against the policy.
 const drainWait = 60 * time.Second
@@ -132,7 +132,7 @@ func start(ctx context.Context, t *testing.T, intercept bool) *arm {
 // policy is the shipped configuration, and the window in it is what makes an
 // intercept run mean anything: at a window of one every drain carries one
 // mutation, nothing is folded, and the run is green with the fold path deleted.
-// The age watermark is what fires here — one workflow is nowhere near 256
+// The age trigger is what fires here — one workflow is nowhere near 256
 // mutations or 256 KiB — which is the drain a run with no writers left can
 // still expect.
 func policy() cycle.Config { return cycle.Defaults() }
@@ -248,7 +248,7 @@ func TestAWorkflowRunsThroughTheLayer(t *testing.T) {
 	require.Equal(t, "hello WALTZ", a.run(ctx, t))
 
 	// Sampled with the server still up, and after a wait rather than after a
-	// drain of our own: what it proves is that the age watermark fires on its
+	// drain of our own: what it proves is that the age trigger fires on its
 	// own with every writer idle, which is the only drain a quiet shard gets.
 	totals := a.waitForDrain(ctx, t)
 	t.Log(witness.Describe(witness.Observed{Totals: totals}))
@@ -302,7 +302,7 @@ func TestAWorkflowRunsWithTheLayerOutOfThePath(t *testing.T) {
 	a.stop(ctx, t)
 }
 
-// waitForDrain gives the age watermark time to fire and returns the totals as
+// waitForDrain gives the age trigger time to fire and returns the totals as
 // soon as a drain is visible.
 func (a *arm) waitForDrain(ctx context.Context, t *testing.T) cycle.Totals {
 	t.Helper()

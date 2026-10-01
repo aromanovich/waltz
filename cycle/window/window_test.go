@@ -53,7 +53,7 @@ func TestAnEmptyWindowHasNoAge(t *testing.T) {
 	require.True(t, w.Aged(epoch.Add(time.Minute+time.Second), time.Second))
 }
 
-// TestTheCountIsAnsweredBeforeTheBytes: a window over both watermarks reports
+// TestTheCountIsAnsweredBeforeTheBytes: a window over both triggers reports
 // the count, since the trigger is what carries the two apart downstream.
 func TestTheCountIsAnsweredBeforeTheBytes(t *testing.T) {
 	at := Watermarks{Mutations: 2, Bytes: 100}
@@ -73,10 +73,9 @@ func TestTheCountIsAnsweredBeforeTheBytes(t *testing.T) {
 
 // TestEachWatermarkTripsAtItsOwnValue drives all three comparisons at the value
 // they are configured with, which is the one place they can be wrong by one.
-// Nothing did: the case above reaches the byte arm with 500 against a watermark of
-// 100, so moving that comparison to `>` left the whole of `go test ./...` green —
-// and a test proved far from a boundary says nothing about the boundary. The count
-// arm was driven at its own value by accident, and the age arm's was already here.
+// The case above reaches the byte arm with 500 against a trigger of 100, so
+// moving that comparison to `>` leaves it green — and a test proved far from a
+// boundary says nothing about the boundary.
 //
 // What being wrong by one costs is small and not nothing: the drain comes one
 // mutation late, so the tail stands one entry above the size the operator
@@ -114,7 +113,7 @@ func TestEachWatermarkTripsAtItsOwnValue(t *testing.T) {
 	})
 }
 
-// TestAnEmptyWindowTripsNothing pins the reading of a zero watermark: "drain
+// TestAnEmptyWindowTripsNothing pins the reading of a zero trigger: "drain
 // every write", which is a rule about a window something was folded into.
 func TestAnEmptyWindowTripsNothing(t *testing.T) {
 	var w Window

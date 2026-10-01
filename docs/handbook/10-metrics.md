@@ -274,10 +274,10 @@ separates them.
   1.0 means nothing is collapsing: every drained mutation touched a different workflow, so the drain
   writes as many rows as the individual writes would have.
 * **I7 drop share, per category** — how much task work the window let a queue delete under it:
-  `rate(wal_dropped_tasks{task_category=X}) / (rate(wal_dropped_tasks{task_category=X}) + rate(wal_written_tasks{task_category=X}))`.
-  Compare each category against its own history: immediate and scheduled categories drop at
-  unrelated rates. Keep the denominator as the sum — that is what distinguishes "everything was
-  dropped" from "there were no tasks".
+  `rate(wal_dropped_tasks{task_category=X}) / (rate(wal_dropped_tasks{task_category=X}) +
+  rate(wal_written_tasks{task_category=X}))`. Compare each category against its own history:
+  immediate and scheduled categories drop at unrelated rates. Keep the denominator as the sum — that
+  is what distinguishes "everything was dropped" from "there were no tasks".
 * **Refusal rate by limit** — which bound is biting:
   `rate(wal_backpressure_refusals{limit=X}) / rate(wal_intercepted_writes)`.
   Use `wal_intercepted_writes` as the denominator rather than a drain count: refusals are counted

@@ -15,9 +15,12 @@ import (
 
 // Manager is the node's cycles, one per shard, each pinned to the epoch it was
 // created at. The wrapper's ShardObserver hook talks to it, and it is the only
-// place a cycle is created or retired. An acquire is observable and a close is
-// not, so a cycle is retired only by a higher epoch superseding it and nothing
-// reaps an idle one — one goroutine and an empty accumulator, a bounded leak.
+// place a cycle is created. An acquire is observable and a close is not, so a
+// cycle leaves the map only when a higher epoch supersedes it or the node shuts
+// down, and nothing reaps an idle one — one goroutine and an empty accumulator,
+// a bounded leak. A cycle stopped by name (the root package's
+// Layer.RetireShard) stays in the map, reporting halted-lost, because its tail
+// is acked entries the reports go on reading.
 type Manager struct {
 	deps   Deps
 	policy Policy
@@ -47,8 +50,9 @@ type Totals struct {
 	Acked, Applied wal.Seqno
 	TailEntries    int
 
-	// Halted names every shard whose current cycle is not running. A retired
-	// cycle's state stays out: being superseded is the fence working.
+	// Halted names every shard whose current cycle is not running, a cycle
+	// stopped by name among them. A superseded cycle's state stays out: being
+	// superseded is the fence working.
 	Halted []string
 }
 
@@ -77,7 +81,7 @@ func (m *Manager) Totals() Totals {
 }
 
 // NewManager builds the registry. Every cycle it creates reads the same
-// [Policy] — the source and not a copy, so a watermark that moves reaches the
+// [Policy] — the source and not a copy, so a setting that moves reaches the
 // cycles this node already holds. It refuses a node whose hard_max × shards
 // does not fit its tail budget ([Config.CheckBudget]), and a binary with no
 // registry has no cycle at all, so that error is the layer refusing to start.
@@ -198,8 +202,8 @@ type Residue struct {
 }
 
 // Close drains and stops every cycle, and answers with every shard whose tail it
-// could not empty. Shutdown is the one moment a tail is drained without a
-// watermark asking for it.
+// could not empty. Shutdown is the one moment a tail is drained without the
+// shard's own traffic asking for it.
 func (m *Manager) Close(ctx context.Context) []Residue {
 	var left []Residue
 	for _, c := range m.held.takeAll() {

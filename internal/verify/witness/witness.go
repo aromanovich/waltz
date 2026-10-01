@@ -447,9 +447,8 @@ var layerClaims = []claim{{
 	// Sync mode's half of the inversion, and in this window each is a claim
 	// about *nothing happening*. Sync mode drains before it answers, so the
 	// accumulator is empty at every call boundary and no read can cross a
-	// window that holds anything — which is what keeps a whole-folder byte
-	// comparison meaningful with the read path wired in, and the cheapest place
-	// to notice a window that stopped being one mutation.
+	// window that holds anything — which makes this the cheapest place to
+	// notice a window that stopped being one mutation.
 	Gate: inSync,
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Totals.ReadsHeld != 0 {
@@ -494,7 +493,7 @@ var layerClaims = []claim{{
 	// The other half of sync mode's one carve-out, stated outright because it
 	// is the mechanism: a condition failure at a window of one is answered, so
 	// entries acked exceed drains committed. This reads Acked as a count, which
-	// the fresh-folder caveat on [Observed.Totals] is about.
+	// the empty-log caveat on [Observed.Totals] is about.
 	Gate: all(inSync, expectsFailures),
 	Check: func(_ Expect, o Observed, report report) {
 		if int64(o.Totals.Acked) <= int64(o.Totals.Drains) {
@@ -666,10 +665,10 @@ func (e Expect) Check(o Observed) []error {
 }
 
 // Describe is the run as one line, for a person to read beside whatever the
-// witness said. It prints every counter and only the kinds that fired — the
-// zeroes are the interesting half, but printing every name on every line to
-// say so buries the ones that matter, and [Expect.Check] is where a missing
-// kind is a failure rather than a fact.
+// witness said. It prints every counter but the trims and the replay's drops,
+// and only the kinds that fired — the zeroes are the interesting half, but
+// printing every name on every line to say so buries the ones that matter, and
+// [Expect.Check] is where a missing kind is a failure rather than a fact.
 //
 // task-collisions is printed and not asserted, and the asymmetry is the point:
 // the two sources a merged page draws from are disjoint by construction, so a
@@ -709,8 +708,8 @@ func describeKinds(t cycle.Totals) string {
 // drainTriggers summarises what asked for the drains — [walmetrics.Drains]'s
 // trigger tag — which says more about the window a run kept than the number of
 // drains does: a run whose drains are all fold.ErrRefused force-drains never
-// reached a watermark at all, where one the mutation watermark dominates is a
-// window that filled.
+// reached a size or age trigger at all, where one the mutations trigger
+// dominates is a window that filled.
 func drainTriggers(emitted Emissions) string {
 	by := map[string]int{}
 	for _, r := range emitted[seriesDrains] {

@@ -359,8 +359,8 @@ func TestReplayRefusesATailWrittenAboveItsEpoch(t *testing.T) {
 	// once.
 	require.Contains(t, err.Error(), "the shard has been fenced away")
 	require.Equal(t, "the shard has been fenced away", FencedAway,
-		"FencedAway is an operator-facing cause the handbook's shard-lifecycle "+
-			"and operations chapters name verbatim, so it is not free to change")
+		"FencedAway is an operator-facing cause the handbook's operations chapter "+
+			"names verbatim, so it is not free to change")
 }
 
 // TestAFailedTailReadIsRetriedFromTheWatermark: a failed page read leaves the
@@ -532,7 +532,7 @@ func inheritShard(t *testing.T, log wal.Log, epoch wal.Epoch, mark *fakeWatermar
 // outcome nobody can read is abandoned with its entries acked, and the retry
 // re-reads every one of them from the watermark. The bytes those acks put in
 // the tail are what I10 refuses writes on, so a tail still holding them after
-// the abandonment counts one incident's memory once per attempt.
+// the abandonment counts one incident's bytes once per attempt.
 func TestAnAbandonedReplayHoldsNoneOfWhatItAcked(t *testing.T) {
 	ctx := context.Background()
 	log := memwal.New()

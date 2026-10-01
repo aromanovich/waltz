@@ -129,10 +129,8 @@ func TestAPageDropsWindowNodesOutsideTheRange(t *testing.T) {
 
 // TestAWindowOverflowingThePageWithNothingUnderItPaginates drives the one branch
 // where the base page is empty and the window alone is longer than the page.
-// Nothing did: every overflow case in this file has base rows, and the guard that
-// keeps the branch from reading basePage[0] could therefore be removed with the
-// whole of `go test ./...` green — and what it does instead is panic, inside a
-// history read, on the shard's own goroutine.
+// Without the guard that keeps the branch from reading basePage[0] it panics,
+// inside a history read, on the shard's own goroutine.
 //
 // It is reachable rather than defensive: the base answers an empty page for a
 // branch whose nodes are all still in the window, which is every branch of a
@@ -195,11 +193,9 @@ func TestABasePageTheMergeCannotRestOnIsRefused(t *testing.T) {
 	}{
 		"empty beside a token": {nil, []byte("more"), ErrBasePageEmptyBesideAToken},
 		"not ascending":        {[]p.InternalHistoryNode{node(3, 300), node(1, 100)}, nil, ErrBasePageNotAscending},
-		// Ascending means strictly, and only this row says so: the case above
-		// stages a descending pair, so the comparison could be moved to `>` with
-		// the whole of `go test ./...` green. What an equal pair costs is a node
-		// the merge emits twice — mergeHistoryNodes deduplicates *between* the two
-		// sources and walks each of them as a strictly ascending run.
+		// Ascending means strictly. What an equal pair costs is a node the merge
+		// emits twice — mergeHistoryNodes deduplicates *between* the two sources
+		// and walks each of them as a strictly ascending run.
 		"a key twice": {[]p.InternalHistoryNode{node(2, 200), node(2, 200)}, nil, ErrBasePageNotAscending},
 	}
 	for name, c := range cases {
@@ -276,8 +272,8 @@ func rows(ns ...p.InternalHistoryNode) HistoryBasePage {
 	}
 }
 
-// countingBase pages through its rows one ask at a time and records any token it
-// is handed twice, which is the obligation this merge is written not to need.
+// base pages through its rows one ask at a time and counts the tokens it is
+// handed twice.
 type base struct {
 	all []p.InternalHistoryNode
 	// seen counts each cursor handed over, and reAsked is how many were handed

@@ -144,11 +144,12 @@ implementation runs. It is also **in one process's memory**, so:
 
 A deployment's log is where the interesting failures live, and it is judged by
 `waltest.RunContractSuite` plus `waltest.CheckReopen` and `waltest.CheckRetention` against its own
-storage, plus a two-process failover test the deployment writes. The two checks are the suite's blind
-spots as checks that can be run rather than limits. `CheckReopen` opens the storage a second time and
-asks the fresh value what it holds and who owns the shard — half of the fence's blind spot, needing no
-second process, and not one `memwal` can pass, since a map in this process has nothing to reopen. `CheckRetention` is time: it costs the window it is given, so only a deployment can spend it,
-and only a deployment knows what its storage was configured to expire.
+storage, plus a two-process failover test the deployment writes. The two checks are the suite's
+blind spots as checks that can be run rather than limits. `CheckReopen` opens the storage a second
+time and asks the fresh value what it holds and who owns the shard — half of the fence's blind spot,
+needing no second process, and not one `memwal` can pass, since a map in this process has nothing to
+reopen. `CheckRetention` is time: it costs the window it is given, so only a deployment can spend
+it, and only a deployment knows what its storage was configured to expire.
 
 ## The cold store is real, and it is in memory
 

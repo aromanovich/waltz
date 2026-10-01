@@ -8,7 +8,7 @@
 // cardinality class upstream has nowhere. Ratios go out as two counters, so the
 // division is the reader's and "everything was dropped" is distinguishable from
 // "there was nothing to drop". Nothing here is a latency; [WindowAge] is the
-// age of the oldest un-drained mutation, which is what the age watermark fires
+// age of the oldest un-drained mutation, which is what the age trigger fires
 // on.
 package walmetrics
 
@@ -29,9 +29,11 @@ var (
 	InterceptedWrites = metrics.NewCounterDef("wal_intercepted_writes",
 		metrics.WithDescription("Writes this store sent at the layer, by store method."))
 
-	// OverlaidReads counts reads routed at the layer — the two mutable-state reads through the overlay and ReadHistoryBranch through the history merge, the name predating the third, not reads the
-	// window could answer: a counter that only fired on a hit would read zero
-	// on a healthy idle cluster and zero on a layer wired up wrong.
+	// OverlaidReads counts reads routed at the layer — the two mutable-state
+	// reads through the overlay and ReadHistoryBranch through the history
+	// merge — not reads the window could answer: a counter that only fired on
+	// a hit would read zero on a healthy idle cluster and zero on a layer wired
+	// up wrong.
 	OverlaidReads = metrics.NewCounterDef("wal_overlaid_reads",
 		metrics.WithDescription("Reads routed through the overlay, by store method."))
 
@@ -48,9 +50,10 @@ var (
 	MergedTaskCollisions = metrics.NewCounterDef("wal_merged_task_collisions",
 		metrics.WithDescription("Task keys a merged page found in both the window and the cold store."))
 
-	// Drains is tagged by what tripped it: size is the design working, age is a
-	// shard nobody is pushing on, refusal is the accumulator's drain-and-retry,
-	// sync is sync mode's one drain per write.
+	// Drains is tagged by what tripped it, one of the Trigger values below.
+	// Size is the design working, age is a shard nobody is pushing on, refusal
+	// is the accumulator's drain-and-retry, sync is sync mode's one drain per
+	// write.
 	Drains = metrics.NewCounterDef("wal_drains",
 		metrics.WithDescription("Committed drains, by what triggered them."))
 	DrainedMutations = metrics.NewCounterDef("wal_drained_mutations",
@@ -66,10 +69,10 @@ var (
 		metrics.WithDescription("Synchronous drains whose condition did not hold and were answered to the caller."))
 
 	// BackpressureRefusals is a write refused before its append, tagged by why:
-	// entries means a stalled applier, bytes a workflow near the server's own
-	// blob limits, unresolved an applier that cannot say what its last drain
-	// did, storage_pressure a backend that asked for no new appends until its
-	// storage recovers.
+	// entries means an applier that is behind, bytes the same or a few entries
+	// large enough to fill the bound, unresolved a stalled applier that cannot
+	// say what its last drain did, storage_pressure a backend that asked for no
+	// new appends until its storage recovers.
 	BackpressureRefusals = metrics.NewCounterDef("wal_backpressure_refusals",
 		metrics.WithDescription("Writes the shard refused before appending them, by what refused."))
 
@@ -328,8 +331,9 @@ func (e *Emitter) Replayed(entries, dropped int) {
 // AnsweredConditionFailure records an answered drain: sync mode's window of one.
 func (e *Emitter) AnsweredConditionFailure() { e.load().conditions.Record(1) }
 
-// BackpressureRefusal records I10 refusing a write, tagged with what refused
-// it: one of the two size bounds, or the unresolved drain that is neither.
+// BackpressureRefusal records a write refused before its append, tagged with
+// what refused it: one of the two size bounds, the unresolved drain, or the
+// backend's storage pressure.
 func (e *Emitter) BackpressureRefusal(limit string) {
 	e.load().refusals.Record(1, metrics.StringTag(TagLimit, limit))
 }

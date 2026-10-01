@@ -199,9 +199,8 @@ func refuseUncarried(
 	// And the encoding of the two blobs [Decode] parses, for the same reason one
 	// step along: the decoder admits proto3 alone, so any other encoding is an
 	// entry that appends, acks, and then refuses to decode for every owner that
-	// inherits it. The refusal belonged on this side all along — on the other it
-	// arrives after the ack, where the only choices left are a crash loop and a
-	// silent hole.
+	// inherits it. On the other side the refusal arrives after the ack, where the
+	// only choices left are a crash loop and a silent hole.
 	if err := refuseEncoding("execution info", infoBlob); err != nil {
 		return err
 	}
