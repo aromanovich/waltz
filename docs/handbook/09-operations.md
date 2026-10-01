@@ -152,7 +152,8 @@ So the order is:
    ([runbook (b)](#b-a-shard-halted--and-which-of-the-two-classes)).
    **Read the cause before acting on the count.** A residue carrying zero entries is this node saying
    it could not establish what that shard holds, and the cause says which kind. One naming
-   `the shard has been fenced away` is a shard another node took: nothing on this node will ever
+   `halted-lost` — `the shard has been fenced away` is one wording of it, an append or a drain
+   refused at the fence the other — is a shard another node took: nothing on this node will ever
    drain it, restarting in intercept mode will report it again, and the entries — if any — are the
    new owner's, whose own shutdown is where they appear. Finish that node's step 2 instead. Any
    other cause is this node's own failure to look, and a restart is the remedy;

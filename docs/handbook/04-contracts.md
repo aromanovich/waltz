@@ -482,7 +482,9 @@ returns an error, leaving the accumulator exactly as it was. It also **takes own
 handed**, because requests are merged in place, so a caller that needs the mutation afterwards must
 copy it first. Seqnos must be strictly increasing across drains: one accumulator follows one log.
 
-Three errors partition what `Add` can refuse:
+Three errors partition what `Add` can refuse of a well-formed call — a seqno not above the last, a
+mutation of another shard and one holding no single request are the caller's bug, and come back as
+ordinary errors:
 
 | Error | What it reports |
 |---|---|

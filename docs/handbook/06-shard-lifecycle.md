@@ -568,7 +568,8 @@ latency budget rather than hygiene.
   elapsed time (60 s by default). Both are read at the decision, so they may move under a shard this
   node is already holding. The decision is taken only when a drain commits, so the time half is no
   timer: an idle shard does not trim until its next drain. There is a cadence at all because a
-  `DeleteRange` per drain would be a transaction per drain for no gain. [Chapter 08](08-configuration.md) has the configuration keys.
+  `Log.Trim` per drain would be a log transaction per drain for no gain. [Chapter
+  08](08-configuration.md) has the configuration keys.
 * **It runs beside the loop, not in it.** `cycle/trim` is its own package for exactly that reason: a
   stuck log may not stop a shard from acking and applying. One trim runs at a time; a cadence that
   comes due while a trim is in flight is **skipped rather than queued**, since the next one takes a

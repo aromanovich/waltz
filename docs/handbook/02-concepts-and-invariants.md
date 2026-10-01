@@ -18,7 +18,8 @@ whose effects a cold-store transaction contains. Between them, `resolved` marks 
 whose fate is known. Usually `resolved` and `appliedSeqno` move together. They separate when a
 window folds to no database work — an `AddHistoryTasks` carrying no rows is the one mutation that
 does — so its entries are finished, but there was no transaction in which to advance the persistent
-watermark.
+watermark. A condition answered to its caller at the drain separates them the same way
+([the log picture](#the-log-picture) has both).
 
 This third position prevents two tempting mistakes. Measuring the tail as
 `commitSeqno - appliedSeqno` charges already-settled entries against the tail bound. Advancing
@@ -703,8 +704,8 @@ The bound has two units — entries and bytes — and both come off `tailstate.T
 window. They are not two spellings of one budget: **bytes stand in for memory** — encoded bytes, a
 proxy for the resident cost of an unapplied tail in the heap of the process that also runs the
 history service — and **entries bound recovery time**, since a successor must decode and fold
-every inherited entry and that work is per entry rather than per byte. Whichever trips first raises the refusal, and the `limit` tag says
-which. Why neither unit works alone, and where the two defaults come from, is [chapter
+every inherited entry and that work is per entry rather than per byte. Whichever trips first raises
+the refusal, and the `limit` tag says which. Why neither unit works alone, and where the two defaults come from, is [chapter
 14](14-where-the-defaults-came-from.md#why-the-bound-counts-entries-as-well-as-bytes).
 
 * **entries** going up means the applier is behind, and that a failover would take longer than it

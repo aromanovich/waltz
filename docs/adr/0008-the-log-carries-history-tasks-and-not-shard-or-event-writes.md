@@ -71,8 +71,8 @@ because that is what a queue's own checkpoints are — `[old, new)`, butt-joined
 and it is what makes the rule cheap enough to live in the accumulator and be rebuilt by replay.
 A single key is neither, and a second deletion shape would be a second thing every reader, every
 drain and every replay has to agree about. Its one caller in the whole server is the admin
-handler's `RemoveTask`, which today, on a task still in the window, deletes a row that is not
-there and reports success. Passthrough still transits it.
+handler's `RemoveTask`, which, on a task still in the window, deleted a row that was not there
+and reported success before this refusal. Passthrough still transits it.
 
 **The answer is given at the append**, like every other intercepted write (I2), not after the
 drain. The decoupling the old bound bought — a queue checkpoint never parked behind a stuck
