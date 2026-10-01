@@ -485,9 +485,9 @@ func TestReplayCutsItsTransactionsWhereTheWatermarksSay(t *testing.T) {
 	require.EqualValues(t, []wal.Seqno{2, 4, 5}, second.ap.seqnos)
 }
 
-// TestACycleWithNoRegistryRefuses: a nil task-category registry may not be read as "do not
-// recover". [NewManager] refuses to build such a node, and a cycle constructed
-// directly refuses every request.
+// TestACycleWithNoRegistryRefuses: a nil task-category registry may not be read
+// as "do not recover". [NewManager] refuses to build such a node, and a cycle
+// constructed directly refuses every request.
 func TestACycleWithNoRegistryRefuses(t *testing.T) {
 	ctx := context.Background()
 	ap := &fakeApplier{}
