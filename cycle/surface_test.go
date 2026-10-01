@@ -15,8 +15,8 @@ import (
 // doors is every exported method on a *Cycle and what it is for. The bar is
 // I11's — Manager.Shard hands the handle to whoever asks, so nothing on it may
 // be a way to write around Manager.Write — and not "somebody outside calls it":
-// State and Retire are what internal/verify/ drives a cycle by, Stats and Retire
-// what waltz.Layer.ShardStats and RetireShard answer off, and Shard, Epoch and
+// State and Retire are what internal/verify/ drives a cycle by, Stats, Epoch and
+// Retire what waltz.Layer.ShardStats and RetireShard answer off, and Shard and
 // Close are reached only from inside this package today. All six either read or
 // stop.
 // Each row carries the call as well, so the two tests below range over one

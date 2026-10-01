@@ -794,22 +794,28 @@ Found by a documentation pass reading ADR 0014's paragraph on changing stores
 against `fold/history.go`: the paragraph then said such a tail replays correctly
 anyway, and `addHistory` is where that stopped being true.
 
-**A field Temporal adds to an event batch, dropped from the record with every
-suite green.** Severity: silent, and only on the path where the record is the
-batch's one copy — a store that declares `cold.HistoryApplier`, `cold/memcold`
-included — and only for an entry that is replayed. `mutation/history.go` mirrors
-`InternalAppendHistoryNodesRequest`, `InternalHistoryNode`, `HistoryBranch` and
-`HistoryBranchRange` field by field, and the field-set guard that makes a new field of every other mirrored struct a
-named failure (`mutation/fieldset_test.go`'s `mirroredStructs`) walks none of
-them. A `go.temporal.io/server` bump that adds a field there compiles, encodes the
-batch without it, and acks. The cycle that appended it folds the request it was
-handed, so its own drain writes the field; a replay of the tail folds what it
-decodes, and drains the batch as the record held it.
+**A field Temporal adds to a struct the record mirrors and the guard does not
+walk, dropped with every suite green.** Severity: silent, and only for an entry
+that is replayed: the cycle that appended it folds the request it was handed, so
+its own drain writes the field, while a replay folds what it decodes and drains
+what the record held. The field-set guard (`mutation/fieldset_test.go`'s
+`mirroredStructs`) makes a new field of every request struct it walks a named
+failure, and it walks none of five the codec copies field by field:
 
-*What would close it:* the four structs as rows of `mirroredStructs`, each field
+* `commonpb.DataBlob`, which `encodeBlob` reduces to `Data` and `EncodingType` —
+  every blob of every mutation, so every replayed entry;
+* `InternalAppendHistoryNodesRequest`, `InternalHistoryNode`, `HistoryBranch` and
+  `HistoryBranchRange` (`mutation/history.go`) — an event batch, where the record
+  is the batch's one copy over a store that declares `cold.HistoryApplier`,
+  `cold/memcold` included.
+
+A `go.temporal.io/server` or `go.temporal.io/api` bump that adds a field to one
+of them compiles, encodes without it, and acks.
+
+*What would close it:* the five structs as rows of `mirroredStructs`, each field
 recorded as carried or derived with the reason, so a new one fails the guard the
-way a new field of the mutable-state requests does — watched to go red by adding a
-field to a copy of one of them.
+way a new field of the mutable-state requests does — watched to go red by adding
+a field to a copy of one of them.
 
 ---
 
@@ -1119,7 +1125,7 @@ than the transaction publishing the state — inside it or before it opens — a
 `memcold` keeps it by putting them inside that transaction. A tail written over
 a store that declares the marker and replayed over one that does not is not
 covered by this: it hands history to an applier that never said it writes it,
-and that is the first entry under *Open*.
+and that is the second entry under *Open*.
 
 The class of garbage is the same in both and is one upstream produces itself and
 has a collector for: its own deletion path leaves a history branch behind
@@ -1154,9 +1160,9 @@ block.
 **A sparse record cannot lose a field silently** (structural). `mutation`'s
 field-set guard walks every request struct of every kind and fails by name on a
 field that is neither carried nor recorded as deliberately dropped, and
-`TestTheGuardCatchesAnUpgrade` is what says the guard is not vacuous. The event
-batches a request carries are the exception: their four structs are not among
-the walked ones, and that is the second entry under *Open*.
+`TestTheGuardCatchesAnUpgrade` is what says the guard is not vacuous. The data blob
+and the event batch's four structs are the exception: they are not among the
+walked ones, and that is the third entry under *Open*.
 
 **Sync mode's window really is one** (read). `Sync` is a section key read once
 when the policy is built, not a dynamic setting, so no shard changes mode under a

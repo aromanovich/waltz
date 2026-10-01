@@ -36,9 +36,9 @@ reflective codec. What to know before changing any of it:
   so a kind added without one fails by name instead of being walked by nobody,
   which is what the two history-task requests once were. A
   temporal bump that adds a field is expected to fail it — that failure *is* the
-  mechanism, not a broken test. The event batch's four structs
-  (`InternalAppendHistoryNodesRequest`, `InternalHistoryNode`, `HistoryBranch`,
-  `HistoryBranchRange`) are not rows of `mirroredStructs`, so a field added to
+  mechanism, not a broken test. `commonpb.DataBlob` and the event batch's four
+  structs (`InternalAppendHistoryNodesRequest`, `InternalHistoryNode`,
+  `HistoryBranch`, `HistoryBranchRange`) are not rows of `mirroredStructs`, so a field added to
   one of them is dropped with the guard green — an Open entry in `DURABILITY.md`;
 
 * **a kind is declared once, and the spokes it can be forgotten in fail by

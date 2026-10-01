@@ -19,7 +19,7 @@
 // type outright. The cost of an explicit mirror is that a field Temporal adds is
 // a field this format silently omits; that cost is paid by the field-set guard
 // in mutation's tests, which holds one recorded decision per field of every
-// struct mirrored here except the history batch's four:
+// struct mirrored here except five: DataBlob, and the history batch's
 // InternalAppendHistoryNodesRequest, InternalHistoryNode, HistoryBranch and
 // HistoryBranchRange are not walked, so a field added to one of them is omitted
 // with the guard green (DURABILITY.md, under Open).
