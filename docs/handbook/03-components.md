@@ -122,7 +122,7 @@ graph TD
   SS -->|"ShardAcquired: fence and create"| MGR
   SS -->|"the shard row itself"| CS
   ES -->|"mutation.Mutation plus the base reads"| MGR
-  ES -->|"the other fifteen methods"| CS
+  ES -->|"the other fifteen methods, and a write's events when the applier does not write them"| CS
   MGR -->|"resolves the shard, checks the epoch"| CY
   CY -->|"Append, ReadFrom"| LOG
   CY -->|"Add, Drain, TaskPage"| ACC
@@ -137,9 +137,11 @@ graph TD
 How to read this. Nothing crosses a shard boundary below `cycle.Manager`: the manager resolves a
 shard to its one cycle, and everything under that cycle belongs to that shard alone. Two paths reach
 the cold store through an interface the layer names, and both are the deployment's to implement —
-`cold.Applier`, the layer's only *write* door, and `cold.Watermarker`, which reads back what the last
+`cold.Applier`, the drain's *write* door, and `cold.Watermarker`, which reads back what the last
 drain committed when its outcome was unknown. The wrapper's own arrows to the cold store are the
-transits. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers twelve of them itself — the
+transits, plus one write: where the applier does not declare `cold.HistoryApplier`, an intercepted
+write's new history events go down through the store below before its mutation is appended, and the
+record carries none. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers twelve of them itself — the
 eight writes and the four reads on the diagram — refuses a thirteenth, `CompleteHistoryTask`, with
 `wrapper.ErrCompleteHistoryTaskUnsupported`, and hands the other fifteen straight to the store below.
 
@@ -294,7 +296,7 @@ that range. Both consequences are [chapter
 | `Cycle.finished` | written by the loop on its way out | read by `Cycle.Retire` only after the loop's `done` channel is closed — that is the happens-before, and the reason there is no lock |
 | `trim.Trimmer` | its own goroutine, beside the loop | a `Trimmer` is handed a watermark *by value*; one mutex of its own over the one trim in flight and the one follow-up queued behind it; `Trimmer.Wait` is how a caller waits for it |
 | `walmetrics.Emitter` | shared, one per node | every method is an atomic load and a `Record`; `Emitter.Use` is the only mutation and takes the first non-nil handler it is given |
-| the shard map | `cycle.held` | one mutex; every method finishes its map arithmetic and returns without touching a `*Cycle` |
+| the shard map | `cycle.held` | one mutex; every method finishes its map arithmetic and returns without calling into a `*Cycle` |
 
 Two of those need more than a table cell.
 

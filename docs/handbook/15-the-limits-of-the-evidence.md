@@ -194,7 +194,7 @@ known and deliberate, and each is written down beside the code it is about:
 | the difference | recorded in |
 |---|---|
 | upstream's `dbRecordVersion == 0` fallback, which compares `next_event_id` against the request's condition, has no analogue: a run assertion here is always `DBRecordVersion − 1` | `cold/memcold/rows.go` |
-| a create's current-row assertion is compared against `current_executions.last_write_version`, where upstream joins and compares `executions.last_write_version` | `cold/memcold/apply.go` |
+| a create's current-row assertion is compared against `current_executions.last_write_version`, where upstream joins and compares `executions.last_write_version` | `cold/memcold/rows.go` (`lockCurrent`), with the reason at `applyCurrentRow` in `apply.go` |
 | a row count other than one on an execution-row write is a condition failure here rather than upstream's `NotFound` | `cold/memcold/rows.go` |
 
 All three follow from the layer having already acknowledged the write: what fold checked before the
@@ -233,8 +233,8 @@ foreground round trip per batch and lets a drain write a window's worth of nodes
 spends I10's byte budget on event blobs, so the window holds fewer mutations and drains sooner. **No
 run here measures either side of that trade.** The shipped composition takes the batches
 (`cold/memcold` declares `cold.HistoryApplier`), so every green target in this tree exercises that
-path — and [chapter 14](14-where-the-defaults-came-from.md#the-drain-triggers-256-mutations-and-256-kib)'s two
-size triggers were derived on a corpus whose records carry no event blobs.
+path — and the corpus [chapter 14](14-where-the-defaults-came-from.md#the-drain-triggers-256-mutations-and-256-kib)
+checks the byte trigger against generates records that carry no event batches.
 
 ## No partition between layer nodes is staged
 
@@ -377,9 +377,9 @@ that was chosen.
   interprets nothing, with the reason written at the top.
 * [`../../cold/memcold/memcold.go`](../../cold/memcold/memcold.go) — the store that is not a double,
   what the embedding covers and what it does not;
-  [`apply.go`](../../cold/memcold/apply.go) is the drain's transaction statement by statement and
-  carries one of the three places the folded path knowingly answers differently from upstream's
-  sequential path; [`rows.go`](../../cold/memcold/rows.go) carries the other two.
+  [`apply.go`](../../cold/memcold/apply.go) is the drain's transaction statement by statement, and
+  [`rows.go`](../../cold/memcold/rows.go) carries the three places the folded path knowingly answers
+  differently from upstream's sequential path, one of them with its reason in `apply.go`.
 * [`../../internal/verify/coldtasks/coldtasks.go`](../../internal/verify/coldtasks/coldtasks.go) — the two paginations
   it models, and the paragraph headed "what can make it a lie".
 * [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one log here: a map of shards

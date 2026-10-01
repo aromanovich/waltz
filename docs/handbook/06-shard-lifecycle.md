@@ -62,7 +62,7 @@ two different meanings:
 
 | Where it comes from | Shape | Meaning |
 |---|---|---|
-| the shard controller renewing its range (`renewRangeLocked`) — on acquire, and whenever the shard exhausts its task-id range | `RangeID = PreviousRangeID + 1` | the shard changing hands, or its range being renewed: a **new epoch** |
+| the shard context renewing its range (`renewRangeLocked`) — on acquire, and whenever the shard exhausts its task-id range | `RangeID = PreviousRangeID + 1` | the shard changing hands, or its range being renewed: a **new epoch** |
 | the shard's periodic info update (`updateShardInfo`) | `RangeID == PreviousRangeID` | a **heartbeat** that carries no news |
 
 Comparing those two fields is the whole of the distinction, and
@@ -84,7 +84,7 @@ Two properties of that code are load-bearing.
 **The order.** The observer runs *before* the base store commits the rangeID bump, so the WAL is
 fenced at the new epoch first and the rangeID lands second. A failed fence therefore fails the
 acquire without the base store being called at all, and leaves the previous owner's rangeID in place
-for the shard controller to retry. The invariant this protects is that the epoch in the log may never
+for the shard context to retry. The invariant this protects is that the epoch in the log may never
 lag the epoch in the database. If the database moved ahead of a log nobody had fenced, two writers
 would each hold what it believes is the current range.
 
@@ -95,7 +95,7 @@ An acquire, drawn end to end:
 
 ```mermaid
 sequenceDiagram
-    participant SC as history shard controller
+    participant SC as history shard context
     participant WS as wrapper.ShardStore
     participant MG as cycle.Manager
     participant LOG as wal.Log
@@ -118,7 +118,7 @@ The two other shapes of the same call:
 
 ```mermaid
 sequenceDiagram
-    participant SC as history shard controller
+    participant SC as history shard context
     participant WS as wrapper.ShardStore
     participant MG as cycle.Manager
     participant BS as the base ShardStore
@@ -242,8 +242,8 @@ stateDiagram-v2
 ```
 
 How to read this. `Created` is not a state value: it is a running cycle that has not yet read its
-seqno floor (`state.started` is false). The self-loop on it is the only recoverable failure on the
-diagram — a replay whose log read failed leaves the cycle unstarted with an empty window, so the
+seqno floor and replayed the tail above it (`state.started` is false). The self-loop on it is the
+only recoverable failure on the diagram — a replay whose log read failed leaves the cycle unstarted with an empty window, so the
 next request starts again from the watermark. `Stopped` is likewise not a `State` value: a stopped
 cycle keeps reporting the state its goroutine stopped in, and `Retire` on a *running* cycle stamps
 it `halted-lost` on the way out, because being superseded is exactly what that state means.

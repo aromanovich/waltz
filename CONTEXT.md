@@ -99,8 +99,8 @@ concatenates two sources and paginates)
 
 **Apply**:
 The step that writes folded summary updates into the cold store in one
-transaction with the appliedSeqno bump and an epoch CAS, over whatever event
-history the batch carries, durable no later than that transaction.
+transaction with the appliedSeqno bump and an epoch CAS, with whatever event
+history the batch carries durable no later than that transaction.
 
 **Drain**:
 One pass of the apply cycle: fold a window, write it in a single transaction,
@@ -151,13 +151,14 @@ first, never re-derive from base versions)
 **Condition authority (авторитет условия)**:
 The rule that every assertion a mutation carries is verified **before** the ack —
 the append is the ack and the ack is the answer, so a check after it has neither
-an addressee nor an undo — and the set that rule is about: exactly the
-assertions the fold discards. Recorded assertions travel with the drain's
-transaction and stay claims about the pre-window row; discarded ones stand on
-the window's own state. The two partition, so nothing is checked twice and a new
+an addressee nor an undo. The accumulator answers exactly the assertions the
+fold discards, which stand on the window's own state; recorded ones stay claims
+about the pre-window row, read from the cold store before the append (outside
+sync mode) and asserted again in the drain's transaction. The two partition —
+no assertion is evaluated against both the window and the base row — so a new
 request shape needs no check of its own once its assertions are derived. The
-predicate is read-only on the accumulator, and an assertion the window does not
-determine is **refused** rather than admitted.
+predicate is read-only on the accumulator, and a discarded assertion the window
+does not determine is **refused** rather than admitted.
 _Avoid_: validation, precondition check (both suggest something the store would
 repeat; this one is what answers instead of the store)
 
@@ -278,14 +279,6 @@ the metric emissions optional), so an instrument a run does not have skips
 exactly the claims that read it and weakens none of the rest.
 _Avoid_: smoke check, sanity assert (both name something weaker than the suite;
 this is the stronger claim)
-
-**Ownership generation (поколение владения)**:
-The unit such a run's length is measured in: one node's life on one shard — a
-kill, a successor, and the tail replayed between them. Wall clock is not a unit
-here and drains are the layer's own decision, so a schedule stated in either
-would be a function of the thing under test. The evidence a run produces is
-linear in generations and in nothing else.
-_Avoid_: round, iteration (neither names the kill that makes it evidence)
 
 **Cold store (холодное хранилище)**:
 Whatever the caller plugs in behind `cold.Store` — an applier and a watermarker,

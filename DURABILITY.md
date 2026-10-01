@@ -505,7 +505,7 @@ one case it exists for — without the detach the read fails, and a failed read
 there is "an outcome nobody could read", which **halts the shard**. So every
 expiring deadline would stop a shard. `Cycle.drain` detaches for the causes
 whose window holds work whose callers were acked and have gone
-([`drainCause.detached`]), and flipping the mutations trigger or the
+(`drainCause.detached`), and flipping the mutations trigger or the
 drain-and-retry to keep the caller's clock strands exactly those entries in a
 transaction abandoned on one writer's deadline. All three moves left the whole of
 `go test ./...` green.
@@ -1134,7 +1134,9 @@ block.
 **A sparse record cannot lose a field silently** (structural). `mutation`'s
 field-set guard walks every request struct of every kind and fails by name on a
 field that is neither carried nor recorded as deliberately dropped, and
-`TestTheGuardCatchesAnUpgrade` is what says the guard is not vacuous.
+`TestTheGuardCatchesAnUpgrade` is what says the guard is not vacuous. The event
+batches a request carries are the exception: their four structs are not among
+the walked ones, and that is the second entry under *Open*.
 
 **Sync mode's window really is one** (read). `Sync` is a section key read once
 when the policy is built, not a dynamic setting, so no shard changes mode under a
@@ -1169,8 +1171,11 @@ blob, which neither this store nor the upstream code it embeds writes; so whethe
 state with no start time writes NULL or 1970 is invisible to every read this
 repository has — while for a deployment it is the value upstream's workflow-id
 reuse check measures against, the same hazard the delegated-conflict entry above is
-closed for. Both columns are therefore prose here by necessity, not by choice: an
-assertion over either needs a reader this store does not expose.
+closed for. An assertion over it needs a table read, and it has one now:
+`TestTheCurrentRowsColumnsComeFromItsBlob` (`cold/memcold/currentrow_internal_test.go`)
+reads the row back inside the package, for a state with a start time and one
+without. The executions row's `last_write_version` above has no such read and is
+still prose.
 
 **The oracle comparing the current row by its run alone was hiding nothing**
 (measured). It diffs run rows and task rows whole and compared the current row by
@@ -1439,7 +1444,7 @@ Of the twenty-one still green, eighteen are `if err != nil` on a call no fixture
 can fail — the untested-error-path class this file already names as coverage rather
 than a defect — and three are `len(x) == 0` or nil early returns the next line
 no-ops through. `memwal`'s `CheckTrim` is the one worth naming: its absence is
-covered by the `upTo < base` check two lines later, which is the guard that does
+covered by the `upTo < base` check further down, which is the guard that does
 the work and is now driven.
 
 **The fourth segment is measured rather than finished, and the measurement is the

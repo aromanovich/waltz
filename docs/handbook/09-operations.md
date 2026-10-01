@@ -12,8 +12,8 @@ can demand opposite responses depending on whether the tail is full or a transac
 unknown.
 
 This chapter follows the system through deployment and a rolling restart, turns to incident
-diagnosis — the routing tree first, then the runbooks it routes into — and closes with a developer
-appendix that nothing before it depends on. Configuration keys are defined in [chapter
+diagnosis — the routing tree first, then the runbooks, three of which it routes into — and closes
+with a developer appendix that nothing before it depends on. Configuration keys are defined in [chapter
 08](08-configuration.md) and metric names and tag values in [chapter
 10](10-metrics.md#3-the-reference-table); here they appear only as evidence for a decision you have
 to make.
@@ -321,7 +321,8 @@ conditions below; the keys are
   backend's own monitoring names. The layer is already doing everything it can: the age tick drains
   whatever window is left without waiting for a trigger (`wal_drains{trigger="storage_pressure"}`)
   and every trim runs with the cadence bypassed, so `wal.trimEvery`/`wal.trimAfter` are not the
-  knobs and no key of the layer's clears the refusal. The backend lowers the level itself, and writes resume with nothing to reset.
+  knobs and no key of the layer's clears the refusal. The backend lowers the level itself, and writes
+  resume with nothing to reset.
 
 No refused call in this runbook wrote anything: all four refusals — `entries`, `bytes`,
 `unresolved` and `storage_pressure` — are decided before the append. The history node's handling of
@@ -349,9 +350,10 @@ import ban in [03-components.md](03-components.md) exist to allow.
   * `state="halted-lost"` — the shard was fenced away. This is fencing working: the halted cycle
     discards its *window*, the acked entries stay in the log, nothing is trimmed, and the next owner
     replays them. Writes come back as `ShardOwnershipLost`, which the server handles by re-acquiring.
-    Expect it on every failover and on every rolling restart. **Not an alert.**
-  * `state="halted-invariant"` — an assertion failed inside a window whose failure could not be
-    pinned on one caller. There is no retry and no failover: the layer deliberately does not convert
+    Expect it around failovers and rolling restarts, wherever an old owner is still alive to try a
+    write or a drain after the fence — a retire emits nothing. **Not an alert.**
+  * `state="halted-invariant"` — a divergence this process owns, most often an assertion that failed
+    inside a window whose failure could not be pinned on one caller. There is no retry and no failover: the layer deliberately does not convert
     this into an ownership-lost, because handing a divergence to the next owner as an ordinary
     failover would spread it. **This is the one that pages.**
 * **What to check.** For `halted-invariant`, the `apply cycle halted` log line. It carries the shard
@@ -432,9 +434,9 @@ import ban in [03-components.md](03-components.md) exist to allow.
   `wal.trimEvery` alone does not keep a log around for a post-mortem — `wal.trimAfter` fires anyway.
 * **How much log is left to read is computable.** The cycle trims to the applied watermark with no
   safety lag, so while trims succeed what survives is bounded by `wal.trimEvery` ×
-  `wal.windowMutations` entries plus whatever the tail currently holds — 4096 entries at the shipped
-  defaults, however long the shard has been running, and less on a low-traffic shard where the age trigger fires first. Where those
-  two numbers came from is
+  `wal.windowMutations` entries — 4096 at the shipped defaults — plus whatever the tail currently
+  holds, however long the shard has been running, and less on a low-traffic shard where the age
+  trigger fires first. Where those two numbers came from is
   [14-where-the-defaults-came-from.md](14-where-the-defaults-came-from.md#the-trim-cadence-16-drains-or-60-seconds).
 
 ### (e) Task drops are climbing
@@ -499,7 +501,8 @@ Three distinct refusals, all before anything listens:
   says which setting to write instead, and whether it is read at each decision or once at start-up.
   Any other unrecognised key in the section is refused by the strict decoder, so `snyc: true` stops
   the node rather than leaving it quietly running the mode nobody asked for. A section spelt `WAL:`
-  or `Wal:`, which neither parser would see, is refused too. The numbers do not behave this way: a misspelt *dynamic-config* key is a warning, and the default stands.
+  or `Wal:`, which neither parser would see, is refused too. The numbers do not behave this way: a
+  misspelt *dynamic-config* key is a warning, and the default stands.
 
 A fourth failure used to belong here and no longer does: **a drain landing in one cold store while
 the watermark is read from another.** It is worth knowing because the symptom is unlike the other

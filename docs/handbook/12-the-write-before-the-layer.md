@@ -269,10 +269,11 @@ Stated plainly, and carrying the assumption above:
 > **One state transition is one conditional immediate transaction over adjacent keys of one table,
 > plus the history write before it.**
 
-That claim is not one of the numbered invariants, and it could not be. I1–I11 name what the layer's
-own code and suites enforce; this is a property of the system the layer sits in front of, which
-neither can reach. [Chapter 02](02-concepts-and-invariants.md#the-invariants-without-a-number) draws
-the same distinction from the other side.
+That claim is not one of the numbered invariants, and it could not be. I1–I11 are claims about the
+layer and the two seams it is composed over, most of them enforced by its own code and suites; this
+is a property of the system the layer sits in front of, which neither can reach. [Chapter
+02](02-concepts-and-invariants.md#the-invariants-without-a-number) draws the same distinction from
+the other side.
 
 ## What follows: a log on the same database buys no latency
 
@@ -310,10 +311,10 @@ how fast the log acknowledges. That is what the rest of the layer is about.
 they are append-only, one row per batch, durable no later than the mutable state that refers to them
 whichever writer puts them down. Nothing about carrying them on the record folds any of them — the
 window holds them, it does not merge them. So a workflow whose transitions carry hundreds of event
-batches still pays hundreds of history rows however wide the window is. Whatever fraction of a deployment's write volume
-is event history is a fraction the layer cannot address at all. So if you tune the window against
-total write volume, you are tuning against a number that includes writes no window can remove; tune
-against the mutable-state half instead.
+batches still pays hundreds of history rows however wide the window is. Whatever fraction of a
+deployment's write volume is event history is a fraction the layer cannot address at all. So if you
+tune the window against total write volume, you are tuning against a number that includes writes no
+window can remove; tune against the mutable-state half instead.
 
 ## What this picture does not give
 

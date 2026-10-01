@@ -163,10 +163,10 @@ func refusals(shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 }
 
 // drain is everything the transaction carries, in the order the numbered list
-// above states — which is this store's: the cold package's doc pins what a
-// drain must carry, the epoch first and the history no later than what names
-// it, and not the rest of the sequence. A store running the range deletes after
-// the inserts would take away every task the window kept past its own sweep.
+// above states. The cold package's doc pins what a drain must carry and three
+// orders in it — the epoch first, the history no later than what names it, the
+// range deletes before the task inserts — and the rest of the sequence is this
+// store's.
 //
 // It does not commit: the caller does, so that a failure here is always a
 // transaction still open and always rolled back.

@@ -8,8 +8,9 @@ history rows through to the cold store first, unless that store takes them in th
 that mutation to the shard's cycle. So far the layer has promised the caller nothing.
 
 Three questions come before anything is logged. Is the write still stamped with the epoch this node
-holds? Is the shard's tail below its bound? Does the request's condition hold against the state at
-the head of this window? Every refusal here happens **before the append**, so a refused caller can
+holds? Is the shard free to take more — its tail below its bound, no drain's outcome left unread,
+its backend not asking appends to stop? Does the request's condition hold against the state at the
+head of this window? Every refusal here happens **before the append**, so a refused caller can
 conclude that its mutation consumed no seqno and is absent from the log. That is the first moment of
 certainty.
 
@@ -18,7 +19,8 @@ That is the second moment. Once the append has returned and the entry has been f
 window, a write that trips no drain trigger returns success. The mutable-state rows still hold what
 they held, but the write is durable: replay can recover it and the overlay makes it visible. This is
 the layer's central bargain — most foreground calls end at the append and the fold, and only the
-call that fills a window (or the age tick behind it) pays for the cold-store drain.
+call that trips a trigger, most often by filling a window (or the age tick behind it), pays for the
+cold-store drain.
 
 The third moment comes later. A drain writes a folded batch, together with a watermark saying how
 far it applied, in one transaction. Once that commits, the cold store itself holds the effect and
@@ -152,7 +154,7 @@ sequenceDiagram
   participant AP as cold.Applier
   participant CS as the cold store
 
-  Note over CY: a drain trigger fires — 256 mutations, or 256 KiB, or 5 seconds
+  Note over CY: a drain trigger fires — 256 mutations, or 256 KiB, or 5 seconds, or storage pressure
   CY->>ACC: Drain()
   ACC-->>CY: batch — one merged request per dirty workflow, plus its assertions
   CY->>AP: Apply(shard, epoch, batch)
@@ -381,19 +383,19 @@ recognise a retried request and answer it as already-started, `RunID` to decide 
 or attach to, `Status` to fill the client's response, and `LastWriteVersion` both to decide whether
 the namespace is active here and to carry as the previous run's version when creating the new run as
 current. The layer therefore does not synthesise those fields: `fold.currentConflict` deserialises
-the window's own current-execution state blob and fills the conflict error from it, short of two of
-the store's own: the start time is never carried, and the request ids are empty where the window's
-last current-row write came from a conflict-resolve. A refusal of the right type with empty fields
-would create a second run where a start should have deduplicated.
+the window's own current-execution state blob and fills the conflict error from it — the blob the
+store would have read, so every field the store's own error carries comes out of it, the start time
+included. A refusal of the right type with empty fields would create a second run where a start
+should have deduplicated.
 
 A delegated assertion is refused the same way, out of the row the cold store returned rather than
 out of a blob the window wrote — and the run id there comes from the response's own `RunID` field,
 not from the execution state beside it, because upstream's read fills the field and leaves the
 state's copy empty. That is also what the store below owes: the state it answers with has to carry
 the request ids, or a retried start deduplicates against nothing. It carries the start time as well,
-which the window-built conflict cannot: a start time the store's error would have carried and this
-one leaves nil reads as a run that began at the zero time, so the reuse interval the start path
-measures against it is enormous and its minimal-interval refusal never fires.
+as both conflicts do: a start time the store's error would have carried and this one leaves nil
+reads as a run that began at the zero time, so the reuse interval the start path measures against it
+is enormous and its minimal-interval refusal never fires.
 
 In the windowed modes, then, `wal_answered_condition_failures` stays at **zero**: no failed
 condition ever reaches a drain there. A non-zero value means one of two things — the check let a
@@ -542,8 +544,8 @@ halted"* carrying the cause. Inside the cause is the attribution `apply.Attribut
 the failure: every row that is not where fold asserted it, with the asserted and the actual version
 and the window slice (`HeadSeqno..TailSeqno`) answering for it. `CutSeqno` is the highest seqno
 anything may acknowledge, one below the lowest diverged entry. Zero means acknowledge nothing, and
-covers three cases at once — no divergence was found, the window's first entry diverged, or the
-readback itself failed. The runbook is [chapter
+covers three cases at once — no divergence was found, the shard's first entry (`wal.FirstSeqno`)
+diverged, or the readback itself failed. The runbook is [chapter
 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
 
 ## 7. Failed drain — the outcome could not be read
@@ -611,8 +613,8 @@ A few valid streams cannot be expressed as merged requests — a continue-as-new
 request's envelope, a delete of one half of such a pair. Those are not errors; they are a window
 that has run out of room.
 
-A third shape comes from the delete-current. `DeleteCurrentWorkflowExecution` carries a
-`current_run_id` guard, and the window records **no assertion** from it: the store removes the row
+A third shape comes from the delete-current. `DeleteCurrentWorkflowExecution` carries its
+`RunID` as a guard, and the window records **no assertion** from it: the store removes the row
 only if the row names that run, so a mismatch is an ordinary no-op, and synthesising `current == run`
 would turn a legal no-op into a false invariant violation. Instead the delete *taints* the current
 row: any later mutation of the same window that stands on that row is refused, because an assertion

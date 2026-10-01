@@ -134,8 +134,8 @@ changing either:
   composition holds. A caller that wires its own emitter beside it has two;
 * the wrapper is where the server's `metrics.Handler` enters the layer,
   and that is the whole of the metrics plumbing: `NewFactory` hands it to
-  anything below implementing `wrapper.MetricsSink` and fills nothing in
-  itself. **`Options.Metrics` is the layer's own `*walmetrics.Emitter`, not a
+  the layer's `MetricsSink` face (`Use`) and fills nothing in itself.
+  **`Options.Metrics` is the layer's own `*walmetrics.Emitter`, not a
   handler**, and that is what makes one hand-off enough for both halves: the
   stores record through the value the cycles record through, so a binary running
   several services cannot send the wrapper's series to service N's handler and

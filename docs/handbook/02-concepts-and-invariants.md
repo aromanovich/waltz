@@ -227,8 +227,9 @@ pass and measures nothing.
 transaction and moves appliedSeqno; an empty batch writes no transaction and settles its entries in
 memory without moving the watermark. A transactional drain is all-or-nothing over everything it
 publishes — event history excepted, which may be written ahead of the transaction and must be
-durable no later than it — and appliedSeqno is the witness to whether that transaction committed. *Not to be confused with:* stopping a layer or a
-node, which is `Shutdown` (it drains *and* closes).
+durable no later than it — and appliedSeqno is the witness to whether that transaction committed.
+*Not to be confused with:* stopping a layer or a node, which is `Shutdown` (it drains *and*
+closes).
 
 **Apply.** The step that turns folded summary updates into cold-store writes: one transaction
 carrying the merged requests, the appliedSeqno bump and the epoch compare-and-swap, over event history
@@ -339,7 +340,7 @@ event batches they carry — into the cold store.
 the watermark rather than the log. It runs beside the cycle rather than in it; a failed trim is
 retried at the next cadence and halts nothing. It is part of the latency budget rather than hygiene:
 a log that is never trimmed grows without bound, and a backend's reads get dearer as its log gets
-longer, so trimming sits on the drain's budget rather than being a background chore.
+longer, so a drain is what fires a trim rather than a sweeper on a clock of its own.
 
 **Backpressure.** The refusal a shard's write meets before it is appended. Four things raise it,
 and the metric's `limit` tag says which:
@@ -699,8 +700,8 @@ known.
 The bound has two units — entries and bytes — and both come off `tailstate.Tail`, not off the
 window. They are not two spellings of one budget: **bytes stand in for memory** — encoded bytes, a
 proxy for the resident cost of an unapplied tail in the heap of the process that also runs the
-history service — and **entries bound recovery time**, since a successor must decode and fold every inherited entry and that work is per
-entry rather than per byte. Whichever trips first raises the refusal, and the `limit` tag says
+history service — and **entries bound recovery time**, since a successor must decode and fold
+every inherited entry and that work is per entry rather than per byte. Whichever trips first raises the refusal, and the `limit` tag says
 which. Why neither unit works alone, and where the two defaults come from, is [chapter
 14](14-where-the-defaults-came-from.md#why-the-bound-counts-entries-as-well-as-bytes).
 

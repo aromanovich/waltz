@@ -360,8 +360,9 @@ which is why a witness rests on it rather than on the series.
 the in-process twin of `wal_merged_task_pages`, and `Overlaid` plus `HistoryReads` is the twin of
 `wal_overlaid_reads`: `Overlaid` counts only the two mutable-state reads, and `HistoryReads` the
 `ReadHistoryBranch` pages routed at the history merge. `HistoryReads` has no twin on the layer's own
-side: `cycle.Counters` deliberately carries no history-read field, for the reason
-[chapter 07](07-read-path.md) gives.
+side: `cycle.Counters` deliberately carries no history-read field, and a branch page raises
+neither `Reads` nor `ReadsHeld` — a witness reads `ReadsHeld` as "the overlay crossed a held
+workflow", and a branch page counted there would satisfy that claim without touching the overlay.
 
 `internal/verify/witness` is what reads them: its `Observed` takes a `cycle.Totals` for the node and,
 where the run can reach the store it decorated, a `*wrapper.Counts` beside it. That is where the
@@ -408,9 +409,10 @@ and every node writing that log moves the same counters — so N nodes emitting 
 same quantity N times.
 
 Invariant I9 — an append is one immediate write over adjacent keys, not a distributed transaction —
-is therefore checked by a guard that reads the engine's counters out of band, not by a runtime
-series. That guard belongs to whoever ships the backend, because the counters are the deployment's
-own; [11-verification.md](11-verification.md) says what it has to do.
+is therefore for a guard that reads the engine's counters out of band to check, not for a runtime
+series, and nothing in this tree is that guard. It belongs to whoever ships the backend, because
+the counters are the deployment's own; [11-verification.md](11-verification.md) says what it has
+to do.
 
 ---
 
@@ -421,7 +423,7 @@ own; [11-verification.md](11-verification.md) says what it has to do.
   comment stating the three shape decisions.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the wrapper's
   emission points: the interception table that supplies the `operation` tag values, the two overlay
-  reads, the routed task page, and the in-process `Counts`.
+  reads and the branch read, the routed task page, and the in-process `Counts`.
 * [`../../wrapper/wrapper.go`](../../wrapper/wrapper.go) — `MetricsSink` and
   `Options.Metrics`: the seam the server's handler travels back down, and what a nil emitter means.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Stats`, the drain's four-series emission,

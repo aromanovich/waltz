@@ -145,7 +145,7 @@ flowchart TD
     E -->|"either halted state, empty tail, mutable-state or branch read"| Z
     E -->|"running"| F{"DrainOnRead?"}
     F -->|"on"| G["drain the window, trigger tag read"]
-    G --> Z
+    G --> M
     F -->|"off"| M["merge over the window"]
 ```
 
@@ -155,7 +155,7 @@ type-switch on the concrete error value.
 The two readers part deliberately, and always the same way: a mutable-state read has callers that
 legitimately do not own the shard, so it falls through to the cold store, while a task read has
 exactly one caller, whose page — if short a tail — would be completed and acked past, so it is
-refused. Four moments in the diagram are that difference, and together they are one rule: **a task
+refused. The four rows of the table below are that difference, and together they are one rule: **a task
 page is answered by a running cycle or not at all.**
 
 A branch page is asked as a mutable-state read at every moment: its reader deletes nothing it read,
@@ -463,14 +463,10 @@ Reaching the branch where the window alone overflows the page means the window c
 page** — and the incoming token is handed back untouched, so that row comes back on the next call
 rather than being lost.
 
-One degenerate case falls out of the same arithmetic. When the base's first row ties the window's
-first, nothing is strictly below it, and cutting there would emit an empty page for ever. So the
-merge emits that single deduplicated entry instead — which is emitting the base page whole, and
-therefore allowed by the cut rule.
-
-A token this layer did not write is refused rather than carried — the rule stated above with the
-token's framing, and the reason it can be: no route hands a caller the base store's token, so such a
-token is not a pagination of this layer's to resume.
+One degenerate case falls out of the same arithmetic. When the base's first row is at or below the
+window's first, no window task is strictly below it, and cutting there would emit an empty page for
+ever. So the merge emits that single base row instead — deduplicated against the window's on a tie —
+which is emitting the base page whole, and therefore allowed by the cut rule.
 
 ### The collision counter
 
@@ -500,8 +496,8 @@ timer, so the database knows less about a queue's progress than the queue does.
 
 The order inside one checkpoint is load-bearing, and it is the server's order, not this layer's: the
 range is completed **first**, and the queue's state is written to the shard row afterwards. Persist
-the state first and a failed deletion leaves the watermark above rows that are still there — the
-shard reloads, and those tasks are never deleted.
+the state first and a failed deletion leaves the queue's deletion watermark above rows that are
+still there — the shard reloads, and those tasks are never deleted.
 
 Because a merged read offers the window, a queue can complete a range covering a task whose row is
 still in the tail. If the drain then wrote that row anyway, it would land **below** the queue's

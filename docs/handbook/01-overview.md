@@ -98,8 +98,8 @@ puts the folded batch, the epoch check and the new `appliedSeqno` into a single 
 
 1. The history service calls `UpdateWorkflowExecution` on `wrapper.ExecutionStore`.
 2. The wrapper encodes the call as a `mutation.Mutation` and hands it to that shard's cycle.
-3. The cycle checks its backpressure — the tail bound, and a log that has asked for no new appends —
-   and the caller's condition before writing anything.
+3. The cycle checks its backpressure — a drain whose outcome it cannot yet say, a log that has asked
+   for no new appends, and the tail bound — and the caller's condition before writing anything.
 4. It appends the record at the next seqno under the shard's current epoch. The log now contains a
    durable, ordered promise.
 5. The cycle charges that promise to the tail and folds it into the window. If this write fires no
@@ -202,7 +202,7 @@ moving from the diagram into the tree.
 | `mutation/` | what one entry *is*: the protobuf record of one persistence call, plus the record kinds |
 | `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task and history-branch pages |
 | `baserow/` | the cold store's two mutable-state reads as the write path needs them — one run's row, and the current-execution row with `last_write_version` beside it. `wrapper`, `cycle` and `apply` all need the pair and none of them may import another's copy, so it lives here and imports nothing of the layer |
-| `cold/` | the cold store's contract: `Store`, which is what a deployment implements — the `Applier` a drain lands on and the `Watermarker` that reads back the seqno the last drain committed, embedded in one interface because one value has to answer both — and the four things an implementation owes — one publication per drain (the merged requests, the task work and the watermark in one transaction — the event batches too, for a store that declares `cold.HistoryApplier`, and otherwise over event history already durable), the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
+| `cold/` | the cold store's contract: `Store`, which is what a deployment implements — the `Applier` a drain lands on and the `Watermarker` that reads back the seqno the last drain committed, embedded in one interface because one value has to answer both — and the four things an implementation owes — one publication per drain (the merged requests, the task work and the watermark in one transaction — with the event batches durable no later than it, for a store that declares `cold.HistoryApplier`, and otherwise over event history already durable), the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
 | `cold/memcold/` | the one implementation of that contract here: Temporal's own SQL execution store, embedded whole, over an in-process SQLite database, with the folded window's transaction added beside its 28 inherited methods |
 | `apply/` | what a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries |
 | `cycle/` | one goroutine per (shard, epoch) owning the accumulator, the drain, the trim's cadence, the reads and replay — the layer's state machine |

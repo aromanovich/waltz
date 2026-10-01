@@ -138,7 +138,7 @@ left the process fails the first; one whose epoch never left it fails the second
 at the first seqno fails the third. None of it needs a kill, a second process, or a judge outside
 both.
 
-It is a function rather than a suite case for a reason that is not `CheckRetention`'s: `memwal` cannot
+It is a function rather than a suite case for a reason of its own: `memwal` cannot
 be reopened at all, being a map in this process, so the suite has no log to run it against. And it is
 proved rather than assumed, in `memwal`'s own tests, against three backend shapes — a `Backend` handed
 back twice (storage that outlived the value, which must pass), a fresh `Backend` per open (appends that
@@ -412,8 +412,8 @@ the condition authority instead.
 ### Recovery: the same stream, a different set of windows
 
 Every run above ends in a shutdown drain, which applies the last window out of memory. So none of
-them ever takes an entry back out of the log, and the run just described stops one step short of the
-claim the first rule is about: it proves the entries a refused drain carried are still in the log,
+them ever takes an entry back out of the log, and `TestAShardThatLosesItsEpochMidRun` stops one step
+short of the claim the first rule is about: it proves the entries a refused drain carried are still in the log,
 not that anybody can turn them back into rows.
 
 `TestARecoveredShardHoldsWhatAnUninterruptedOneDoes` is that step. One seed is driven twice. The
@@ -893,8 +893,8 @@ suites above and are stated where they are:
   readiness probe and the log gate; [`e2e_test.go`](../../internal/verify/e2e/e2e_test.go) is the two arms
   and what each claims.
 * [`../../internal/verify/mutgen/mutgen.go`](../../internal/verify/mutgen/mutgen.go) — the generator and the
-  determinism rules it is written under; [`corpus.go`](../../internal/verify/mutgen/corpus.go) is the report
-  a stream makes about itself.
+  determinism rules it is written under, and the report a stream makes about itself;
+  [`corpus.go`](../../internal/verify/mutgen/corpus.go) materialises a stream with that report beside it.
 * [`../../internal/verify/witness/witness.go`](../../internal/verify/witness/witness.go) — `Expect`, `Observed` and
   the named claim tables.
 * [`../../internal/verify/checker/record.go`](../../internal/verify/checker/record.go) — the record's file format, why

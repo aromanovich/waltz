@@ -4,7 +4,8 @@ Date: 2026-09-07
 
 ## Status
 
-Accepted. Makes the two seams symmetric, and retires "waltz implements no persistence" as the
+Accepted. Makes the two seams symmetric in what they ship — not in what they export, as
+*Consequences* says — and retires "waltz implements no persistence" as the
 sentence the tree was described by.
 
 ## Context

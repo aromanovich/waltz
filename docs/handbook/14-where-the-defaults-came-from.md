@@ -27,9 +27,9 @@ read the constant, do the arithmetic. Others are **observations** — a curve me
 machine, at one revision. An observation is not worth less, but it is worth exactly what the saved
 result says and no more, and this chapter marks which of the two stands behind each number.
 
-**Every observation below, except the generated corpus's mean entry size, which a test in this tree
-measures, was made on the research prototype this library was extracted from, on one workload
-against one store.** None of those can be re-run here. The two backends in this tree,
+**Every observation below, except the generated corpus's mean entry size and its refusal cadence,
+which a test in this tree measures, was made on the research prototype this library was extracted
+from, on one workload against one store.** None of those can be re-run here. The two backends in this tree,
 `wal/memwal` and `cold/memcold`, exist to exercise the layer in process, so a curve taken against
 them would describe a map under a mutex and a SQLite database in memory. The observations are quoted
 so you know a number had evidence behind it, and attributed so nobody mistakes that evidence for

@@ -30,6 +30,11 @@
 //     from: a mutable state published over nodes that are not there points at
 //     history nobody wrote.
 //
+//     Inside the transaction one more order is pinned: the batch's range deletes
+//     run before its task inserts. The window keeps a task that arrived after a
+//     range, even one whose key the range covers, so a store that inserts first
+//     and sweeps second deletes an acked task.
+//
 //  2. The watermark commits inside that transaction. It is the seqno the batch
 //     carries ([Applier]), and [Watermarker] reads it back — the only witness to
 //     what a drain did, and the reason a store may never derive that answer from

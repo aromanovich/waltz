@@ -404,7 +404,7 @@ What to know before changing it:
   cycle hands it a watermark and the two numbers read at the decision
   (`Config.cadence`'s `TrimEvery` and `TrimAfter`) — or, under storage
   pressure, the watermark alone through `Trimmer.Force` — and asks nothing back but
-  `Counters` at `stats` and `Wait` at `Retire`. What that bought beyond locality
+  `Counters` at `stats` and at `Retire`, and `Wait` before the latter. What that bought beyond locality
   is the ownership rule below: the `go` statement is in a package that cannot
   see a `*state`, so it is structural rather than prose, and the cadence
   arithmetic is judged in `trim`'s own tests with a fake log and a driven clock
@@ -604,7 +604,7 @@ What to know before changing it:
   **invariant** side, deliberately — the other arm would hand an outcome nobody
   enumerated to the next owner as an ordinary failover. And **which way a
   settlement settles the tail is not part of the value**: that stays one
-  statement each in `answer`, `dropProvisional` and the drain's forward path,
+  statement each in `answerWriter`, `dropProvisional` and the drain's forward path,
   because it is the branch the drain takes rather than a property of the
   settlement. A test claiming otherwise would assert a table against its own
   definition, so `decide_test.go` says that in place of the test, and
@@ -648,7 +648,7 @@ What to know before changing it:
   crossed with both locality settings, lie between 8.11 and 8.40. So 8 MB of
   tail is ~68 MB resident and the node's 2 GB is ~17 GB of live heap at the
   bound. That probe caps no workflow pool, so its two locality settings collapse
-  1.03 against 1.15 and it shows no locality effect at all, where a run on
+  1.03–1.05 against 1.12–1.15 and it shows no locality effect at all, where a run on
   the research prototype reached a ratio of 3.30 and a multiplier of 2.94 — so
   quote the number with the collapse ratio it was taken at or not at all, and
   re-measure it rather than carrying it forward, since it was measured on a

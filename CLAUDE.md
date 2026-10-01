@@ -164,7 +164,7 @@ has the three places such a rule may live instead, in the order to try them.
   boundary, the tree, one entry per append, one shipped implementation at each
   seam, the cold store embedding Temporal's own persistence, what a write must
   read from the cold store before it appends, and a record carrying the event
-  batches its own request produced;
+  batches its own request produced.
 * [`docs/handbook/`](docs/handbook/README.md) — the book. 01–11 are the
   reference (components, contracts, the paths, the keys, the series, the
   suites); 12–15 are the deep dives (what a write cost before the layer, the

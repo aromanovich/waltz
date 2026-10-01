@@ -6,6 +6,9 @@ Date: 2026-08-03
 
 Accepted. Settles the repository layout.
 
+**Amended** three times — see the last three sections. The last of them moves `verify/` to
+`internal/verify/` and reverses "Considered and not taken: `internal/`", which is left as written.
+
 ## Context
 
 The packages had sat flat, beside a root package of ~13k lines holding the acceptance, the

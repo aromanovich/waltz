@@ -256,16 +256,16 @@ lose.
 | Method | Promises | Refuses | Leaves behind on failure |
 |---|---|---|---|
 | `Fence(ctx, shard, epoch) error` | claims the log for `epoch`, atomically cutting off every append of a lower epoch (I4); idempotent per epoch, so a restart without an ownership change may replay its acquire; entries stay and the new owner continues the log at the next seqno | a lower epoch than the one held (`ErrFenced`); epoch 0 (`ErrZeroEpoch`) | nothing — ownership included |
-| `Append(ctx, shard, epoch, seqno, payload) error` | writes `payload` as the entry at `seqno`, under `epoch`; returning nil means every entry up to and including `seqno` is durable, so the caller's commitSeqno becomes `seqno` | `ErrFenced`, `ErrAlreadyWritten`, `ErrGap`; a `seqno` below `FirstSeqno`; a nil payload (an empty one is an entry); epoch 0 | none of the three errors writes anything |
+| `Append(ctx, shard, epoch, seqno, payload) error` | writes `payload` as the entry at `seqno`, under `epoch`; returning nil means every entry up to and including `seqno` is durable, so the caller's commitSeqno becomes `seqno` | `ErrFenced`, `ErrAlreadyWritten`, `ErrGap`; a `seqno` below `FirstSeqno`; a nil payload (an empty one is an entry); epoch 0 | none of these refusals writes anything |
 | `ReadFrom(ctx, shard, from, limit) ([]Entry, error)` | up to `limit` entries at or above `from`, in seqno order; a read after a successful `Fence` sees every entry the log held when the fence took it | a non-positive `limit` | reads change nothing |
 | `Trim(ctx, shard, upTo) error` | deletes entries at or below `upTo`; the log stays appendable at the next seqno and ownership stays put | nothing that is merely already absent — trimming entries that are not there is not an error | a log appendable at the next seqno, owned by the same epoch, whatever `upTo` said and whether or not it deleted anything: a failed trim is retried at the next cadence and costs a partly shorter log at worst |
 | `Close()` | releases what the backend holds around the log: a connection, a lease, the goroutine some backends keep ownership alive from. Called once, after the last append and after any drain | nothing | the entries, and whoever fenced a shard owning it until that ownership expires or a successor takes it — a close is neither a drain nor a fence |
 
 Six things the table cannot hold:
 
-* **An ordinary append error has an unknown commit outcome.** Only the three sentinel errors promise
-  that nothing was written. Any other error, including cancellation in flight, may leave the entry
-  durable.
+* **An ordinary append error has an unknown commit outcome.** Only `ErrFenced`, `ErrAlreadyWritten`
+  and `ErrGap`, and the refusal of an argument the contract does not admit, promise that nothing was
+  written. Any other error, including cancellation in flight, may leave the entry durable.
 * **`from` is clamped, not refused.** A `from` below `FirstSeqno` reads from `FirstSeqno`; fewer than
   `limit` entries means the log ends there. `wal.Entries(ctx, log, shard, from, page)` is that loop
   as an `iter.Seq2[Entry, error]`: it ends at a short page, yields the zero entry with the error on a
@@ -630,8 +630,8 @@ Obligations of the intercepted path, which the store discharges:
 * **Errors are returned exactly as they arrive.** `ContextImpl.handleWriteErrorLocked` in the
   history service type-switches on concrete values, so one `%w` would turn an expected condition
   failure into a background re-acquire.
-* **Construction can fail.** `NewExecutionStore(base, opts)` returns `baserow.ErrNoVersionedRead`
-  when intercept mode is asked for over a base store that cannot read a current row's
+* **Construction can fail.** `NewExecutionStore(base, opts)` returns an error wrapping
+  `baserow.ErrNoVersionedRead` when intercept mode is asked for over a base store that cannot read a current row's
   `last_write_version`. The refusal happens where the server is still starting and can be told what
   its store is missing, rather than at the first create of the first workflow.
 
@@ -671,7 +671,7 @@ may be keyed on it.
 ### The wrapper's own interfaces
 
 * **`ShardObserver`** — `ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wal.Epoch)
-  error`. The epoch is the new rangeID (I11). `ShardAcquired`'s error reaches the shard controller
+  error`. The epoch is the new rangeID (I11). `ShardAcquired`'s error reaches the shard context
   unwrapped. Nothing reports the other direction: closing a shard makes no persistence call.
 * **`ShardWriter`** — `WritesHistory() bool` and `Write(ctx context.Context, m mutation.Mutation,
   epoch wal.Epoch, base *baserow.Rows) error`. `WritesHistory` says whether an intercepted write's
@@ -684,9 +684,10 @@ may be keyed on it.
   named no epoch", not "epoch 0" — the two deletes and the range delete carry none, and the drain's
   own epoch CAS fences them instead. The error is the store's own — condition failure, fenced shard,
   tail at its bound — and comes back unwrapped. In a windowed mode a condition failure is this
-  caller's own, because fold's `Check` decides it before the entry is appended; under `Sync` the
-  drain decides it, and the window is one mutation, so it is this caller's there too. `base` is
-  called inside the goroutine that owns the window, at most once per asserted row.
+  caller's own, because it is settled before the entry is appended — by fold's `Check`, or by the
+  pre-window read it delegates; under `Sync` the drain decides it, and the window is one mutation,
+  so it is this caller's there too. `base` is called inside the goroutine that owns the window, at
+  most once per asserted row.
 * **`ShardReader`** — four reads, each taking the caller's request and the cold store's own answer
   as a closure, so the layer decides whether to call it. `GetWorkflowExecution` and
   `GetCurrentExecution` take `base func(context.Context) (…, error)`; `GetHistoryTasks` takes `base
@@ -806,15 +807,16 @@ land underneath it, and the divergence it would then report is not a bug.
 |---|---|
 | `Cause` | the store's own condition failure, as it reached the classifier; `Unwrap` returns it |
 | `Diverged []Diverged` | every row the readback found to differ from what fold asserted. It can be empty — the divergence may have been repaired between the transaction and the readback — which changes nothing about the class |
-| `CutSeqno` | the highest seqno a partial re-drain may acknowledge: one below the lowest entry answering for any diverged row. **Zero means nothing may be acknowledged**, and covers three cases that demand the same thing — no divergence found, the window's first entry diverged, and a failed readback. The field is forensic: no code re-drains partially today, so what it carries is what an operator or a future partial re-drain would be entitled to |
+| `CutSeqno` | the highest seqno a partial re-drain may acknowledge: one below the lowest entry answering for any diverged row. **Zero means nothing may be acknowledged**, and covers three cases that demand the same thing — no divergence found, the log's first seqno (`wal.FirstSeqno`) diverged, and a failed readback. The field is forensic: no code re-drains partially today, so what it carries is what an operator or a future partial re-drain would be entitled to |
 | `ReadbackErr` | set when the attribution read itself failed; `Diverged` is then incomplete |
 
 One `Diverged` names one row, with four parts:
 
 * `NamespaceID`, `WorkflowID` and `RunID` — the last is empty when the row is the workflow's
   current-execution row;
-* `AssertedBase` and `ActualBase`, both −1 when there is no version to report: a must-not-exist
-  assertion, an absent row, or any current-row divergence;
+* `AssertedBase` and `ActualBase`, each −1 when its side has no version to report: `AssertedBase`
+  under a must-not-exist assertion, `ActualBase` for an absent row, and both for any current-row
+  divergence;
 * a `Detail` that always says what was asserted and what the cold store holds;
 * the `HeadSeqno` and `TailSeqno` of the window slice answering for the row.
 
@@ -822,8 +824,8 @@ One `Diverged` names one row, with four parts:
 
 `cold.Watermarker` is one method — `Watermark(ctx, shard) (wal.Seqno, bool, error)` — and it is the
 only read this layer makes through the `cold` seam. It is not the layer's only read of the cold
-store — the cycle drives `baserow.Rows.Run`, `baserow.Rows.Current` and `fold.BasePage` against it
-too — but those go through the base store the wrapper decorates. The rule it exists for is: **after an
+store — the cycle drives `baserow.Rows.Run`, `baserow.Rows.Current`, `fold.BasePage` and
+`fold.HistoryBasePage` against it too — but those go through the base store the wrapper decorates. The rule it exists for is: **after an
 unknown outcome, read `appliedSeqno` before anything else, whatever the drain appeared to do.**
 
 The watermark rides the drain's own transaction, so it moved if and only if the batch committed, and
@@ -1011,7 +1013,7 @@ the layer refusing to start. Its surface:
 | `Use(h metrics.Handler)` | the wrapper's `MetricsSink`. First call wins; a nil handler is ignored |
 | `Shard(shard) *Cycle` | internal callers that have already resolved a shard; nil when this node has not acquired it |
 | `Totals() Totals` | a witness |
-| `Close(ctx) []Residue` | shutdown — drains and stops every cycle, and answers with a `Residue` (shard, epoch, entries, the drain's error) for every shard whose tail it could not empty; those entries are in the log for the next owner, not lost. The one drain neither a size or age trigger, a request in flight nor the backend asks for: a refusal, a read and a replay drain off some caller's call, storage pressure off the backend's own report, and the node's stop is nobody's. The drain is tagged `trigger="explicit"` |
+| `Close(ctx) []Residue` | shutdown — drains and stops every cycle, and answers with a `Residue` (shard, epoch, entries, the drain's error) for every shard whose tail it could not empty; those entries are in the log for the next owner, not lost. The one drain neither a size or age trigger, a request in flight nor the backend asks for: sync, a refusal, a read and a replay drain off some caller's call, storage pressure off the backend's own report, and the node's stop is nobody's. The drain is tagged `trigger="explicit"` |
 
 `cycle.BaseTasks` and `cycle.BaseHistory` are type **aliases** for the task-read and branch-read
 closures, deliberately: the two packages that must agree on the signature may not import each other,
@@ -1107,7 +1109,8 @@ it and found it false. The layer therefore requires the read to project the colu
 compensating for its absence, and no compensating path exists.
 
 `Of(store p.ExecutionStore) (*Rows, error)` is the conversion, because that is how the store
-arrives, and it returns `ErrNoVersionedRead` when the base store does not answer that read;
+arrives, and it returns an error wrapping `ErrNoVersionedRead` when the base store does not answer
+that read;
 `New(store Store) *Rows` is for a caller that already has the narrow interface.
 
 `Rows` owns the three things every caller was repeating: the shard is stamped onto the request,

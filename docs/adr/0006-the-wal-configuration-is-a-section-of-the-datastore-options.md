@@ -26,7 +26,8 @@ Three routes, and each has a different cost to a deployment that already exists:
 ## Decision
 
 Route 1: a `wal` section inside `persistence.datastores.<default>.customDatastore.options`, read
-by `waltz.Parse`, which reads that key and nothing else.
+by `waltz.Parse`, which reads that key's value and nothing else (it looks at the other keys' names
+only to refuse a miscased `wal`, below).
 
 Three properties decide it.
 
