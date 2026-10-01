@@ -225,7 +225,7 @@ func TestAScheduledRangeIsFireTimeOnly(t *testing.T) {
 // places in a window, and the sweep must reach every one the read does. A row
 // the read shows and the sweep misses is a leak — the caller declared it garbage
 // and the drain writes it anyway — and a tombstone's orphans are the case that
-// looks exempt: the collapse preserves them because I7 says a task is durable
+// looks exempt: the collapse preserves them because I8 says a task is durable
 // somewhere, while the range says the caller no longer wants it.
 //
 // Each home carries a row inside the range and one above it, so a sweep that

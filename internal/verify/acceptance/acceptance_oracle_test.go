@@ -108,8 +108,8 @@ func TestFoldingChangesNothingButTheNumberOfTransactions(t *testing.T) {
 			"the %s queue came out of the fold holding different rows", category.Name())
 	}
 
-	// Both ends of the log meet the stream's length in both arms, so neither
-	// comparison above was made over a run that stopped early.
+	// The watermark meets the stream's length in both arms, so none of the
+	// comparisons above was made over a run that stopped early.
 	for name, s := range map[string]*seams{"folded": folded, "sequential": one} {
 		seqno, ok, err := s.store.Watermark(s.ctx, seamsShard)
 		require.NoError(t, err)

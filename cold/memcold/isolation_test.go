@@ -1,8 +1,8 @@
 package memcold_test
 
-// Every suite in conformance_test.go is written as though it had the database to itself, and a
-// second store leaking rows into the first turns "green" into "green when run
-// alone". These are the two directions that can go wrong.
+// Every suite in conformance_test.go is written as though it had the database
+// to itself, and a second store leaking rows into the first turns "green" into
+// "green when run alone". These are the two directions that can go wrong.
 
 import (
 	"context"

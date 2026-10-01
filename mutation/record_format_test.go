@@ -125,9 +125,7 @@ func TestARecordedEntryStillMeansWhatItsWriterMeant(t *testing.T) {
 }
 
 // requireRecordMeaning names every slot two same-typed fields could have been
-// swapped between. Five of the mutation's scalars are int64, four of its upsert
-// collections are map[int64]*DataBlob, and its delete sets share two key types,
-// so each of those lines can be crossed with its neighbours and still compile.
+// swapped between.
 func requireRecordMeaning(t *testing.T, m Mutation) {
 	t.Helper()
 	require.Equal(t, KindUpdate, m.Kind())

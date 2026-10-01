@@ -183,8 +183,8 @@ func (s *Store) drain(
 		return err
 	}
 
-	// Inside the transaction, which this store may do and a client with a
-	// separate bulk path may not: what the contract pins is that these rows are
+	// Inside the transaction, which this store can do and a client with a
+	// separate bulk path cannot: what the contract pins is that these rows are
 	// durable no later than the mutable state naming them, and one transaction
 	// is the strongest way to keep that.
 	if err := applyHistory(ctx, tx, batch.History()); err != nil {

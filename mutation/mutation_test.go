@@ -147,8 +147,8 @@ func TestRoundTripEveryKind(t *testing.T) {
 }
 
 // The two delete requests carry the same four fields and must still decode as
-// different kinds: fold makes one a tombstone for the workflow and the other
-// for the current-run pointer.
+// different kinds: fold makes one a tombstone for a run and the other for the
+// current-run pointer.
 func TestDeleteKindsAreNotInterchangeable(t *testing.T) {
 	del, err := Encode(Mutation{Delete: &p.DeleteWorkflowExecutionRequest{ShardID: 1, RunID: "r"}})
 	require.NoError(t, err)

@@ -1,6 +1,6 @@
 // Package trim is the lazy deletion of WAL entries the cold store already
 // holds: the cadence that decides when, the one trim in flight, and the two
-// counters that tell a cadence that fired from a trim that reached the log.
+// counters that tell a trim that fired from a trim that reached the log.
 //
 // It runs beside the apply cycle rather than in it, which is the whole of why
 // it is a package. A stuck log may not stop a shard from acking and applying,
@@ -136,12 +136,12 @@ func (t *Trimmer) Force(applied wal.Seqno) {
 // that a backend outlives the last trim it was asked for.
 func (t *Trimmer) Wait() { t.running.Wait() }
 
-// Counters is what this shard's trims have done: cadences that fired, and the
-// subset that reached the log. Two numbers rather than one, because a run whose
-// every trim failed would otherwise read like one whose cadence never fired —
-// and a reading taken while a trim is in flight, or queued behind one, leaves
-// fired above committed by those, which is the honest answer rather than a
-// race.
+// Counters is what this shard's trims have done: trims that fired, cadenced or
+// forced, and the subset that reached the log. Two numbers rather than one,
+// because a run whose every trim failed would otherwise read like one whose
+// cadence never fired — and a reading taken while a trim is in flight, or
+// queued behind one, leaves fired above committed by those, which is the
+// honest answer rather than a race.
 func (t *Trimmer) Counters() (fired, committed int) {
 	return t.fired, int(t.committed.Load())
 }

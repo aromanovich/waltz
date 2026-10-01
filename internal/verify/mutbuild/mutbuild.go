@@ -390,7 +390,7 @@ func named(s string) *commonpb.DataBlob {
 	return &commonpb.DataBlob{Data: []byte(s), EncodingType: enumspb.ENCODING_TYPE_PROTO3}
 }
 
-// check ends the test rather than returning: a fixture the store would refuse
+// check panics rather than returning: a fixture the store would refuse
 // is a bug in whoever asked for it, and there is no caller that could do
 // anything with the error but fail.
 func check(shape string, err error) {

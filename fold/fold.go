@@ -88,9 +88,9 @@ var ErrBasePageNotAscending = errors.New("fold: the cold store answered a page t
 // exhausted. The merge would otherwise read it as the end of the pagination,
 // stop calling the base, and hand back a pagination that is over — so rows the
 // store still held are never read, and on a task page the range its reader
-// completes at the end deletes them. A store that pages by filtering a chunk and can answer an empty
-// page with more behind it does not satisfy this contract, and is told so here
-// rather than silently losing the remainder.
+// completes at the end deletes them. A store that pages by filtering a chunk
+// and can answer an empty page with more behind it does not satisfy this
+// contract, and is told so here rather than silently losing the remainder.
 var ErrBasePageEmptyBesideAToken = errors.New("fold: the cold store answered no rows beside a token saying it holds more")
 
 // RunAssertion is what the head of the window asserted about one run's row in
@@ -196,7 +196,7 @@ func (e *Emitted) RunAssertions() map[string]RunAssertion { return e.runs }
 
 // OrphanedTasks are tasks from mutations a tombstone collapsed, which only a
 // tombstone carries: the Delete that collapsed them has no task slot of its
-// own, and losing them would break I7. Writing them is apply's business.
+// own, and losing them would break I8. Writing them is apply's business.
 func (e *Emitted) OrphanedTasks() map[tasks.Category][]p.InternalHistoryTask {
 	return e.orphanedTasks
 }
@@ -1016,7 +1016,7 @@ func (a *Accumulator) addDelete(seqno wal.Seqno, req *p.DeleteWorkflowExecutionR
 	pr := newPending(seqno, mutation.Mutation{Delete: req})
 	if rs != nil {
 		// The tombstone collapses the run's pending state; its tasks must
-		// survive (I7), and the Delete has no slot to carry them in.
+		// survive (I8), and the Delete has no slot to carry them in.
 		old := rs.owner
 		pr.orphanedTasks = old.slotTasks(rs.part)
 		w.drop(old)

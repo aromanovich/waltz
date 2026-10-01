@@ -1,6 +1,6 @@
 package waltest
 
-// The one obligation [RunContractSuite] cannot express, because what it is
+// The first obligation [RunContractSuite] cannot express, because what it is
 // about is time.
 //
 // [wal.Log.Trim] is the only removal the contract excuses: what a completed
@@ -35,10 +35,10 @@ const retentionEntries = 3
 
 // CheckRetention appends a short run to shard, waits out window, and requires
 // every entry to still be there: same seqnos, same payloads, same order, and the
-// log still appendable above them. It is [RunContractSuite]'s missing case, and
-// it is a function returning an error rather than a case in the suite for two
-// reasons — it costs window in wall-clock time, and a deployment runs it from
-// whatever harness it has rather than only from `go test`.
+// log still appendable above them. It is one of [RunContractSuite]'s two missing
+// cases, and it is a function returning an error rather than a case in the
+// suite for two reasons — it costs window in wall-clock time, and a deployment
+// runs it from whatever harness it has rather than only from `go test`.
 //
 // shard must be one nothing else writes, and epoch one nothing else has fenced
 // it at; the check fences twice at that same epoch, which the contract makes

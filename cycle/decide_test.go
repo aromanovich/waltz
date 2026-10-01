@@ -118,8 +118,10 @@ func TestEveryMomentAReadCanArriveInRoutesBothReaders(t *testing.T) {
 			{"lost, task read, empty tail", StateHaltedLost, true, 0, taskRead, refuseAsLost},
 			{"lost, task read, held tail", StateHaltedLost, false, 0, taskRead, refuseAsLost},
 
-			// Halted-invariant: the shard has not moved on, so the tail rule is
-			// the whole rule and both readers get the same answer.
+			// Halted-invariant: the shard has not moved on, so the mutable-state
+			// read keeps the tail rule, while a task read is refused with the
+			// halt whatever the tail says — a page out of the cold store hands
+			// back that store's own token.
 			{"invariant, mutable-state read, empty tail", StateHaltedInvariant, true, 0, mutableStateRead, passThrough},
 			{"invariant, mutable-state read, held tail", StateHaltedInvariant, false, 0, mutableStateRead, refuseAsHalt},
 			{"invariant, task read, empty tail", StateHaltedInvariant, true, 0, taskRead, refuseAsHalt},

@@ -3,8 +3,8 @@ package mutation
 import p "go.temporal.io/server/common/persistence"
 
 // kindInfo is one row of the kind enumeration: the bookkeeping facts about a
-// [Kind], not its behaviour, which stays in the per-kind switches in fold,
-// check and apply. [Mutation.Kind] and [Mutation.ShardID] stay hand-written
+// [Kind], not its behaviour, which stays in the per-kind switches in fold and
+// in the cold store's applier. [Mutation.Kind] and [Mutation.ShardID] stay hand-written
 // fan-outs; every mutation field must have exactly one row that agrees with
 // both. The last two columns are read at run time —
 // [Mutation.RangeID] and [Mutation.EventSlots] are the table — so a kind added

@@ -587,7 +587,7 @@ func TestTheColdStoreDecidesWhoWritesTheEventBatches(t *testing.T) {
 	}
 
 	require.False(t, compose(coldtest.New()).Options().Layer.WritesHistory(),
-		"a store that does not write the batches must have them written through it before the append")
+		"a store that does not write the batches must have them written through the base store before the append")
 	require.True(t, compose(historyApplier{coldtest.New()}).Options().Layer.WritesHistory(),
 		"a store that writes them takes them in the record, so nothing writes them twice")
 }

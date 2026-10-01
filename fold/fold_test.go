@@ -445,7 +445,7 @@ func TestAClearFoldingIntoASnapshotHasNoSlotToMark(t *testing.T) {
 }
 
 // TestTombstone: a deletion collapses the run's pending state into the
-// Delete; the collapsed mutations' tasks survive as orphans (I7).
+// Delete; the collapsed mutations' tasks survive as orphans (I8).
 func TestTombstone(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,
@@ -465,7 +465,7 @@ func TestTombstone(t *testing.T) {
 	require.Len(t, out, 1, "the update collapsed into the tombstone")
 	require.Equal(t, mutation.KindDelete, out[0].Request.Kind())
 	require.Equal(t, []string{"t-upd"}, taskNames(out[0].OrphanedTasks()),
-		"a task is in the WAL tail or in the store (I7): the fold may not lose it")
+		"a task is in the WAL tail or in the store (I8): the fold may not lose it")
 	require.Equal(t, fold.RunAssertion{BaseVersion: 1}, out[0].RunAssertions()[runX])
 	require.Equal(t, 3, stats.MutationsIn, "the failed add does not count; the idempotent delete does")
 }

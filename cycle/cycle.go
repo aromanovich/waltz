@@ -110,7 +110,7 @@ type Config struct {
 	// sit at the measured collapse knee; changing either means re-measuring.
 	Mutations int
 	Bytes     int
-	// Age drains a tail nothing is pushing on, and is also how often a shard
+	// Age drains a window nothing is pushing on, and is also how often a shard
 	// whose last drain had no readable outcome re-asks the cold store — the one
 	// clock a cycle that refuses its writers has left. A recovery-budget choice,
 	// not a measured one. Non-positive is not "no age rule": it is filled with
@@ -469,7 +469,10 @@ func (c *Cycle) State() State { return State(c.mirroredState.Load()) }
 // Close starts the cycle if nothing has yet, drains what the window holds, waits
 // for any trim in flight and stops the goroutine. A halted cycle whose loop is
 // still running drains nothing (its tail is not its to apply) and returns the
-// halt.
+// halt — except one that halted inside its replay, which has never started, so
+// start runs over it again and floors the tail the halt was holding; if that
+// replay cannot read the log, the tail stays floored and the error returned is
+// the read's. That is an open entry in DURABILITY.md.
 //
 // The start is what makes the answer about the *shard* rather than about this
 // cycle's own window. A cycle replays lazily, on the first request to reach it,
@@ -575,8 +578,8 @@ type state struct {
 
 	// Counters is what this cycle counted, the same value [Stats] and [Totals]
 	// carry. When each moves is a rule of this file: AckedRanges at the fold,
-	// because a folded range raised the bound whether or not its drain
-	// committed; DroppedTasks and WrittenTasks only for a committed drain;
+	// because a folded range is in the window whether or not its drain
+	// commits; DroppedTasks and WrittenTasks only for a committed drain;
 	// Kinds at the accept, so it counts what this cycle acked. The two trim
 	// counters are the trimmer's and are read at [Cycle.stats].
 	Counters
@@ -638,9 +641,10 @@ func (c *Cycle) run() {
 	defer func() { c.finished = s.Counters }()
 	ageC, age := c.clock.NewTimer(c.policy().Age)
 	defer age.Stop()
-	// The age timer runs always, and ticks on an empty window are ignored.
-	// Arming it only when the window fills would mean re-arming from inside the
-	// drain, where a missed reset is a tail that never ages out.
+	// The age timer runs always, and a tick on an empty window does nothing
+	// unless a stall or storage pressure stands. Arming it only when the window
+	// fills would mean re-arming from inside the drain, where a missed reset is a
+	// tail that never ages out.
 	for {
 		select {
 		case <-c.stop.Channel():
@@ -933,8 +937,8 @@ func (c *Cycle) refold(s *state, m mutation.Mutation, kind mutation.Kind, size i
 // folds took it.
 func (c *Cycle) folded(s *state, kind mutation.Kind, size int) {
 	if kind == mutation.KindRangeCompleteTasks {
-		// Counted at the fold and not at the drain: the range has already
-		// raised the window's bound.
+		// Counted at the fold and not at the drain: the range is in the
+		// window already, whatever becomes of the drain.
 		s.counted().AckedRanges++
 	}
 	s.window.Add(size, c.clock.Now())
@@ -1000,13 +1004,18 @@ func (c *Cycle) checkDelegated(ctx context.Context, del fold.Delegated, rows *ba
 // request, and in this goroutine, which is what makes the readiness gate free
 // rather than a flag: a request arriving mid-replay is already parked in
 // [ask] on its own context. A failure leaves the cycle unstarted and the
-// window empty, so the next request starts again from the watermark.
+// window empty; one that leaves it running is retried from the watermark by the
+// next request.
 //
-// The attempt is abandoned whole, and everything it moved is either dropped
+// That attempt is abandoned whole, and everything it moved is either dropped
 // with it or re-planted at the top of the next one: its counters are a value
 // this never adopts ([state.counted]), its accumulator and window are replaced,
 // and its acked bytes go with the floor, which is read again from the cold
-// store's own watermark. There is no field here to remember to restore.
+// store's own watermark. There is no field here to remember to restore. An
+// attempt that halted is followed by none, so its tail and counters stay.
+//
+// It does not ask whether the cycle is halted; its callers do, except
+// [Cycle.Close].
 func (c *Cycle) start(ctx context.Context, s *state) error {
 	if s.started {
 		return nil
@@ -1361,10 +1370,10 @@ func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause er
 // working and the next owner's to continue, halted-invariant is a divergence this
 // process owns and may never be handed on as an ordinary failover, so a later halt
 // turning one into the other changes what the layer tells a server about a
-// failover. Nothing reaches it twice today, every door a caller has refusing
-// through [Cycle.halted] once the first has landed, which is why no test drives
-// it; it stays because "unreachable" is a claim about today's callers and this one
-// costs a comparison.
+// failover. Every door but one refuses through [Cycle.halted] once the first has
+// landed; [Cycle.Close] runs [Cycle.start] with no such check, so a cycle halted
+// inside its replay replays again, and that replay can halt a second time. No
+// test drives that arm.
 func (c *Cycle) halt(s *state, st State, cause error) {
 	if s.st != StateRunning {
 		return

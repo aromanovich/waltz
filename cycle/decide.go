@@ -311,7 +311,7 @@ func writeRefused(
 	return nil, ""
 }
 
-// persistenceLimit is the shape every refusal here is — the two above and the
+// persistenceLimit is the shape every refusal here is — the three above and the
 // read [loopRoute] refuses on the same unreadable drain — spelled once: copies
 // of it agree only while somebody keeps them agreeing, and what the shard reads
 // off them is the type and this pair.

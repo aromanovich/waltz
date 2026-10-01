@@ -31,7 +31,7 @@ type held struct {
 	shards  map[wal.ShardID]*Cycle
 	retired Totals
 	// closed is what [held.takeAll] leaves behind, so that a shutdown is a state
-	// and not just an empty map: the map empties at every acquire's install too.
+	// and not just an empty map: the map is empty before the first acquire too.
 	closed bool
 }
 

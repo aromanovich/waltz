@@ -487,10 +487,11 @@ func (g *Generator) snapshot(w *workflowState, r *runState, extraKeys int) (p.In
 	return snapshot, nil
 }
 
-// historyTasks draws TaskDensity tasks on average, each in one of the four
-// categories a persisted queue has. It is the only source of them here:
-// upstream's own generator maps every category to an empty slice, so a stream
-// taken from it exercises none of the task path fold has to concatenate.
+// historyTasks draws TaskDensity tasks on average, each in one of four
+// persisted categories: transfer, timer, visibility, replication. It is the
+// only source of them here: upstream's own generator maps every category to an
+// empty slice, so a stream taken from it exercises none of the task path fold
+// has to concatenate.
 func (g *Generator) historyTasks(w *workflowState, r *runState) (map[tasks.Category][]p.InternalHistoryTask, error) {
 	n := int(g.cfg.TaskDensity)
 	if g.rng.Float64() < g.cfg.TaskDensity-float64(n) {

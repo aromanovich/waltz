@@ -24,7 +24,8 @@ type Counters struct {
 	TrimsCommitted int
 	// Replayed counts entries read out of an inherited tail, Dropped the
 	// provisional ones whose condition did not hold. Both describe the replay
-	// that finished: an abandoned attempt takes what it counted with it.
+	// that finished or halted: an attempt abandoned for a retry takes what it
+	// counted with it.
 	Replayed int
 	Dropped  int
 	// Reads counts overlay reads routed, ReadsHeld the subset the window had

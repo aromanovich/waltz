@@ -141,7 +141,7 @@ func tasksCompletedOf(s *ExecutionStore) *atomic.Int64 { return &s.tasksComplete
 // interception is that table, indexed by [mutation.Kind]. Every kind the
 // wrapper takes into the layer has a row; the guard is
 // TestEveryInterceptedKindHasARow, so a kind added without one fails by name
-// rather than raising no counter and tagging its metric with the empty string.
+// rather than as a refusal of every write of that kind ([ExecutionStore.write]).
 var interception = [mutation.KindCount]interceptRow{
 	mutation.KindCreate:             {op: "CreateWorkflowExecution", counter: interceptedOf},
 	mutation.KindUpdate:             {op: "UpdateWorkflowExecution", counter: interceptedOf},
