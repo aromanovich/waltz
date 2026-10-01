@@ -55,7 +55,7 @@ a log: this one fires anyway, at the first drain past it.`)
 	HardMaxEntries = dynamicconfig.NewGlobalIntSetting(
 		"wal.hardMaxEntries", measured.HardMaxEntries,
 		`HardMaxEntries is invariant I10's bound on one shard's tail in entries: what has been
-acked and not yet applied. A shard at the bound refuses its writers with ResourceExhausted
+acked and not yet settled. A shard at the bound refuses its writers with ResourceExhausted
 rather than parking them behind the apply. READ AT START-UP: a change needs the history
 services restarted. It is read once because it is one half of a bound whose other half is
 wal.hardMaxBytes — neither unit works alone, and a node honouring one of the two from a

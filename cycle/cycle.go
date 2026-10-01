@@ -130,7 +130,7 @@ type Config struct {
 	DrainOnRead bool
 
 	// HardMaxEntries and HardMaxBytes are I10's bound on one shard's tail: what
-	// has been acked and not yet applied. Neither unit works alone: one workflow
+	// has been acked and not yet settled. Neither unit works alone: one workflow
 	// near the server's 8 MB mutable-state limit turns an entries-only bound
 	// into a byte budget with no ceiling, and bytes alone bound no replay. See
 	// [Config.CheckBudget].

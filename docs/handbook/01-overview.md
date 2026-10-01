@@ -405,7 +405,7 @@ above is [chapter 08](08-configuration.md).
   deletions, and which tasks they drop before a drain ever sees them.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the
   twelve-of-28 partition and the refused thirteenth, method by method.
-* [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — the one window onto
+* [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — the one view onto
   shard ownership, and how an acquire is told from a heartbeat.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — the state machine and `cycle.Defaults()`'s
   shipped triggers.
