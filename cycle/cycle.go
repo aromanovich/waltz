@@ -117,7 +117,7 @@ type Config struct {
 	// the default, because the loop arms a timer from it (see [Config.fill]).
 	Age time.Duration
 	// TrimEvery and TrimAfter are the trim cadence, whichever trips first. A
-	// DeleteRange per drain is a transaction per drain for no gain.
+	// Log.Trim per drain is a transaction per drain for no gain.
 	TrimEvery int
 	TrimAfter time.Duration
 	// Sync makes every [Cycle.write] drain before it returns and report the

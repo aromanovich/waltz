@@ -124,7 +124,7 @@ Two things the number does *are* recorded, and they bound how far it may sensibl
 ## The trim cadence: 16 drains or 60 seconds
 
 `TrimEvery: 16` and `TrimAfter: 60 * time.Second`. What the code records is a floor rather than a
-derivation: at `TrimEvery: 1`, a trim is a `DeleteRange` per drain — a transaction per drain for no
+derivation: at `TrimEvery: 1`, a trim is a `Log.Trim` per drain — a transaction per drain for no
 gain. Nothing records why 16 rather than 8 or 32, and nothing records why 60 seconds. They are start
 values, free to move on read-cost grounds. **Both are chosen.**
 
