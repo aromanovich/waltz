@@ -84,9 +84,9 @@ sequenceDiagram
   ES->>MG: Write(mutation, epoch=request.RangeID, baseRows)
   MG->>MG: resolve the shard's cycle, compare epochs (I11)
   MG->>CY: write(mutation, baseRows)
-  CY->>CY: off-loop tail check against I10's bound
+  CY->>CY: off-loop refusal check — I10's bound, a stall, a pressure stop
   Note over CY: from here the work runs on the cycle's own goroutine
-  CY->>CY: the tail check again, now in the loop
+  CY->>CY: the refusal check again, now in the loop
   CY->>ACC: CheckOrDrain(mutation) — the condition authority
   ACC-->>CY: delegated assertions the window cannot settle
   CY->>CS: read the pre-window rows the delegation named
@@ -162,7 +162,7 @@ sequenceDiagram
   CS-->>AP: committed
   AP-->>CY: nil
   Note over CY: appliedSeqno = batch.Watermark(), tail releases the window's bytes
-  CY->>CY: trimmer.Drained(appliedSeqno) — trims every 16 drains or 60 seconds, or trimmer.Force at once under storage pressure
+  CY->>CY: trimmer.Drained(appliedSeqno) — trims at the 16th drain or the first past 60 seconds, or trimmer.Force at once under storage pressure
 ```
 
 **Who blocks.** The write that trips a trigger pays for the drain inside its own call: the drain
@@ -204,7 +204,7 @@ sequenceDiagram
   CS-->>AP: committed
   AP-->>CY: nil
   Note over CY: appliedSeqno moves, the tail releases the taken window's bytes
-  CY->>CY: count the drain, emit wal_drains and wal_window_age
+  CY->>CY: count the drain, emit wal_drains, wal_drained_mutations, wal_drained_workflows, wal_window_age and the task counts
   CY->>CY: trimmer.Drained — a detached goroutine trims the log at the cadence (Force under storage pressure)
 ```
 
@@ -241,7 +241,8 @@ carry for years without anybody meeting it.
 The quieter rules of the drain:
 
 * **the trim is neither in the transaction nor on the loop.** `trim.Trimmer` starts a detached
-  goroutine at its cadence — `TrimEvery` drains (16) or `TrimAfter` (60 s), whichever trips first.
+  goroutine at its cadence — `TrimEvery` drains (16) or `TrimAfter` (60 s), whichever trips first,
+  both judged when a drain commits, so an idle shard does not trim on a timer.
   A cadence that comes due while a trim is already in flight is skipped rather than queued, and the
   goroutine runs under a one-minute budget. Under storage pressure every committed drain calls
   `Trimmer.Force` instead, which ignores the cadence and, behind a trim in flight, queues one
@@ -286,9 +287,9 @@ is for.
 flowchart TD
   W["a write is folded"] --> M["256 mutations reached: trigger=mutations"]
   W --> B["256 KiB reached: trigger=bytes"]
-  W --> RF["fold.ErrRefused, the window cannot express it: trigger=refusal"]
+  W --> RF["fold.ErrRefused at the check or the fold, the window cannot express it: trigger=refusal"]
   W --> P["the backend reports storage pressure: trigger=storage_pressure"]
-  T["the age timer ticks"] --> A["window older than Age: trigger=age"]
+  T["the age timer ticks"] --> A["window older than Age, or a stall to re-ask: trigger=age"]
   T --> P
   RP["a new owner replays a tail"] --> R["a size trigger trips, a provisional entry is met, or the tail runs out: trigger=replay"]
   X["Close or drainNow"] --> E["shutdown, or a test: trigger=explicit"]
@@ -707,9 +708,11 @@ waits on the trim, which is detached, and nobody waits on another shard.
 * [`../../cycle/write.go`](../../cycle/write.go) — `Manager.Write`: the shard lookup, the
   I11 epoch check, and the translation of a cycle's answer into the store's error types.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — `add`, `accept`, `drain`, `resolve`
-  and `halt`, plus `Defaults()` and the `drainCause` values behind the `trigger` tag values.
+  and `halt`, plus `Defaults()`, the `drainCause` values behind the `trigger` tag values, and
+  `pressureLevel`, where the backend's `wal.PressureSource` is read.
 * [`../../cycle/decide.go`](../../cycle/decide.go) — the rules as pure functions:
-  `writeRefused` (I10), `storeError`, `attribute` and `settlementOf`.
+  `writeRefused` (the unresolved drain, the pressure stop and I10, in that precedence),
+  `storeError`, `attribute` and `settlementOf`.
 * [`../../cycle/window/window.go`](../../cycle/window/window.go) and
   [`../../cycle/tailstate/tailstate.go`](../../cycle/tailstate/tailstate.go) — the two
   byte counters that must never be merged, and the typed token between them;

@@ -188,4 +188,7 @@ and the policy it hands `Compose`. What to know before changing any of it:
   what its shard holds leaves the tail at its floor, which reads as zero exactly
   like a shard that is clean, so `Cycle.residue` reports a non-nil cause as a
   residue whatever the count says.
-  `TestAShutdownSeesATailNoRequestEverMadeItLookAt` is red without either.
+  `TestAShutdownSeesATailNoRequestEverMadeItLookAt` is red without either. A
+  cycle that halted inside its replay has not started either, and the start
+  floors the tail its halt was holding — the first Open entry in
+  `DURABILITY.md`, where the residue's zero is that floor and not a clean shard.

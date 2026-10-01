@@ -334,7 +334,10 @@ What to know before changing it:
     *before* it queues anything, so the leak's first symptom is a working shard
     refusing its writers. **Halted inside the replay is the other half**: no
     attempt follows, so the tail stays as the evidence `routeRead` refuses
-    reads on and the counters stay with it. The counters therefore
+    reads on and the counters stay with it — except under `Cycle.Close`, which
+    runs `start` with no state check, floors that tail, replays again and, if
+    the log read fails, leaves it empty for `stoppedRoute` to pass reads
+    through on (the first Open entry in `DURABILITY.md`). The counters therefore
     under-report a committed drain inside an abandoned attempt, deliberately —
     which is the reading `Replayed` and `Dropped` always had, in the direction
     that undercounts a rare incident rather than inventing acks on every retry;
@@ -370,7 +373,7 @@ What to know before changing it:
   readback answered would heal where this fails over, and it is a bigger
   mechanism than the one place it would help — a log that answers no reads is
   a log the successor cannot write to either;
-* **`cycle/acked.go` is gone and must not come back**. It held I7's bound
+* **`cycle/acked.go` is gone and must not come back**. It held the drop's bound
   — per (shard, epoch, category), raised only, filled from a queue's goroutine
   under a mutex, snapshotted per drain — and every one of those placements was
   forced by the same thing: the delete had already happened when the layer heard
@@ -412,8 +415,9 @@ What to know before changing it:
   see a `*state`, so it is structural rather than prose, and the cadence
   arithmetic is judged in `trim`'s own tests with a fake log and a driven clock
   where it used to need a whole cycle env.
-  A failed trim is retried at the next cadence and never halts anything — and
-  its retry is observed rather than assumed: a second write issued
+  A failed trim never halts anything: a cadenced one is retried at the next
+  cadence, a forced one is forced again while the pressure stands — and the
+  retry is observed rather than assumed: a cadence that comes due
   while the first trim is still in flight is *correctly* given no trim at all,
   so a test driving the next cadence waits on `Trimmer.Wait` first. A concurrent
   trim also does **not** cost the appends their I9 immediacy — measured once on

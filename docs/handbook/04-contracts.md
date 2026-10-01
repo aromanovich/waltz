@@ -26,7 +26,7 @@ This chapter is the reference for the interfaces themselves. For the mechanism b
 [chapter 03](03-components.md) for who stands where, [chapter 05](05-write-path.md) for a write end
 to end, [chapter 06](06-shard-lifecycle.md) for ownership and replay, and [chapter
 07](07-read-path.md) for the overlay and the task merge. The invariants cited by number below — I1,
-I2, I4, I5, I7, I9, I10 and I11 — are stated in [chapter 02](02-concepts-and-invariants.md), and the
+I2, I4, I5, I8, I9, I10 and I11 — are stated in [chapter 02](02-concepts-and-invariants.md), and the
 metrics that watch them are in [chapter 10](10-metrics.md).
 
 ## The seams, at a glance
@@ -135,9 +135,9 @@ classDiagram
   ColdStore --|> Watermarker
   Deployment ..|> ColdStore
   Rows ..> Store : reads through
-  Cycle ..> Log : appends, reads, trims
+  Cycle ..> Log : fences, appends, reads, trims
   Cycle ..> Applier : drains through
-  Cycle ..> Watermarker : resolves ambiguity through
+  Cycle ..> Watermarker : reads its floor and resolves ambiguity through
 ```
 
 How to read this. `cycle` names no storage at all. Everything below it arrives as one of these
@@ -522,7 +522,7 @@ Every request in a batch names a `WorkflowRecord`, which holds the workflow's he
 assertion (`Current`), the current row the window would write (`CurrentWrite`) and whether the
 window's net effect was to remove that row (`CurrentRemoved`). Orphaned tasks appear only on a
 tombstone: they are the tasks of the mutations the tombstone collapsed. The `Delete` has no task
-slot of its own to hold them, and losing them would break I7.
+slot of its own to hold them, and losing them would break I8.
 
 `Batch` also answers `Empty()`, `Len()`, `Stats()`, `Settles() (wal.Seqno, bool)`, `Tasks()
 TaskWork`, `History()` — the window's event batches in WAL order, which any applier handed them
@@ -1013,7 +1013,7 @@ the layer refusing to start. Its surface:
 | `Use(h metrics.Handler)` | the wrapper's `MetricsSink`. First call wins; a nil handler is ignored |
 | `Shard(shard) *Cycle` | internal callers that have already resolved a shard; nil when this node has not acquired it |
 | `Totals() Totals` | a witness |
-| `Close(ctx) []Residue` | shutdown — drains and stops every cycle, and answers with a `Residue` (shard, epoch, entries, the drain's error) for every shard whose tail it could not empty; those entries are in the log for the next owner, not lost. The one drain neither a size or age trigger, a request in flight nor the backend asks for: sync, a refusal, a read and a replay drain off some caller's call, storage pressure off the backend's own report, and the node's stop is nobody's. The drain is tagged `trigger="explicit"` |
+| `Close(ctx) []Residue` | shutdown — drains and stops every cycle, and answers with a `Residue` (shard, epoch, entries, the drain's error) for every shard whose tail it could not empty; those entries are in the log for the next owner, not lost. A cycle that halted inside its replay is the exception to the count: its close replays it again over a floored tail, so a failed log read there leaves a residue of zero entries carrying the read's error — an open defect in [the durability ledger](../../DURABILITY.md). The one drain neither a size or age trigger, a request in flight nor the backend asks for: sync, a refusal, a read and a replay drain off some caller's call, storage pressure off the backend's own report, and the node's stop is nobody's. The drain is tagged `trigger="explicit"` |
 
 `cycle.BaseTasks` and `cycle.BaseHistory` are type **aliases** for the task-read and branch-read
 closures, deliberately: the two packages that must agree on the signature may not import each other,
@@ -1129,14 +1129,16 @@ has to answer for itself — see `cycle.ErrNoBaseRow`.
   order every backend inherits instead of re-deriving.
 * [`../../wal/read.go`](../../wal/read.go) — `wal.Entries`, the paging loop and its
   termination rule.
-* [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one implementation here, and
-  what it deliberately does not offer a test.
+* [`../../wal/memwal/memwal.go`](../../wal/memwal/memwal.go) — the one implementation here, a
+  backend and not a test double: why its next seqno is state, and why payloads are copied in and out.
 * [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — the obligations stated once,
   including the two that belong to no single backend: payload ownership, and the spentness of
   trimmed seqnos.
 * [`../../mutation/mutation.proto`](../../mutation/mutation.proto) — the record format itself, and
   the rule that nothing in it may ever be renumbered or reused;
-  [`mutation.go`](../../mutation/mutation.go) is the type, the codec and the four accessors.
+  [`mutation.go`](../../mutation/mutation.go) is the type, the codec's four functions and the four
+  kinds of accessor, and [`history.go`](../../mutation/history.go) is `ErrMalformedHistory` and the
+  checks behind it.
 * [`../../mutation/kinds.go`](../../mutation/kinds.go) — one row per kind: name, slot,
   shard, rangeID and event slots.
 * [`../../fold/assert.go`](../../fold/assert.go) — what each kind claims about the store,
@@ -1159,7 +1161,8 @@ has to answer for itself — see `cycle.ErrNoBaseRow`.
   registry and `Totals`.
 * [`../../fold/fold.go`](../../fold/fold.go) — the accumulator, `Batch`, `Emitted` and
   the three errors `Add` refuses with and the page errors; [`check.go`](../../fold/check.go) for the
-  condition authority.
+  condition authority; [`history.go`](../../fold/history.go) for `Batch.History`, the event batches
+  the window carries in WAL order.
 * [`../../waltz.go`](../../waltz.go) — `Compose`, `Backends`, `Layer` and its lifecycle.
 * [`../../baserow/baserow.go`](../../baserow/baserow.go) — the two reads, and why neither
   caller may hold its own copy.

@@ -192,9 +192,9 @@ func Universal(t cycle.Totals) []error {
 	if len(t.Halted) > 0 {
 		errs = append(errs, fmt.Errorf("a shard halted: %v", t.Halted))
 	}
-	// A trim that fails halts nothing and is retried at the next cadence, so
-	// nothing else in a run says it happened: the log stops being compacted and
-	// every suite stays green. The claim is conditional on the cadence having
+	// A trim that fails halts nothing and is retried at the next cadence or
+	// force, so nothing else in a run says it happened: the log stops being
+	// compacted and every suite stays green. The claim is conditional on the cadence having
 	// fired at all — a run too short to trim says nothing here, which is why
 	// this is a comparison and not `TrimsCommitted == 0`.
 	if t.Trims > 0 && t.TrimsCommitted == 0 {

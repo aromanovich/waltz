@@ -12,7 +12,8 @@
 // Trimming is part of the latency budget rather than hygiene: a backend's
 // reads get dearer as its log gets longer ([wal.Log.Trim]), so a drain is what
 // fires one, rather than a sweeper on a clock of its own. A failed trim is
-// logged and retried at the next cadence, and halts nothing.
+// logged and halts nothing: a cadenced one is retried at the next cadence, a
+// forced one when its caller forces again.
 package trim
 
 import (

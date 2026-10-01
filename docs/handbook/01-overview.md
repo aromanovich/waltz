@@ -136,7 +136,7 @@ graph TD
   HS(("Temporal history service"))
   ES(("wrapper.ExecutionStore"))
   SS(("wrapper.ShardStore"))
-  CY(("cycle: one goroutine per shard and epoch"))
+  CY(("cycle: one loop per shard and epoch"))
   ACC(("fold.Accumulator: the window"))
   LOG(("wal.Log contract"))
   MW(("memwal: the in-process log"))
@@ -147,12 +147,12 @@ graph TD
 
   HS -->|writes and reads| ES
   HS -->|updates shard| SS
-  SS -->|fences| CY
+  SS -->|reports an acquire| CY
   SS -->|transits| CS
   ES -->|hands mutations| CY
-  ES -->|reads through overlay| CY
+  ES -->|the four reads, through overlay and merges| CY
   ES -->|transits the rest| CS
-  CY -->|appends| LOG
+  CY -->|fences, appends, replays| LOG
   CY -->|folds| ACC
   CY -->|drains| AP
   CY -->|trims| LOG
@@ -166,15 +166,16 @@ graph TD
 
 How to read this. Nothing crosses the shard boundary: every arrow out of `wrapper.ExecutionStore`
 that is not a transit or a metric goes to *that shard's* cycle goroutine, which is the only thing
-that touches that shard's accumulator, log and drain.
+that touches that shard's accumulator and drain, and the only thing that appends to its log.
 
 Three kinds of path reach the cold store, and the diagram draws two of them. **Transits** are the
 calls the layer has no record shape for; they go to the base store unchanged. **The applier** is the
 layer's only door to the base store's own transactions, one per drain. The third path is undrawn:
 the layer also uses the base store on its own account. Over a cold store that does not declare
 `cold.HistoryApplier`, an intercepted write puts its event slots down through it before the append;
-a read the window cannot answer falls through to it, and an assertion the window cannot settle by
-itself is checked against it.
+a read the window cannot answer falls through to it, an assertion the window cannot settle by
+itself is checked against it, and a cycle reads the applied watermark back through
+`cold.Watermarker` when it starts and when a drain's outcome is unknown.
 
 The arrows to `walmetrics.Emitter` are one-way: the emitter may not import anything it measures.
 

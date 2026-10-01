@@ -245,7 +245,7 @@ func TestASyncConditionFailureIsCountedAndIsNotADrain(t *testing.T) {
 }
 
 // TestTrimsAreCountedByOutcome. A failed trim halts nothing and is retried at
-// the next cadence, so this counter is the only way it is visible from outside
+// the next cadence or force, so this counter is the only way it is visible from outside
 // the process.
 func TestTrimsAreCountedByOutcome(t *testing.T) {
 	ns := uuid.NewString()

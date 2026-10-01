@@ -63,7 +63,7 @@ and the cycle have handed it on.
 |---|---|---|---|
 | `wal` | The log's contract: one fenced, gap-free, totally ordered sequence of entries per shard, payloads opaque. | `Log`, `Entry`, `ShardID`, `Seqno`, `Epoch`, `ErrFenced`, `ErrAlreadyWritten`, `ErrGap`, `ErrZeroEpoch`, `PressureSource`, `PressureLevel` | the Temporal server, and every package above it — the contract is backend-independent, so an implementer gets the log and not Temporal |
 | `wal/memwal` | The contract in process memory: the one implementation this library ships, so everything above the log tests without a cluster. | `Backend`, `New` | the same, for the same reason |
-| `wal/waltest` | The conformance suite an implementation runs, plus `Faulty`, a log wrapped so a chosen call fails. | `RunContractSuite`, `Faulty`, `Fault`, `Once`, `Always` | the same, **plus every implementation including `memwal`** — a suite that could name one would special-case it and stop being about the contract |
+| `wal/waltest` | The conformance suite an implementation runs, the two checks only a deployment can (reopen, retention), and `Faulty`, a log wrapped so a chosen call fails. | `RunContractSuite`, `CheckReopen`, `CheckRetention`, `Faulty`, `Fault`, `Once`, `Always` | the same, **plus every implementation including `memwal`** — a suite that could name one would special-case it and stop being about the contract |
 | `mutation` | What one log entry *is*: the protobuf record of one persistence call, and the eight kinds. | `Mutation`, `Kind`, `Part`, `Encode`, `Decode` | any persistence implementation — the record mirrors Temporal's requests; the store that eventually writes them is the applier's business |
 | `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — `wrapper`, `cycle` and `apply` all need this pair and none of them may name another's copy, so it imports Temporal's persistence and nothing more |
 | `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page and history-branch merges. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage`, `HistoryBasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
@@ -125,10 +125,10 @@ graph TD
   ES -->|"the other fifteen methods, and a write's events when the applier does not write them"| CS
   MGR -->|"resolves the shard, checks the epoch"| CY
   CY -->|"Append, ReadFrom"| LOG
-  CY -->|"Add, Drain, TaskPage"| ACC
+  CY -->|"Add, Drain, the read views and pages"| ACC
   CY -->|"Apply: one batch"| AP
   CY -->|"Drained or Force: a watermark"| TR
-  CY -->|"Watermark: recovery read"| WM
+  CY -->|"Watermark: the floor at start, an unknown outcome"| WM
   TR -->|"Trim"| LOG
   AP -->|"one transaction"| CS
   WM -->|"reads the applied watermark"| CS
@@ -138,7 +138,8 @@ How to read this. Nothing crosses a shard boundary below `cycle.Manager`: the ma
 shard to its one cycle, and everything under that cycle belongs to that shard alone. Two paths reach
 the cold store through an interface the layer names, and both are the deployment's to implement —
 `cold.Applier`, the drain's *write* door, and `cold.Watermarker`, which reads back what the last
-drain committed when its outcome was unknown. The wrapper's own arrows to the cold store are the
+drain committed — once when the cycle starts, for the floor it replays above, and again whenever a
+drain's outcome was unknown. The wrapper's own arrows to the cold store are the
 transits, plus one write: where the applier does not declare `cold.HistoryApplier`, an intercepted
 write's new history events go down through the store below before its mutation is appended, and the
 record carries none. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers twelve of them itself — the
@@ -163,7 +164,7 @@ graph TD
   ES2 -->|"counts intercepted writes and routed reads"| EM
   CY2 -->|"counts drains, halts, refusals, task rows"| EM
   CY2 -->|"Floor, Ack, Settle, Stall, Resolve"| TS
-  TS -->|"publishes tail entries and bytes"| EM
+  TS -->|"publishes tail entries, bytes and unapplied"| EM
 ```
 
 How to read this. The emitter is a sink and nothing more: every arrow into it is one-way. Every

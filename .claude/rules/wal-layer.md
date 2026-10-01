@@ -113,7 +113,7 @@ What to know before changing any of it:
 * **`Trim` is driven concurrently, because that is the only way it is ever
   called** (`TrimRunsBesideAppends`). The trimmer runs on a goroutine of its own
   so a slow trim cannot stop a shard from acking, so in every deployment a trim
-  is in flight while the loop appends and replays. The other three trim cases are
+  may be in flight while the loop appends and replays. The other three trim cases are
   sequential over a quiescent log, which no deployment is ever in, and a backend
   whose trim is a read-modify-write over the region the appends land in passes
   all three — measured, by giving `memwal`'s trim a snapshot taken before a

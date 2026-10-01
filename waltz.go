@@ -149,7 +149,7 @@ type Backends struct {
 //     [cycle.NewManager] refuses nil rather than starting a node whose recovery
 //     is silently off;
 //   - logger is optional, and nil is a noop: the layer's own warnings — a
-//     shutdown drain that did not commit, a trim retried at the next cadence —
+//     shutdown drain that did not commit, a trim that failed —
 //     then have nowhere to go;
 //   - handler is optional, and nil is the production value: the server hands one
 //     down through [wrapper.MetricsSink] after this runs.
@@ -287,12 +287,14 @@ func (l *Layer) RetireShard(shard wal.ShardID, epoch wal.Epoch) bool {
 }
 
 // Shutdown stops the layer: every shard that still holds a window is drained
-// into the cold store, and the log is released.
+// into the cold store, a halted one excepted, which is reported instead, and
+// the log is released.
 //
 // It must run after the server has stopped: the drain writes to the cold store
 // the mutations of writers the server is shutting down. budget bounds the apply
 // transactions — one per shard, in sequence — and not a trim already in flight,
-// which is waited out on the minute of its own detached context; a drain the
+// which is waited out on the minute each attempt has on its own detached
+// context, plus the one follow-up a forced trim may have queued; a drain the
 // budget cuts short leaves a tail, not lost data (invariant I2: it is in the
 // log, acked), which the next owner's replay picks up.
 //
@@ -318,6 +320,9 @@ func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) error {
 
 // UndrainedError is what [Layer.Shutdown] answers when a tail outlived it: the
 // shards still holding acked entries no drain applied, and how many each holds.
+// The count can read zero over entries the log holds — a cycle that halted
+// inside its replay and whose shutdown re-read of the log failed, an open entry
+// in DURABILITY.md — so a listed shard is never clean, whatever its count.
 //
 // It reports neither a lost write nor a failed shutdown. Those entries are in
 // the log and a successor's replay is what they are there for, so a node

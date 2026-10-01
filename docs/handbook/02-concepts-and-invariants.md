@@ -337,10 +337,12 @@ code, reads no event history back from the store and carries acknowledged log en
 event batches they carry — into the cold store.
 
 **Trim.** Lazy deletion of log entries at or below appliedSeqno, with no safety lag — recovery reads
-the watermark rather than the log. It runs beside the cycle rather than in it; a failed trim is
-retried at the next cadence and halts nothing. It is part of the latency budget rather than hygiene:
-a log that is never trimmed grows without bound, and a backend's reads get dearer as its log gets
-longer, so a drain is what fires a trim rather than a sweeper on a clock of its own.
+the watermark rather than the log. It runs beside the cycle rather than in it; a failed trim halts
+nothing and is retried at the next cadence, or, if storage pressure forced it, forced again while the
+pressure stands. It is part of the latency budget rather than hygiene: a log that is never trimmed
+grows without bound, and a backend's reads get dearer as its log gets longer, so a drain is what
+fires a trim rather than a sweeper on a clock of its own — the one exception being standing storage
+pressure over an empty window, where the age tick forces it.
 
 **Backpressure.** The refusal a shard's write meets before it is appended. Four things raise it,
 and the metric's `limit` tag says which:
@@ -497,9 +499,9 @@ cold store's `appliedSeqno` — and the third, in-memory one the tail is actuall
 
 ```mermaid
 graph LR
-  P["trimmed prefix: entries the log no longer holds"]
+  P["applied: in the cold store, trimmed from the log by and by"]
   A(("appliedSeqno"))
-  S["settled, not applied: entries a drain released without a transaction"]
+  S["settled, not applied: entries released without a transaction"]
   R(("resolved"))
   U["the unapplied tail: acked, fate still open"]
   C(("commitSeqno"))
@@ -549,7 +551,7 @@ graph TD
   TAIL -->|"a slice of it, at most all of it"| WIN
   WIN -->|"folded into"| ACC
   ACC -->|"emitted as fold.Batch"| DR
-  DR -->|"a known outcome releases those entries"| TAIL
+  DR -->|"a commit, an empty batch or an answered condition releases those entries"| TAIL
 ```
 
 How to read this. The two of them empty at different moments:
@@ -619,7 +621,7 @@ lower, on the log, except that a backend breaking it is slow rather than wrong.
 | **I1** | A mutation is one log entry, whole. No path writes parts of a mutation as separate entries. | [`mutation/mutation.go`](../../mutation/mutation.go) — exactly one request per mutation, one `oneof` in `mutation.proto`, one payload | `mutation`'s field-set and kind guards; `wrapper/intercept_test.go` asserts the record format has exactly eight shapes |
 | **I2** | A mutation is confirmed to its caller ⟺ its seqno ≤ commitSeqno. No ack before durability. | [`wal/wal.go`](../../wal/wal.go) guarantee 3 (cumulative ack); the cycle answers after `Append` returns | the log conformance suite [`wal/waltest`](../../wal/waltest/waltest.go), which every implementation runs |
 | **I3** | Readers see state as of commitSeqno: everything confirmed, nothing unconfirmed. | [`fold/overlay.go`](../../fold/overlay.go) and [`cycle/read.go`](../../cycle/read.go) — reads run on the cycle's own goroutine | `cycle`'s read tests over a window that is deliberately left undrained |
-| **I4** | Fencing is end to end: the log append is protected by the contract's fence semantics, and the cold-store write by the same epoch in the same transaction. | [`wal/wal.go`](../../wal/wal.go) (`Log.Fence`); the cold-store half is the applier's, which is handed the epoch on every `Apply` | `waltest`'s `FenceCutsOffLowerEpochs` (the zombie ex-owner) and `TwoWritersContendForOneShard` cover the log half; the applier's half is a deployment's obligation and nothing here judges it |
+| **I4** | Fencing is end to end: the log append is protected by the contract's fence semantics, and the cold-store write by the same epoch in the same transaction. | [`wal/wal.go`](../../wal/wal.go) (`Log.Fence`); the cold-store half is the applier's, which is handed the epoch on every `Apply` | `waltest`'s `FenceCutsOffLowerEpochs` (the zombie ex-owner) and `TwoWritersContendForOneShard` cover the log half; the acceptance suite's `TestAShardThatLosesItsEpochMidRun` holds `cold/memcold` to the cold-store half, and a deployment's own applier is its obligation, which nothing here judges |
 | **I5** | appliedSeqno is persisted atomically with each batch, and a batch it already covers is never applied twice. | the applier's own transaction: `cold.Applier` is handed a batch and `cold.Watermarker` reads back what it committed | `cycle`'s recovery tests, over an applier whose outcome the test chooses; that the real one is atomic is a deployment's obligation |
 | **I6** | Log entries are self-contained state deltas, not commands: applying an entry needs nothing but the entry. | [`mutation/encode.go`](../../mutation/encode.go) — the record mirrors the persistence request field for field | the codec's field-set guard: one recorded decision per mirrored field |
 | **I7** | The layer does not model an ack level: it applies the range deletions it was asked for, in the order it was asked. | [`fold/histtasks.go`](../../fold/histtasks.go), handed to the applier inside the drain's `fold.Batch` | `fold`'s task tests and the task-page corpus test; the `wal_dropped_tasks` / `wal_written_tasks` pair |

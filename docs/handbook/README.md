@@ -158,7 +158,7 @@ graph TD
   HS(("Temporal history service"))
   ES(("wrapper.ExecutionStore"))
   SS(("wrapper.ShardStore"))
-  CY(("cycle: one goroutine per shard and epoch"))
+  CY(("cycle: one loop per shard and epoch"))
   ACC(("fold.Accumulator: the window"))
   LOG(("wal.Log contract"))
   MW(("memwal: the in-process log"))
@@ -169,12 +169,12 @@ graph TD
 
   HS -->|writes and reads| ES
   HS -->|updates shard| SS
-  SS -->|fences| CY
+  SS -->|reports an acquire| CY
   SS -->|transits| CS
   ES -->|hands mutations| CY
-  ES -->|reads through overlay| CY
+  ES -->|the four reads, through overlay and merges| CY
   ES -->|transits the rest| CS
-  CY -->|appends| LOG
+  CY -->|fences, appends, replays| LOG
   CY -->|folds| ACC
   CY -->|drains| AP
   CY -->|trims| LOG

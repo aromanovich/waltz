@@ -176,6 +176,11 @@ func stoppedRoute(st State, tailEmpty bool, who reader, shard wal.ShardID, halt 
 // store can answer; entries in it mean the layer knows the store is incomplete
 // and cannot say by what. lostWhy is what the refusal tells an operator, and
 // the two callers differ in it because the cycle is in different shapes.
+//
+// The rule trusts the tail, and one stop breaks that trust: [Cycle.Close] over
+// a cycle halted inside its replay floors the tail and, when its log read
+// fails, retires it empty, so [stoppedRoute] passes a mutable-state read to a
+// store short those entries. That is an open entry in DURABILITY.md.
 func tailRoute(st State, tailEmpty bool, shard wal.ShardID, lostWhy string, halt error) (readRoute, error) {
 	if tailEmpty {
 		return passThrough, nil

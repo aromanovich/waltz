@@ -228,7 +228,9 @@ func (c *Cycle) replayEntry(
 // What the tail then reports is not a count anybody should read: whatever sits
 // above the entry was never looked at, and a seqno gap moves the commit over
 // the hole it names. Non-empty is the whole of what is needed — it is the only
-// thing [tailRoute] asks, and a halted cycle's bound is read by nobody.
+// thing [tailRoute] asks, and a halted cycle's bound is read by nobody. The
+// charge holds until [Cycle.Close], whose start floors it away; that is an open
+// entry in DURABILITY.md.
 func (c *Cycle) strand(s *state, e wal.Entry, cause error) {
 	s.tail.Ack(e.Seqno, len(e.Payload))
 	c.halt(s, StateHaltedInvariant, cause)

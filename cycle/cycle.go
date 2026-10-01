@@ -1012,10 +1012,14 @@ func (c *Cycle) checkDelegated(ctx context.Context, del fold.Delegated, rows *ba
 // this never adopts ([state.counted]), its accumulator and window are replaced,
 // and its acked bytes go with the floor, which is read again from the cold
 // store's own watermark. There is no field here to remember to restore. An
-// attempt that halted is followed by none, so its tail and counters stay.
+// attempt that halted is meant to be followed by none, so its tail and
+// counters stay.
 //
 // It does not ask whether the cycle is halted; its callers do, except
-// [Cycle.Close].
+// [Cycle.Close]. So a cycle halted inside its replay is started again there:
+// the floor below empties the tail its halt was holding, the replay counts its
+// entries a second time, and a log read that fails leaves the tail empty. That
+// is an open entry in DURABILITY.md.
 func (c *Cycle) start(ctx context.Context, s *state) error {
 	if s.started {
 		return nil
@@ -1049,10 +1053,10 @@ func (c *Cycle) start(ctx context.Context, s *state) error {
 			s.tail.Floor(s.tail.Applied())
 			return err
 		}
-		// Halted inside the replay, where no attempt follows. The tail stays:
-		// it is the evidence those entries were acked and never applied, which
-		// is what [Cycle.routeRead] refuses reads on. What the attempt counted
-		// stays with it for the same reason — nothing will count it again.
+		// Halted inside the replay, where no attempt follows but Close's. The
+		// tail stays: it is the evidence those entries were acked and never
+		// applied, which is what [Cycle.routeRead] refuses reads on. What the
+		// attempt counted stays with it for the same reason.
 		s.Counters.add(attempt)
 		return err
 	}
@@ -1373,7 +1377,8 @@ func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause er
 // failover. Every door but one refuses through [Cycle.halted] once the first has
 // landed; [Cycle.Close] runs [Cycle.start] with no such check, so a cycle halted
 // inside its replay replays again, and that replay can halt a second time. No
-// test drives that arm.
+// test drives that arm. The start floors the tail before that replay, which is
+// an open entry in DURABILITY.md whether or not the second halt comes.
 func (c *Cycle) halt(s *state, st State, cause error) {
 	if s.st != StateRunning {
 		return

@@ -83,8 +83,8 @@ var (
 		metrics.WithDescription("Apply cycles that stopped, by class."))
 
 	// Trims is the log's compaction, by outcome. A failed trim is retried at the
-	// next cadence and halts nothing, so the pair is all a scrape sees of it; the
-	// cause is in the trim's own warning.
+	// next cadence or force and halts nothing, so the pair is all a scrape sees
+	// of it; the cause is in the trim's own warning.
 	Trims = metrics.NewCounterDef("wal_trims",
 		metrics.WithDescription("Log trims, by outcome."))
 

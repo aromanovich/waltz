@@ -130,8 +130,9 @@ values, free to move on read-cost grounds. **Both are chosen.**
 
 What the pair derives matters more than where it came from, because it is the bound a post-mortem
 depends on: how much of the log is still there when you go looking. Trim goes to the committed
-applied watermark **with no safety lag**, so while trims succeed what survives is at most
-`TrimEvery × Mutations` entries, plus whatever the tail currently holds. At the shipped defaults
+applied watermark **with no safety lag**, so while trims succeed and none is still in flight when a
+cadence comes due, what survives is at most `TrimEvery × Mutations` entries, plus whatever the tail
+currently holds. At the shipped defaults
 that is 16 × 256 = **4096 entries**, and it is the same 4096 whether the shard has been running
 for a minute or a month. A failed trim is retried at the next cadence, and a cadence that comes due
 while a trim is still in flight is skipped, so either leaves more behind until then, never less.
@@ -230,7 +231,7 @@ graph TD
   TB -->|"divided by"| HB
   MS -->|"divided into"| HB
   WM -.->|"32 windows, after the fact"| HE
-  WM -.->|"times the trim cadence: 4096 entries survive a trim"| TR
+  WM -.->|"times the trim cadence: at most 4096 entries survive a trim"| TR
 ```
 
 How to read this. A solid edge is a derivation the tree records. A dotted edge is arithmetic that

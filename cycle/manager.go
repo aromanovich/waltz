@@ -195,7 +195,10 @@ type Residue struct {
 	Shard wal.ShardID
 	Epoch wal.Epoch
 	// Entries is the tail as its last publish left it: acked, unsettled, and the
-	// next owner of this shard to apply.
+	// next owner of this shard to apply. For a cycle that halted inside its
+	// replay the last publish can be the floor its shutdown start planted, so
+	// this reads zero over entries the log still holds — an open entry in
+	// DURABILITY.md.
 	Entries int
 	// Cause is what the shutdown drain answered — nil where it committed and
 	// what is left is a halt's tail or a stall's.
@@ -233,7 +236,8 @@ func (m *Manager) Close(ctx context.Context) []Residue {
 // that is not arithmetic: the counters say what this cycle acked, and a close
 // that failed is one that could not establish what the shard holds — a failed
 // watermark read leaves the tail at its floor, which reads as zero exactly like
-// a shard that is clean. The caller's question is whether removing the layer
+// a shard that is clean, and so does a failed log read under the start that
+// re-replays a cycle halted inside its replay. The caller's question is whether removing the layer
 // strands anything, and the only safe answer to "nobody looked" is to say so.
 func (c *Cycle) residue(cause error) (Residue, bool) {
 	entries, _ := c.mirror.Size()

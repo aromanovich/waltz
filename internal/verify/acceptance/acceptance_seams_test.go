@@ -13,10 +13,11 @@ package acceptance
 // against the schema, the row layouts and the condition failures upstream
 // wrote — so the claim becomes what the database holds afterwards.
 //
-// Three claims, and the second case is invariant I2 with both seams real: a
-// shard whose epoch moves under a running cycle holds exactly the drains that
-// committed before the loss, and the entries acked after it are still in the
-// log for the next owner rather than half-applied under a stale epoch.
+// Three claims, and the second case is invariant I4's cold-store half with
+// both seams real: a shard whose epoch moves under a running cycle holds
+// exactly the drains that committed before the loss, and the entries acked
+// after it are still in the log for the next owner rather than half-applied
+// under a stale epoch.
 
 import (
 	"cmp"
@@ -129,14 +130,14 @@ func TestBothSeamsRealNoServer(t *testing.T) {
 		first, last, seamsMutations, running.TrimsCommitted)
 }
 
-// TestAShardThatLosesItsEpochMidRun is I2 with both seams real. A second owner
-// takes the shard in the database — the rangeID moves, which is all an
-// acquire is from underneath — while this node's cycle keeps acking into a log
-// nobody fenced away from it. So the loss is discovered where it has to be
+// TestAShardThatLosesItsEpochMidRun is I4's cold-store half with both seams
+// real. A second owner takes the shard in the database — the rangeID moves,
+// which is all an acquire is from underneath — while this node's cycle keeps
+// acking into a log nobody fenced away from it. So the loss is discovered where it has to be
 // discovered, inside the drain's own transaction, with a window of acked
 // mutations riding on it.
 //
-// What must be true afterwards is the whole of the invariant: the database
+// What must be true afterwards is that half, and I2 beside it: the database
 // holds every drain that committed before the loss, nothing of the drain that
 // found it, and the log still holds every entry those refused drains carried.
 // Nothing acked is lost and nothing unapplied is invented.

@@ -48,8 +48,9 @@ gain; raising it leaves more of the log behind, which is what a post-mortem read
 
 	TrimAfter = dynamicconfig.NewGlobalDurationSetting(
 		"wal.trimAfter", measured.TrimAfter,
-		`TrimAfter is the same cadence in time, whichever trips first. Raising TrimEvery alone
-does not keep a log: this one fires anyway.`)
+		`TrimAfter is the same cadence in time, whichever trips first. It is judged when a drain
+commits, so an idle shard does not trim on this timer. Raising TrimEvery alone does not keep
+a log: this one fires anyway, at the first drain past it.`)
 
 	HardMaxEntries = dynamicconfig.NewGlobalIntSetting(
 		"wal.hardMaxEntries", measured.HardMaxEntries,

@@ -107,7 +107,7 @@ thing to keep in mind below. What to know before changing the fold itself:
 
 * **a deletion collapses the run's accumulator into a tombstone**, and the
   dropped state's tasks survive as `Emitted.OrphanedTasks` — a task is durable
-  in the tail or in the store (I7), and a fold may not quietly lose one. The
+  in the tail or in the store (I8), and a fold may not quietly lose one. The
   collapse leans on Temporal's deletion flow always pairing
   `DeleteWorkflowExecution` with `DeleteCurrentWorkflowExecution`: without the
   pair a folded window would leave the current row holding pre-window content

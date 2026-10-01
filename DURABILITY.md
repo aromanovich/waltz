@@ -108,8 +108,8 @@ backend-side obligation is `APageEndsAtItsLimitAndNotAtAByteBudget` in the
 conformance suite.
 
 **A trim that is not isolated from a concurrent append.** The trimmer runs on a
-goroutine of its own so a slow trim cannot stop a shard from acking, so a trim is
-always in flight while the log is being appended to. A backend whose trim is a
+goroutine of its own so a slow trim cannot stop a shard from acking, so any trim
+may be in flight while the log is being appended to. A backend whose trim is a
 read-modify-write over the region the appends land in loses the entry acked while
 it ran — no error, a log that simply ends lower, and the seqno handed out twice.
 `TrimRunsBesideAppends` in the conformance suite; proved by giving `memwal`'s trim
@@ -536,7 +536,10 @@ reads as permission to remove the `wal` section: passthrough composes no log, so
 those entries are never replayed by anyone. A shutdown now starts a cycle that
 has not started before draining it, and a close that could not establish what its
 shard holds is a residue of its own rather than a zero.
-`TestAShutdownSeesATailNoRequestEverMadeItLookAt` (`waltz_test.go`).
+`TestAShutdownSeesATailNoRequestEverMadeItLookAt` (`waltz_test.go`). That start
+also runs over a cycle that halted inside its replay, which has not started
+either, and empties the tail the halt was holding — the first entry under
+*Open*.
 
 **The same zero, in the two reads a caller has.** `RetireShard` is how a harness
 stages what a killed process leaves behind, and the cycle it stops stays the

@@ -170,6 +170,12 @@ may be one this layer wrote on an earlier page.
 | halted-invariant (`loopRoute`) | the base store answers if the tail is empty, else the halt's own error | the halt's own error, whatever the tail holds |
 | retired, its goroutine gone (`stoppedRoute`) | the same tail rule | `ShardOwnershipLost` — re-issued on the successor by `Manager.taskPage` where one has superseded it |
 
+The tail rule is only as good as the tail, and one stop empties a tail it did not apply: a cycle that
+halted inside its replay is replayed again by `Cycle.Close`, which floors the tail first, so a second
+log read that fails leaves the retired cycle's mirror empty and the last row passes a mutable-state
+read to a cold store missing those entries. That is an open defect in
+[the durability ledger](../../DURABILITY.md).
+
 An empty tail does not soften the task read's half of any of them, and the last row is why it cannot:
 a page the cold store answers carries **that store's own page token**. A shard re-acquired mid
 pagination — a rangeID renewal is one, and it unloads nothing, so the caller's reader keeps
@@ -277,9 +283,10 @@ sequenceDiagram
     HS->>ES: GetWorkflowExecution
     ES->>MG: GetWorkflowExecution plus a base thunk
     MG->>LP: queue the read as a job
-    LP->>LP: prelude - gate, count, route
+    LP->>LP: prelude - the replay gate
     LP->>ACC: ViewRun
     ACC-->>LP: RunDelta
+    LP->>LP: prelude - count, route
     LP->>CS: base thunk - the pre-window row
     CS-->>LP: the row at its own version
     LP->>LP: Render - apply the window's delta to a private copy
@@ -660,7 +667,8 @@ witness; [chapter 10](10-metrics.md) owns every series named here, with its tags
 * [`../../fold/historypage.go`](../../fold/historypage.go) — the merged branch page: the same
   cut rule, the store's two orders, and its own token.
 * [`../../fold/histtasks.go`](../../fold/histtasks.go) — I7's half inside the window:
-  `TaskRange.Covers`, the sweep, `taskRows`, and the two drop counters.
+  `TaskRange.Covers`, the sweep, `taskRows`, and `TaskCounts`, the dropped and written counts
+  per category.
 * [`../../fold/tasks.go`](../../fold/tasks.go) — the window's tasks as a reader sees
   them, and why the scan has no index over it.
 * [`../../cycle/read.go`](../../cycle/read.go) — the two mutable-state reads,
@@ -669,8 +677,8 @@ witness; [chapter 10](10-metrics.md) owns every series named here, with its tags
   three task-read counters.
 * [`../../cycle/history.go`](../../cycle/history.go) — who may answer a branch page, and the
   token unwrapped on every route that answers without the window.
-* [`../../cycle/decide.go`](../../cycle/decide.go) — `readRoute` and the four rules that
-  return it, as functions of values.
+* [`../../cycle/decide.go`](../../cycle/decide.go) — `readRoute`, the one rule at its five
+  moments, and the functions of values that return it.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the
   twelve-of-28 partition, method by method, and where each read counter is raised.
 * [`../../walmetrics/walmetrics.go`](../../walmetrics/walmetrics.go) — the series, with

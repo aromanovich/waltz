@@ -107,11 +107,12 @@ sequenceDiagram
     MG->>MG: install a fresh Cycle, and Retire the one it displaced
     MG-->>WS: nil
     WS->>BS: UpdateShard (the rangeID bump)
-    BS-->>SC: committed
+    BS-->>WS: committed
+    WS-->>SC: committed
 ```
 
 How to read this. Every arrow above the base store happens *first*. If `Fence` fails, none of the
-four arrows below it happen, so the database still says the previous owner holds range `N` while
+arrows after its answer happen, so the database still says the previous owner holds range `N` while
 this node holds no cycle for the shard.
 
 The two other shapes of the same call:
@@ -228,13 +229,13 @@ recorded.
 stateDiagram-v2
     [*] --> Created: ShardAcquired: fence held, cycle installed
     Created --> Running: first read or write: watermark, replay, drain
-    Created --> Created: replay read failed: unstarted, retried on the next request
+    Created --> Created: a watermark read, a log read or a replay drain's outcome failed: unstarted, retried on the next request
     Created --> HaltedLost: a replayed entry above this epoch, or a replay drain finding the shard lost
-    Created --> HaltedInvariant: a seqno gap, an undecodable or foreign entry, or a divergence at a replay drain
+    Created --> HaltedInvariant: a seqno gap, an undecodable or foreign entry, a tail read that ended short, or a divergence at a replay drain
     Created --> Stopped: Retire
     Running --> Running: append, fold, drain, trim
     Running --> HaltedLost: wal.ErrFenced, apply ClassShardLost, a watermark past an unreadable drain
-    Running --> HaltedInvariant: condition failure at a drain, ErrTailNotEmpty, unreadable drain proven not to have committed
+    Running --> HaltedInvariant: condition failure or refused batch at a drain, ErrTailNotEmpty, an append whose outcome cannot be read, a fold refusal that survives its drain, unreadable drain proven not to have committed
     Running --> Stopped: Retire: superseded by a higher epoch, RetireShard, or the node closed
     HaltedLost --> Stopped: Retire
     HaltedInvariant --> Stopped: Retire
@@ -243,8 +244,8 @@ stateDiagram-v2
 
 How to read this. `Created` is not a state value: it is a running cycle that has not yet read its
 seqno floor and replayed the tail above it (`state.started` is false). The self-loop on it is the
-only recoverable failure on the diagram — a replay whose log read failed leaves the cycle unstarted
-with an empty window, so the next request starts again from the watermark. `Stopped` is likewise not a `State` value: a stopped
+only recoverable failure on the diagram — a start whose watermark read or log read failed, or whose
+replay drain could not learn its outcome, leaves the cycle unstarted with an empty window, so the next request starts again from the watermark. `Stopped` is likewise not a `State` value: a stopped
 cycle keeps reporting the state its goroutine stopped in, and `Retire` on a *running* cycle stamps
 it `halted-lost` on the way out, because being superseded is exactly what that state means.
 
@@ -293,7 +294,10 @@ sequenceDiagram
     CY->>LOG: ReadFrom(appliedSeqno+1), pages of the window size
     LOG-->>CY: entries, in seqno order
     CY->>CY: decode, check epoch and seqno, fold into a fresh accumulator
-    CY->>CS: drain: one transaction per window's worth
+    CY->>CS: drain: one transaction each time a size trigger trips
+    CY->>LOG: ReadFrom(next, 1) — confirm the tail ends where the pages did
+    LOG-->>CY: nothing there
+    CY->>CS: drain what is left, if anything was replayed
     CS-->>CY: committed, and the watermark moves with it
     CY->>REQ: now served
 ```
@@ -394,7 +398,11 @@ would count one incident once per attempt. The tail is what invariant I10 reads 
 queued, so the first symptom of such a leak would be a perfectly healthy shard refusing its writers.
 
 Halting *inside* a replay is the opposite case. No further attempt follows, so the tail stays where
-it is — it is the evidence that reads are refused on — and the counters stay with it.
+it is — it is the evidence that reads are refused on — and the counters stay with it. One caller
+breaks that today: `Cycle.Close` runs the start again over such a cycle, which floors the tail
+before it replays, so a shutdown whose second log read fails leaves the tail empty and a
+mutable-state read then passes through to a cold store missing those entries. That is an open defect
+in [the durability ledger](../../DURABILITY.md).
 
 ---
 
@@ -480,7 +488,11 @@ answer as one nobody holds, which is the zero a caller reads as "nothing strande
 
 **`Cycle.Close(ctx)` — drain, then retire.** This is the shutdown path. A cycle no request has
 reached yet replays its tail first, so that the drain has it to apply. A halted cycle drains
-nothing and returns its halt; a cycle already retired answers nil, having nothing left to drain.
+nothing and returns its halt; a cycle already retired answers nil, having nothing left to drain. The
+exception is a cycle that halted inside its replay: it never started, so `Close` replays it again,
+flooring its tail first, and if that replay cannot read the log the tail is left empty and `Close`
+returns the read's error instead of the halt — the open entry in
+[the durability ledger](../../DURABILITY.md).
 
 **`Layer.Shutdown(ctx, budget)` — the node's stop.** It puts `budget` on a context and calls
 `Manager.Close`, which empties the registry in one step and closes every cycle it took, in sequence,
@@ -516,7 +528,9 @@ sequenceDiagram
     MG->>CY: Close: replay if unstarted, drain, then Retire
     CY->>CS: one transaction for this shard's window
     CY->>CY: wait for the trim in flight
+    MG-->>L: a Residue for every shard still holding a tail
     L->>L: Log.Close — whatever the backend held around the log
+    L-->>Main: nil, or an UndrainedError naming those shards
 ```
 
 How to read this. The registry is emptied in one step, so a second `Close` finds nothing to drain.
@@ -549,7 +563,8 @@ latency budget rather than hygiene.
 * **The cadence is two numbers, whichever trips first** (storage pressure aside, below):
   `cycle.Config.TrimEvery` drains since the last trim (16 by default) and `cycle.Config.TrimAfter`
   elapsed time (60 s by default). Both are read at the decision, so they may move under a shard this
-  node is already holding. There is a cadence at all because a `DeleteRange` per drain would be a
+  node is already holding. The decision is taken only when a drain commits, so the time half is no
+  timer: an idle shard does not trim until its next drain. There is a cadence at all because a `DeleteRange` per drain would be a
   transaction per drain for no gain. [Chapter 08](08-configuration.md) has the configuration keys.
 * **It runs beside the loop, not in it.** `cycle/trim` is its own package for exactly that reason: a
   stuck log may not stop a shard from acking and applying. One trim runs at a time; a cadence that
@@ -562,8 +577,9 @@ latency budget rather than hygiene.
   itself, since no commit is coming to force it. A forced trim that finds one in flight queues a
   single follow-up, coalesced to the highest watermark asked for, rather than being skipped; one a
   trim has already reached, or is reaching, schedules nothing.
-* **A failed trim halts nothing.** It is logged, retried at the next cadence, and counted — and
-  `wal_trims{outcome="started"|"failed"}` is the only series that reports it. Two counters
+* **A failed trim halts nothing.** It is logged and counted, and
+  `wal_trims{outcome="started"|"failed"}` is the only series that reports it. A cadenced one is
+  retried at the next cadence, a forced one by the next force while the pressure stands. Two counters
   rather than one, because a run whose every trim failed would otherwise read exactly like one whose
   cadence never fired.
 * **A halted cycle trims nothing**, in either class. Under `halted-lost` the log belongs to the next

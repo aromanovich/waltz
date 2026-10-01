@@ -155,7 +155,7 @@ theirs from their definitions — `wal_tail_entries` and `wal_unapplied_entries`
 | `wal_answered_condition_failures` | counter | writes | none | `Cycle.answerWriter` | Drains whose condition did not hold and were **answered to the caller** instead of halting the shard. This is sync mode's traffic and only sync mode's: `drainSync` is the one cause carrying the attribution that reaches here, so under `wal.sync: true` this rate is what tells a shard losing ordinary races from one diverging. In windowed mode it stays at zero — every condition is decided before the append, so no failed condition survives to a drain, and the halt branch is the only one a windowed drain can reach. `answered` is load-bearing: a condition failure at a drain has three endings (`cycle.attribute`) and this counts one. The other two are `wal_halts{state="halted-invariant"}`, for a batch whose caller cannot be named, and `wal_replay_dropped_entries`, for a replayed provisional entry whose caller has its answer already. |
 | `wal_backpressure_refusals` | counter | writes | `limit` = `entries`, `bytes`, `unresolved`, `storage_pressure` | `Cycle.writeRefused`, before the append | Writes the shard refused before appending them, by what refused. `entries`/`bytes` are [I10](02-concepts-and-invariants.md#the-invariants)'s two size bounds; `unresolved` is the applier being blind rather than behind — it cannot read what its last drain did, so nothing may be applied over it; `storage_pressure` is not the layer's bound at all — the backend reports pressure at the level that stops appends, and lowers it itself. |
 | `wal_halts` | counter | cycles | `state` = `halted-lost`, `halted-invariant` | `Cycle.halt` | Apply cycles that halted, by class; a retire stops a cycle without counting here. The tag value is the state's own `String()`, so a state added to the cycle cannot be silently folded into a bucket here. **Never sum the two** — see §7. |
-| `wal_trims` | counter | trims | `outcome` = `started`, `failed` | `trim.Trimmer.start` and its goroutine | Log trims by outcome, the forced ones under storage pressure included — a forced trim is an ordinary trim that consulted no cadence. A failed trim is retried at the next cadence and halts nothing (under standing pressure the age tick is that cadence), so this is the only place it is visible. `started` minus `failed` is the number that succeeded *or* is still in flight. |
+| `wal_trims` | counter | trims | `outcome` = `started`, `failed` | `trim.Trimmer.start` and its goroutine | Log trims by outcome, the forced ones under storage pressure included — a forced trim is an ordinary trim that consulted no cadence. A failed trim halts nothing — a cadenced one is retried at the next cadence, a forced one is forced again by the next committed drain or, over an empty window, the next age tick while the pressure stands — so this is the only place it is visible. `started` minus `failed` is the number that succeeded *or* is still in flight. |
 | `wal_tail_entries` | histogram | dimensionless (entries) | none | `tailstate.Mirror.store`, reached by every tail move | Entries acked into the log and not yet settled, on one shard, observed at each append and each drain. One observation per shard per tail move. |
 | `wal_tail_bytes` | histogram | bytes | none | same call | Encoded bytes acked and not yet settled, on one shard. The second unit I10 bounds; not the window's byte count, which is a different number. |
 | `wal_unapplied_entries` | histogram | dimensionless (seqnos) | none | same call | `commitSeqno − appliedSeqno`: how far the cold store is behind the log, per shard. **Not** the tail — see §8. |
@@ -226,10 +226,15 @@ flowchart TD
     J["drain: apply transaction"] --> K{"outcome"}
     K -->|"committed"| L["wal_drains, wal_drained_mutations, wal_drained_workflows, wal_window_age"]
     L --> M["wal_dropped_tasks, wal_written_tasks (per category)"]
-    L --> N["trim cadence: wal_trims outcome=started or failed"]
+    L --> N["trim, at the cadence or forced by pressure: wal_trims outcome=started or failed"]
     K -->|"fenced away"| P["wal_halts state=halted-lost"]
     K -->|"invariant violated"| Q["wal_halts state=halted-invariant"]
-    K -->|"outcome unreadable"| R["tail stalls: later writes refused with limit=unresolved"]
+    K -->|"invariant violated, sync mode's window of one"| S["wal_answered_condition_failures, the writer is answered"]
+    K -->|"outcome unknown"| W{"the watermark, re-read"}
+    W -->|"at the drain's seqno: it committed"| L
+    W -->|"below it"| Q
+    W -->|"above it"| P
+    W -->|"unreadable"| R["tail stalls: later writes refused with limit=unresolved"]
 ```
 
 How to read this: the four series on `L` come from **one** `Emitter.Drained` call, so a drain cannot

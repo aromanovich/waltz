@@ -372,14 +372,14 @@ watermark instead — allowed exactly when the cold store holds every seqno acke
 does not. Read as loss unconditionally, it was a sample that failed on the machine where the drain
 won the race and passed on the one where the writer did.
 
-`TestAShardThatLosesItsEpochMidRun` is invariant [I2](02-concepts-and-invariants.md#the-invariants)
-with both seams real. After 2,000 mutations another owner takes the shard in the database: the
+`TestAShardThatLosesItsEpochMidRun` is invariant [I4](02-concepts-and-invariants.md#the-invariants)'s
+cold-store half with both seams real. After 2,000 mutations another owner takes the shard in the database: the
 rangeID moves, which is all an acquire is from underneath. The log is left unfenced on purpose — fencing
 it would stop the appends and halt the cycle before any drain reached the database, which is the
 other half of fencing and not this run's subject. Here the loss is discovered inside the drain's own
 transaction, with a window of acknowledged mutations riding on it.
 
-What must hold afterwards is the whole of the invariant. The write path answers a
+What must hold afterwards is that half, and I2 beside it. The write path answers a
 `*persistence.ShardOwnershipLostError` and the cycle is in `StateHaltedLost`. The database matches
 the ledger's snapshot from *before* the loss, and every run that only a refused drain would have
 written is absent from it. The applied position is still the last committed drain's, and the log
@@ -786,7 +786,7 @@ graph LR
   E(("internal/verify/e2e")) --> S["a Temporal server composed over both seams"]
   G(("internal/verify/guard")) --> D["decisions somebody may revert"]
   W(("wal/waltest")) --> L["any wal.Log implementation"]
-  MC(("cold/memcold")) --> T["Temporal's own four persistence suites"]
+  MC(("cold/memcold")) --> T["the shipped cold store, under Temporal's own four persistence suites"]
   WI["internal/verify/witness"] --> C["the layer's own counters"]
   CH["internal/verify/checker"] --> R["a record of the calls one driver made"]
 ```
@@ -876,22 +876,31 @@ suites above and are stated where they are:
 
 * [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its twenty-one
   cases, and the guarantee each is stated under;
-  [`fault.go`](../../wal/waltest/fault.go) is `Faulty`.
+  [`fault.go`](../../wal/waltest/fault.go) is `Faulty`;
+  [`reopen.go`](../../wal/waltest/reopen.go) and [`retention.go`](../../wal/waltest/retention.go) are
+  `CheckReopen` and `CheckRetention`, the two checks a deployment runs, with `Unfenced` and
+  `Expiring`, the logs each is proved against; [`truncating.go`](../../wal/waltest/truncating.go) is
+  `Truncating`, the log whose short page a whole-log reader must not take for the end.
 * [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)
   — the stream, the window, the assertions and the knob control at the other end of the dial;
   [`acceptance_seams_test.go`](../../internal/verify/acceptance/acceptance_seams_test.go) is the same shape
-  over both real seams, with the ledger that says what the database must hold;
+  over both real seams, with the ledger that says what the database must hold, and
+  [`trimguard_test.go`](../../internal/verify/acceptance/trimguard_test.go) is the log it runs over,
+  which records any trim reaching past what the cold store has committed and fails the run on it;
   [`acceptance_recovery_test.go`](../../internal/verify/acceptance/acceptance_recovery_test.go) drives
   that stream twice and holds the recovered database against the uninterrupted one, and
   [`acceptance_handover_test.go`](../../internal/verify/acceptance/acceptance_handover_test.go) is the
-  two registries a failover really has, with each fence taken on its own, and
+  two registries a failover really has, with each fence taken on its own;
+  [`acceptance_twonode_test.go`](../../internal/verify/acceptance/acceptance_twonode_test.go) is two
+  nodes over one log and one store, asking whether a drain's witness is owner-scoped; and
   [`acceptance_oracle_test.go`](../../internal/verify/acceptance/acceptance_oracle_test.go) is the same
   stream folded and unfolded into two databases that must agree.
 * [`../../cold/memcold/conformance_test.go`](../../cold/memcold/conformance_test.go) — Temporal's
   four suites over the shipped store, and why a suite of ours is not beside them;
-  [`apply_test.go`](../../cold/memcold/apply_test.go) is the one method they do not reach, and
-  [`isolation_test.go`](../../cold/memcold/isolation_test.go) is the pair the four suites stay green
-  without.
+  [`apply_test.go`](../../cold/memcold/apply_test.go) is the drain they never call,
+  [`current_test.go`](../../cold/memcold/current_test.go) the versioned current-row read they do not
+  cover, and [`isolation_test.go`](../../cold/memcold/isolation_test.go) is the pair the four suites
+  stay green without.
 * [`../../internal/verify/e2e/server.go`](../../internal/verify/e2e/server.go) — the server's configuration, the
   readiness probe and the log gate; [`e2e_test.go`](../../internal/verify/e2e/e2e_test.go) is the two arms
   and what each claims.

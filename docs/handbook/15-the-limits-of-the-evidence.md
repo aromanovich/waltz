@@ -313,7 +313,7 @@ graph LR
   A --> A5["memcold passes Temporal's own suites"]
   A --> A4["a Temporal server runs a workflow over the layer"]
   A --> A3["no decision the guards watch has been reverted"]
-  A1 --> B["a claim about this library and two in-process backends, on one generated workload"]
+  A1 --> B["a claim about this library and two in-process backends, on one generated workload and one workflow"]
   A2 --> B
   A5 --> B
   A4 --> B
