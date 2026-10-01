@@ -753,8 +753,9 @@ event batches only where the store the writer was composed with declares
 Replay does not ask: `fold.Accumulator.addHistory` takes whatever the record held,
 so the batch the replay drain hands `cold.Applier.Apply` carries
 `fold.Batch.History` whatever the successor's store declares. A successor composed
-over a store that does not declare the marker — a deployment moving off
-`cold/memcold`, or two builds of one deployment disagreeing about their store —
+over a store that does not declare the marker — a later build of a deployment
+whose store drops the declaration, or two builds running side by side that
+disagree about it —
 meets history on a path nothing else ever hands it, and nothing refuses it. The
 contract is unambiguous — the package doc's first obligation owes `Batch.History`
 from every applier handed it, declared or not, and `HistoryApplier`'s doc now says
@@ -776,7 +777,7 @@ anyway, and `addHistory` is where that stopped being true.
 **A field Temporal adds to an event batch, dropped from the record with every
 suite green.** Severity: silent, and only on the path where the record is the
 batch's one copy — a store that declares `cold.HistoryApplier`, `cold/memcold`
-included. `mutation/history.go` mirrors `InternalAppendHistoryNodesRequest`,
+included — and only for an entry that is replayed. `mutation/history.go` mirrors `InternalAppendHistoryNodesRequest`,
 `InternalHistoryNode`, `HistoryBranch` and `HistoryBranchRange` field by field,
 and the field-set guard that makes a new field of every other mirrored struct a
 named failure (`mutation/fieldset_test.go`'s `mirroredStructs`) walks none of
