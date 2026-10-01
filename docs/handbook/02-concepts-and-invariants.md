@@ -227,7 +227,7 @@ pass and measures nothing.
 transaction and moves appliedSeqno; an empty batch writes no transaction and settles its entries in
 memory without moving the watermark. A transactional drain is all-or-nothing over everything it
 publishes — event history excepted, which may be written ahead of the transaction and must be
-durable no later than it — and appliedSeqno is the one record of whether that transaction committed.
+durable no later than it — and appliedSeqno is the witness to whether that transaction committed.
 *Not to be confused with:* stopping a layer or a node, which is `Shutdown` (it drains *and*
 closes).
 
