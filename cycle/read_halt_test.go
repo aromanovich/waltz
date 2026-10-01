@@ -153,8 +153,8 @@ func TestACycleFencedAwayHoldingATailRefusesAllThree(t *testing.T) {
 
 // TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree is why
 // [loopRoute] looks at halted-lost specifically rather than at "is it halted":
-// the tail rule alone applies here, and converting this to ShardOwnershipLost
-// would hand the divergence on as an ordinary failover.
+// every refusal here is the halt itself, and converting it to
+// ShardOwnershipLost would hand the divergence on as an ordinary failover.
 //
 // The tail is what makes that rule safe for the two mutable-state reads, and an
 // entry this build cannot decode is charged to it by [Cycle.strand] before the

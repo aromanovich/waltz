@@ -39,8 +39,8 @@ type ExecutionStore struct {
 	// reason: a closure per page would allocate one and say nothing more.
 	baseHistory func(context.Context, *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error)
 
-	// emit sends the same numbers to the server's metrics stack, tagged by
-	// store method.
+	// emit sends the same numbers to the server's metrics stack, the writes and
+	// the overlaid reads tagged by store method.
 	emit *walmetrics.Emitter
 
 	// intercepted counts the mutable-state writes and the two tombstones that

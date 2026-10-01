@@ -41,7 +41,7 @@ func (*Store) AppliesHistory() {}
 //
 // The order of the transaction, statement for statement:
 //
-//  1. the epoch, as a compare-and-set on the shard's rangeID. First, so a
+//  1. the epoch, as a locked compare of the shard's rangeID. First, so a
 //     drain that lost the shard reports a lost shard rather than the version
 //     failure a fenced writer would find underneath it — the shard's new owner
 //     has been writing, and every version this drain stands on is stale for a

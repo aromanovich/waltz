@@ -36,8 +36,8 @@ import (
 // The namespace id is parsed rather than asserted, which is where this departs
 // from the read it is derived from: upstream's own uses primitives.MustParseUUID
 // and panics on a malformed one. Every write path in this store already parses
-// through the same helper, and this read is the one obligation the layer puts on
-// the store below — it runs on every delegated condition check — so a panic here
+// through the same helper, and this read is the one the layer adds to what the
+// store below owes — it runs on every delegated condition check — so a panic here
 // is the process rather than the call. That the id cannot be malformed today is a
 // claim about today's callers.
 func (s *Store) GetCurrentExecutionWithLastWriteVersion(

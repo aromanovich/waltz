@@ -745,6 +745,26 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
+**A shutdown that empties the tail a replay halt was holding.** Severity: silent,
+on reads — a mutable-state read of the shard is answered from a cold store that
+lacks an acked, unapplied entry (I3), until a successor replays the log, which
+still holds it. `Cycle.Close` runs `Cycle.start` with no check of the cycle's
+state, where `Cycle.startForRead` returns early for one that is not running. A
+cycle that halted inside its replay has never started, so `start` reads the
+watermark and calls `Tail.Floor` — emptying the tail that was the halt's
+evidence — before replaying again; if that replay cannot read the log, `start`
+takes its halted-inside-replay branch, which keeps the tail it has just emptied.
+`Retire` follows, and `stoppedRoute` passes the read through on an empty
+mirror. Staged with a probe over the existing halt fixtures, for both halt
+classes: the mirror held one entry and refused the read before `Close`, held
+none and passed it to the base store after; with the second log read
+succeeding, the replay rebuilt the tail and the refusal came back.
+
+*What would close it:* `Close` skipping `start` for a cycle that is not running,
+as `startForRead` does — or `start` never flooring a halted cycle's tail — with
+a test that halts a replay, fails the log read, closes, and is watched to go red
+on a read reaching the base store without the guard.
+
 **A tail whose records carry event batches, replayed over a store that never
 said it writes them.** Severity: silent — the mutable state lands, the events it
 points at do not, and the drain reports a commit. A record carries its request's
@@ -1571,7 +1591,7 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**The floor is signed. Open went empty, took an entry back, emptied, and holds two again.**
+**The floor is signed. Open went empty, took an entry back, emptied, and holds three again.**
 One adversarial pass on a fresh context put an entry there — a current row written
 without its start time — which is what the paragraph below says such a pass is for,
 and the first time it had happened rather than been anticipated. It is closed now,

@@ -108,7 +108,7 @@ func (w *fakeWatermark) Watermark(ctx context.Context, _ wal.ShardID) (wal.Seqno
 	return 0, false, nil
 }
 
-// testDeps is the trio a manager here is built over, named once: a new required
+// testDeps is the set a manager here is built over, named once: a new required
 // field of [Deps] is then filled in one place rather than in twelve literals.
 func testDeps(log wal.Log, apply cold.Applier) Deps {
 	return Deps{Log: log, Writer: apply, Recoverer: &fakeWatermark{}, Registry: testRegistry()}
@@ -619,7 +619,7 @@ func TestATakenSeqnoHalts(t *testing.T) {
 	require.ErrorIs(t, err, wal.ErrAlreadyWritten)
 	require.Equal(t, StateHaltedInvariant, e.c.State())
 	require.ErrorIs(t, e.add(t, mkUpdate(ns, wf, run, 2)), ErrTailNotEmpty,
-		"the halt names the gap it cannot fill")
+		"the halt names the seqno somebody else took")
 }
 
 // TestACallersClockCannotDecideADurableEntrysFate is the production sequence
@@ -628,10 +628,9 @@ func TestATakenSeqnoHalts(t *testing.T) {
 // busy node all produce it — and by the time it happens the entry may already
 // be durable.
 //
-// Three lines exist for it, each detaching a read or a transaction from the
-// caller's context, and each was judged by nothing: removing the first left the
-// whole of `go test ./...` green, and so did flipping either of the two drain
-// causes that carry other callers' acked work.
+// Each case below is one line that detaches a read or a transaction from the
+// caller's context: the append's readback, and the detached flag on two of the
+// drain causes that carry other callers' acked work.
 //
 // What they buy is the difference between a blip and an incident. The entry is
 // in the log; the only question is whether this process can still find out. On
@@ -983,7 +982,7 @@ func TestAFailedFenceLeavesNoCycle(t *testing.T) {
 	require.NoError(t, err)
 
 	err = m.ShardAcquired(context.Background(), testShard, 9)
-	require.Equal(t, wal.ErrFenced, err, "the log's error reaches the shard controller unwrapped")
+	require.Equal(t, wal.ErrFenced, err, "the log's error reaches the shard context unwrapped")
 	require.Nil(t, m.Shard(testShard))
 }
 
@@ -1059,8 +1058,7 @@ func commitToColdStore(store *basetest.Store, batch fold.Batch) {
 // the condition.
 //
 // Both arms of the delegated walk ask it, because which row the store would have
-// judged first is what the refusal names, and neither was driven: deleting either
-// check left the whole tree green. Refusal rather than panic is deliberate — a
+// judged first is what the refusal names. Refusal rather than panic is deliberate — a
 // refused write provably acked nothing, and "unreachable" is a claim about today's
 // callers rather than about tomorrow's.
 func TestAWriteBringingNoBaseRowsIsRefused(t *testing.T) {
@@ -1097,8 +1095,7 @@ func TestAWriteBringingNoBaseRowsIsRefused(t *testing.T) {
 // it is refused, and the shard needs a third acquire before anybody can apply
 // them.
 //
-// The behaviour was driven by nothing: every other case acquires upward. What this
-// pins is the behaviour and not one mechanism, and the distinction is worth stating
+// What this pins is the behaviour and not one mechanism, and the distinction is worth stating
 // because a sweep will find it: deleting the registry's own epoch comparison leaves
 // this green, since the acquire then reaches [wal.Log.Fence] and the log — already
 // fenced at the higher epoch — refuses it there. Two mechanisms, one outcome. The

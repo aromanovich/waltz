@@ -106,5 +106,5 @@ func TestARefusedAcquireDoesNotMoveTheRangeID(t *testing.T) {
 		&p.InternalUpdateShardRequest{ShardID: 7, RangeID: 42, PreviousRangeID: 41})
 
 	require.True(t, err == errObserver, //nolint:errorlint // identity is the assertion
-		"the observer's error must reach the shard controller unwrapped, got %v", err)
+		"the observer's error must reach the shard context unwrapped, got %v", err)
 }

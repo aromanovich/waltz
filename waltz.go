@@ -260,8 +260,8 @@ func (l *Layer) ShardStats(shard wal.ShardID) (cycle.Stats, bool) {
 }
 
 // RetireShard stops one shard's cycle without draining it, and reports whether
-// the epoch named is the one this node still holds. It is what a process that
-// died leaves behind, which is why it is named apart from [Layer.Shutdown]: a
+// the epoch named is the one this node still holds. It stages what a process
+// that died leaves behind, which is why it is named apart from [Layer.Shutdown]: a
 // drain writes, and a kill does not.
 //
 // epoch is which acquisition is being retired, and a mismatch retires nothing.

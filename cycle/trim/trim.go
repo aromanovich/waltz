@@ -133,14 +133,15 @@ func (t *Trimmer) Force(applied wal.Seqno) {
 }
 
 // Wait blocks until no trim is in flight. Whoever retires a cycle calls it, so
-// that a backend outlives the last read it was asked for.
+// that a backend outlives the last trim it was asked for.
 func (t *Trimmer) Wait() { t.running.Wait() }
 
 // Counters is what this shard's trims have done: cadences that fired, and the
 // subset that reached the log. Two numbers rather than one, because a run whose
 // every trim failed would otherwise read like one whose cadence never fired —
-// and a reading taken while a trim is in flight leaves fired one above
-// committed, which is the honest answer rather than a race.
+// and a reading taken while a trim is in flight, or queued behind one, leaves
+// fired above committed by those, which is the honest answer rather than a
+// race.
 func (t *Trimmer) Counters() (fired, committed int) {
 	return t.fired, int(t.committed.Load())
 }

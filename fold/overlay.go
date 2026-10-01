@@ -249,8 +249,10 @@ func (v CurrentView) NeedsBase() bool {
 // It is not [workflowAcc.assertsCurrent] and the two deliberately disagree on
 // [CurrentGuarded]: a tainted DeleteCurrent is something the window has to say
 // about the row, so a read is answered from it, and it carries no head
-// assertion, so the condition authority delegates. A read question and a
-// partition question, and the guarded shape is where they part.
+// assertion, so the partition does not count the row as held — though the
+// condition authority, rather than delegating, refuses an assertion behind it
+// ([Accumulator.decideCurrent]). A read question and a partition question, and
+// the guarded shape is where they part.
 func (v CurrentView) Held() bool { return v.Shape != CurrentUnheld }
 
 // Render answers a current-execution read; found is false for "no current

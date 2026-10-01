@@ -19,8 +19,8 @@ package acceptance
 //     (the order wrapper.ShardStore.UpdateShard imposes), so a write by the old
 //     owner is refused while the database still names him owner;
 //   - the cold store's epoch CAS stops the drains, which need neither an append
-//     nor a caller — a shutdown drain and the age timer both fire out of a full
-//     window on their own.
+//     nor a caller — a shutdown drain and the age timer both fire out of a
+//     window that holds something, on their own.
 //
 // [TestAShardThatLosesItsEpochMidRun] leaves the log unfenced deliberately, so it
 // exercises the second alone from inside one process. These are that pair with

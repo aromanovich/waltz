@@ -199,10 +199,10 @@ func TestAConditionTheWindowAnswersIsTheCallersOwnError(t *testing.T) {
 
 // TestAWindowedWriteRetainsTheCallersOwnRequest is the ownership half of
 // wrapper.ShardWriter.Write: past a Write the window has not drained, the
-// layer holds the caller's request itself. That is what puts the drain's
-// rangeID stamp (apply) in a struct whose caller returned long ago, and a
-// copy taken anywhere between the seam and the drain would answer the doc's
-// promise with a mutation nobody can observe.
+// layer holds the caller's request itself. That is what puts the fold's
+// in-place merge in a struct whose caller returned long ago, and a copy taken
+// anywhere between the seam and the drain would answer the doc's promise with
+// a mutation nobody can observe.
 func TestAWindowedWriteRetainsTheCallersOwnRequest(t *testing.T) {
 	ctx := context.Background()
 	applier := &fakeApplier{}

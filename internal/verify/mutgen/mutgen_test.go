@@ -571,7 +571,8 @@ func TestVersionChainIsTheOneTheStoreAsserts(t *testing.T) {
 
 // TestStreamSurvivesTheCodec: the corpus exists to travel through the WAL, so a
 // mutation this package builds that the codec cannot carry is a corpus bug, not
-// a codec bug — and it is cheaper to find here than in a folder comparison.
+// a codec bug — and it is cheaper to find here than in the acceptance oracle's
+// comparison of a folded database with an unfolded one.
 func TestStreamSurvivesTheCodec(t *testing.T) {
 	stream, _ := take(t, config(13), 150)
 	registry := tasks.NewDefaultTaskCategoryRegistry()

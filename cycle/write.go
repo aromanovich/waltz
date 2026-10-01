@@ -1,6 +1,6 @@
 package cycle
 
-// The boundary the ExecutionStore wrapper writes through: one method, and the
+// The boundary the ExecutionStore wrapper writes through: one write method, and the
 // translation of what a cycle answers into what the history service's write
 // path understands. It is here because the wrapper may not import cycle.
 //

@@ -61,9 +61,10 @@ func TestANodeInBothHalvesIsEmittedOnce(t *testing.T) {
 }
 
 // The pagination rule, which is taskpage.go's: a page is never larger than the
-// size asked for, and no base page is ever half-emitted — so the store is never
-// asked to answer one token twice, and a caller's own token is never parsed
-// here. Driven across every page size that cuts the stream somewhere different.
+// size asked for, and no base page is ever half-emitted — so the store's own
+// token is never parsed here, and a pagination the window does not overflow
+// never hands the store one token twice. Driven across every page size that
+// cuts the stream somewhere different.
 func TestPagingNeverCutsInsideABasePageAndNeverOverruns(t *testing.T) {
 	for size := 1; size <= 9; size++ {
 		t.Run(fmt.Sprintf("page size %d", size), func(t *testing.T) {

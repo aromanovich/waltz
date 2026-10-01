@@ -8,11 +8,11 @@ package cycle
 // It is the fourth read the cycle serves and it routes like the two
 // mutable-state ones rather than like the task page. A history reader does not
 // delete what it read, so a page short a history row is a workflow rebuilt
-// short its newest events rather than a row nobody asks for again — which is the staleness [tailRoute] already
-// decides who may pay. What it does share with the task page is a token this
-// layer wrote, so every route that answers without the window unwraps it first
-// ([fold.BaseHistoryToken]): one of ours reaching a plugin's parser fails a
-// pagination in the middle.
+// short its newest events rather than a row nobody asks for again — which is
+// the staleness [tailRoute] already decides who may pay. What it does share
+// with the task page is a token this layer wrote, so every route that answers
+// without the window unwraps it first ([fold.BaseHistoryToken]): one of ours
+// reaching a plugin's parser fails a pagination in the middle.
 
 import (
 	"context"

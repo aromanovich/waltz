@@ -1,10 +1,10 @@
 package memcold_test
 
-// What one drain does to a real database. Every case here is about the
-// all-or-nothing part rather than about row layout, which the four conformance
-// suites already judge: a drain that commits leaves its rows and its watermark,
-// and a drain that fails leaves neither — including the rows the statements
-// before the failing one had already written.
+// What one drain does to a real database. The four conformance suites judge
+// the inherited methods and never call Apply, so what is judged here is the
+// write nothing upstream judges: a drain that commits leaves its rows, where their readers read them,
+// and its watermark, and a drain that fails leaves neither — including the rows
+// the statements before the failing one had already written.
 
 import (
 	"context"
@@ -166,8 +166,8 @@ func TestTheLastWriteFailingUndoesTheEarlierOnes(t *testing.T) {
 	require.False(t, ok, "a drain that wrote nothing may not leave a position behind")
 }
 
-// TestARangeDeleteActsBeforeTheDrainsOwnInserts pins the one ordering rule that
-// is not visible in the rows: fold keeps a task that arrived after a range
+// TestARangeDeleteActsBeforeTheDrainsOwnInserts pins the order the cold
+// package's first obligation states inside the transaction: fold keeps a task that arrived after a range
 // delete, because the sequential path keeps it, and it only survives if the
 // delete runs before the insert. Getting it backwards deletes a timer nobody
 // asked to be gone.

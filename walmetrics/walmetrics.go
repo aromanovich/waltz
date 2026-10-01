@@ -35,7 +35,7 @@ var (
 	// a hit would read zero on a healthy idle cluster and zero on a layer wired
 	// up wrong.
 	OverlaidReads = metrics.NewCounterDef("wal_overlaid_reads",
-		metrics.WithDescription("Reads routed through the overlay, by store method."))
+		metrics.WithDescription("Reads routed at the layer's overlay or history merge, by store method."))
 
 	// MergedTaskPages counts GetHistoryTasks pages routed at the layer, for
 	// [OverlaidReads]' reason: routed, not merged. The name says merged and the

@@ -42,7 +42,7 @@ func (w *Window) Empty() bool { return w.mutations == 0 }
 // Taken is what one take handed over. It exists so the bytes cannot be stated
 // as a number: the only value the tail will release is one a window produced,
 // and it releases it once ([Taken.Release]), so a branch that settles twice
-// subtracts twice from nothing rather than driving the tail below zero — a tail
+// subtracts nothing the second time rather than driving the tail below zero — a tail
 // that never trips I10 again, which is unbounded memory by the road the bound
 // exists to close.
 //

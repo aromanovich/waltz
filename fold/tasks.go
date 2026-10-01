@@ -27,7 +27,7 @@ import (
 // value reaches this package through a task-category registry, so the reader's
 // and the writer's need not be the same instance to mean the same queue. The
 // blobs are shared with the accumulator, as everywhere on the read path: fold
-// replaces a task list, it never writes through a [commonpb.DataBlob].
+// replaces a task list, it never writes through a *commonpb.DataBlob.
 func (a *Accumulator) Tasks(category tasks.Category) []p.InternalHistoryTask {
 	var out []p.InternalHistoryTask
 	for home := range a.taskRows() {

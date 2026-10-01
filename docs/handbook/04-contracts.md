@@ -613,7 +613,7 @@ replayed by a node composed with one that does not.
 is a range per category, not a key, and a second deletion shape would be another thing every reader,
 drain and replay has to agree about. A range is also the shape the caller already has: a queue
 checkpoint is a `[old, new)` interval, and the log's deletion record is that checkpoint restated.
-Its one caller is the admin handler's `RemoveTask`, and that caller is already unreliable against an
+Its one caller is the history handler's `RemoveTask`, behind the admin API of that name, and that caller is already unreliable against an
 intercepting node — a delete forwarded to the cold store for a task still sitting in the window
 finds no row, removes nothing and reports success. The choice is between a refusal an operator sees
 and a success an operator believes. On a node in intercept mode the admin remove-task API is

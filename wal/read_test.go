@@ -97,8 +97,9 @@ func TestAWholeLogIsReadInPagesUntilAShortOne(t *testing.T) {
 // TestAFullPageThatEndsWhereItBeganStillAdvances is the livelock guard's own
 // boundary. At a page of one every page is full and its last seqno is exactly
 // the one the read began at, so a guard refusing `last == from` beside
-// `last < from` would refuse the first page — and with it every recovery a
-// sync-mode node makes, its window being one by construction. Every other case
+// `last < from` would refuse the first page — and with it every replay on a
+// node whose window trigger is one mutation, a replay's page being the
+// window's size. Every other case
 // in this file pages at 64, where a full page always ends far above its start.
 func TestAFullPageThatEndsWhereItBeganStillAdvances(t *testing.T) {
 	log := logOf(3)

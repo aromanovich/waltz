@@ -72,8 +72,8 @@ func TestTheWindowCarriesTheRowsAnAddPutInIt(t *testing.T) {
 // TestARangeTakesOutWhatTheWindowAlreadyHeld: a drain applies its range deletes
 // before it writes the batch's task rows, so a batch holding both a range and a
 // row inside it would come out written. Both sources of a task are swept — an
-// AddHistoryTasks' rows and a mutable-state write's task map — because both end
-// up in the same UPSERT.
+// AddHistoryTasks' rows and a mutable-state write's task map — because both are
+// written after the range deletes.
 func TestARangeTakesOutWhatTheWindowAlreadyHeld(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,

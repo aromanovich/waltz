@@ -81,9 +81,9 @@ func TestEveryMomentAReadCanArriveInRoutesBothReaders(t *testing.T) {
 		}
 	})
 
-	// Three states × two readers × the tail's two, and the stall over all of
-	// them: a drain nobody could read the outcome of is a fact about the tail
-	// and not about who holds the shard.
+	// Three states × two readers × the tail's two, and the stall beside them:
+	// a drain nobody could read the outcome of is a fact about the tail and not
+	// about who holds the shard.
 	t.Run("the cycle answers for itself", func(t *testing.T) {
 		const at = wal.Seqno(2) // the drain a stalled tail is stalled at
 

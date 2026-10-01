@@ -660,9 +660,9 @@ func testTwoWritersContendForOneShard(f *fixture) {
 // ends there rebuilds a prefix of the tail, comes up, and serves reads and task
 // pages missing everything above the cut, which its callers then ack past.
 //
-// The layer's own bound admits exactly this: a tail is capped at 8 MB rather
-// than by a count, so one workflow near the server's own mutable-state limit
-// fills a replay page on its own.
+// The layer's own bound admits exactly this: a tail is capped at 8 MB as well
+// as by a count, and a replay page by a count alone, so one workflow near the
+// server's own mutable-state limit fills a replay page on its own.
 func testAPageEndsAtItsLimitAndNotAtAByteBudget(f *fixture) {
 	const (
 		entries = 24
@@ -963,7 +963,7 @@ func (f *fixture) trim(shard wal.ShardID, upTo wal.Seqno) {
 // instead of failing the test, because the chaos test's claimants read from
 // goroutines of their own.
 func (f *fixture) readLog(shard wal.ShardID) ([]wal.Entry, error) {
-	// Big enough that the suite's logs come back in one read.
+	// Big enough that most of the suite's logs come back in one read.
 	const window = 64
 	return readAll(f.ctx, f.log, shard, window)
 }
@@ -990,8 +990,8 @@ func (f *fixture) expectError(got, want error) {
 	require.ErrorIs(f.t, got, want)
 }
 
-// expectLog reads a shard from the start with a limit above anything this suite
-// writes, so what comes back is the whole log.
+// expectLog reads a shard from the start with a limit above anything the cases
+// calling it write, so what comes back is the whole log.
 func (f *fixture) expectLog(shard wal.ShardID, want []wal.Entry) {
 	f.t.Helper()
 	f.expectEntries(shard, wal.FirstSeqno, 10, want)

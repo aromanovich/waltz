@@ -273,8 +273,8 @@ func unmarshalBlob(b *commonpb.DataBlob, into proto.Message) error {
 	return proto.Unmarshal(b.Data, into)
 }
 
-// A repeated key is refused rather than overwritten, here and in the three
-// decoders below it: keeping the last value would drop one run's blob, or a
+// A repeated key is refused rather than overwritten by each of the four
+// decoders below: keeping the last value would drop one run's blob, or a
 // whole category's tasks, on replay and say nothing — the failure
 // [ErrUnknownCategory] exists to prevent. [Encode] emits each collection once
 // out of a Go map, so a duplicate is an entry this codec did not write.

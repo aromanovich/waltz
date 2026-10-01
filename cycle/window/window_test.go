@@ -78,7 +78,7 @@ func TestTheCountIsAnsweredBeforeTheBytes(t *testing.T) {
 // boundary says nothing about the boundary.
 //
 // What being wrong by one costs is small and not nothing: the drain comes one
-// mutation late, so the tail stands one entry above the size the operator
+// mutation late, so the window stands one entry above the size the operator
 // configured, and the number a runbook compares against is off by that entry.
 func TestEachWatermarkTripsAtItsOwnValue(t *testing.T) {
 	t.Run("the bytes", func(t *testing.T) {

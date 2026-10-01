@@ -54,9 +54,8 @@ func SetWatermark(ctx context.Context, tx sqlplugin.Tx, shard wal.ShardID, seqno
 }
 
 // Watermark is the last seqno a drain committed for shard, false if none has.
-// The two answers differ: a shard that has never drained is not a shard drained
-// up to zero, and a replay told the second would start above entries it has to
-// fold.
+// No row is answered as absence and not as a seqno of zero: no drain carries
+// that seqno, and a shard that has never drained has none to report.
 //
 // It reads in a transaction of its own, so a caller already holding one on this
 // store must not call it — the database is served by a single connection and the

@@ -221,9 +221,9 @@ func TestTheCountersAreNotAControlSurface(t *testing.T) {
 // TestAckedRangesCountsRangeDeletesAndNothingElse pins what the counter means
 // rather than that it is summed. It is the input to the witness's "a queue
 // completed a range", which no run here gates on — an e2e run is too short to
-// checkpoint one, and says so — so the counter reaches no judge at all: it can
-// be made to move on every other kind, or on none, with the whole of
-// go test ./... green either way. What a deployment's longer run would then be
+// checkpoint one, and says so — so without this test the counter reaches no
+// judge at all: it could be made to move on every other kind, or on none, with
+// the whole of go test ./... green either way. What a deployment's longer run would then be
 // told is that half the history-task path was exercised when it was not.
 func TestAckedRangesCountsRangeDeletesAndNothingElse(t *testing.T) {
 	e := newEnv(t, func(c *Config) { c.Sync = true })

@@ -28,7 +28,7 @@
 // The 28 inherited methods know nothing of waltz and must not: they are the
 // store a Temporal server calls, and a store that could see the layer would be
 // judged by the thing it sits under. The layer's vocabulary enters through
-// [Store.Apply] and [Store.Watermark] alone, beside that surface rather than
+// [Store.Apply], [Store.Watermark] and [Store.AppliesHistory] alone, beside that surface rather than
 // inside it.
 //
 // # Bringing your own

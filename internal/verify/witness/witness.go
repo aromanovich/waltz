@@ -282,9 +282,9 @@ var controlClaims = []claim{{
 }}
 
 // layerClaims are what a run with a layer says. The order is the order they are
-// reported in, and it is the order they were written in: the ones that say the
-// layer was reached at all, then the routed equalities, then the coverage
-// claims, then the two windows' inversion, then the emissions.
+// reported in: the ones that say the layer was reached at all, then the routed
+// equalities, then the coverage claims, then the empty layer and its opposite,
+// then the two windows' inversion, then the emissions, then the claimed kinds.
 var layerClaims = []claim{{
 	Name: "W1 every acked entry named a request",
 	// A kind the codec could not name is a bug wherever it appears, so this

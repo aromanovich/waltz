@@ -18,9 +18,9 @@ package acceptance
 //
 // What it reads back is named rather than assumed, because a region left out is
 // a region the fold may destroy while this stays green: the run rows, the
-// current-execution rows, and every category's queue rows. The queue was the
-// one added last and the one that mattered — a sweep covering one key too many
-// took six acked task rows out of the folded arm with the other two comparisons
+// current-execution rows, and every category's queue rows. The queue is the one
+// the other two cannot stand in for: a sweep covering one key too many takes
+// acked task rows out of the folded arm with the other two comparisons
 // identical.
 //
 // What it cannot see is a defect the two arms share: the codec, the encoding of

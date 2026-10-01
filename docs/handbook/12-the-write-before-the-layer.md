@@ -216,7 +216,7 @@ that meant something narrower than a whole fire-time interval cannot say so in t
 category the store reads only their fire times. This is Temporal's shape rather than one store's —
 the request carries a fire-time interval because that is what a scheduled queue's checkpoint *is*.
 The interface does have a single-key delete, `CompleteHistoryTask`, but no queue checkpoints with
-it: its one caller is the admin handler's `RemoveTask`, and the layer refuses it
+it: its one caller is the history handler's `RemoveTask`, behind the admin API of that name, and the layer refuses it
 ([chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) says with what).
 
 As long as writes and deletes reach the store in the caller's own order, that breadth costs nothing.

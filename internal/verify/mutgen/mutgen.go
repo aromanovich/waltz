@@ -473,8 +473,8 @@ func (g *Generator) Take(n int) ([]mutation.Mutation, error) {
 }
 
 // Report describes the stream produced so far. The counters are already in
-// [Generator.rep]; this fills the config echoes and the two derived ratios
-// beside them, over a map of its own so the caller's copy stops moving.
+// [Generator.rep]; this fills the config echoes, Workflows and the two derived
+// ratios beside them, over a map of its own so the caller's copy stops moving.
 func (g *Generator) Report() Report {
 	r := g.rep
 	r.cfg = g.cfg

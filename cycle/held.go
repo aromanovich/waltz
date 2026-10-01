@@ -11,13 +11,14 @@ import (
 // held is the cycles this node holds and the counters of the ones a higher
 // epoch has superseded, with the one mutex over both.
 //
-// A type rather than three fields on [Manager], for the reason the lock exists
+// A type rather than four fields on [Manager], for the reason the lock exists
 // and the reason it is dangerous: every read path resolves through
 // [Manager.Shard], which takes this mutex, so any code that calls into a
 // cycle's goroutine while holding it stops every shard on the node — one cycle
 // blocked inside a base read and the whole registry waits behind it.
 //
-// Each method below takes the lock, finishes its map arithmetic and returns.
+// Each method below takes the lock (or, [held.list], runs under a caller that
+// holds it), finishes its map arithmetic and returns.
 // None of them hands out the lock and none of them calls into a `*Cycle`: where
 // one is handed back it is for the caller to question outside the lock, which
 // is what [held.totals] says of its second result. So there is no lock on

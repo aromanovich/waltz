@@ -492,7 +492,7 @@ func TestTheOverlayIsReadOnlyOnTheAccumulator(t *testing.T) {
 }
 
 // TestTheOverlayDoesNotWriteThroughTheBase is the same rule for the caller's
-// base row, which belongs to whoever answered the thunk. Two moments, and the
+// base row, which belongs to the caller that read it. Two moments, and the
 // second is the one snapshotOfBase answers for: the fold must not reach the row
 // while it renders, and what it hands back must not be the row's own maps —
 // there too the copy is a line per collection.

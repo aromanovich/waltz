@@ -77,7 +77,7 @@ func TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs(t *testing.T) {
 
 // A malformed namespace id is a bad request and not a bad process. The read this
 // one is derived from asserts the uuid (primitives.MustParseUUID) and panics, and
-// this read is the one obligation the layer puts on the store below — it stands
+// this read is the one the layer adds to what the store below owes — it stands
 // in front of every delegated condition check — so a panic here takes the node
 // down on a path a request reaches.
 func TestAMalformedNamespaceIsRefusedRatherThanFatal(t *testing.T) {

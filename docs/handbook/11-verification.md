@@ -143,8 +143,10 @@ be reopened at all, being a map in this process, so the suite has no log to run 
 proved rather than assumed, in `memwal`'s own tests, against three backend shapes — a `Backend` handed
 back twice (storage that outlived the value, which must pass), a fresh `Backend` per open (appends that
 never left the process), and a `Backend` behind `waltest.Unfenced`, whose entries persist while its
-epoch lives in this process only. That last one is exactly the backend the paragraph above says passes
-every fencing case in the suite.
+epoch lives in this process only. That last one stages the defect the paragraph above names — an
+epoch held in this process — though not as a backend the suite would pass: it fences the log below at
+whatever epoch an append carries, so the fencing cases refuse it too, and it is an instrument for the
+reopen check rather than a log.
 
 **What is still the author's own test** is a fence *racing* a displaced owner's append: two writers
 sharing no memory, each reading the outcome off the log rather than off itself. Whoever supplies the

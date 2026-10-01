@@ -668,17 +668,16 @@ func TestAReplayRefusesALogTrimmedPastItsWatermark(t *testing.T) {
 }
 
 // TestATailIsReplayedAPageAtATime: the page a replay reads with is the window's
-// own size, so a node in sync mode — whose window is one by construction — reads
-// its inherited tail one entry per page. Every other case here replays at the
-// shipped window, where a full page ends far above where the read began, and the
-// one-entry page is the shape that makes `last == from` on every call.
+// own size in mutations, so a node whose window is one reads its inherited tail
+// one entry per page. The one-entry page is the shape that makes `last == from`
+// on every call, and no other case here replays a tail through it.
 //
 // [wal.Entries]' livelock guard is what that boundary sits on: a full page whose
 // last seqno is *below* the read's start cannot advance, and a guard that refused
-// `last == from` as well would refuse every page of one. Nothing drove it, so the
-// comparison could be moved and sync mode's whole recovery path would stop at the
-// first entry with "the reads are not advancing" — a shard that cannot come up,
-// on a mode this repository ships.
+// `last == from` as well would refuse every page of one. Without this case the
+// comparison could be moved and every recovery at a window of one would stop at
+// the first entry with "the reads are not advancing" — a shard that cannot come
+// up, on a setting an operator may write.
 func TestATailIsReplayedAPageAtATime(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t, func(c *Config) { c.Mutations = 1 })

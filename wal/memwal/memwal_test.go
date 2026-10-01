@@ -58,8 +58,8 @@ func TestTheRetentionCheckIsNotVacuous(t *testing.T) {
 // exists for, and the one no case in the suite can reach, since every other case
 // reads back through the value that appended. And a Backend behind
 // waltest.Unfenced keeps its entries while its epoch lives in this process only,
-// which is exactly the backend RunContractSuite's own doc says passes every
-// fencing case it has.
+// which is the defect RunContractSuite's own doc says no fencing case it has
+// can see.
 func TestTheReopenCheckIsNotVacuous(t *testing.T) {
 	ctx := context.Background()
 	const shard, epoch = wal.ShardID(9), wal.Epoch(4)

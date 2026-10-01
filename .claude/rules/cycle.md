@@ -44,7 +44,8 @@ What to know before changing it:
   window they read. What is left here is the round trip — the base page arrives
   as a callback, so this side builds the request and keeps the context — and the
   three counters (`TaskReads`, pages *routed*; `TaskReadsMerged`, pages that
-  carried at least one window task; `TaskCollisions`, node-wide).
+  carried at least one window task; `TaskCollisions`, per cycle, beside a series
+  that carries no shard tag).
   Before changing any rule about a page's contents, read that file: the cut has
   no freedom and its reasoning is stated there, at length;
 * a task read on a shard this node does not hold is **refused** with

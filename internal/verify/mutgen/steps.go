@@ -334,8 +334,8 @@ func (g *Generator) emitDeletePair(w *workflowState) error {
 // ---------------------------------------------------------------- the payloads
 
 // mutation builds the delta of one update: the run's scalars at their new
-// values, the sub-entity upserts and deletes the knobs asked for, and the
-// window's history tasks.
+// values, the sub-entity upserts and deletes the knobs asked for, and its
+// history tasks.
 func (g *Generator) mutation(w *workflowState, r *runState) (p.InternalWorkflowMutation, error) {
 	infoBlob, stateBlob, checksumBlob, err := g.rowBlobs(w, r)
 	if err != nil {

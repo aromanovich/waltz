@@ -10,15 +10,17 @@ import "github.com/aromanovich/waltz/mutation"
 // outlives the cycle, and summing them counts the same entries once per
 // acquire. [Counters.add] must include every field.
 type Counters struct {
-	// Drains counts committed drains, Trims the trims the cadence started, and
-	// Refusals the force-drains: a window the accumulator cannot express, or an
-	// assertion the condition authority cannot determine.
+	// Drains counts committed drains, Trims the trims started (cadenced or
+	// forced by pressure), and Refusals the force-drains: a window the
+	// accumulator cannot express, or an assertion the condition authority
+	// cannot determine.
 	Drains   int
 	Trims    int
 	Refusals int
 	// TrimsCommitted is the subset of Trims that reached the log. Counted off
-	// the loop where the outcome is known, so a cycle superseded with a trim in
-	// flight leaves Trims one above this.
+	// the loop where the outcome is known, so a reading taken with a trim in
+	// flight has Trims above this; a retired cycle's count is taken after its
+	// trims finish, so there the gap is the trims that failed.
 	TrimsCommitted int
 	// Replayed counts entries read out of an inherited tail, Dropped the
 	// provisional ones whose condition did not hold. Both describe the replay
@@ -32,7 +34,8 @@ type Counters struct {
 	ReadsHeld int
 	// TaskReads counts task pages routed, TaskReadsMerged those that carried a
 	// task out of the window. TaskCollisions counts keys both sources held,
-	// which their disjointness should never produce; it is node-wide.
+	// which their disjointness should never produce; the metric emitted beside
+	// it carries no shard tag, so only this field says which shard.
 	TaskReads       int
 	TaskReadsMerged int
 	TaskCollisions  int
