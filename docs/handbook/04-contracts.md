@@ -418,8 +418,8 @@ Four kinds of accessor carry every consumer:
   the contract because callers concatenate the slots.
 * `EventSlots()` returns every slice of new history events the request carries, in the order they
   must reach the store, and `ClearEvents()` drops them in place. The payload carries whatever is
-  still there, so **the events are durable before the state that names them either way**: a mutation
-  acked over history nodes nobody wrote is a mutable state the cold store can never be brought to.
+  still there, so **the events are durable no later than the state that names them either way**: a mutation
+  acked over history rows nobody wrote is a mutable state the cold store can never be brought to.
   The writer that puts them down through the store clears them once they are down, which is what
   makes "a mutation reaching the layer carries exactly the batches nobody has written yet" true, and
   what lets the codec and the fold hold no mode of their own.
@@ -443,7 +443,7 @@ event batch missing something the fold keys on or the applier writes. Every `Enc
 because it is the last place that can refuse: past the append the entry is acked and every owner
 inherits it. What the record is a mirror of, and why that matters, is the next section.
 
-The registry is a parameter rather than a package default because it is the one input that is not a
+The task-category registry is a parameter rather than a package default because it is the one input that is not a
 function of the bytes: the same payload decodes on one node and fails on another. `Encode`, by
 contrast, is a function of its argument alone — collections travel as repeated entries in sorted key
 order, so the same mutation always encodes to the same bytes, in this process and in every other.
@@ -523,8 +523,8 @@ tombstone: they are the tasks of the mutations the tombstone collapsed. The `Del
 slot of its own to hold them, and losing them would break I7.
 
 `Batch` also answers `Empty()`, `Len()`, `Stats()`, `Settles() (wal.Seqno, bool)`, `Tasks()
-TaskWork`, `History()` — the window's event batches in WAL order, for a drain whose applier writes
-them — and `Each() iter.Seq[*Emitted]`; `Settles` is false for a window that folded nothing at
+TaskWork`, `History()` — the window's event batches in WAL order, which any applier handed them owes, whether
+or not it declares `cold.HistoryApplier` — and `Each() iter.Seq[*Emitted]`; `Settles` is false for a window that folded nothing at
 all. One `Emitted` is one merged request — `NamespaceID`, `WorkflowID`, `HeadSeqno`, `TailSeqno`,
 `Request`, `BufferedBatches`, plus `RunAssertions()`, `OrphanedTasks()`, `Workflow()` and
 `FirstOfWorkflow()`. `TaskWork` is the shard-level half beside them, because a task names no run and
@@ -567,6 +567,12 @@ down and trusted until the third one's cost was looked at: an empty page read as
 pagination is a queue completing its range over rows it was never shown, which deletes acked task
 rows, and a failing read is the cheaper outcome. Once the page is being walked the first two are
 free, and they name the store instead of panicking in the reader.
+
+`HistoryBasePage` is held to three of the four — the page size, the store's own order and no empty
+page beside a token — and not to the range one, which nothing checks: the store filters its rows by
+node id and the merge filters the window's the same way. It owes one more, which `BasePage` needs too
+and does not state: a token handed back must answer the same rows, because a base page the cut emits
+nothing from is reached again only through its own token.
 
 ## `wrapper` — the method tables
 
@@ -613,12 +619,12 @@ therefore unavailable, by design rather than by omission.
 
 Obligations of the intercepted path, which the store discharges:
 
-* **The events are durable before the state that names them, and which writer makes them so is the
-  cold store's.** Over a store that does not declare `cold.HistoryApplier`, every intercepted write
+* **The events are durable no later than the state that names them, and which writer makes them so
+  is the cold store's.** Over a store that does not declare `cold.HistoryApplier`, every intercepted write
   calls `AppendHistoryNodes` on the base store for each of the mutation's `EventSlots()` *before* the
   mutation reaches the log, and strips them off it. Over one that does, they stay on the mutation,
-  ride its record, and the drain writes them before it publishes the state. Either way a
-  mutable state is never acked over history nodes nobody wrote.
+  ride its record, and the drain writes them no later than it publishes the state. Either way a
+  mutable state is never acked over history rows nobody wrote.
 * **Errors are returned exactly as they arrive.** `ContextImpl.handleWriteErrorLocked` in the
   history service type-switches on concrete values, so one `%w` would turn an expected condition
   failure into a background re-acquire.
@@ -917,7 +923,8 @@ constructor rather than by hand:
 `Sync`, `DrainOnRead` and the four bounds — `HardMaxEntries`, `HardMaxBytes`, `MaxShards`,
 `TailBudgetBytes` — are deliberately not in `Moving`. `Sync` and `DrainOnRead` are the mode, and a
 mode that changed mid-flight would change what a caller already inside a write was promised. The
-four bounds are `CheckBudget`'s arithmetic, whose purpose is to refuse a node before it boots.
+four bounds are I10's per-shard bound and `CheckBudget`'s arithmetic, whose purpose is to refuse a
+node before it boots.
 
 ### `cycle.Config`, field by field
 
@@ -940,7 +947,7 @@ under `Sync` the delegated pre-window reads are skipped, the entry is encoded pr
 condition failure at the drain is returned to its caller instead of halting the shard. Setting
 `Mutations` to 1 keeps all three of those the windowed way.
 
-The knobs pair up. `Mutations` and `Bytes` are the two size triggers, whichever trips first.
+The fields pair up. `Mutations` and `Bytes` are the two size triggers, whichever trips first.
 `TrimEvery` and `TrimAfter` are the trim cadence, whichever trips first. `HardMaxEntries` and
 `HardMaxBytes` are invariant I10's bound on one shard's tail — what has been acked and not yet
 settled — and neither unit works alone: one workflow near the server's 8 MB mutable-state limit
@@ -948,7 +955,7 @@ turns an entries-only bound into a byte budget with no ceiling, and bytes alone 
 
 `CheckBudget() error` asserts the node's arithmetic: `HardMaxBytes × MaxShards` must fit
 `TailBudgetBytes`, and it returns `ErrBudget` otherwise. It bounds encoded bytes, not RSS. The clock
-is not configurable — it is an unexported field, filled with a real time source. For every knob as
+is not configurable — it is an unexported field, filled with a real time source. For every field as
 an operator writes it, see [chapter 08](08-configuration.md).
 
 `Sync` configures this cycle rather than routing around it. There is one `Cycle.add` body with two
@@ -968,7 +975,7 @@ failure to a caller who did not write the mutation.
 Registry tasks.TaskCategoryRegistry, Metrics *walmetrics.Emitter}`. All are shared across shards and the
 cycle owns none of them. `Registry` is **required** — `NewManager` returns `ErrNoRegistry` for a nil
 one, because replay decodes a payload's task groups through it and nil would be recovery silently
-switched off. It must be the server's own registry, since the archival category exists only where
+switched off. It must be the server's own task-category registry, since the archival category exists only where
 archival is configured. A nil `Logger` becomes a noop logger and a nil `Metrics` a noop emitter.
 
 * `cold.Applier` — `Apply(ctx, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error`.
@@ -990,8 +997,8 @@ archival is configured. A nil `Logger` becomes a noop logger and a nil `Metrics`
 ### `Manager` — the door to every cycle
 
 `NewManager(deps, policy) (*Manager, error)` refuses a policy that fails `CheckBudget`, and refuses
-a nil registry — a binary with no registry has no cycle at all, so that error is the layer refusing
-to start. Its surface:
+a nil task-category registry. A binary with no `Manager` has no cycle at all, so either refusal is the
+layer refusing to start. Its surface:
 
 | Method | Who calls it, and what it promises |
 |---|---|
@@ -1002,7 +1009,7 @@ to start. Its surface:
 | `Use(h metrics.Handler)` | the wrapper's `MetricsSink`. First call wins; a nil handler is ignored |
 | `Shard(shard) *Cycle` | internal callers that have already resolved a shard; nil when this node has not acquired it |
 | `Totals() Totals` | a witness |
-| `Close(ctx) []Residue` | shutdown — drains and stops every cycle, and answers with a `Residue` (shard, epoch, entries, the drain's error) for every shard whose tail it could not empty; those entries are in the log for the next owner, not lost. The one drain with neither a size or age trigger nor a request in flight behind it: a refusal, a read, a replay and a storage-pressure signal all drain off some caller's call, and the node's stop is nobody's. The drain is tagged `trigger="explicit"` |
+| `Close(ctx) []Residue` | shutdown — drains and stops every cycle, and answers with a `Residue` (shard, epoch, entries, the drain's error) for every shard whose tail it could not empty; those entries are in the log for the next owner, not lost. The one drain neither a trigger, a request in flight nor the backend asks for: a refusal, a read and a replay drain off some caller's call, storage pressure off the backend's own report, and the node's stop is nobody's. The drain is tagged `trigger="explicit"` |
 
 `cycle.BaseTasks` and `cycle.BaseHistory` are type **aliases** for the task-read and branch-read
 closures, deliberately: the two packages that must agree on the signature may not import each other,
@@ -1062,7 +1069,7 @@ seams through which the layer is testable without a cluster, and the layer itsel
 neither: the implementations shipped here, `wal/memwal` for the log and `cold/memcold` for the
 store, sit *under* the seam, where a deployment's own storage sits.
 `Registry` is constructible only by `TaskCategories(dc, cfg)` or `DefaultTaskCategories()`: a
-composition accepting upstream's interface directly would accept the plain default registry too,
+composition accepting upstream's interface directly would accept the plain default task-category registry too,
 which is a second answer to which registry a node decodes a tail with.
 
 `Layer`'s narrow surface:
@@ -1147,7 +1154,7 @@ has to answer for itself — see `cycle.ErrNoBaseRow`.
   `Policy`, `Moving`, `Fixed` and `Live`; [`manager.go`](../../cycle/manager.go) for the
   registry and `Totals`.
 * [`../../fold/fold.go`](../../fold/fold.go) — the accumulator, `Batch`, `Emitted` and
-  the three fold errors; [`check.go`](../../fold/check.go) for the condition authority.
+  the three errors `Add` refuses with and the page errors; [`check.go`](../../fold/check.go) for the condition authority.
 * [`../../waltz.go`](../../waltz.go) — `Compose`, `Backends`, `Layer` and its lifecycle.
 * [`../../baserow/baserow.go`](../../baserow/baserow.go) — the two reads, and why neither
   caller may hold its own copy.

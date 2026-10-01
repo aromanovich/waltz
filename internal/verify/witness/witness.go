@@ -137,11 +137,11 @@ type Expect struct {
 	// shards being acquired writes nothing, so a mutation there means
 	// something else was writing.
 	ShardsAcquired bool
-	// MutableState is whether the run's suites make any of the six
-	// mutable-state writes.
+	// MutableState is whether the run's suites make any of the four
+	// mutable-state writes or the two tombstones.
 	MutableState bool
 	// HistoryTasks is whether they write history tasks. Those go into the log
-	// like the six mutable-state writes, so the claim follows the path: zero
+	// like those six, so the claim follows the path: zero
 	// wherever there is no layer, non-zero wherever there is one.
 	HistoryTasks bool
 	// TaskReads is whether they read task pages through the merge.

@@ -43,7 +43,7 @@ func (f *AbstractDataStoreFactory) NewFactory(
 }
 
 // dataStoreFactory vends the two stores waltz is about from the [Store], and
-// everything else — matching, metadata, cluster metadata, the queues, nexus
+// everything else — matching, metadata, cluster metadata, the persistence queues, nexus
 // endpoints — from the SQL factory unchanged. None of those is inside the
 // layer, and none of them is this package's to have an opinion about.
 type dataStoreFactory struct {

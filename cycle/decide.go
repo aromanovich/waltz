@@ -113,10 +113,11 @@ func noCycleRoute(who reader, shard wal.ShardID) (readRoute, error) {
 //     base store's own page token, and a shard re-acquired mid pagination — a
 //     rangeID renewal is one, with no unload and the caller's reader still
 //     holding that token — answers the next page from a cycle that merges,
-//     which cannot read a token this layer did not write and finishes the
-//     pagination on the base alone. The window dropping out of it is acked task
-//     rows the range the reader completes then deletes. So a task page is
-//     answered by a running cycle or not at all;
+//     which cannot read a token this layer did not write and refuses it
+//     (fold.ErrForeignPageToken). Finishing the pagination on the base alone
+//     instead would drop the window out of it, which is acked task rows the
+//     range the reader completes then deletes. So a task page is answered by a
+//     running cycle or not at all;
 //   - mutable-state read: the tail rule, so the cold store on an empty tail and
 //     ShardOwnershipLost or the halt on a held one.
 //

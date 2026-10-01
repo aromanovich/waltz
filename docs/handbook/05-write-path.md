@@ -4,7 +4,7 @@
 
 Start with one `UpdateWorkflowExecution`. The history service has produced new events and a
 mutable-state update. The wrapper turns the persistence request into one mutation — writing the
-history nodes through to the cold store first, unless that store takes them in the drain — and hands
+history rows through to the cold store first, unless that store takes them in the drain — and hands
 that mutation to the shard's cycle. So far the
 layer has promised the caller nothing.
 
@@ -161,7 +161,7 @@ sequenceDiagram
   CS-->>AP: committed
   AP-->>CY: nil
   Note over CY: appliedSeqno = batch.Watermark(), tail releases the window's bytes
-  CY->>CY: trimmer.Drained(appliedSeqno) — trims every 16 drains or 60 seconds, or at once under storage pressure
+  CY->>CY: trimmer.Drained(appliedSeqno) — trims every 16 drains or 60 seconds, or trimmer.Force at once under storage pressure
 ```
 
 **Who blocks.** The write that trips a trigger pays for the drain inside its own call: the drain
@@ -241,8 +241,10 @@ The quieter rules of the drain:
 * **the trim is neither in the transaction nor on the loop.** `trim.Trimmer` starts a detached
   goroutine at its cadence — `TrimEvery` drains (16) or `TrimAfter` (60 s), whichever trips first.
   A cadence that comes due while a trim is already in flight is skipped rather than queued, and the
-  goroutine runs under a one-minute budget. A failed trim is logged, retried at the next cadence,
-  and halts nothing;
+  goroutine runs under a one-minute budget. Under storage pressure every committed drain calls
+  `Trimmer.Force` instead, which ignores the cadence and, behind a trim in flight, queues one
+  follow-up coalesced to the highest watermark asked for. A failed trim is logged, retried at the
+  next cadence — or, under pressure, at the next forced one — and halts nothing;
 * **a halted cycle never trims.** After halted-lost the log belongs to the next owner; after
   halted-invariant the log is the evidence;
 * **a drain that folds to nothing still settles what it acked**, and moves no watermark. No
@@ -302,8 +304,9 @@ the whole replay, and a shutdown waits for the drain it asked for — but neithe
 the window carries. `read` happens only when `drain_on_read` is on, which nothing that ships turns
 on ([chapter 08](08-configuration.md)). `storage_pressure` fires from both sides: inside a write
 whose append the backend answered under pressure — that caller is acked, like the size triggers' —
-and from the age tick, for a window the level rose under between writes. It is the one trigger with
-a consequence past the drain itself: the trim behind it bypasses the cadence
+and from the age tick, for a window the level rose under between writes. Its consequence past the
+drain belongs to the level rather than to the trigger: while the level stands, the trim behind
+*every* committed drain bypasses the cadence, whichever trigger fired it
 ([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)).
 
 **`sync` is the ninth, and it is the same cycle rather than a path around it.** With `sync: true`
@@ -596,11 +599,12 @@ condition failure, which is an invariant halt for a drain that succeeded.
 
 **The third arm is not a halt.** Halting on a failed *read* would lose a shard that a blip would
 have healed. The tail *stalls* at that seqno instead. While the stall stands, every write is refused
-with `limit="unresolved"`, all three layer-served reads are refused, every later drain re-asks the
+with `limit="unresolved"`, all four layer-served reads are refused, every later drain re-asks the
 watermark before it takes the window, and nothing may commit over it — a later drain that committed
 would set the watermark above the unresolved entries, telling the cold store those were applied too,
 and the trim behind it would then delete them from the log. The **age tick is the only thing that
-can heal a stall**, because a shard that refuses its writers gets no caller-driven drain.
+can heal a stall** on a running node, because a shard that refuses its writers gets no caller-driven
+drain; the shutdown drain re-asks too, on the node's way out.
 
 ## 8. Fold refusal — a window the accumulator cannot express
 
@@ -675,8 +679,8 @@ State this exactly, because it is the whole trade:
 
 * the mutation is one durable log entry, at a seqno no other entry has, under a fenced epoch, and
   the request's new history events are durable with it. Where the cold store declares
-  `cold.HistoryApplier` — `memcold` does — the entry carries them and the drain writes them, ahead of
-  the mutable state that points at them; otherwise the wrapper writes them through the base store
+  `cold.HistoryApplier` — `memcold` does — the entry carries them and the drain writes them, no later
+  than the mutable state that points at them; otherwise the wrapper writes them through the base store
   *before* the append;
 * the mutable-state rows, the task rows and the watermark are not. They arrive at a later drain;
   until then the layer answers reads over them itself. `commitSeqno − appliedSeqno` is the

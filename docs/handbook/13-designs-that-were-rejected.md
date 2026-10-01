@@ -38,7 +38,7 @@ places:
 | where | what it sees |
 |---|---|
 | an append | `wal.ErrFenced` |
-| a drain | `apply.ClassShardLost` |
+| a drain | `apply.ClassShardLost`, or a watermark found past an unreadable drain's own seqno, which carries `cycle.FencedAway` too |
 | a replay | `cycle.FencedAway`, the cause it carries when the inherited tail holds an entry above this cycle's own epoch |
 
 Everything a node knows about its own ownership is as fresh as its last attempt to act. A displaced

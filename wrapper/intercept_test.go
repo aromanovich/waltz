@@ -452,7 +452,7 @@ func TestTheEpochTravelsWithTheWrite(t *testing.T) {
 // cold.HistoryApplier the record carries no event batches, so a write's event
 // blobs go to the cold store through AppendHistoryNodes before the mutation is
 // acked. Otherwise the log holds a
-// mutable state pointing at history nodes nobody wrote — an entry that is
+// mutable state pointing at history rows nobody wrote — an entry that is
 // durable and correct, which is why no functional suite sees it. Every
 // intercepted kind is driven, so a request shape whose events go nowhere fails
 // by name; which slots each shape has is
@@ -573,7 +573,7 @@ func TestTheEventsGoDownBeforeTheMutation(t *testing.T) {
 // InternalAppendHistoryNodesRequest per WorkflowEvents it was handed, so a
 // transaction writing several batches to one run is an ordinary shape. Stopping
 // after the first leaves every batch behind it unwritten and the mutation acked
-// anyway — a mutable state pointing at history nodes nobody wrote, which is the
+// anyway — a mutable state pointing at history rows nobody wrote, which is the
 // failure the table above exists for, one dimension over.
 func TestEverySlotsEventsGoDownAndNotJustItsFirst(t *testing.T) {
 	ctx := context.Background()

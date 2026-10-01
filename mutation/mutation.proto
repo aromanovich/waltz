@@ -134,7 +134,7 @@ message DeleteRequest {
 // AddTasksRequest mirrors persistence.InternalAddHistoryTasksRequest.
 //
 // It is the first request in this format that names no run and asserts nothing:
-// a task is a queue entry rather than workflow state. NamespaceID and WorkflowID
+// a task is a queue entry rather than mutable state. NamespaceID and WorkflowID
 // are carried because the request has them, and the store below ignores both —
 // its task rows are keyed by (shard, category, key) alone.
 //

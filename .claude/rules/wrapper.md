@@ -69,13 +69,13 @@ changing either:
   test has a `refused`
   set beside the other two; a second entry in it would be a second thing the
   record format has no shape for, which is a decision and not a detail;
-* **an intercepted write's events are durable before the state naming them, and
+* **an intercepted write's events are durable no later than the state naming them, and
   which writer makes them so is the cold store's** (ADR 0014, superseding D3 in
   part). Over a store that does not declare `cold.HistoryApplier` the wrapper puts
   them down first through the base store's `AppendHistoryNodes` — exactly where a
   store's own Create/Update/ConflictResolve put them — and strips them off the
   mutation; over one that does, they ride the record and the drain writes them.
-  Forget either half and the log holds a mutable state pointing at history nodes
+  Forget either half and the log holds a mutable state pointing at history rows
   nobody wrote, or the drain writes rows the caller was already answered over;
 * **a write also hands the layer the store's own two reads**: the condition
   authority verifies an assertion the window does not determine against the

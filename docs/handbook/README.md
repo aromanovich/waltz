@@ -2,7 +2,7 @@
 
 Imagine a workflow that lives for ten seconds. In that time, Temporal may rewrite its mutable state
 dozens of times, create and consume timers, and delete the task rows that represented them. The
-event history it appends along the way has to be stored: a workflow replays against it, and no later
+event history it appends along the way has to be stored: workflow code is re-executed against it, and no later
 transition rewrites a batch already written. Every intermediate mutable-state image and every task
 row is stored as well — including the images a later transition supersedes and the task rows deleted
 moments after they were created.
@@ -95,7 +95,7 @@ refused, does.
 4. [04-contracts.md](04-contracts.md) — every seam's interface: what it guarantees, what it refuses,
    what the caller owes it.
 5. [05-write-path.md](05-write-path.md) — one mutation end to end, with a diagram per failure class.
-6. [07-read-path.md](07-read-path.md) — the overlay, the merged task page, and invariant I7.
+6. [07-read-path.md](07-read-path.md) — the overlay, the merged task and branch pages, and invariant I7.
 7. [11-verification.md](11-verification.md) — which suites will judge the change, and what a green
    run does not mean.
 8. [13-designs-that-were-rejected.md](13-designs-that-were-rejected.md) — **read this before
@@ -132,7 +132,7 @@ refused, does.
 | [04-contracts.md](04-contracts.md) | Contracts at the failure boundaries | How three failures — an ambiguous append, an unknown drain outcome, a stale owner racing a current one — give every seam its shape, followed by the exact signatures, guarantees, refusals and caller obligations. |
 | [05-write-path.md](05-write-path.md) | A write, end to end | What happens between `UpdateWorkflowExecution` and its return, in the happy path and in every failure path the code enumerates, ending in a table from what the caller saw to what the operator sees. |
 | [06-shard-lifecycle.md](06-shard-lifecycle.md) | When an owner disappears | How fencing turns a new rangeID into a successor cycle, how it replays an inherited tail, why the two halt classes are opposites, and what a stopped node leaves behind. |
-| [07-read-path.md](07-read-path.md) | Reading acknowledged state before it reaches the store | Why mutable state needs an overlay and task pages need an ordered merge, which reads transit to the store untouched, and how invariant I7 makes it legal for a drain to skip a task row whose range a caller has already completed. |
+| [07-read-path.md](07-read-path.md) | Reading acknowledged state before it reaches the store | Why mutable state needs an overlay and task and branch pages need an ordered merge, which reads transit to the store untouched, and how invariant I7 makes it legal for a drain to skip a task row whose range a caller has already completed. |
 | [08-configuration.md](08-configuration.md) | Choosing the operating envelope | How window benefit trades against replay and memory, where the two configuration surfaces divide, every exact key and default, the budget refusal, and three recipes. |
 | [09-operations.md](09-operations.md) | Running, deploying and debugging it | Deployment, start and stop order, rolling restarts and failover, the tree that routes a symptom and the seven runbooks it routes into, and a closing appendix on local development and its traps. |
 | [10-metrics.md](10-metrics.md) | Every series the layer emits | Every series with its type, unit, tag values and emission point; what each counts exactly; the quantities to derive rather than expect; the shape of each alert; and the in-process counters no scrape has. |
@@ -194,8 +194,8 @@ the two start disagreeing.
 
 * **Diagrams are mermaid**, in fenced code blocks tagged `mermaid`, so the source is reviewable in
   the Markdown and renders both on GitHub and in the built site. `npm run check` parses every block
-  in every chapter and fails on one that will not render; `npm run build` writes the HTML edition
-  into `site/`.
+  in every chapter and fails on one that will not render; `npm run build` writes both HTML editions
+  into `site/` — the pages to browse and `waltz-handbook.html`, one self-contained file.
 * **Links into the code are relative** — `../../wal/...` — and point at a file that
   exists, so they resolve from the Markdown, from the built page and from a checkout on disk. A
   chapter's closing "Where this lives in the code" is the list of files it was written from; when

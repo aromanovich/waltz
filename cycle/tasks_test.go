@@ -296,9 +296,10 @@ func TestAHaltedShardRefusesATaskReadWithTheHaltItHolds(t *testing.T) {
 // is in it — and answering would still cost the shard rows, because the token
 // that page carries is the store's own. A rangeID renewal installs a fresh
 // cycle without unloading the shard, so the next page of that same pagination
-// reaches a cycle that merges, and a token this layer did not write puts the
-// rest of the pagination on the base alone: the window drops out of it, and the
-// range the reader then completes deletes the acked task rows that were in it.
+// reaches a cycle that merges, which refuses a token this layer did not write;
+// finishing the pagination on the base alone instead would drop the window out
+// of it, and the range the reader then completes deletes the acked task rows
+// that were in it.
 //
 // So the rule is the one every other route keeps: a task page is answered by a
 // running cycle or not at all.

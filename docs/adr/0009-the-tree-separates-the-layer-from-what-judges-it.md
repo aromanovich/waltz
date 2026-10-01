@@ -94,7 +94,7 @@ Grouping already delivers what the rename was for.
 
 What was done instead: a `doc.go` or a package comment whose first line says in plain words what the
 package is, the handbook for the order nesting cannot express, and the `CONTEXT.md` entries for
-Wrapper, Node, Cycle and Checker.
+Wrapper, Composition, Cycle and Checker.
 
 ## Amendment — a third thing at the module root, and one more judge
 

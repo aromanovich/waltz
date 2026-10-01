@@ -5,9 +5,9 @@ package cycle
 // order and the dedup are [fold.Accumulator.HistoryPage], beside the window they
 // read.
 //
-// It is the third merged read and it routes like the two mutable-state ones
-// rather than like the task page. A history reader does not delete what it read,
-// so a page short a node is a workflow rebuilt short its newest events rather
+// It is the fourth read the cycle serves and it routes like the two
+// mutable-state ones rather than like the task page. A history reader does not delete what it read,
+// so a page short a history row is a workflow rebuilt short its newest events rather
 // than a row nobody asks for again — which is the staleness [tailRoute] already
 // decides who may pay. What it does share with the task page is a token this
 // layer wrote, so every route that answers without the window unwraps it first
@@ -82,9 +82,8 @@ func baseAlone(
 	}
 }
 
-// readHistoryPage is the loop's half. The window's view is taken inside
-// [Cycle.prelude] so a replay that resets the accumulator is not read around,
-// and the page itself is built after it.
+// readHistoryPage is the loop's half. The page is built after [Cycle.prelude],
+// so a replay that resets the accumulator is not read around.
 func (c *Cycle) readHistoryPage(
 	ctx context.Context,
 	s *state,

@@ -39,8 +39,8 @@ func TestAReversePageInvertsBothHalvesOfTheKey(t *testing.T) {
 	require.Equal(t, []historyKey{{5, 100}, {5, 101}, {4, 200}}, keysOf(page))
 }
 
-// The whole point of the overlay: a node acked into the window is a node the
-// cold store does not have yet, and a reader that missed it would rebuild a
+// The whole point of the merge: a history row acked into the window is a row
+// the cold store does not have yet, and a reader that missed it would rebuild a
 // workflow short the events its own caller was told were durable.
 func TestAPageInterleavesTheWindowWithTheColdStore(t *testing.T) {
 	acc := New(7)
@@ -321,7 +321,7 @@ func readWholeBranch(
 
 // What the drain gets: every batch the window folded, in WAL order, and a
 // watermark at or above the entry that carried the last one. A batch left
-// behind is a mutable state published over nodes nobody wrote.
+// behind is a mutable state published over history rows nobody wrote.
 func TestTheBatchCarriesEveryFoldedBatchInLogOrder(t *testing.T) {
 	acc := New(shardID)
 	require.NoError(t, acc.Add(11, carrying(create(p.CreateWorkflowModeBrandNew), 4, 5)))

@@ -82,16 +82,16 @@ func (m *Manager) Totals() Totals {
 
 // NewManager builds the registry. Every cycle it creates reads the same
 // [Policy] — the source and not a copy, so a setting that moves reaches the
-// cycles this node already holds. It refuses a node whose hard_max × shards
-// does not fit its tail budget ([Config.CheckBudget]), and a binary with no
+// cycles this node already holds. It refuses a node whose HardMaxBytes ×
+// MaxShards does not fit its tail budget ([Config.CheckBudget]), and a binary with no
 // registry has no cycle at all, so that error is the layer refusing to start.
-// Reading the budget once is sound because those four fields are the ones
+// Reading the budget once is sound because its three fields are among those
 // [Moving] does not carry.
 func NewManager(deps Deps, policy Policy) (*Manager, error) {
 	if err := policy().CheckBudget(); err != nil {
 		return nil, err
 	}
-	// The other startup assertion: without a registry a node recovers nothing,
+	// The other startup assertion: without a task-category registry a node recovers nothing,
 	// silently, until the first failover. See [Deps.Registry].
 	if deps.Registry == nil {
 		return nil, ErrNoRegistry
@@ -111,7 +111,7 @@ func NewManager(deps Deps, policy Policy) (*Manager, error) {
 // record this layer appends, which is a property of the cold store underneath
 // and of nothing else: one that declares [cold.HistoryApplier] writes them in
 // the drain's own publication, and one that does not gets them through the base
-// store before the append, as every store did before that interface existed.
+// store before the append.
 //
 // There is no setting. A deployment's answer is which store it composed, and the
 // deps are fixed at construction, so the two halves of the question — who writes
@@ -202,8 +202,8 @@ type Residue struct {
 }
 
 // Close drains and stops every cycle, and answers with every shard whose tail it
-// could not empty. Shutdown is the one moment a tail is drained without the
-// shard's own traffic asking for it.
+// could not empty. Shutdown is the one moment a tail is drained with no
+// trigger asking for it.
 func (m *Manager) Close(ctx context.Context) []Residue {
 	var left []Residue
 	for _, c := range m.held.takeAll() {

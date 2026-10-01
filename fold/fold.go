@@ -5,7 +5,7 @@
 // Assertions come from the head of the window and data from the tail, because
 // only the head was ever evaluated against the cold store. A snapshot-bearing
 // request resets the run's accumulator (I8); tasks concatenate across that
-// reset, being queue entries rather than workflow state.
+// reset, being queue entries rather than mutable state.
 //
 // Event history is the exception and history.go says why: a window keeps the
 // batches a record carried, in WAL order, and folds none of them. Two appends of

@@ -66,7 +66,7 @@ and the cycle have handed it on.
 | `wal/waltest` | The conformance suite an implementation runs, plus `Faulty`, a log wrapped so a chosen call fails. | `RunContractSuite`, `Faulty`, `Fault`, `Once`, `Always` | the same, **plus every implementation including `memwal`** — a suite that could name one would special-case it and stop being about the contract |
 | `mutation` | What one log entry *is*: the protobuf record of one persistence call, and the eight kinds. | `Mutation`, `Kind`, `Part`, `Encode`, `Decode` | any persistence implementation — the record mirrors Temporal's requests; the store that eventually writes them is the applier's business |
 | `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — `wrapper`, `cycle` and `apply` all need this pair and none of them may name another's copy, so it imports Temporal's persistence and nothing more |
-| `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page merge. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage`, `HistoryBasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
+| `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page and history-branch merges. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage`, `HistoryBasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
 | `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. `Store` is the pair as a deployment supplies it — one value, because a watermark read from a store other than the one the drains landed in is no witness at all. | `Store`, `Applier`, `HistoryApplier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
 | `cold/memcold` | That contract satisfied, and the one cold store this repository ships: Temporal's own SQL persistence over an in-memory SQLite database, embedded whole, with the folded window's transaction added beside its 28 inherited methods. It sits *under* the layer rather than being part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | `cycle`, `wrapper` and the root package — a store that could see the layer would be judged by the thing sitting on top of it. It does name the vocabulary the contract is stated in: `fold`, `wal`, `apply`, `baserow`, `mutation` |
 | `apply` | What a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries. | `Class`, `Classify`, `Diverged`, `InvariantViolationError` | `wal.Log` and `wal.Entry` — pacing and trim are the cycle's policy, not the outcome's |
@@ -351,13 +351,15 @@ off-loop things in the table above.
   for one shard, each unaware of the other.
 * **A `Cycle` is created by `Manager.ShardAcquired`**, which fences the log at the new epoch and then
   starts the cycle, in that order — the log's epoch may never lag the database's.
-* **A `Cycle` is retired by a higher epoch superseding it, or by the node closing.** The layer reaps
+* **A `Cycle` is retired by a higher epoch superseding it, by the node closing, or by name.** The layer reaps
   none by itself, because it only sees what crosses the persistence interface: an acquire bumps the
   rangeID and is therefore visible, while closing a shard makes no persistence call and is not. So a
   shard the server has quietly stopped serving leaves a goroutine and an empty accumulator behind
   until its node stops — a bounded leak, taken knowingly. A caller that knows the shard is gone can
   stop it with `Layer.RetireShard(shard, epoch)`, which retires without draining — the epoch being
-  which acquisition it means, since a caller that knows a shard is gone may be learning it late.
+  which acquisition it means, since a caller that knows a shard is gone may be learning it late. The
+  stopped cycle stays registered — reporting `halted-lost` if it was running — because its tail is
+  acked entries still in the log.
 * **The layer's lifecycle brackets the server's.** `waltz.Compose` runs before the server is built,
   so its two startup assertions — `cycle.Config.CheckBudget`, and a task-category registry that must
   not be nil — stop the binary rather than a shard. `Layer.Shutdown(ctx, budget)` runs after the

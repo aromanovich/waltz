@@ -46,7 +46,7 @@ func TestAnEmptyWindowHasNoAge(t *testing.T) {
 	require.Zero(t, held.Release())
 
 	require.False(t, w.Aged(epoch.Add(time.Hour), time.Second),
-		"the age watermark drains a tail nothing is pushing on, and there is nothing here")
+		"the age trigger drains a tail nothing is pushing on, and there is nothing here")
 
 	// The age runs from the mutation that opened the window.
 	w.Add(10, epoch.Add(time.Minute))
@@ -62,7 +62,7 @@ func TestTheCountIsAnsweredBeforeTheBytes(t *testing.T) {
 	require.Equal(t, NoTrip, w.Trips(at))
 
 	w.Add(500, epoch)
-	require.Equal(t, TripBytes, w.Trips(at), "one mutation, over the byte watermark")
+	require.Equal(t, TripBytes, w.Trips(at), "one mutation, over the byte trigger")
 
 	w.Add(1, epoch)
 	require.Equal(t, TripMutations, w.Trips(at), "over both, and the count is the answer")
@@ -86,7 +86,7 @@ func TestEachWatermarkTripsAtItsOwnValue(t *testing.T) {
 
 		var w Window
 		w.Add(39, epoch)
-		require.Equal(t, NoTrip, w.Trips(at), "one byte below the watermark is below it")
+		require.Equal(t, NoTrip, w.Trips(at), "one byte below the trigger is below it")
 
 		w.Add(1, epoch)
 		require.Equal(t, TripBytes, w.Trips(at), "and the configured size is reached, not passed")
@@ -109,7 +109,7 @@ func TestEachWatermarkTripsAtItsOwnValue(t *testing.T) {
 
 		require.False(t, w.Aged(epoch.Add(time.Second-time.Nanosecond), time.Second))
 		require.True(t, w.Aged(epoch.Add(time.Second), time.Second),
-			"a window exactly as old as the watermark has reached it")
+			"a window exactly as old as the age trigger has reached it")
 	})
 }
 

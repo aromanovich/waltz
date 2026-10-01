@@ -34,7 +34,7 @@ import (
 
 const testShard wal.ShardID = 3
 
-// testRegistry is the default registry: nothing here interprets a category.
+// testRegistry is the default task-category registry: nothing here interprets a category.
 func testRegistry() tasks.TaskCategoryRegistry { return tasks.NewDefaultTaskCategoryRegistry() }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,9 @@ Each entry is marked:
 
 * **closed** — a mechanism in this repository prevents it, and the entry names
   the mechanism and a test that fails when it is removed;
+* **refuted** — established as impossible, or as not a loss, and recorded with
+  the argument and how it was established, so that a later pass does not derive
+  it again;
 * **open** — it can happen today, and the entry says what would close it;
 * **accepted** — it can happen, nobody here will close it, and the entry says
   what is being accepted, why, and what a deployment owes in its place. A
@@ -67,7 +70,7 @@ arrived, after which the trim takes the rest. Replay confirms every entry's seqn
 is the one it is waiting for and halts on a gap, which is all that is left to do.
 `TestAReplayRefusesALogTrimmedPastItsWatermark` (`cycle/replay_test.go`).
 
-Its isolation is the part worth keeping: on a tail that trips no watermark
+Its isolation is the part worth keeping: on a tail that trips no trigger
 mid-loop, the end-of-log confirmation catches the same hole one seqno later, so a
 test with a short tail passes with the check deleted and judges nothing. It drains
 per entry for that reason — measured, the first version of it was green against the
@@ -219,8 +222,8 @@ for a record some older binary wrote.
 
 *Reachable or not, and why it did not matter.* Temporal's own `ProtoEncode`
 produces proto3, so no stream this layer sees today carries anything else — which
-is the same claim that was made about the parsed-struct-without-a-blob shape in the
-entry above, where two fixtures in this repository were found building it. The
+is the same claim that was made about the parsed-struct-without-a-blob shape in
+that entry, where two fixtures in this repository were found building it. The
 codec already refuses a Cassandra-shaped CHASM blob at encode for the identical
 reason; this was the one blob field where the refusal sat on the far side of the
 ack.
@@ -487,7 +490,7 @@ exactly one batch in each. It therefore pins which slots a shape has and never
 that a slot is walked to its end, so stopping the inner loop after the first
 append left the whole of `go test ./...` green, all eight of its own kinds
 included. What that costs is the failure that case exists for, one dimension
-over: a mutable state acked pointing at history nodes nobody wrote, durable and
+over: a mutable state acked pointing at history rows nobody wrote, durable and
 correct-looking, which no functional suite sees.
 `TestEverySlotsEventsGoDownAndNotJustItsFirst` (`wrapper/intercept_test.go`).
 
@@ -511,7 +514,10 @@ stages the deadline *inside* the append, through the log's own fault seam, and
 reads the drain's view of its context off the applier. The third cause,
 `drainWatermarkAge`, is the one that cannot be judged: its only call site is the
 timer, which drains on a context of its own, so its flag is inert and a case
-over it passes with the flag flipped — said at the cause.
+over it passes with the flag flipped — said at the cause. The bytes trigger and
+the storage-pressure drain detach on the same flag, and no case here flips
+either: for those two the flag is held by the table it sits in and nothing
+else.
 
 **A trim past what the cold store holds.** The trim goes to `applied`, which only
 a committed drain moves — never to what the window acked. A forced trim under
@@ -763,9 +769,9 @@ the way a live write over such a store does; with a test that replays a
 history-carrying tail over an applier without the marker and is watched to go red
 without the refusal.
 
-Found by a documentation pass reading ADR 0014's "Changing stores" paragraph
-against `fold/history.go`, which is where that paragraph's "replays such a tail
-correctly anyway" stopped being true.
+Found by a documentation pass reading ADR 0014's paragraph on changing stores
+against `fold/history.go`: the paragraph then said such a tail replays correctly
+anyway, and `addHistory` is where that stopped being true.
 
 **A field Temporal adds to an event batch, dropped from the record with every
 suite green.** Severity: silent, and only on the path where the record is the
@@ -955,8 +961,8 @@ applies to it next quarter.
 write carries is built from what `baserow.Rows.Current` answered, so such a store gives
 a retried start nothing to deduplicate against — an opaque failure where the layer
 could have named the run it collided with. Not a loss of acked data; it is here
-for the reason the delegated-conflict entry above is, that the effect on a caller
-is the same.
+for the reason *a refusal the caller cannot act on* above is, that the effect on a
+caller is the same.
 
 *What is accepted* is that the obligation is checked for the one store in this
 repository and unverifiable for any other. `memcold` is held to it
@@ -1079,15 +1085,15 @@ closes the same way on both of the two paths a cold store can choose between
 (ADR 0014), because the *order* is what is pinned and the mechanism is not.
 
 Where the store does not declare `cold.HistoryApplier`, the wrapper puts the
-events down through it *first*, so a crash strands unreachable history nodes and
+events down through it *first*, so a crash strands unreachable history rows and
 never a mutable state pointing at events nobody wrote. Where the store does
 declare it, the events and the state are one record with one ack, so there is no
 interval between them at all; what can then strand is a drain that made the
 history rows durable and failed before its transaction, which leaves the same
 unreachable nodes. **The forbidden order is unreachable in both**: the contract on
-`cold.Applier` is that every history row the batch carried is durable before the
-transaction publishing the state opens, and `memcold` keeps it by putting them
-inside that transaction.
+`cold.Applier` is that every history row the batch carried is durable no later
+than the transaction publishing the state — inside it or before it opens — and
+`memcold` keeps it by putting them inside that transaction.
 
 The class of garbage is the same in both and is one upstream produces itself and
 has a collector for: its own deletion path leaves a history branch behind
@@ -1098,13 +1104,14 @@ storage leak on a path upstream already leaks on. Nothing acked is missing on
 either path, which is why this stays a read rather than an open entry.
 
 What is *not* closed by it and is named rather than counted: the three history
-methods that transit past a window which may hold their rows (named as an exposure
+methods that transit past a window which may hold their rows — `DeleteHistoryNodes`,
+`DeleteHistoryBranch`, `GetHistoryTreeContainingBranch` (named as an exposure
 in [ADR
 0014](docs/adr/0014-a-record-may-carry-the-event-batches-its-own-request-produced.md)).
 A `DeleteHistoryNodes` from `TrimHistoryBranch` finds no row and the drain writes
-that node after it; a `DeleteHistoryBranch` cannot see a branch whose tree row is
+that row after it; a `DeleteHistoryBranch` cannot see a branch whose tree row is
 still in the window. Both leave rows behind rather than taking acked ones away — a
-leak on the same collector's path — and both are accepted here because what a
+leak on the same collector's path — and both are left as they are because what a
 deletion aimed at an undrained node *should* do depends on where a deployment put
 its history, which is not this library's to decide.
 
@@ -1130,7 +1137,7 @@ live cycle and "a window of one by construction" holds wherever it is relied on.
 **A queue reader does survive a rangeID renewal** (read, against upstream
 v1.29.6). `renewRangeLocked` drains in-flight task requests, bumps the rangeID,
 updates the task key manager and unloads nothing. This is a premise rather than a
-hazard: it is what makes the task-page routing entry above reachable.
+hazard: it is what makes the two-token-spaces entry above reachable.
 
 **The two `last_write_version` columns cannot drift** (read). The layer's condition
 authority reads `current_executions.last_write_version` where upstream joins and

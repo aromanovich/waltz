@@ -132,9 +132,10 @@ func (c *Cycle) readTasks(
 		// No route answers a task read this way — every one of them merges or
 		// refuses — and this arm is here to keep it that way rather than to run.
 		// What it would do is hand the caller the cold store's own page *token*,
-		// which the cycle that replaces this one cannot read: the pagination
-		// finishes on the base alone with the window dropped out of it, and the
-		// range its reader completes deletes the acked rows that were in it. A
+		// which the cycle that replaces this one cannot read and refuses
+		// (fold.ErrForeignPageToken); finished on the base alone instead, the
+		// pagination would drop the window out of it, and the range its reader
+		// completes deletes the acked rows that were in it. A
 		// rule held by three functions in decide.go and nothing at the site that
 		// would carry out the loss is a rule one edit away from being gone.
 		return nil, fmt.Errorf(

@@ -139,7 +139,7 @@ func TestADrainThatFoldsToNothingStillSettlesWhatItAcked(t *testing.T) {
 }
 
 // TestADrainOfAnEmptyWindowSettlesNothing is the other direction of the same
-// early return, and the more dangerous one: drainNow at shutdown, a read under
+// early return, and the more dangerous one: the shutdown drain, a read under
 // DrainOnRead and replay's terminal drain all reach it with a window that folded
 // nothing, which is what fold.Batch.Settles answers false for. Settling such a
 // drain anyway would put resolved under the whole log and report every entry

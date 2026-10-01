@@ -25,7 +25,7 @@ declare `cold.HistoryApplier`, `ExecutionStore.write` calls `appendEvents` befor
 `layer.Write`, and that walks every slot's every batch through `base.AppendHistoryNodes`
 serially. The ordering is deliberate and is the reason the tree is never behind the tail:
 on that path the record carries no events, so a mutation acked before them would point at
-history nodes nobody wrote. Over a store that declares it — `cold/memcold` does — the batches
+history rows nobody wrote. Over a store that declares it — `cold/memcold` does — the batches
 ride the record and the drain writes them (ADR 0014), and this visit does not happen.
 
 **The second is the conditions.** `Cycle.check` runs the condition authority before the
@@ -94,7 +94,7 @@ read's absence costs latency only.
 while the conditions are being checked. The join has to be before
 the append, not merely before the drain, or the ack would outrun the events — so `Write` grows
 a "work that must finish before the append" seam and a new invariant to guard. Nothing about
-orphaned nodes changes: a refused condition already leaves the events written, since they go
+orphaned history rows changes: a refused condition already leaves the events written, since they go
 first on that path today.
 
 **Remember the versions this layer wrote (costly side).** The accumulator computes exactly

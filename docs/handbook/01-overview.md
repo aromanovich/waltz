@@ -25,7 +25,7 @@ for every version of the row and for a task whose entire lifetime fitted between
 transitions.
 
 `ExecutionStore` holds two kinds of data with different shapes, and only one of them can be
-collapsed. **Event history** is what a workflow replays against: a transition *appends* batches of
+collapsed. **Event history** is what workflow code is re-executed against: a transition *appends* batches of
 events to their own tables and never rewrites a batch it already wrote. **Mutable state** is the
 current state of one run — which activities are started and how often they were retried, which
 timers are set, which children are outstanding, where the history ends and what version all of it is
@@ -200,7 +200,7 @@ moving from the diagram into the tree.
 | `wal/memwal/` | the one shipped implementation of that contract, in process memory, so everything above the log can be tested without a cluster |
 | `wal/waltest/` | the conformance suite: a candidate `wal.Log` runs it against itself to find out whether it satisfies the contract |
 | `mutation/` | what one entry *is*: the protobuf record of one persistence call, plus the record kinds |
-| `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task pages |
+| `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task and history-branch pages |
 | `baserow/` | the cold store's two mutable-state reads as the write path needs them — one run's row, and the current-execution row with `last_write_version` beside it. `wrapper`, `cycle` and `apply` all need the pair and none of them may import another's copy, so it lives here and imports nothing of the layer |
 | `cold/` | the cold store's contract: `Store`, which is what a deployment implements — the `Applier` a drain lands on and the `Watermarker` that reads back the seqno the last drain committed, embedded in one interface because one value has to answer both — and the four things an implementation owes — one publication per drain (the merged requests, the task work and the watermark in one transaction — the event batches too, for a store that declares `cold.HistoryApplier`, and otherwise over event history already durable), the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
 | `cold/memcold/` | the one implementation of that contract here: Temporal's own SQL execution store, embedded whole, over an in-process SQLite database, with the folded window's transaction added beside its 28 inherited methods |
@@ -240,7 +240,7 @@ below.
 Event history costs the same rows on both sides of that comparison, because the layer never folds
 it. Where those rows are written depends on the cold store. Over one that declares
 `cold.HistoryApplier` — `cold/memcold` does — the batches ride the record and the drain writes them
-before it publishes the state naming them. Over one that does not,
+no later than it publishes the state naming them. Over one that does not,
 `wrapper.ExecutionStore.appendEvents` puts each of the mutation's event slots down through the base
 store's `AppendHistoryNodes` before the mutation is acked — the same work the incumbent does, in a
 different shape. [Chapter 12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first)
@@ -279,7 +279,7 @@ commit to; that possibility is why `wal.Log` is a contract rather than a fixed c
 
 ## What "mode" names here
 
-Two settings decide which mode the layer runs in. They are **independent axes**, not one dial with
+Two switches decide which mode the layer runs in. They are **independent axes**, not one dial with
 four positions:
 
 * **what the wrapper does** — passthrough or intercept, chosen by whether the node's config has a
@@ -316,11 +316,12 @@ In intercept the wrapper takes **twelve** of `ExecutionStore`'s 28 methods into 
 [Chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) has the method table; [chapter
 07](07-read-path.md) has the four reads; and what makes the two task calls records at all — they
 name no run and assert nothing — is the **task record** entry of [chapter
-02](02-concepts-and-invariants.md#the-glossary-in-reading-order). Why the shard's own writes and a
-standalone history append stay out of the log is argued where each belongs: [chapter
-13](13-designs-that-were-rejected.md#the-shards-own-writes-deferred-into-the-log) for the shard's
-own writes, and [chapter
-12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first) for event history.
+02](02-concepts-and-invariants.md#the-glossary-in-reading-order). Why the shard's own writes stay
+out of the log is argued in [chapter
+13](13-designs-that-were-rejected.md#the-shards-own-writes-deferred-into-the-log); a standalone
+history append stays out because it has no mutation whose condition, epoch and ack it could share,
+and [chapter 12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first) has
+where event history goes instead.
 
 Two things about the shipped windowed configuration are worth knowing early. The first:
 **a caller's condition is judged before the append**, from the window itself plus a read of the

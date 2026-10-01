@@ -62,7 +62,7 @@ Beside that surface — never inside it — the store adds exactly what Temporal
 * **`AppliesHistory`**, added since by
   [ADR 0014](0014-a-record-may-carry-the-event-batches-its-own-request-produced.md): the marker
   that declares `cold.HistoryApplier`, so a window's event batches arrive in its batch and `Apply`
-  writes them as history node and tree rows inside the same transaction, through `TableCRUD`.
+  writes them as `history_node` and `history_tree` rows inside the same transaction, through `TableCRUD`.
 
 **What judges the inherited surface is Temporal's own four exported suites** —
 `NewShardSuite`, `NewExecutionMutableStateSuite`, `NewExecutionMutableStateTaskSuite` and

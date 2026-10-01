@@ -139,7 +139,7 @@ whether or not sixteen drains have happened. So does storage pressure, which for
 the cadence altogether.
 
 The two triggers are therefore one knob and not two, and a run that needs the whole log has to move
-**both**. Raise `TrimEvery` alone and `TrimAfter` deletes the history anyway, and the run comes back
+**both**. Raise `TrimEvery` alone and `TrimAfter` trims the log anyway, and the run comes back
 red against a layer that did nothing wrong.
 
 ## The per-shard tail bound: 8192 entries and 8 MiB
@@ -250,8 +250,8 @@ hardMaxBytes × maxShards  ≤  tailBudgetBytes
 ```
 
 `cycle.Config.CheckBudget` states it, `cycle.NewManager` runs it before it returns a manager, and
-`waltz.Compose` therefore fails over it — before the layer has opened anything, since composing
-reaches no cluster. At the shipped defaults the product fits exactly: 8388608 × 256 = 2147483648.
+`waltz.Compose` therefore fails over it — with no round trip of its own, though the backends it is
+handed were opened by its caller first. At the shipped defaults the product fits exactly: 8388608 × 256 = 2147483648.
 There is no headroom, so raising either factor without raising the budget gives you a node that
 refuses to start. [Chapter 08](08-configuration.md#5-the-budget-refusal) owns that refusal.
 

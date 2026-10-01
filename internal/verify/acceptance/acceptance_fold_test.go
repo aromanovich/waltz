@@ -18,8 +18,7 @@ import (
 
 // envAcceptanceMutations overrides the stream length. A full-volume run is
 // 10^6 and is set through this variable; the default is a tenth of it, which
-// keeps the test inside a normal run's budget while still being an order of
-// magnitude past anything the cluster-bound runs can afford.
+// keeps the test inside a normal run's budget.
 const envAcceptanceMutations = "WAL_ACCEPTANCE_MUTATIONS"
 
 const defaultAcceptanceMutations = 100_000

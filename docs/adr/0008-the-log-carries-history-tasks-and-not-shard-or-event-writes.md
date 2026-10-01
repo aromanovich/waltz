@@ -28,7 +28,7 @@ boundary is**, since the same argument reaches shard writes and event history.
 
 ### Why both halves of the task path, and not only the deletes
 
-Deferring the delete while the write stays immediate is worse than either. A store deletes a
+Deferring the delete while the write is still applied at once is worse than either. A store deletes a
 **scheduled** category's range by fire time and ignores the task ids entirely. A delete applied
 late over a write applied immediately therefore covers a timer created *after* the checkpoint whose
 fire time falls inside the passed window. That is not a garbage row: it is a lost timer, and a

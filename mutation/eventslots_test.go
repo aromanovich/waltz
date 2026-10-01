@@ -11,7 +11,7 @@ import (
 )
 
 // [Mutation.EventSlots] is what both writers of a request's event batches walk,
-// so a slot nobody names is a mutation acked over history nodes nobody wrote —
+// so a slot nobody names is a mutation acked over history rows nobody wrote —
 // durable, correct, and invisible to every functional suite. Cases name a
 // slot's contents, in the order the store receives them.
 func TestEveryRequestShapesEventSlotsAreNamed(t *testing.T) {

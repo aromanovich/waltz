@@ -65,8 +65,8 @@ func (s State) String() string {
 // ErrHalted matches (via errors.Is) every refusal a halted cycle's loop answers
 // with, and the one [ask] gives once that loop is gone. It is not always what
 // the caller sees: [storeError] turns a halted-lost write into
-// ShardOwnershipLost, and a read is [loopRoute]'s, which hands this back only on
-// the route that refuses as halted. The class is in [Cycle.State]; the cause
+// ShardOwnershipLost, and a read is [loopRoute]'s or [stoppedRoute]'s, which
+// hand this back only on the route that refuses as halted. The class is in [Cycle.State]; the cause
 // travels wrapped, so a caller can still reach the
 // [apply.InvariantViolationError].
 var ErrHalted = errors.New("cycle: the shard is halted")
@@ -77,7 +77,7 @@ var ErrHalted = errors.New("cycle: the shard is halted")
 // ([Cycle.settleAppend]), so a second writer holds this cycle's epoch. It halts.
 var ErrTailNotEmpty = errors.New("cycle: the log holds an entry at a seqno this cycle replayed past")
 
-// ErrBudget refuses a policy whose hard_max × shards per node does not fit the
+// ErrBudget refuses a policy whose HardMaxBytes × MaxShards does not fit the
 // node's tail budget. See [Config.CheckBudget].
 var ErrBudget = errors.New("cycle: the per-shard tail bound does not fit the node's budget")
 
@@ -252,7 +252,7 @@ type Deps struct {
 	Logger    log.Logger
 	// Registry is required ([ErrNoRegistry]): replay decodes a payload's task
 	// groups through it and an unknown category id fails the replay. It must be
-	// the server's own registry, since the archival category exists only where
+	// the server's own task-category registry, since the archival category exists only where
 	// archival is configured.
 	Registry tasks.TaskCategoryRegistry
 	// Metrics is where the numbers go; nil is the noop emitter.
@@ -431,8 +431,8 @@ func (c *Cycle) write(ctx context.Context, m mutation.Mutation, rows *baserow.Ro
 }
 
 // drainNow applies the window whatever the triggers say; a no-op on an empty
-// one. The only drain asked for from outside the loop, and it exists for
-// shutdown.
+// one. It is [Cycle.Close]'s drain without the start and the stop, and only
+// tests ask for it.
 func (c *Cycle) drainNow(ctx context.Context) error {
 	return tell(ctx, c, func(s *state) error { return c.drain(ctx, s, drainExplicit) })
 }
@@ -1092,7 +1092,7 @@ var (
 	// waiting for this transaction, which is what makes its clock the right one.
 	drainSync = drainCause{walmetrics.TriggerSync, answersCaller, false}
 
-	// The three triggers, in [Cycle.add] and on the age timer. Their windows
+	// The size and age triggers, in [Cycle.add] and on the age timer. Their windows
 	// hold work whose callers were already told it succeeded, so a condition
 	// failure is nobody's answer and neither is a deadline.
 	drainWatermarkMutations = drainCause{walmetrics.TriggerMutations, noCaller, true}
@@ -1106,8 +1106,9 @@ var (
 	// waiting for it.
 	drainRefusal = drainCause{walmetrics.TriggerRefusal, noCaller, true}
 
-	// drainExplicit is [Cycle.drainNow]: shutdown, or a test. Its caller asked
-	// for this drain and nothing else, and the shutdown budget is what bounds
+	// drainExplicit is [Cycle.Close]'s shutdown drain, or [Cycle.drainNow]'s in
+	// a test. Its caller asked for this drain and nothing else, and the
+	// shutdown budget is what bounds
 	// the apply transactions one at a time, so this one keeps that clock.
 	drainExplicit = drainCause{walmetrics.TriggerExplicit, noCaller, false}
 

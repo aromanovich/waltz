@@ -36,7 +36,7 @@ type kindInfo struct {
 	// they must reach the store. It is what both writers walk — the wrapper that
 	// puts them down through the store, and the fold that hands whatever the
 	// record carried to the drain — so a kind whose row omits one is a mutation
-	// acked over history nodes nobody wrote (ADR 0014). [Mutation.ClearEvents]
+	// acked over history rows nobody wrote (ADR 0014). [Mutation.ClearEvents]
 	// and the codec name the same fields again by hand.
 	events func(Mutation) [][]*p.InternalAppendHistoryNodesRequest
 }

@@ -13,7 +13,7 @@ window contains the acknowledged changes on top of it. A correct read must combi
 * a history-task read **merges** two ordered streams and subtracts acknowledged range deletes;
 * a history-branch read merges the same way, over the event batches the window still holds, with
   nothing to subtract;
-* both run on the shard's cycle goroutine — the same goroutine the drain runs on — so no read can
+* all three run on the shard's cycle goroutine — the same goroutine the drain runs on — so no read can
   land in the gap between a drain emptying the window and its transaction committing.
 
 This chapter derives those rules from the split-state example and then gives the exact routing,
@@ -37,7 +37,7 @@ calls the base store's method of the same name and returns what it said.
 | `GetHistoryTasks` | **routed**, merged | a page short a task in the window is not stale, it is a lost task (below) |
 | `ListConcreteExecutions` | transits | a scan; no caller of it can be harmed by the window, and the layer has no shape for merging a scan |
 | `ReadHistoryBranch` | **routed**, merged | where a record carries its request's event batches they are in the window until a drain lands them — and whether the window holds any is a fact about the tail this shard inherited, not about this node's store, so it is merged whatever that store does with a write's batches |
-| `GetHistoryTreeContainingBranch` | transits | a decision rather than an omission: what a tree read owes a node still in the window depends on where the deployment put its history, and the layer does not choose for it |
+| `GetHistoryTreeContainingBranch` | transits | a decision rather than an omission: what a tree read owes a history row still in the window depends on where the deployment put its history, and the layer does not choose for it |
 | `GetAllHistoryTreeBranches` | transits | a scan, like `ListConcreteExecutions` |
 | `GetReplicationTasksFromDLQ` | transits | the DLQ is not carried by the log |
 | `IsReplicationDLQEmpty` | transits | as above |
@@ -142,7 +142,7 @@ flowchart TD
     E -->|"running, drain outcome unreadable"| R["refuse: ResourceExhausted"]
     E -->|"halted-lost: a task read, or a non-empty tail"| L
     E -->|"halted-invariant: a task read, or a non-empty tail"| H["refuse: the halt's own error"]
-    E -->|"halted, empty tail, mutable-state or branch read"| Z
+    E -->|"either halted state, empty tail, mutable-state or branch read"| Z
     E -->|"running"| F{"DrainOnRead?"}
     F -->|"on"| G["drain the window, trigger tag read"]
     G --> Z
@@ -168,14 +168,15 @@ may be one this layer wrote on an earlier page.
 | the registry holds none for this shard (`noCycleRoute`) | the base store answers | `ShardOwnershipLost` |
 | halted-lost (`loopRoute`) | the base store answers if the tail is empty, else `ShardOwnershipLost` | `ShardOwnershipLost`, whatever the tail holds |
 | halted-invariant (`loopRoute`) | the base store answers if the tail is empty, else the halt's own error | the halt's own error, whatever the tail holds |
-| retired, its goroutine gone (`stoppedRoute`) | the same tail rule | `ShardOwnershipLost`, re-issued on the successor by `Manager.taskPage` |
+| retired, its goroutine gone (`stoppedRoute`) | the same tail rule | `ShardOwnershipLost` — re-issued on the successor by `Manager.taskPage` where one has superseded it |
 
 An empty tail does not soften the task read's half of any of them, and the last row is why it cannot:
 a page the cold store answers carries **that store's own page token**. A shard re-acquired mid
 pagination — a rangeID renewal is one, and it unloads nothing, so the caller's reader keeps
 paginating — answers the next page from a cycle that merges, which cannot read a token this layer did
-not write and so finishes the pagination on the base alone. The window dropping out of it is acked
-task rows, and the range the reader completes on reaching the end deletes them.
+not write and refuses it (§4's page-token rules). Finishing the pagination on the base alone instead
+would drop the window out of it: acked task rows, which the range the reader completes on reaching
+the end deletes.
 
 Each rule is a function of plain values — a state, a tail, which reader is asking — in
 [`../../cycle/decide.go`](../../cycle/decide.go), so its whole domain can be enumerated in a test
@@ -640,8 +641,9 @@ those two apart at a glance.
 
 `wal_merged_task_pages` and `wal_overlaid_reads` are the two whose names and meanings disagree: the
 first counts pages routed, not pages merged, and the second predates the branch read it now also
-counts. Renaming either would break every alert expression written over it, so the distinction lives
-in the metric's description instead.
+counts. Renaming either would break every alert expression written over it, so the distinction is
+written down instead — in the first's description, and for both at their definitions in
+`walmetrics`.
 
 The hit counters do the other job, and that is why both kinds exist. A test suite is just as green
 over a layer that came out empty as over one doing its work, so a run needs a **witness**: an

@@ -23,7 +23,7 @@ the layer was carrying them and then declining to.
 D3's two objections were the right ones and neither has gone away. I10's budget
 is denominated in bytes and event blobs are the bulk of them. And writing the
 events first is what makes the ordering invariant free: a mutable state can
-never point at history nodes nobody wrote, because the nodes are in the store
+never point at history rows nobody wrote, because the rows are in the store
 before the entry that names them is in the log.
 
 What changed is that both have answers now that cost less than the property
@@ -66,7 +66,7 @@ first obligation becomes *one drain is one publication*: the merged requests, th
 task work and the watermark stay one transaction, and `fold.Batch.History` may be
 written outside it by whatever means a store has. What may not move is that a
 history row written outside it is durable **before** that transaction opens.
-Nodes are immutable and keyed by `(tree, branch, node, transaction)`, so a
+History rows are immutable and keyed by `(tree, branch, node, transaction)`, so a
 repeated write is the same row and a drain that failed after them leaves orphans nobody
 references; the other order cannot be recovered from.
 
@@ -79,7 +79,7 @@ with every suite green — is unreachable from the write path rather than refuse
 no write puts history in a batch a store did not say it would write. Replay is
 the exception, and the paragraph on changing stores names it.
 
-**`ReadHistoryBranch` is merged on read, always.** Whether the window holds nodes
+**`ReadHistoryBranch` is merged on read, always.** Whether the window holds history rows
 is a fact about the tail this shard inherited — a log written under one store is
 replayed by a node composed with another — rather than about this node. The merge is
 `fold.Accumulator.HistoryPage`, under the pagination rule the task page already
@@ -109,7 +109,7 @@ declare the marker.
 **One append makes a state transition and its events durable together**, and a
 refused write leaves nothing behind — where the base-store path leaves the events
 written and unreferenced. The foreground cold-store round trip per event batch
-goes away, and the drain writes a window's worth of nodes at once.
+goes away, and the drain writes a window's worth of history rows at once.
 
 **The byte budget counts event blobs wherever the store takes them in the
 record.** I10 bounds a shard's tail in bytes and the bound is unchanged, so such
@@ -131,12 +131,12 @@ anyway.
 **Three history methods still transit past a window that may hold their rows**,
 and this is a named exposure rather than an oversight — the decision is that this
 library does not choose for a deployment here, because what a deletion aimed at
-an undrained node should do depends on where that deployment put its history.
+an undrained history row should do depends on where that deployment put its history.
 
 * `TrimHistoryBranch` reads the branch through the new merge, so it *can* see a
-  window node, and the `DeleteHistoryNodes` it then issues goes to the cold
+  window's history row, and the `DeleteHistoryNodes` it then issues goes to the cold
   store, where that row is not yet. The delete is a no-op and the drain writes
-  the node afterwards. What survives is a node off the transaction chain, which
+  the row afterwards. What survives is a row off the transaction chain, which
   the reader's own chain walk skips — a leak rather than a corruption, and one
   the next trim of that branch removes.
 * `DeleteHistoryBranch` resolves its ranges through `GetHistoryTreeContainingBranch`,

@@ -52,7 +52,7 @@ type ExecutionStore struct {
 	tasksCompleted atomic.Int64
 	// overlaid counts the mutable-state reads through the layer, taskReads the
 	// task pages routed at the merge — routed, not merged: a page the layer
-	// answers out of the cold store alone is in it.
+	// refuses, or one the window contributed nothing to, is in it.
 	overlaid  atomic.Int64
 	taskReads atomic.Int64
 	// historyReads counts the branch pages routed through the merge — routed,
@@ -184,7 +184,7 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 // appendEvents writes the mutation's new history events through the base store,
 // before the mutation that refers to them is acked, and strips them off the
 // mutation once they are down. It is the writer for records that do not carry
-// the batches: skipping them would ack a mutable state pointing at history nodes
+// the batches: skipping them would ack a mutable state pointing at history rows
 // nobody wrote — which no functional suite sees, the entry being durable and
 // correct. Where the record carries them the drain is the writer instead, inside
 // the transaction that writes the mutable state naming them (ADR 0014).
@@ -424,7 +424,7 @@ func (s *ExecutionStore) IsReplicationDLQEmpty(
 //
 // One of the seven is answered by the layer. The other six transit in both
 // modes, which for the two deletions and the tree read is a decision rather than
-// an omission: what a delete aimed at a node still in the window should do
+// an omission: what a delete aimed at a history row still in the window should do
 // depends on where that deployment put its history, and this library does not
 // choose for it. ADR 0014 names the exposure.
 

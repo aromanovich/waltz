@@ -117,7 +117,7 @@ func TestAWindowThatFoldedAnythingSettlesWhatItAcked(t *testing.T) {
 }
 
 // TestAWindowThatFoldedNothingSettlesNothing is the other direction, and the
-// dangerous one: drainNow at shutdown, a read under DrainOnRead and replay's
+// dangerous one: the shutdown drain, a read under DrainOnRead and replay's
 // terminal drain all reach a drain with nothing in the window, and a position
 // taken from such a batch is zero — which would report every entry ever acked
 // as unsettled and turn I10 into a shard that refuses every write.

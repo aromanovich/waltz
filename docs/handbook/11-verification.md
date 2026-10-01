@@ -663,7 +663,7 @@ rather than assuming it inherited them.
 
 * **an append-immediacy guard** for [I9](02-concepts-and-invariants.md#the-invariants) — drive
   ordinary appends through the front door and read the storage engine's own transaction counters out
-  of band, asserting that the appends were immediate, that nothing else was touched, and that no
+  of band, asserting that the appends were immediate transactions, that nothing else was touched, and that no
   secondary structure exists on the log's tables. It exists because a "harmless" change — an index, a
   changefeed, one read of one other table — quietly makes every append pay for a coordinator tick,
   and *nothing above the layer would notice*: the append still returns success, just later.
@@ -773,7 +773,7 @@ drive; they assert nothing. **Judgements** say yes or no.
 | `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, end up the same whether the stream crossed one owner or six, lose no row to an owner that kept draining after it had been fenced, and are the rows one mutation per transaction would have left |
 | `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
 | `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
-| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the 23 tests over the one method those suites do not know about |
+| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus its own tests over the three methods those suites do not know about — `Apply` (23 of them), `Watermark` and the versioned current-row read |
 | `wal/waltest` | an implementation of `wal.Log` satisfies the five guarantees — the one judgement here written to be run against somebody else's code |
 
 Who judges what. Circles are judgements, boxes are what they are stated over.

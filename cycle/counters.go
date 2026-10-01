@@ -25,7 +25,7 @@ type Counters struct {
 	// that finished: an abandoned attempt takes what it counted with it.
 	Replayed int
 	Dropped  int
-	// Reads counts overlay reads answered, ReadsHeld the subset the window had
+	// Reads counts overlay reads routed, ReadsHeld the subset the window had
 	// something for. A witness rests on the second: reads that never crossed a
 	// held workflow is what an empty layer looks like.
 	Reads     int

@@ -48,7 +48,7 @@ exclusion.
 
 Before a successor examines the inherited tail, it must make further appends by the predecessor
 impossible. Otherwise replay and live writes interleave under two owners, and no watermark can say
-which history is authoritative. That exclusion is **fencing**: a check made at the point of the
+which owner's entries are authoritative. That exclusion is **fencing**: a check made at the point of the
 write, not a term the owner keeps in its own memory. The distinction matters because the failed owner
 is frequently not gone at all — a collection pause, a swap or a partition returns a process that
 learned nothing about its own death. [Chapter
@@ -261,7 +261,7 @@ readers are refused until one readable watermark ends the stall. A watermark exa
 seqno means it committed after all. A watermark below it — or none recorded at all — means it did
 not, and the shard halts on the invariant side. One *past* it was moved by an owner that is not this
 one, and the shard halts on the lost side instead. What the refusals look like, and why the age tick is
-the only thing that can heal a stall, is [chapter
+the only thing that can heal a stall on a running node, is [chapter
 05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read). For this chapter the point is
 the placement: a stall is a property of the *tail*, not a fourth `State`, so a shard that recovers
 from one has nothing to un-halt.
@@ -333,7 +333,7 @@ Seven rules the loop applies, entry by entry:
   registration for. The entry is already acked, so there is nothing to do but stop. An entry that
   decodes but names a different shard halts the same way. This is why `cycle.Deps.Registry` is
   required and `NewManager` refuses a nil one with `cycle.ErrNoRegistry`: a node that decoded with no
-  registry would recover nothing, silently, until its first failover.
+  task-category registry would recover nothing, silently, until its first failover.
 * **an entry the two rules above stop on is charged to the tail first** (`Cycle.strand`). All three
   of their stops — the seqno gap, the decode failure and the foreign shard — halt before `Cycle.accept`, so
   nothing else would put the entry there, and a tail left empty is read exactly one way:
@@ -409,7 +409,7 @@ cycle's to shorten.
 | | `halted-lost` | `halted-invariant` |
 |---|---|---|
 | What it means | the shard was fenced away: another node owns it | a divergence this process owns |
-| Reached by | `wal.ErrFenced` on an append, `apply.ClassShardLost` at a drain, a replayed entry above this cycle's epoch, a watermark found *past* an unreadable drain's own seqno, or `Retire` on a running cycle — the one way in that emits nothing, since a rangeID renewal, `Layer.RetireShard` and a graceful shutdown all take it | a condition failure at a drain, `cycle.ErrTailNotEmpty`, a decode, seqno or foreign-shard violation at replay, an unreadable drain proven not to have committed, an append whose outcome could not be read back, or any apply class nobody enumerated |
+| Reached by | `wal.ErrFenced` on an append, `apply.ClassShardLost` at a drain, a replayed entry above this cycle's epoch, a watermark found *past* an unreadable drain's own seqno, or `Retire` on a running cycle — the one way in that emits nothing, since a rangeID renewal, `Layer.RetireShard` and a graceful shutdown all take it | a condition failure at a drain, `cycle.ErrTailNotEmpty`, a decode, seqno or foreign-shard violation at replay, an unreadable drain proven not to have committed, an append whose outcome could not be read back, an acked entry the window will not fold, or any apply class nobody enumerated |
 | Who continues the work | the next owner: it fences, replays the tail and applies it | the halted cycle never resumes. The layer asks nobody to take over, although Temporal may independently acquire a higher rangeID, install a successor and make it replay the same tail |
 | At the store boundary | translated to `ShardOwnershipLost`, which is what the shard's write path matches to re-acquire | returned unchanged rather than translated to ownership-lost, so this error does not request a failover; a separate background acquisition at a higher rangeID still supersedes the halted cycle |
 | Operator response | none — this is fencing working | page: [runbook (b)](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes) |
@@ -439,7 +439,7 @@ What a halted shard answers a *reader* is [chapter
 07](07-read-path.md#2-routing-a-read-and-drainonread). Briefly: an empty tail passes through to the
 cold store in either halt, and a non-empty one refuses. The refusal is `ShardOwnershipLost` under
 `halted-lost`, and the halt's own error, cause included, under `halted-invariant`. That is the rule
-for a **mutable-state** read. A task read never reaches it: it is refused at either halt whatever
+for a **mutable-state** read, and for a branch page, which routes as one. A task read never reaches it: it is refused at either halt whatever
 the tail holds, because its one caller would complete a range it was handed short — and because a
 page the cold store answers carries that store's own token, which the cycle that replaces this one
 cannot read.
@@ -557,8 +557,10 @@ latency budget rather than hygiene.
 * **Storage pressure overrides the cadence.** While the log reports `wal.PressureDrain` or above
   for the shard, every committed drain forces a trim to its watermark (`Trimmer.Force`), and so
   does an acquire once its replay is done — the previous owner's applied entries are owed back
-  before this cycle appends. A forced trim that finds one in flight queues a single follow-up
-  rather than being skipped.
+  before this cycle appends; on a started cycle with an empty window, the age tick forces one
+  itself, since no commit is coming to. A forced trim that finds one in flight queues a single
+  follow-up, coalesced to the highest watermark asked for, rather than being skipped; one a trim
+  has already reached, or is reaching, schedules nothing.
 * **A failed trim halts nothing.** It is logged, retried at the next cadence, and counted — and
   `wal_trims{outcome="started"|"failed"}` is the only series that reports it. Two counters
   rather than one, because a run whose every trim failed would otherwise read exactly like one whose

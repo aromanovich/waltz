@@ -380,8 +380,9 @@ construction, so the dedup is a safety net rather than the mechanism. What the p
 rests on is where it may cut: at the end of a base page or below its first row, never inside one.
 The cold store's pagination token is the underlying plugin's own bytes, which this layer may neither
 parse nor synthesise, so a half-emitted base page would lose rows on one side and duplicate them on
-the other. *Not to be confused with:* the overlay, which renders one run's state; this concatenates
-two sources and paginates.
+the other. A history-branch page is merged the same way, under the same cut rule, with nothing to
+subtract (`fold.Accumulator.HistoryPage`). *Not to be confused with:* the overlay, which renders one
+run's state; this concatenates two sources and paginates.
 
 **Cold store.** Whatever a deployment's persistence implementation writes its rows into: the
 permanent target of apply, reached only through `cold.Applier` and `cold.Watermarker`. No package of
@@ -430,7 +431,7 @@ than forking it, and it may import no persistence implementation at all, so whic
 underneath is the binary's business. *Not to be confused with:* adapter, proxy — both suggest
 translation, and this one decides routing.
 
-**Node, or composition.** What a running server composes the layer out of: the `wal` section of the
+**Composition.** What a running server composes the layer out of: the `wal` section of the
 custom datastore's options, the policy settings the server's dynamic config carries, the backends
 they run over, and the task-category registry a tail is decoded with. A composition, not a cluster
 member — the server is the node, and this is what it builds. `waltz.Compose` is the call, and
@@ -478,7 +479,7 @@ graph TD
 
 That is the spine rather than the whole vocabulary. What is deliberately not on it:
 
-* **wrapper** and **node** — the seam that puts a mutation on the line at all;
+* **wrapper** and **composition** — the seam that puts a mutation on the line at all;
 * **epoch**, **condition authority**, **base row**, **backpressure** and the **cut point** — rules
   every step is subject to rather than steps of their own;
 * the **task record** and its **deletion range** — carried by the same log and folded into the same
@@ -668,7 +669,7 @@ known.
   barrier may drop one. On the tombstone side, a deleted run's tasks survive as orphaned tasks on
   the emitted delete. On the snapshot side, a create, conflict-resolve or set resets everything else
   about the run and leaves its accumulated tasks alone, concatenating them through the barrier:
-  tasks are queue records rather than workflow state, and rewriting a workflow's state wholesale
+  tasks are queue records rather than mutable state, and rewriting a run's mutable state wholesale
   does not cancel work already promised. `fold.mergeTasks` is called from the merge, the
   snapshot-delta and the snapshot-replacing paths alike, and the last of those saves the prior task
   map across the replacement.

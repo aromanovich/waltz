@@ -293,7 +293,7 @@ func (s *seams) handOver(t *testing.T) {
 	epoch := s.epoch + 1
 	require.NoError(t, s.mgr.ShardAcquired(s.ctx, seamsShard, epoch))
 	require.EqualValues(t, epoch, s.bumpRange(t),
-		"the range id did not land on the epoch the log was just fenced at")
+		"the rangeID did not land on the epoch the log was just fenced at")
 	s.epoch = epoch
 }
 

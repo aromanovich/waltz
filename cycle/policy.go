@@ -20,8 +20,9 @@ type Policy func() Config
 //
 // The rest of [Config] is not here. Sync and DrainOnRead are the mode, and a
 // mode that changed mid-flight would change what a caller already inside a write
-// was promised. The four bounds are [Config.CheckBudget]'s arithmetic, whose
-// purpose is to refuse a node before it boots.
+// was promised. The four bounds are I10's per-shard bound and
+// [Config.CheckBudget]'s arithmetic, whose purpose is to refuse a node before it
+// boots.
 //
 // A nil getter means the static value stands, not the zero: a window of no
 // mutations drains every write and a trim cadence of zero trims on every drain.

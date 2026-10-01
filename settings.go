@@ -42,7 +42,7 @@ as the default rather than obeyed: it is the interval that timer is re-armed at.
 
 	TrimEvery = dynamicconfig.NewGlobalIntSetting(
 		"wal.trimEvery", measured.TrimEvery,
-		`TrimEvery is the trim cadence in drains: the log below the applied watermark is
+		`TrimEvery is the trim cadence in drains: the log at or below the applied watermark is
 deleted every this many drains. A DeleteRange per drain is a transaction per drain for no
 gain; raising it leaves more of the log behind, which is what a post-mortem reads.`)
 

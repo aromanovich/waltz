@@ -265,7 +265,7 @@ func tripATail(t *testing.T) error {
 // noDrain is the cycle's two collaborators in the smallest shape that gets a
 // tail full: no drain ever runs, and the shard has never had a watermark.
 func noDrain() *coldtest.Cold {
-	return coldtest.Refusing(errors.New("no drain should have run: the window watermark is out of reach"))
+	return coldtest.Refusing(errors.New("no drain should have run: the window's size trigger is out of reach"))
 }
 
 // aMutation is a brand-new workflow, built through mutbuild because the encoder

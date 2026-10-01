@@ -64,7 +64,7 @@ type Mutation struct {
 	Delete          *p.DeleteWorkflowExecutionRequest
 	DeleteCurrent   *p.DeleteCurrentWorkflowExecutionRequest
 	// AddTasks and RangeCompleteTasks travel through the log so that both take
-	// effect in the order issued. An immediate range delete beside a deferred
+	// effect in the order issued. A range delete applied at once beside a deferred
 	// add would run before the rows it should have covered existed, losing a
 	// scheduled category's timer outright.
 	AddTasks           *p.InternalAddHistoryTasksRequest
@@ -208,11 +208,11 @@ func (m Mutation) TaskSlots() []*map[tasks.Category][]p.InternalHistoryTask {
 // none.
 //
 // Which of the two writers puts them down is the cold store's, and both keep the
-// same rule: a mutation acked over history nodes nobody wrote is a mutable state
+// same rule: a mutation acked over history rows nobody wrote is a mutable state
 // the cold store can never be brought to, and no functional suite sees it. The
 // writer that puts them down through the store strips them off once they are
 // down, so a mutation still holding batches is one whose append is what makes
-// them durable — and a cold store declaring cold.HistoryApplier writes the nodes
+// them durable — and a cold store declaring cold.HistoryApplier writes the rows
 // in the drain's transaction, beside the state that names them.
 func (m Mutation) EventSlots() [][]*p.InternalAppendHistoryNodesRequest {
 	kind := m.Kind()

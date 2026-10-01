@@ -40,8 +40,8 @@ func snapTasks(list ...p.InternalHistoryTask) func(*p.InternalWorkflowSnapshot) 
 }
 
 // taskMap sorts tasks into two categories by key shape, the way the store does:
-// a fire time equal to tasks.DefaultFireTime is immediate, anything else is
-// scheduled.
+// a fire time equal to tasks.DefaultFireTime is an immediate category's key,
+// anything else a scheduled one's.
 func taskMap(list ...p.InternalHistoryTask) map[tasks.Category][]p.InternalHistoryTask {
 	out := make(map[tasks.Category][]p.InternalHistoryTask)
 	for _, t := range list {

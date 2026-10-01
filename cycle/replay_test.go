@@ -485,7 +485,7 @@ func TestReplayCutsItsTransactionsWhereTheWatermarksSay(t *testing.T) {
 	require.EqualValues(t, []wal.Seqno{2, 4, 5}, second.ap.seqnos)
 }
 
-// TestACycleWithNoRegistryRefuses: a nil registry may not be read as "do not
+// TestACycleWithNoRegistryRefuses: a nil task-category registry may not be read as "do not
 // recover". [NewManager] refuses to build such a node, and a cycle constructed
 // directly refuses every request.
 func TestACycleWithNoRegistryRefuses(t *testing.T) {
@@ -630,7 +630,7 @@ func mustEncode(t *testing.T, m mutation.Mutation) []byte {
 // mutations being gone.
 //
 // A drain per entry, because that is what isolates this check from the
-// confirmation at the end of the replay. On a tail that never reaches a watermark
+// confirmation at the end of the replay. On a tail that never trips a size trigger
 // mid-loop, the end confirmation catches the same hole one seqno later, by finding
 // an entry where the miscounted replay thinks the log ends — so a test with a
 // short tail passes with this check deleted and judges nothing.

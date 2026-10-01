@@ -91,7 +91,9 @@ caller's batch size, with the window's undrained deletion ranges subtracted from
 the cold store's half of it. The dedup is a safety net rather than the
 mechanism: the two sources are disjoint by construction, and what makes the page
 honest is where it may cut — at the end of a base page or below its first row,
-never inside one, since the base's token is the plugin's own bytes.
+never inside one, since the base's token is the plugin's own bytes. A
+history-branch page is merged the same way, under the same cut rule, with
+nothing to subtract (`fold.Accumulator.HistoryPage`).
 _Avoid_: overlay for tasks (the overlay renders one run's state; this
 concatenates two sources and paginates)
 
@@ -244,13 +246,16 @@ configurations of one cycle, not two write paths.
 _Avoid_: synchronous/asynchronous (a windowed mode's ack is not asynchronous —
 it is given at the append)
 
-**Node (композиция)**:
+**Composition (композиция)**:
 What a running server composes the layer out of: the `wal` section of the
 custom datastore's options — the mode — plus the nine policy
 settings the server's dynamic config carries, the backends they run over and
 the task-category registry a tail is decoded with. A composition, not a cluster member —
 the server is the node, this is what it builds. It is the root package,
 `waltz`: `waltz.Compose` is the call, and `waltz.Layer` is what it hands back.
+_Avoid_: node where the difference matters (the node is the history process
+that builds this; "the node's budget" and "the node's config" are this
+composition's)
 
 **Checker (проверяльщик)**:
 The record a driver writes of the calls it made and what it was told: two

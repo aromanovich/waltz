@@ -71,8 +71,8 @@ func TestARangeCompletionWithNobodyWatchingIsATransit(t *testing.T) {
 	require.Equal(t, Counts{}, store.Counts(), "passthrough counts nothing")
 }
 
-// The other half of the task path, counted apart from the six mutable-state
-// writes.
+// The other half of the task path, counted apart from the four mutable-state
+// writes and the two tombstones.
 func TestAddHistoryTasksGoesIntoTheLogToo(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	base := versioned(ctrl)

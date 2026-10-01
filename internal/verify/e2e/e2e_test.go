@@ -51,7 +51,7 @@ const budget = 3 * time.Minute
 // against a slow machine rather than against the policy.
 const drainWait = 60 * time.Second
 
-// taskQueue is the one queue the worker polls.
+// taskQueue is the one task queue the worker polls.
 const taskQueue = "waltz-e2e"
 
 // upper is the activity, and greet the workflow that calls it. Between them

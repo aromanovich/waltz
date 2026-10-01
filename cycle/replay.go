@@ -56,13 +56,13 @@ import (
 // replay reads the tail the previous owner left and applies it. The floor has
 // already been read: s.next is the watermark's successor.
 //
-// A failure leaves the cycle unstarted and the window empty, so the next
-// request retries from the watermark. It does not halt — a log read that failed
-// is not an answer.
+// A failed log read leaves the cycle unstarted and the window empty, so the
+// next request retries from the watermark. It does not halt — a log read that
+// failed is not an answer.
 func (c *Cycle) replay(ctx context.Context, s *state) error {
 	if c.deps.Registry == nil {
 		// A payload's task groups name their category by id, so a cycle with no
-		// registry could not decode a tail even if it found one. See
+		// task-category registry could not decode a tail even if it found one. See
 		// [Deps.Registry].
 		return fmt.Errorf("%w (shard %d)", ErrNoRegistry, c.shard)
 	}

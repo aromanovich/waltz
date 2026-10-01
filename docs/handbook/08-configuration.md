@@ -4,8 +4,8 @@ The layer buys fewer cold-store transactions by holding acknowledged work outsid
 Every tuning decision here changes one side of that exchange. A larger window collapses more
 mutations into one transaction, but leaves more work to replay after a crash and more bytes in
 memory. Trimming more often shortens the retained log, but spends a transaction each time. A larger
-per-shard tail bound lets a shard ride out a longer disturbance, but only if the node has memory for
-every shard it may own at once.
+per-shard tail bound lets a shard ride out a longer disturbance, but only if the node's tail budget
+covers every shard it may own at once.
 
 Configuration is easier to reason about as four questions:
 
@@ -184,7 +184,7 @@ services restarted**.
 | `wal.windowMutations` | int | `256` | **live** — at the decision | the drain trigger in mutations: the window is applied as one transaction when it holds this many | it sits at the measured collapse knee. Lowering gives collapse away; raising holds more unapplied work per shard |
 | `wal.windowBytes` | int | `262144` | **live** | the same trigger in encoded bytes, whichever trips first | as above, in the other unit |
 | `wal.windowAge` | duration | `5s` | **live** | how long an idle shard's acked-but-unapplied work waits before it is drained — and therefore what the next owner would replay | a recovery-budget choice, not a measured one. A change takes effect within one window, since the timer is re-armed at every tick. Raising it lengthens replay after a hard restart |
-| `wal.trimEvery` | int | `16` | **live** | the trim cadence in drains: the log below the applied watermark is deleted after this many drains | at 1 it is a `DeleteRange` per drain — a transaction per drain for no gain. Raising it leaves more of the log behind, which is what a post-mortem reads |
+| `wal.trimEvery` | int | `16` | **live** | the trim cadence in drains: the log at or below the applied watermark is deleted after this many drains | at 1 it is a `DeleteRange` per drain — a transaction per drain for no gain. Raising it leaves more of the log behind, which is what a post-mortem reads |
 | `wal.trimAfter` | duration | `1m0s` | **live** | the same cadence in time, whichever trips first | raising `trimEvery` alone does not keep a log: this one fires anyway |
 | `wal.hardMaxEntries` | int | `8192` | **START-UP** | invariant [I10](02-concepts-and-invariants.md#the-invariants)'s bound on one shard's tail in entries — what has been acked and not yet applied. A shard at the bound refuses its writers with `ResourceExhausted` rather than parking them behind the apply | it is one half of a bound whose other half is `hardMaxBytes`; neither unit works alone, and a node honouring one from a different edit than the other is a bound nobody wrote |
 | `wal.hardMaxBytes` | int | `8388608` | **START-UP** | the same bound in encoded bytes. One workflow near the server's own 8 MB mutable-state limit turns an entries-only bound into a byte budget with no ceiling | arithmetic, not taste: the node's tail budget divided by the shards it may own. It is a factor of the product asserted before the node boots |
@@ -302,7 +302,8 @@ to start.
 
 `waltz.Compose` asserts it, through `cycle.NewManager`, and neither opens anything nor reaches
 anything: the check is arithmetic over values already in memory from the two config surfaces, so a
-node whose numbers do not fit is refused without a round trip. The same assertion is available to
+node whose numbers do not fit is refused without a round trip of its own — though by then the
+caller has already opened the log and the cold store it hands over. The same assertion is available to
 the composing `main` as `policy().CheckBudget()`. Calling it there, before the log and the cold
 store are opened, refuses the node before anything connects to anything — that ordering is the
 caller's to choose, but the assertion itself cannot be skipped.

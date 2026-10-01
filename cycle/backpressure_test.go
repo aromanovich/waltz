@@ -387,7 +387,7 @@ func TestBackpressureNeverCostsTheNodeItsShard(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestTheNodeBudgetIsAStartupAssertion: the node's tail, in encoded bytes, goes
-// as `hard_max × shards per node`, so raising the per-shard bound has to stop
+// as `HardMaxBytes × MaxShards`, so raising the per-shard bound has to stop
 // the node rather than quietly overcommit it. The registry is where that
 // happens, because a composed binary has no cycle without one.
 func TestTheNodeBudgetIsAStartupAssertion(t *testing.T) {

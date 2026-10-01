@@ -69,8 +69,9 @@ What to know before changing it:
   halted-invariant an empty tail makes the page *correct* and the token it
   carries is still the base store's, so a shard re-acquired mid pagination — a
   rangeID renewal unloads nothing — meets that token at a cycle that merges,
-  cannot read it, and finishes the pagination on the base alone; the window that
-  drops out is acked task rows, which the range the reader completes deletes. A
+  cannot read it, and refuses it (`fold.ErrForeignPageToken`); finishing the
+  pagination on the base alone instead would drop the window out of it, which
+  is acked task rows the range the reader completes deletes. A
   retired cycle has no loop left to ask, so it reads the tail off the mirrored
   atomic `write` already consults — **for the two mutable-state reads and the
   branch page only**: a task page is answered by the shard's *current* cycle or
@@ -106,7 +107,8 @@ What to know before changing it:
   `drainonread_test.go` is deliberately its own file, so it can be deleted with
   the field.
   The reasoning, including why the counters are taken *before* the drain and why
-  a halted cycle must not reach it, is on the field and beside `drainForRead`;
+  a halted cycle must not reach it, is on `Cycle.prelude` and beside
+  `drainForRead`;
 * **nothing may hold the registry's mutex across a cycle's loop**, and that is a lock
   inversion rather than a long hold: the read path resolves through
   `Manager.Shard`, which wants that mutex. `ShardAcquired` once broke it.
@@ -188,7 +190,7 @@ What to know before changing it:
   and it deletes the only claim that tells sync mode from a run that committed
   everything it acked;
 * the states are not defensive branches, they are decisions: **halted-lost**
-  is fencing working (drop the tail, do not trim), **halted-invariant** is a
+  is fencing working (drop the window, keep the tail, do not trim), **halted-invariant** is a
   divergence this process owns — no retry, and it must never be converted to
   `ShardOwnershipLost`, which would hand the bug to the next owner as an
   ordinary failover. `storeError` is where that rule is enforced at the boundary
@@ -220,7 +222,7 @@ What to know before changing it:
   *together* by whatever delegates, so as fields "a run reader and no current
   reader" — or its mirror — was one call site away and detectable only on a
   request that happened to delegate: the same argument `wrapper.ShardLayer`
-  makes about a layer's three faces. Of the four states a pair of nilable fields
+  makes about a layer's four faces. Of the four states a pair of nilable fields
   had, **three stopped compiling**; the fourth is now a nil `*baserow.Rows`,
   which is a presence problem and Go has no answer for it. So `ErrNoBaseRow`
   stays — beside the caller that brought no rows and **one state to check where
@@ -277,7 +279,7 @@ What to know before changing it:
   availability rather than data — but the trigger is an ordinary timeout, which
   is what makes it worth a field rather than a call-site habit. The other four
   keep the caller's context and each carries its reason on the row: sync mode's
-  outcome *is* the answer, `drainNow` is what the shutdown budget bounds one
+  outcome *is* the answer, `Cycle.Close`'s drain is what the shutdown budget bounds one
   transaction at a time, a `DrainOnRead` reader is answered out of the cold store
   after it, and replay has no bound of its own, so a caller's clock is the only
   thing that can interrupt it;
@@ -337,7 +339,7 @@ What to know before changing it:
   or `waltz.DefaultTaskCategories` for a cluster with no archival, which is the
   same call over an empty config — because the archival
   category exists only where archival is configured, and an unknown category id
-  is fatal to a replay by design. A default registry here would refuse to replay
+  is fatal to a replay by design. A default task-category registry here would refuse to replay
   exactly the entries carrying archival tasks;
 * the cycle starts at the watermark's successor and replays everything above it,
   so by the time it appends, its seqno is past the whole tail. `ErrAlreadyWritten`
@@ -398,7 +400,8 @@ What to know before changing it:
   acking and applying, and `TestATrimNeverBlocksADrain` is what says so. The
   cadence, the one trim in flight and the two counters are the module's; the
   cycle hands it a watermark and the two numbers read at the decision
-  (`Config.cadence`'s `TrimEvery` and `TrimAfter`) and asks nothing back but
+  (`Config.cadence`'s `TrimEvery` and `TrimAfter`) — or, under storage
+  pressure, the watermark alone through `Trimmer.Force` — and asks nothing back but
   `Counters` at `stats` and `Wait` at `Retire`. What that bought beyond locality
   is the ownership rule below: the `go` statement is in a package that cannot
   see a `*state`, so it is structural rather than prose, and the cadence
@@ -628,7 +631,7 @@ What to know before changing it:
   stays green — and the four sites that do are all off it (`Cycle.stoppedRead`,
   `Cycle.residue`, `Cycle.Stats` on a stopped cycle, and this fast path);
 * the node's budget is a **startup assertion**, which is why `NewManager`
-  returns an error: `hard_max × MaxShards` must fit `TailBudgetBytes`, and
+  returns an error: `HardMaxBytes × MaxShards` must fit `TailBudgetBytes`, and
   `Defaults()` fits exactly (2 GB over 256 shards is the 8 MB). Its three
   numbers are dynamic-config settings read **once**, when the policy is built,
   and that is what keeps this assertion meaning something — see `waltz.settings`.

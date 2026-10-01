@@ -87,7 +87,7 @@ thing to keep in mind below. What to know before changing the fold itself:
 * **snapshot-bearing requests reset the accumulator (I8), and that is the same
   rule rather than a special case.** A Create followed by ten Updates folds into
   a Create, which needs no assertion rewriting because a Create asserts absence.
-  Tasks are the one exception: they are queue entries and not workflow state, so
+  Tasks are the one exception: they are queue entries and not mutable state, so
   they concatenate across the barrier;
 
 * **upsert-vs-delete is resolved per key, inside the accumulator.** Left

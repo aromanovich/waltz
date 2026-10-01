@@ -23,7 +23,7 @@
 //     mutable-state transaction may write those rows first, by whatever means it
 //     likes. What is pinned is the order and not the mechanism — every history
 //     row must be durable no later than the mutable state that names it: inside
-//     that transaction, or before it starts. History nodes are immutable and
+//     that transaction, or before it starts. History rows are immutable and
 //     keyed by (tree, branch, node, transaction), so a repeated write is the same
 //     row and a drain that failed after writing them first leaves orphans nobody
 //     references. The other order is the one that cannot be recovered
@@ -108,8 +108,8 @@ type Applier interface {
 	// workflow, the history-task work, the range completions — and
 	// batch.Watermark(), in one transaction, under an epoch it compare-and-sets
 	// first, with batch.History() durable no later than that transaction
-	// commits — inside it, or before it opens. The four obligations in this package's doc say why each of those is not
-	// negotiable.
+	// commits — inside it, or before it opens. The four obligations in this
+	// package's doc say why each of those is not negotiable.
 	//
 	// The error is the whole of what the cycle learns, and it is read through
 	// apply.Classify rather than compared: return nil only if the transaction
@@ -139,7 +139,7 @@ type Applier interface {
 // store below before each append instead, and the batches its writes fold carry
 // none. Replay does not ask. A tail whose records were written over a store that
 // declares it carries event batches whatever the successor's applier declares,
-// and nothing refuses them — the Open entry in DURABILITY.md. So every applier
+// and nothing refuses them — an Open entry in DURABILITY.md. So every applier
 // handed [fold.Batch.History] owes it under the first obligation in this
 // package's doc, declared or not: one that ignores the field commits a mutable
 // state over events nobody wrote, acked and lost with every suite green.
