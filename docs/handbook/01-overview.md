@@ -97,7 +97,8 @@ puts the folded batch, the epoch check and the new `appliedSeqno` into a single 
 ## One write, and the interval it opens
 
 1. The history service calls `UpdateWorkflowExecution` on `wrapper.ExecutionStore`.
-2. The wrapper encodes the call as a `mutation.Mutation` and hands it to that shard's cycle.
+2. The wrapper wraps the call in a `mutation.Mutation` and hands it to that shard's cycle, which
+   encodes it.
 3. The cycle checks its backpressure — a drain whose outcome it cannot yet say, a log that has asked
    for no new appends, and the tail bound — and the caller's condition before writing anything.
 4. It appends the record at the next seqno under the shard's current epoch. The log now contains a

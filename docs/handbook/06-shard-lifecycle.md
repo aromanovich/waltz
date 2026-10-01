@@ -245,9 +245,10 @@ stateDiagram-v2
 How to read this. `Created` is not a state value: it is a running cycle that has not yet read its
 seqno floor and replayed the tail above it (`state.started` is false). The self-loop on it is the
 only recoverable failure on the diagram — a start whose watermark read or log read failed, or whose
-replay drain could not learn its outcome, leaves the cycle unstarted with an empty window, so the next request starts again from the watermark. `Stopped` is likewise not a `State` value: a stopped
-cycle keeps reporting the state its goroutine stopped in, and `Retire` on a *running* cycle stamps
-it `halted-lost` on the way out, because being superseded is exactly what that state means.
+replay drain could not learn its outcome, leaves the cycle unstarted with an empty window, so the next request starts again from the
+watermark. `Stopped` is likewise not a `State` value: a stopped cycle keeps reporting the state its
+goroutine stopped in, and `Retire` on a *running* cycle stamps it `halted-lost` on the way out,
+because being superseded is exactly what that state means.
 
 ### The state that is not a state: a stalled tail
 
@@ -419,7 +420,7 @@ cycle's to shorten.
 | | `halted-lost` | `halted-invariant` |
 |---|---|---|
 | What it means | the shard was fenced away: another node owns it | a divergence this process owns |
-| Reached by | `wal.ErrFenced` on an append, `apply.ClassShardLost` at a drain, a replayed entry above this cycle's epoch, a watermark found *past* an unreadable drain's own seqno, or `Retire` on a running cycle — the one way in that emits nothing, since a rangeID renewal, `Layer.RetireShard` and a graceful shutdown all take it | a condition failure at a drain, `cycle.ErrTailNotEmpty`, a decode, seqno or foreign-shard violation at replay, an unreadable drain proven not to have committed, an append whose outcome could not be read back, an acked entry the window will not fold, a drain apply refused (`apply.ClassRefused`), or any apply class nobody enumerated |
+| Reached by | `wal.ErrFenced` on an append, `apply.ClassShardLost` at a drain, a replayed entry above this cycle's epoch, a watermark found *past* an unreadable drain's own seqno, or `Retire` on a running cycle — the one way in that emits nothing, since a rangeID renewal, `Layer.RetireShard` and a graceful shutdown all take it | a condition failure at a drain, `cycle.ErrTailNotEmpty`, a decode, seqno or foreign-shard violation at replay, a replayed tail read that ended short, an unreadable drain proven not to have committed, an append whose outcome could not be read back, an acked entry the window will not fold, a drain apply refused (`apply.ClassRefused`), or any apply class nobody enumerated |
 | Who continues the work | the next owner: it fences, replays the tail and applies it | the halted cycle never resumes. The layer asks nobody to take over, although Temporal may independently acquire a higher rangeID, install a successor and make it replay the same tail |
 | At the store boundary | translated to `ShardOwnershipLost`, which is what the shard's write path matches to re-acquire | returned unchanged rather than translated to ownership-lost, so this error does not request a failover; a separate background acquisition at a higher rangeID still supersedes the halted cycle |
 | Operator response | none — this is fencing working | page: [runbook (b)](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes) |
@@ -566,8 +567,8 @@ latency budget rather than hygiene.
   `cycle.Config.TrimEvery` drains since the last trim (16 by default) and `cycle.Config.TrimAfter`
   elapsed time (60 s by default). Both are read at the decision, so they may move under a shard this
   node is already holding. The decision is taken only when a drain commits, so the time half is no
-  timer: an idle shard does not trim until its next drain. There is a cadence at all because a `DeleteRange` per drain would be a
-  transaction per drain for no gain. [Chapter 08](08-configuration.md) has the configuration keys.
+  timer: an idle shard does not trim until its next drain. There is a cadence at all because a
+  `DeleteRange` per drain would be a transaction per drain for no gain. [Chapter 08](08-configuration.md) has the configuration keys.
 * **It runs beside the loop, not in it.** `cycle/trim` is its own package for exactly that reason: a
   stuck log may not stop a shard from acking and applying. One trim runs at a time; a cadence that
   comes due while a trim is in flight is **skipped rather than queued**, since the next one takes a

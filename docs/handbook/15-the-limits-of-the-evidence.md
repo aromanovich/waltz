@@ -10,8 +10,9 @@ of this chapter, and it is a narrower boundary than it once was: waltz shipped n
 to begin with, so nothing could run against storage, and both seams now have an implementation —
 `wal/memwal` for the log, `cold/memcold` for the cold store. The boundary moved rather than
 dissolved. A suite can append, commit, boot a Temporal server and read rows back. No suite can
-fsync, cross a network, wait on a quorum, hand a shard to another machine, or be killed. Every claim
-that depends on storage outliving its process is still somebody else's to make.
+fsync an acknowledged write, cross a network, wait on a quorum, hand a shard to another machine,
+or be killed. Every claim that depends on storage outliving its process is still somebody else's to
+make.
 
 ## Which numbers survive a release
 
@@ -134,7 +135,7 @@ statement with no cost in it at all.
 a trim the way a durable log has to, and it passes the same twenty-one contract cases any other
 implementation runs. It is also **in one process's memory**, so:
 
-* **no fsync, no network, no quorum has ever been in the path** of anything in this repository. Every
+* **no fsync, no network, no quorum has ever been in the path** of any acknowledged write. Every
   timing property of every suite here is the timing of a map on one side of the layer and of an
   in-process SQLite database on the other;
 * **no fence has ever had to reach another process.** That is the contract suite's own blind spot,
