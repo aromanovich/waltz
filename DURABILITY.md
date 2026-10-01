@@ -782,7 +782,9 @@ included — and only for an entry that is replayed. `mutation/history.go` mirro
 and the field-set guard that makes a new field of every other mirrored struct a
 named failure (`mutation/fieldset_test.go`'s `mirroredStructs`) walks none of
 them. A `go.temporal.io/server` bump that adds a field there compiles, encodes the
-batch without it, acks, and drains the batch as the record held it.
+batch without it, and acks. The cycle that appended it folds the request it was
+handed, so its own drain writes the field; an owner that inherits the tail folds
+what it decodes, and drains the batch as the record held it.
 
 *What would close it:* the four structs as rows of `mirroredStructs`, each field
 recorded as carried or derived with the reason, so a new one fails the guard the
@@ -1094,7 +1096,10 @@ history rows durable and failed before its transaction, which leaves the same
 unreachable nodes. **The forbidden order is unreachable in both**: the contract on
 `cold.Applier` is that every history row the batch carried is durable no later
 than the transaction publishing the state — inside it or before it opens — and
-`memcold` keeps it by putting them inside that transaction.
+`memcold` keeps it by putting them inside that transaction. A tail written over
+one path and replayed over the other is not covered by this: it hands history to
+an applier that never said it writes it, and that is the first entry under
+*Open*.
 
 The class of garbage is the same in both and is one upstream produces itself and
 has a collector for: its own deletion path leaves a history branch behind
