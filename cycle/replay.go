@@ -62,8 +62,8 @@ import (
 func (c *Cycle) replay(ctx context.Context, s *state) error {
 	if c.deps.Registry == nil {
 		// A payload's task groups name their category by id, so a cycle with no
-		// task-category registry could not decode a tail even if it found one. See
-		// [Deps.Registry].
+		// task-category registry could not decode a tail even if it found one.
+		// See [Deps.Registry].
 		return fmt.Errorf("%w (shard %d)", ErrNoRegistry, c.shard)
 	}
 	// One read of the policy for the whole replay, for the reason [Cycle.add]

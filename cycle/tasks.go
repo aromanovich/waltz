@@ -135,9 +135,9 @@ func (c *Cycle) readTasks(
 		// which the cycle that replaces this one cannot read and refuses
 		// (fold.ErrForeignPageToken); finished on the base alone instead, the
 		// pagination would drop the window out of it, and the range its reader
-		// completes deletes the acked rows that were in it. A
-		// rule held by three functions in decide.go and nothing at the site that
-		// would carry out the loss is a rule one edit away from being gone.
+		// completes deletes the acked rows that were in it. A rule held by three
+		// functions in decide.go and nothing at the site that would carry out the
+		// loss is a rule one edit away from being gone.
 		return nil, fmt.Errorf(
 			"cycle: shard %d: a task page may not be answered by the cold store alone", c.shard)
 	}

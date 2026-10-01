@@ -31,8 +31,8 @@ ride the record and the drain writes them (ADR 0014), and this visit does not ha
 **The second is the conditions.** `Cycle.check` runs the condition authority before the
 append, and in a windowed mode whatever the window cannot determine is delegated:
 `checkDelegated` reads the pre-window rows the assertions stand on. In sync mode the drain
-inside the call asserts them and the reads are skipped. The reason it happens *before* the append is the
-whole of it — the ack is the answer, so a condition this layer means to answer has to be
+inside the call asserts them and the reads are skipped. The reason the check happens *before*
+the append is the whole of it — the ack is the answer, so a condition this layer means to answer has to be
 evaluated while the caller is still on the line. After the ack a refusal has no addressee and
 no undo.
 
@@ -91,11 +91,11 @@ read's absence costs latency only.
 
 **Overlap the events with the reads (free side).** Over a store that does not declare
 `cold.HistoryApplier` the two cold-store visits are independent, so the events could travel
-while the conditions are being checked. The join has to be before
-the append, not merely before the drain, or the ack would outrun the events — so `Write` grows
-a "work that must finish before the append" seam and a new invariant to guard. Nothing about
-orphaned history rows changes: a refused condition already leaves the events written, since they go
-first on that path today.
+while the conditions are being checked. The join has to be before the append, not merely
+before the drain, or the ack would outrun the events — so `Write` grows a "work that must
+finish before the append" seam and a new invariant to guard. Nothing about orphaned history
+rows changes: a refused condition already leaves the events written, since they go first on
+that path today.
 
 **Remember the versions this layer wrote (costly side).** The accumulator computes exactly
 what the run-row reads ask for and discards it at every drain, which is why the read is per

@@ -251,9 +251,9 @@ hardMaxBytes × maxShards  ≤  tailBudgetBytes
 
 `cycle.Config.CheckBudget` states it, `cycle.NewManager` runs it before it returns a manager, and
 `waltz.Compose` therefore fails over it — with no round trip of its own, though the backends it is
-handed were opened by its caller first. At the shipped defaults the product fits exactly: 8388608 × 256 = 2147483648.
-There is no headroom, so raising either factor without raising the budget gives you a node that
-refuses to start. [Chapter 08](08-configuration.md#5-the-budget-refusal) owns that refusal.
+handed were opened by its caller first. At the shipped defaults the product fits exactly:
+8388608 × 256 = 2147483648. There is no headroom, so raising either factor without raising the budget gives
+you a node that refuses to start. [Chapter 08](08-configuration.md#5-the-budget-refusal) owns that refusal.
 
 **It is a budget of encoded bytes, and not a promise about heap.** `Config.CheckBudget` says so in
 its own doc comment: what is resident is decoded protos plus the accumulator's indices, not the wire
@@ -269,8 +269,8 @@ has a measurement behind it, taken on the research prototype rather than here.
 The probe filled one accumulator the way a stuck applier leaves one — drained only when fold refuses,
 every drained batch held exactly as an unfinished apply holds it — and weighed the live heap against
 a second pass that generated the same stream and threw it away. It needed no cluster, so of every
-prototype measurement in this chapter it is the one easiest to rebuild. Two locality settings, three tail
-sizes:
+prototype measurement in this chapter it is the one easiest to rebuild. Two locality settings, three
+tail sizes:
 
 | workflow reuse | encoded | mutations | collapse in/out | resident bytes | resident per encoded byte |
 |---:|---:|---:|---:|---:|---:|
