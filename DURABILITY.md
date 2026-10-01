@@ -153,8 +153,8 @@ behind it takes them out of the log. **A batch folded for another shard** lands 
 shard's rows under another's id, and both are wrong afterwards with nothing in
 either saying so. `TestTheDrainRefusesWhatItCannotWrite`
 (`cold/memcold/apply_test.go`), red in all three of its cases; the other two refusals
-are default arms over values no fold can produce, unreachable from outside the
-package, and the test says so.
+are default arms over values no fold can produce, reachable only by a batch built
+by hand, which nothing outside `fold` can build — and the test says so.
 
 **A reset's second and third runs, acked and never written** (rung 4). A
 conflict-resolve carries up to three runs — the run being reset, the run that was
@@ -372,8 +372,8 @@ every batch filed under the first one's run.
 
 **A delete of a run's collection the drain acknowledged and never applied**
 (rung 4). *A collection of a run the drain acknowledged and never wrote*
-enumerates the `Upsert*` fields of a delta, so the
-delete half of the same seven collections was driven by nothing here — and by
+enumerates the `Upsert*` fields of a delta, so the delete half of the same seven
+collections was driven by nothing here — and by
 almost nothing anywhere: `mutgen` removes sub-entity keys from **activities and
 timers only**, so the differential oracle exercises two of the seven and the other
 five had no guard at all. Dropping `children`, `requestCancels`, `signals`,
@@ -941,8 +941,8 @@ cold store does not hold, which is the whole reason they were in the log.
 suite finishes in milliseconds and cannot age an entry, so a backend whose storage
 expires rows passes every case of it. This one differs from the three above in
 having an instrument for the whole of what it accepts rather than only a boundary,
-and the instrument is not a
-suite case for a reason no design can remove: the check costs the window it is
+and the instrument is not a suite case for a reason no design can remove: the
+check costs the window it is
 given in wall-clock time, and the length worth testing is the deployment's own.
 
 *Why it stays accepted:* `waltest.CheckRetention` is as far as a library can take
@@ -1323,15 +1323,17 @@ and the sync-mode page above — and the rest were equivalences worth naming: an
 adjacent range that merges or does not cover the same keys either way, an assignment
 of an equal value, a switch arm the case above it already matched.
 
-**Run exhaustively it is a different instrument, and the second run says so.** The fifty-one were
-chosen; `tools/mutation-sweep.py` enumerates the class instead, and **111** comparisons over the
-whole layer — `fold`, `cycle` and its three sub-packages, `apply`, `wrapper`, `baserow`, `mutation`,
-`wal`, `walmetrics` and the root — plus the two shipped implementations, `memwal` and `memcold`,
-left **28** green, of which **seven** were boundaries nothing drove: the window's byte trigger and
-its age trigger, the trim cadence's time half, a task range's inclusive minimum, the task page's own
-range on both halves, the history page's strict ascent, and the length check in front of
-`basePage[0]` — the last one a panic rather than a wrong answer. A chosen list cannot make that
-claim, which is the argument for generating a class rather than writing one down.
+**Run exhaustively it is a different instrument, and the second run says so.** The
+fifty-one were chosen; `tools/mutation-sweep.py` enumerates the class instead, and
+**111** comparisons over the whole layer — `fold`, `cycle` and its three
+sub-packages, `apply`, `wrapper`, `baserow`, `mutation`, `wal`, `walmetrics` and the
+root — plus the two shipped implementations, `memwal` and `memcold`, left **28**
+green, of which **seven** were boundaries nothing drove: the window's byte trigger
+and its age trigger, the trim cadence's time half, a task range's inclusive
+minimum, the task page's own range on both halves, the history page's strict
+ascent, and the length check in front of `basePage[0]` — the last one a panic
+rather than a wrong answer. A chosen list cannot make that claim, which is the
+argument for generating a class rather than writing one down.
 
 **The dismissals were confirmed, and one of them was wrong.** Re-run with every
 package in the judge, 8 of the 28 are caught: seven by the tests this branch added,

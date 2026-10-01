@@ -188,8 +188,8 @@ func TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree(t *testing
 // TestAReplayThatFailedWithoutHaltingIsStillAnError bounds
 // [Cycle.startForRead]'s swallow: a replay that could not read its page leaves
 // the cycle running and the window empty, so there is no halt for the routing
-// rule to answer with and the read must fail rather than be served from a window that was
-// never rebuilt.
+// rule to answer with and the read must fail rather than be served from a
+// window that was never rebuilt.
 func TestAReplayThatFailedWithoutHaltingIsStillAnError(t *testing.T) {
 	ctx := context.Background()
 	log := newLog()
