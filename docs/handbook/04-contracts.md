@@ -258,7 +258,7 @@ lose.
 | `Fence(ctx, shard, epoch) error` | claims the log for `epoch`, atomically cutting off every append of a lower epoch (I4); idempotent per epoch, so a restart without an ownership change may replay its acquire; entries stay and the new owner continues the log at the next seqno | a lower epoch than the one held (`ErrFenced`); epoch 0 (`ErrZeroEpoch`) | nothing — ownership included |
 | `Append(ctx, shard, epoch, seqno, payload) error` | writes `payload` as the entry at `seqno`, under `epoch`; returning nil means every entry up to and including `seqno` is durable, so the caller's commitSeqno becomes `seqno` | `ErrFenced`, `ErrAlreadyWritten`, `ErrGap`; a `seqno` below `FirstSeqno`; a nil payload (an empty one is an entry); epoch 0 | none of these refusals writes anything |
 | `ReadFrom(ctx, shard, from, limit) ([]Entry, error)` | up to `limit` entries at or above `from`, in seqno order; a read after a successful `Fence` sees every entry the log held when the fence took it | a non-positive `limit` | reads change nothing |
-| `Trim(ctx, shard, upTo) error` | deletes entries at or below `upTo`; the log stays appendable at the next seqno and ownership stays put | nothing that is merely already absent — trimming entries that are not there is not an error | a log appendable at the next seqno, owned by the same epoch, whatever `upTo` said and whether or not it deleted anything: a failed trim is retried at the next cadence and costs a partly shorter log at worst |
+| `Trim(ctx, shard, upTo) error` | deletes entries at or below `upTo`; the log stays appendable at the next seqno and ownership stays put | nothing that is merely already absent — trimming entries that are not there is not an error | a log appendable at the next seqno, owned by the same epoch, whatever `upTo` said and whether or not it deleted anything: a failed trim is retried at the next cadence, or forced again while storage pressure stands, and costs a partly shorter log at worst |
 | `Close()` | releases what the backend holds around the log: a connection, a lease, the goroutine some backends keep ownership alive from. Called once, after the last append and after any drain | nothing | the entries, and whoever fenced a shard owning it until that ownership expires or a successor takes it — a close is neither a drain nor a fence |
 
 Six things the table cannot hold:
@@ -991,7 +991,7 @@ only where archival is configured. A nil `Logger` becomes a noop logger and a ni
 
 | Error | What it reports |
 |---|---|
-| `ErrHalted` | matches, via `errors.Is`, every refusal a halted cycle answers with; the class is in `Cycle.State()` and the cause travels wrapped, so a caller can still reach the `*apply.InvariantViolationError` |
+| `ErrHalted` | matches, via `errors.Is`, every refusal a halted cycle's loop answers with — though not always what the caller sees: `Manager.Write` turns a write refused by a `halted-lost` cycle into a `*p.ShardOwnershipLostError`. The class is in `Cycle.State()` and the cause travels wrapped, so a caller can still reach the `*apply.InvariantViolationError` |
 | `ErrTailNotEmpty` | the log holds the seqno the cycle meant to write. A cycle replays past the whole tail before it appends, and an append that failed ambiguously is read back at once and settled, so what is left is a second writer holding this cycle's own epoch. It halts |
 | `ErrBudget` | a policy whose `HardMaxBytes × MaxShards` does not fit `TailBudgetBytes` |
 | `ErrNoRegistry` | a nil `Deps.Registry` |
@@ -1149,8 +1149,8 @@ has to answer for itself — see `cycle.ErrNoBaseRow`.
   `ShardLayer`, and the factory decorators.
 * [`../../apply/failure.go`](../../apply/failure.go) — `Class`, `Classify`, `Refuse`,
   `Attribute` and the attribution an applier hands back.
-* [`../../cold/cold.go`](../../cold/cold.go) — `Store`, its two halves and the four things
-  an implementation owes; [`../../cold/memcold/apply.go`](../../cold/memcold/apply.go) is the one
+* [`../../cold/cold.go`](../../cold/cold.go) — `Store`, its two halves, the four things
+  an implementation owes and the bound on its own calls it owes besides; [`../../cold/memcold/apply.go`](../../cold/memcold/apply.go) is the one
   implementation of them here, with the transaction's order stated statement by statement, and
   [`memcold.go`](../../cold/memcold/memcold.go) is what the embedding does and does not cover.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — `Config`, `Defaults`, `Deps`,

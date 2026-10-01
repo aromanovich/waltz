@@ -176,8 +176,9 @@ drain included. That cost was accepted knowingly and has never been measured
 ## 2. The drain itself
 
 One drain is one publication: the merged requests, the task work and the watermark in one
-transaction, together with the window's event history where the batch carries it. This is what it
-does, in order, against `memcold`.
+transaction, with the window's event history, where the batch carries it, durable no later than that
+transaction — inside it, or before it opens. This is what it does, in order, against `memcold`,
+which puts the history inside.
 
 ```mermaid
 sequenceDiagram
@@ -543,8 +544,8 @@ to the next owner as an ordinary failover, and the next owner would replay into 
 halted"* carrying the cause. Inside the cause is the attribution `apply.Attribute` read back after
 the failure: every row that is not where fold asserted it, with the asserted and the actual version
 and the window slice (`HeadSeqno..TailSeqno`) answering for it. `CutSeqno` is the highest seqno
-anything may acknowledge, one below the lowest diverged entry. Zero means acknowledge nothing, and
-covers three cases at once — no divergence was found, the shard's first entry (`wal.FirstSeqno`)
+a partial re-drain may acknowledge, one below the lowest diverged entry. Zero means acknowledge
+nothing, and covers three cases at once — no divergence was found, the shard's first entry (`wal.FirstSeqno`)
 diverged, or the readback itself failed. The runbook is [chapter
 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
 
@@ -664,8 +665,8 @@ One row per thing the caller can be told, and what it means everywhere else.
 | nil | —, or `ClassCommitted` if this call triggered a drain | acked and folded; possibly drained before return | `wal_intercepted_writes`, `wal_tail_entries`; a triggering call also emits `wal_drains{trigger="mutations"\|"bytes"\|"refusal"\|"storage_pressure"}`, or `trigger="sync"` on every call in sync mode |
 | `WorkflowConditionFailedError` / `CurrentWorkflowConditionFailedError` / `ConditionFailedError` | — (never appended); `ClassInvariantViolated` in sync mode, where the drain answered its own writer | nothing acked, nothing folded, no seqno consumed — in sync mode the entry stays acked and is settled without moving the watermark | nothing in the windowed modes, where `wal_answered_condition_failures` stays 0; in sync mode it counts every answer |
 | `ResourceExhausted` | — (refused before the append) | nothing acked | `wal_backpressure_refusals{limit="entries"\|"bytes"\|"unresolved"\|"storage_pressure"}` |
-| `ShardOwnershipLost` | `ClassShardLost` | halt-lost: window dropped, tail kept, nothing trimmed | `wal_halts{state="halted-lost"}`; warn *"apply cycle halted"* |
-| an unrecognised error (invariant halt) | `ClassInvariantViolated` | halt-invariant: no retry, no conversion to a failover | `wal_halts{state="halted-invariant"}`; warn *"apply cycle halted"* with the diverged rows |
+| `ShardOwnershipLost` | `ClassShardLost` | halted-lost: window dropped, tail kept, nothing trimmed | `wal_halts{state="halted-lost"}`; warn *"apply cycle halted"* |
+| an unrecognised error (invariant halt) | `ClassInvariantViolated` | halted-invariant: no retry, no conversion to a failover | `wal_halts{state="halted-invariant"}`; warn *"apply cycle halted"* with the diverged rows |
 | an unrecognised error (unknown outcome) | `ClassUnknownOutcome` | read the watermark; commit-after-all, halt, or stall | warn *"a drain's outcome could not be read"*, or info *"an ambiguous drain had committed"*; then `wal_backpressure_refusals{limit="unresolved"}` while a stall stands |
 | `Unimplemented` from `CompleteHistoryTask` | — | never reaches the layer's write path | nothing; the method is refused by design in intercept mode |
 

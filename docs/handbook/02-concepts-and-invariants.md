@@ -227,7 +227,7 @@ pass and measures nothing.
 transaction and moves appliedSeqno; an empty batch writes no transaction and settles its entries in
 memory without moving the watermark. A transactional drain is all-or-nothing over everything it
 publishes — event history excepted, which may be written ahead of the transaction and must be
-durable no later than it — and appliedSeqno is the witness to whether that transaction committed.
+durable no later than it — and appliedSeqno is the one record of whether that transaction committed.
 *Not to be confused with:* stopping a layer or a node, which is `Shutdown` (it drains *and*
 closes).
 
@@ -452,7 +452,7 @@ Terms from elsewhere in the handbook, stated once so they are not re-derived:
 The entries above build one object. A **shard** is the unit: one **cycle** goroutine, one log, one
 accumulator, and nothing crossing to another shard. The log carries **mutations**, one per entry,
 each at a **seqno**, and is acked to **commitSeqno**. What is acked and not yet settled is the
-**tail**; the prefix of it one drain will take is the **window**; **fold** compacts that window into
+**tail**; the slice of it one drain will take is the **window**; **fold** compacts that window into
 the **accumulator**, and how far it compacts is the **collapse ratio**. The accumulator is then two
 things at once — what answers reads, through the **overlay** and **merge-on-read**, and what a
 **drain** hands to **apply** as one transaction. That transaction moves **appliedSeqno**, the
@@ -463,14 +463,14 @@ graph TD
   SH["one shard: one cycle, one log, one accumulator"]
   LOG["the log: mutations at seqnos, acked to commitSeqno"]
   TAIL["the tail: resolved .. commitSeqno"]
-  WIN["the window: the prefix one drain takes"]
+  WIN["the window: the slice one drain takes"]
   ACC["fold.Accumulator: that window, folded"]
   RD["reads: overlay and merge-on-read"]
   CS["the cold store, at appliedSeqno"]
 
   SH --> LOG
   LOG -->|"acked and unsettled"| TAIL
-  TAIL -->|"a prefix of it"| WIN
+  TAIL -->|"a slice of it"| WIN
   WIN -->|"fold"| ACC
   ACC -->|"answers"| RD
   ACC -->|"one drain, one apply transaction"| CS
@@ -546,7 +546,7 @@ graph TD
   WIN["the window: what has been folded since the last drain"]
   ACC["fold.Accumulator: the window folded, per dirty workflow"]
   DR["one drain: apply a non-empty batch, or settle an empty one"]
-  TAIL -->|"a prefix of it, at most all of it"| WIN
+  TAIL -->|"a slice of it, at most all of it"| WIN
   WIN -->|"folded into"| ACC
   ACC -->|"emitted as fold.Batch"| DR
   DR -->|"a known outcome releases those entries"| TAIL

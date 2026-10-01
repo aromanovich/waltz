@@ -128,7 +128,8 @@ through the same fold, which takes whatever the record held — so its batches c
 refuses that: the tail is replayed correctly only if that applier writes the field
 anyway.
 
-**Three history methods still transit past a window that may hold their rows**,
+**Three history methods still transit past a window that may hold their rows** —
+`DeleteHistoryNodes`, `DeleteHistoryBranch` and `GetHistoryTreeContainingBranch` —
 and this is a named exposure rather than an oversight — the decision is that this
 library does not choose for a deployment here, because what a deletion aimed at
 an undrained history row should do depends on where that deployment put its history.

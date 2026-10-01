@@ -610,7 +610,7 @@ line here is only what waltz's own builds and CI use.
 * [`../../cycle/decide.go`](../../cycle/decide.go) — the backpressure refusal, its exact
   message and its unwrapped error type.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — the two halted states and their terminality, the
-  refusal every call gets while one stands, and the trim a halted cycle does not do.
+  refusal every write gets while one stands, and the trim a halted cycle does not do.
 * [`../../cycle/trim/trim.go`](../../cycle/trim/trim.go) — the trim's cadence, budget and outcome
   counters.
 * [`../../patches/README.md`](../../patches/README.md) — the one patch in this repository, what it

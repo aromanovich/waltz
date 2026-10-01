@@ -13,8 +13,11 @@ the front door: what a caller names to compose, beside the log, the cold store
 and the policy it hands `Compose`. What to know before changing any of it:
 
 * **`Compose` is the one composition, and there may not be a second.** Everything
-  that runs intercept mode calls it. So do not add a `cycle.NewManager` call
-  anywhere else — what a new caller needs is a *parameter*, and the ones that
+  that runs intercept mode calls it. So do not compose intercept mode out of a
+  `cycle.NewManager` call anywhere else — the suites under `internal/verify/`
+  that build a manager drive the cycle below the wrapper, with no
+  `wrapper.Options` over it, and are not a second composition. What a new
+  caller of intercept mode needs is a *parameter*, and the ones that
   exist (backends, policy, categories, logger, handler) are exactly what callers
   vary. **The policy stays a parameter**: a run that varies the window varies it
   and nothing else. It is a `cycle.Policy` — a source read at each decision — so

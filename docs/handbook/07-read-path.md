@@ -634,13 +634,12 @@ those two apart at a glance.
 | `cycle.Counters.Reads` | **routed** | overlay reads this shard routed, counted before the routing rule, so a read the rule passes through to the cold store is still in it |
 | `cycle.Counters.ReadsHeld` | **hit** | the subset for which the window held the run or the row |
 | `cycle.Counters.TaskReadsMerged` | **hit** | pages that carried at least one task **out of the window** |
-| `cycle.Counters.TaskCollisions` | evidence | keys both sources carried; node-wide |
+| `cycle.Counters.TaskCollisions` | evidence | keys both sources carried; per shard, where the series beside it carries no shard tag |
 
 `wal_merged_task_pages` and `wal_overlaid_reads` are the two whose names and meanings disagree: the
 first counts pages routed, not pages merged, and the second predates the branch read it now also
 counts. Renaming either would break every alert expression written over it, so the distinction is
-written down instead — in the first's description, and for both at their definitions in
-`walmetrics`.
+written down instead — in each one's description, and at each one's definition in `walmetrics`.
 
 The hit counters do the other job, and that is why both kinds exist. A test suite is just as green
 over a layer that came out empty as over one doing its work, so a run needs a **witness**: an

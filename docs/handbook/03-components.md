@@ -61,7 +61,7 @@ and the cycle have handed it on.
 
 | Package | Role, in one line | Key exported types | May not import — and why |
 |---|---|---|---|
-| `wal` | The log's contract: one fenced, gap-free, totally ordered sequence of entries per shard, payloads opaque. | `Log`, `Entry`, `ShardID`, `Seqno`, `Epoch`, `ErrFenced`, `ErrAlreadyWritten`, `ErrGap`, `ErrZeroEpoch` | the Temporal server, and every package above it — the contract is backend-independent, so an implementer gets the log and not Temporal |
+| `wal` | The log's contract: one fenced, gap-free, totally ordered sequence of entries per shard, payloads opaque. | `Log`, `Entry`, `ShardID`, `Seqno`, `Epoch`, `ErrFenced`, `ErrAlreadyWritten`, `ErrGap`, `ErrZeroEpoch`, `PressureSource`, `PressureLevel` | the Temporal server, and every package above it — the contract is backend-independent, so an implementer gets the log and not Temporal |
 | `wal/memwal` | The contract in process memory: the one implementation this library ships, so everything above the log tests without a cluster. | `Backend`, `New` | the same, for the same reason |
 | `wal/waltest` | The conformance suite an implementation runs, plus `Faulty`, a log wrapped so a chosen call fails. | `RunContractSuite`, `Faulty`, `Fault`, `Once`, `Always` | the same, **plus every implementation including `memwal`** — a suite that could name one would special-case it and stop being about the contract |
 | `mutation` | What one log entry *is*: the protobuf record of one persistence call, and the eight kinds. | `Mutation`, `Kind`, `Part`, `Encode`, `Decode` | any persistence implementation — the record mirrors Temporal's requests; the store that eventually writes them is the applier's business |
@@ -127,7 +127,7 @@ graph TD
   CY -->|"Append, ReadFrom"| LOG
   CY -->|"Add, Drain, TaskPage"| ACC
   CY -->|"Apply: one batch"| AP
-  CY -->|"Drained: a watermark"| TR
+  CY -->|"Drained or Force: a watermark"| TR
   CY -->|"Watermark: recovery read"| WM
   TR -->|"Trim"| LOG
   AP -->|"one transaction"| CS
@@ -303,7 +303,8 @@ Two of those need more than a table cell.
 **The trim is off the loop because a stuck log must not stop a shard from acking and applying.** It
 is a package of its own precisely so the `go` statement lives where no `*state` can be named — the
 ownership rule becomes the compiler's job rather than prose. A failed trim halts nothing: it is
-logged and retried at the next cadence.
+logged and retried at the next cadence — or, if storage pressure forced it, forced again while the
+pressure stands.
 
 **There is no mutex on `cycle.Manager`.** The mutex belongs to the unexported `held` type, which owns
 the shard map and the retired counters, and the danger it guards against is a lock inversion. Every
@@ -363,8 +364,8 @@ off-loop things in the table above.
   stopped cycle stays registered — reporting `halted-lost` if it was running — because its tail is
   acked entries still in the log.
 * **The layer's lifecycle brackets the server's.** `waltz.Compose` runs before the server is built,
-  so its two startup assertions — `cycle.Config.CheckBudget`, and a task-category registry that must
-  not be nil — stop the binary rather than a shard. `Layer.Shutdown(ctx, budget)` runs after the
+  so its startup assertions — a policy that must be given, `cycle.Config.CheckBudget`, and a
+  task-category registry that must not be nil — stop the binary rather than a shard. `Layer.Shutdown(ctx, budget)` runs after the
   server has stopped, so the shutdown drain still has a store to write to. It puts the budget on a
   context of the layer's own, detached from the caller's, because a shutdown drain runs exactly where
   a context has just been cancelled and one inheriting that cancellation would return at once. Start

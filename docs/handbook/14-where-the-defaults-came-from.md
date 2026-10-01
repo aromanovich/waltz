@@ -38,7 +38,7 @@ their own deployment's.
 ## The premise under all of them
 
 Every number below sits somewhere on a curve, and the curve is drawn by a workload:
-[chapter 01](01-overview.md#a-workflow-writes-more-history-than-it-keeps)'s picture of many
+[chapter 01](01-overview.md#a-workflow-writes-far-more-than-it-keeps)'s picture of many
 thousands of workflows, each moving through hundreds of state transitions and dying within seconds,
 rewriting the same mutable-state rows dozens of times on the way.
 
@@ -133,8 +133,9 @@ depends on: how much of the log is still there when you go looking. Trim goes to
 applied watermark **with no safety lag**, so while trims succeed what survives is at most
 `TrimEvery × Mutations` entries, plus whatever the tail currently holds. At the shipped defaults
 that is 16 × 256 = **4096 entries**, and it is the same 4096 whether the shard has been running
-for a minute or a month. A failed trim is retried at the next cadence, so it leaves more behind
-until then, never less. The time trigger only shortens it: a low-traffic shard trims at 60 seconds
+for a minute or a month. A failed trim is retried at the next cadence, and a cadence that comes due
+while a trim is still in flight is skipped, so either leaves more behind until then, never less.
+The time trigger only shortens it: a low-traffic shard trims at its first drain past 60 seconds
 whether or not sixteen drains have happened. So does storage pressure, which forces a trim outside
 the cadence altogether.
 

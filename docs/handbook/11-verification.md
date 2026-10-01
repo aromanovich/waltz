@@ -469,8 +469,9 @@ cycle and retires the previous one — which stops its goroutine. So the predece
 and neither of the two fences that exist to stop it is asked anything. A node that lost its lease is
 not told: its cycle stays alive with a window in it, its timers keep running, and it finds out by
 acting. Two nodes are two `cycle.Manager`s over one log and one store, and
-`acceptance_twonode_test.go` already builds that pair — for one question, whether a drain's witness is
-owner-scoped, with an applier that parks the drain and answers without passing the batch down.
+`acceptance_twonode_test.go` already builds that pair — for one question, whether the watermark a
+drain reads back is owner-scoped, with an applier that parks the drain and answers without passing
+the batch down.
 `acceptance_handover_test.go` is where a fenced owner's batch reaches the database, in the three cases
 that shape has.
 
@@ -480,7 +481,7 @@ redundant from where the other stands. The log's stops the appends, and it is in
 imposes](06-shard-lifecycle.md#what-managershardacquired-does-with-the-epoch-it-is-handed)), so a write
 by the old owner is refused while the database still names him owner. The cold store's epoch CAS stops
 the drains, which need neither an append nor a caller: a shutdown drain and the age timer both fire out
-of a full window on their own.
+of a window that holds something, on their own.
 
 `TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` is the first of them. The successor
 fences the log and takes the `rangeID`; the predecessor, holding a tail, writes. The write is
@@ -521,7 +522,7 @@ underneath every other run in this package, so a defect in its fence would weake
 reddening one.
 
 The same drain also carries a watermark below the successor's, and that half is quieter. It loses no
-row: an owner reading a witness that points under rows the database holds either re-applies entries
+row: an owner reading a watermark that points under rows the database holds either re-applies entries
 whose assertions have moved on, or meets the gap a trim left below it. Both end in a halt. What it
 costs is a shard nobody can recover without a person, which is the failure mode the strict equality in
 `Watermarker`'s contract is written against.
@@ -549,11 +550,11 @@ handed:
   acked, that a drain committed, that the applied position moved, that history tasks were written,
   and that **the shards' watermarks are readable out of the database**, so a run claiming a drain
   committed and a store holding nothing cannot both be believed;
-* `TestAWorkflowRunsWithTheLayerOutOfThePath` is the control: the same store bare, and
-  `witness.NoLayer` over the layer it composed and did not install. That claim is only available
-  because the control composes a layer at all — a run with none could not make it — and it goes red
-  if the "passthrough" arm quietly still had a layer in it. Beside it, no shard's watermark may be
-  in the database, because nothing drained.
+* `TestAWorkflowRunsWithTheLayerOutOfThePath` is the control: the same store behind the wrapper
+  with nothing in its options, and `witness.NoLayer` over the layer it composed and did not
+  install. That claim is only available because the control composes a layer at all — a run with
+  none could not make it — and it goes red if the "passthrough" arm quietly still had a layer in
+  it. Beside it, no shard's watermark may be in the database, because nothing drained.
 
 Two things about the run itself are worth knowing. The drains it counts are the **age** trigger's:
 one workflow is nowhere near 256 mutations or 256 KiB, so the five-second age is the only trigger

@@ -15,7 +15,8 @@ paths:
 
 # This repo: what each package may import
 
-These were a table in a guard test until the amendment to
+These were a table in a guard test until the "rules are read, not run"
+amendment to
 [ADR 0009](../../docs/adr/0009-the-tree-separates-the-layer-from-what-judges-it.md), which deleted
 it along with every other lint rule wearing a test's clothes
 ([no-lint-in-tests.md](no-lint-in-tests.md)). The rules themselves did not

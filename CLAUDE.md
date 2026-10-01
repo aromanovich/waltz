@@ -159,12 +159,13 @@ has the three places such a rule may live instead, in the order to try them.
   `paths:` header so it loads when you touch that directory and costs nothing
   otherwise. This is where "what to know before changing this" lives, beside the
   code it is about rather than here.
-* [`docs/adr/`](docs/adr/) — the ten decisions somebody will otherwise try to
+* [`docs/adr/`](docs/adr/) — nine decisions somebody will otherwise try to
   reverse: the log contract, in-process, the configuration's home, the log's
   boundary, the tree, one entry per append, one shipped implementation at each
-  seam, the cold store embedding Temporal's own persistence, what a write must
-  read from the cold store before it appends, and a record carrying the event
-  batches its own request produced.
+  seam, the cold store embedding Temporal's own persistence, and a record
+  carrying the event batches its own request produced. The tenth, what a write
+  must read from the cold store before it appends, is proposed rather than
+  decided: a question left open on purpose.
 * [`docs/handbook/`](docs/handbook/README.md) — the book. 01–11 are the
   reference (components, contracts, the paths, the keys, the series, the
   suites); 12–15 are the deep dives (what a write cost before the layer, the

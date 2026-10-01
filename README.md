@@ -234,8 +234,9 @@ The two rows are not mirror images, and the asymmetry is worth knowing before yo
 contract is waltz's own invention, so waltz owes it a suite and ships one. What a *database* owes a
 Temporal server is Temporal's to state, and Temporal states it as four suites it exports — so
 **nothing exported from here judges somebody else's `cold.Store`.** What is written down instead
-is the four obligations an implementation carries, with `cold/memcold` as the worked example of all
-four: [chapter 04](docs/handbook/04-contracts.md) has both.
+is the four obligations an implementation carries, in the `cold` package's own doc, with
+`cold/memcold` as the worked example of all four: [chapter 04](docs/handbook/04-contracts.md) walks
+through both.
 
 ## Documentation
 

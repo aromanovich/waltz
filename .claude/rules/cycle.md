@@ -203,8 +203,10 @@ What to know before changing it:
   window, because the subject is the mutation in this caller's own call and
   nothing has been acked. The predicate is
   `fold/check.go`, the checked set is the assertions `adopt` discards — do not
-  turn it into a list — and the position is forced twice: after I10's bound
-  (which is also checked outside the loop) and before `Log.Append`. It is inert
+  turn it into a list — and the position is forced once, before `Log.Append`.
+  It sits behind `writeRefused` (which is also asked outside the loop) by choice
+  rather than force: both precede the append, so either order acks nothing, and
+  this one spares a shard already refusing the delegated read. It is inert
   at a window of one, which is what keeps sync mode from regressing;
 * **the delegated read is the residual, and it is skipped in sync mode on
   purpose** (`cycle.checkDelegated`, which `cycle.check` does not reach there):

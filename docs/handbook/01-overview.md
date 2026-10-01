@@ -1,6 +1,6 @@
 # The layer at a glance
 
-## A workflow writes more history than it keeps
+## A workflow writes far more than it keeps
 
 Temporal's history service is write-heavy by construction. A single workflow can move through
 hundreds of state transitions. Each transition produces an `ExecutionStore` write that the
@@ -117,8 +117,8 @@ write can be refused without consuming a seqno, and nothing is in the log. After
 the record exists and cannot be withdrawn, so it will be settled by this process's next drain or,
 if this process dies, by whoever replays the log. The caller does not hear about it until step 5.
 
-That boundary is also what makes a drain failure hard to attribute. A drain runs on some caller's
-call — the one whose write tripped a trigger, at step 5 — and that caller does get the error back.
+That boundary is also what makes a drain failure hard to attribute. A drain that a write trips runs
+on that caller's call, at step 5, and that caller does get the error back.
 But the rest of the batch — up to 255 more mutations at the shipped mutation trigger, fewer when the
 byte trigger fires first — belongs to callers who were acked long ago and have gone, so one caller is
 handed a failure for work that is mostly not its own, and its own mutation is durable in the log

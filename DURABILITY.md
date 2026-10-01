@@ -1095,8 +1095,10 @@ is one the cold store held.
 
 **The write path cannot ack into a cycle that has not replayed** (measured).
 `Cycle.add` calls `Cycle.start` before it reads the policy, takes a seqno or
-appends anything. `Cycle.Close` was the one door that skipped it, and that is the
-shutdown entry above. Moving the `start` call past the append is red.
+appends anything. `Cycle.Close` is the one door that calls `start` without the
+state check in front of it — `add`'s `Cycle.halted`, `Cycle.startForRead`'s
+running test — and that is the shutdown entry above. Moving the `start` call past
+the append is red.
 
 **No intercepted write acks before its events are down** (measured). All eight go
 through one `ExecutionStore.write`, which — over a store that does not declare
@@ -1496,7 +1498,7 @@ So those three are swept and closed, with no candidates to confirm, and the pair
 runs is the cleanest statement of the rule there is: **the judge decides the
 finding, so a green is about the judge until the judge contains whatever guards the
 line.** What is left unswept is `mutation` alone, 72 mutations, and its consumers are
-`fold`, `cycle`, `apply` and `memcold`.
+`fold`, `cycle`, `wrapper` and `memcold`, with `apply`'s tests beside them.
 
 On the evidence of every segment, the interesting question in what remains is the
 same one: **which of its refusals no valid stream reaches.**
@@ -1604,19 +1606,19 @@ and the first time it had happened rather than been anticipated. It is closed no
 along with a second one the same reading turned up beside it, and what closing it
 took is on the entry: a reverse of a decision three documents recorded as
 deliberate, none of which said what the divergence bought. The floor itself is
-unchanged: every entry that was closed, refuted or accepted still is. Three of the acceptances are
-the harness this
-library does not build — a durable log, two processes, a kill, and a judge outside
-all three — and the change that would reopen all three at once is durable storage
-shipping here, which
+unchanged: every entry that was closed, refuted or accepted still is. Three of
+the acceptances are the harness this library does not build — a durable log, two
+processes, a kill, and a judge outside all three — and the change that would
+reopen all three at once is durable storage shipping here, which
 [ADR 0011](docs/adr/0011-each-seam-ships-one-implementation.md) refuses. Two more
 are obligations at a seam, one with an instrument and one with a sentence. The
 sixth is the only one that can be closed from inside and has not been, because
 every way of closing it changes the failover signal and the first three are why
 that cannot be judged here.
 
-**That is the convergence condition and not the end.** What it buys is that a pass
-opening this file has nothing to pick up — which is exactly when the two
+**That is the convergence condition and not the end.** What it buys, once Open is
+empty again, is that a pass opening this file has nothing to pick up — which is
+exactly when the two
 adversarial passes are worth running, each on a context that does not remember the
 last. A pass that finds a named entry again should add nothing but a pointer; a
 pass that finds something *not* named here has found the thing this file admits it

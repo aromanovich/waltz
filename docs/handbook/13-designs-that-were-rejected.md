@@ -467,8 +467,9 @@ than against a stored value ([chapter
 
 ## Where this lives in the code
 
-* [`../../wal/refuse.go`](../../wal/refuse.go) — the append's refusals: `ErrFenced` for a
-  superseded epoch, `ErrZeroEpoch` for none, and the order between them.
+* [`../../wal/refuse.go`](../../wal/refuse.go) — the append's refusals: `ErrZeroEpoch` for no
+  epoch, `ErrFenced` for one the log is not fenced at, and the order that puts `ErrFenced` ahead
+  of `ErrAlreadyWritten`.
 * [`../../wal/wal.go`](../../wal/wal.go) — `Append`, which takes exactly one payload; the contract
   itself states why.
 * [`../../apply/failure.go`](../../apply/failure.go) — `ClassShardLost`, one of the three places
