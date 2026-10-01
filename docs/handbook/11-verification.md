@@ -613,8 +613,8 @@ roughly `TrimEvery` drains' worth of windows — about 4,000 entries at the ship
 and window of 256. A post-mortem look at a long run therefore sees a vanishing fraction of it. The
 consequence for any claim of the form *applied ⊆ logged* is sharper still: such a claim is only
 sound over a run whose log was never trimmed away underneath it, so the run has to push both trim
-triggers — `TrimEvery` and `TrimAfter` — out of reach first, and then check that the promise was
-kept.
+triggers — `TrimEvery` and `TrimAfter` — out of reach first, run over a log that reports no storage
+pressure (one that does forces a trim outside both), and then check that the promise was kept.
 
 ---
 

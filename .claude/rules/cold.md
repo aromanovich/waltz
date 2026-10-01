@@ -36,10 +36,11 @@ What to know before changing any of it:
   reason the store holds a handle at all, and the transferable half of the
   design: an implementer whose driver offers nothing below the per-workflow
   interface cannot satisfy the contract by trying harder inside it;
-* **the seven collections are named in two literals, and both are held to the
-  type.** `applyMutation` names them off a delta and `applySnapshotCollections`
-  off whole state, and a collection missing from either is rows the drain
-  *acknowledged* and never wrote — with the watermark committed beside them, so
+* **the seven collections are named in three literals, and all three are held
+  to the type.** `applyMutation` names their upserts and their deletes off a
+  delta and `applySnapshotCollections` names them off whole state, and a
+  collection missing from any of them is a write the drain
+  *acknowledged* and never made — with the watermark committed beside them, so
   the log is trimmed past them. It is the only failure on this path with nothing
   behind it: a drain that refuses, fails or dies leaves its entries in the log
   for the next owner, and this one does not. Nothing above caught it — the four
@@ -55,7 +56,9 @@ What to know before changing any of it:
   second list for the snapshot arm or for the read-back, both of which reach the
   same collection by taking the `Upsert` prefix off. It is held to the type in
   both directions: an `Upsert*` with no entry, and an entry for a collection a
-  delta no longer has, each fail by name. A buffered batch is the eighth thing
+  delta no longer has, each fail by name. The deletes literal has the same
+  guard in `TestEveryCollectionsDeletesReachTheDatabase`: a dropped delete is a
+  row the acked write removed and the store still holds. A buffered batch is the eighth thing
   with the same failure and neither literal names it: batches never merge, so
   they travel on neither a delta nor a snapshot, and the applier's own loop
   over them is what `TestEveryBufferedBatchReachesTheDatabase` holds;

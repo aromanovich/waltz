@@ -88,7 +88,7 @@ repository ships and defaults away from rather than forbids.
 pass found that closure standing on a coincidence —
 `TestAFullPageThatEndsWhereItBeganStillAdvances` (`wal/read_test.go`). The
 coincidence is worth keeping: every case in the package that *owns* the guard
-pages at 64, where a full page always ends far above its start, so the boundary
+paged at 64, where a full page always ends far above its start, so the boundary
 was reached only through a caller whose page size happened to equal a window of
 one. Raising `max(cfg.Mutations, 1)` to a floor of 2 left the whole of
 `go test ./...` green with the comparison still movable. It is held at the owner
@@ -208,8 +208,8 @@ info's and the state's, and it admits **proto3 alone**: any other encoding is
 
 So a mutation whose state blob arrived in another encoding was appended, acked and
 durable, and then failed to decode for **every owner that inherited it**: each
-reads the tail, fails at that blob, leaves the cycle unstarted, and the next
-request retries it. Severity: **unavailable**, for good, on a shard whose log and
+reads the tail, fails at that blob and halts on it, and the next owner fails
+the same way. Severity: **unavailable**, for good, on a shard whose log and
 cold store are both healthy — which the first rule admits only where nothing was
 acked, and here the caller has been told the write succeeded.
 
@@ -298,7 +298,7 @@ and staging the defect it exists for needs a fake transaction this store has no
 seam for.
 
 **A range delete that sweeps the task rows the same drain's requests carried**
-(rung 4). The applier's second ordering rule — the range deletes before any task
+(rung 4). The applier's third ordering rule — the range deletes before any task
 row this drain writes — was held by a case staging its task through
 `AddHistoryTasks`, which lands in the shard-level home written *last*. That is
 not where most task rows are: a mutable-state write carries its own, they are
@@ -1088,7 +1088,8 @@ so the watermark it is handed is the seqno the committing transaction wrote. A
 halted cycle does not trim at all: the log is the next owner's evidence. Handing
 that call `Tail.Commit()` — the acked position — instead of `Tail.Applied()` is
 red, so the derivation is no longer the only thing holding it. `Trimmer.Force`
-(read) added two reach paths beside that one and both hand the same field: an
+(read) stands in for `Drained` on that path under storage pressure, and adds two
+reach paths beside it, all three handing the same field: an
 acquire calls it after `Tail.Floor` has planted the cold store's own watermark
 and before anything appends, and the age tick calls it on the loop, where only
 a committed drain has ever moved `applied`. The follow-up a Force queues behind
@@ -1100,7 +1101,7 @@ is one the cold store held.
 `Cycle.add` calls `Cycle.start` before it reads the policy, takes a seqno or
 appends anything. `Cycle.Close` is the one door that calls `start` without the
 state check in front of it — `add`'s `Cycle.halted`, `Cycle.startForRead`'s
-running test — and that is the shutdown entry above. Moving the `start` call past
+running test — and that is the first entry under *Open*. Moving the `start` call past
 the append is red.
 
 **No intercepted write acks before its events are down** (measured). All eight go

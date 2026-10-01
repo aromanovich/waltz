@@ -295,7 +295,7 @@ that range. Both consequences are [chapter
 | `tailstate.Mirror` | published by every `Tail` mutator | atomics; read by `Cycle.write` *before* it queues anything, and by a retired cycle's read path |
 | `Cycle.State()` | the loop writes, and `Cycle.Retire` as it stops one; anyone reads | one `atomic.Int32`, so a stopped cycle still reports the state it stopped in |
 | `Cycle.finished` | written by the loop on its way out | read by `Cycle.Retire` only after the loop's `done` channel is closed — that is the happens-before, and the reason there is no lock |
-| `trim.Trimmer` | its own goroutine, beside the loop | a `Trimmer` is handed a watermark *by value*; one mutex of its own over the one trim in flight and the one follow-up queued behind it; `Trimmer.Wait` is how a caller waits for it |
+| `trim.Trimmer` | the loop owns its cadence; each trim in flight runs on a detached goroutine beside it | a `Trimmer` is handed a watermark *by value*; one mutex of its own over the one trim in flight and the one follow-up queued behind it; `Trimmer.Wait` is how a caller waits for it |
 | `walmetrics.Emitter` | shared, one per node | every method is an atomic load and a `Record`; `Emitter.Use` is the only mutation and takes the first non-nil handler it is given |
 | the shard map | `cycle.held` | one mutex; every method finishes its map arithmetic and returns without calling into a `*Cycle` |
 

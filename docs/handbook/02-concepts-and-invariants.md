@@ -363,8 +363,8 @@ Three things about how the refusal is raised:
   own persistence limiter uses, because the shard's write path matches concrete types and anything it
   does not recognise becomes a background re-acquire;
 * **never on the `ShardStore` path**, since refusing a rangeID renewal would turn degradation into a
-  lost shard. Neither size bound is ever raised on a read either. `unresolved` is: a cycle that
-  cannot say what its last drain did has nothing to answer a read from.
+  lost shard. Neither size bound is ever raised on a read either, and nor is `storage_pressure`.
+  `unresolved` is: a cycle that cannot say what its last drain did has nothing to answer a read from.
 
 *Not to be confused with:* throttling, rate limit — both name a pace, and this is a bound on the tail.
 
