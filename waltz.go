@@ -10,7 +10,8 @@
 // selection and not a pin, so a consumer already on a newer one builds against
 // it with no diagnostic: the WAL record format mirrors v1.29.6's request
 // structs field-for-field, and the mirror's completeness is checked against
-// that version here, never in a consumer's build. A field a newer server adds
+// that version here, never in a consumer's build — and not for every struct
+// the codec copies, an open entry in DURABILITY.md. A field a newer server adds
 // is a field this codec drops from a write it has already acked.
 //
 // [Compose] is the only composition; a new caller's need belongs there as a
@@ -70,7 +71,7 @@ type Layer struct {
 	// it ([wal.Log.Close]).
 	log wal.Log
 	// metrics is this node's one emitter: the cycles record through it and so do
-	// the stores [Layer.Options] composes, so the server's handler reaches both
+	// the stores built over [Layer.Options], so the server's handler reaches both
 	// halves of the layer's numbers by being handed over once.
 	metrics *walmetrics.Emitter
 }
@@ -149,7 +150,7 @@ type Backends struct {
 //     [cycle.NewManager] refuses nil rather than starting a node whose recovery
 //     is silently off;
 //   - logger is optional, and nil is a noop: the layer's own warnings — a
-//     shutdown drain that did not commit, a trim retried at the next cadence —
+//     shutdown drain that did not commit, a trim that failed —
 //     then have nowhere to go;
 //   - handler is optional, and nil is the production value: the server hands one
 //     down through [wrapper.MetricsSink] after this runs.
@@ -224,9 +225,8 @@ func AbstractFactory(base client.AbstractDataStoreFactory, opts wrapper.Options)
 }
 
 // AbstractFactory is [AbstractFactory] carrying this layer's own options, and
-// the reason it is a method: the pairing of a composition with the factory that
-// carries it was written out at every call site, and a layer composed but never
-// handed to one is a node running passthrough with a `wal` section that says
+// the reason it is a method: a layer composed but never handed to the factory
+// that carries it is a node running passthrough with a `wal` section that says
 // otherwise — which nothing reports, since that is what an empty layer looks
 // like from outside. So the whole of building a server over this library is
 //
@@ -261,16 +261,15 @@ func (l *Layer) ShardStats(shard wal.ShardID) (cycle.Stats, bool) {
 }
 
 // RetireShard stops one shard's cycle without draining it, and reports whether
-// the epoch named is the one this node still holds. It is what a process that
-// died leaves behind, which is why it is named apart from [Layer.Shutdown]: a
+// the epoch named is the one this node still holds. It stages what a process
+// that died leaves behind, which is why it is named apart from [Layer.Shutdown]: a
 // drain writes, and a kill does not.
 //
 // epoch is which acquisition is being retired, and a mismatch retires nothing.
 // Without it a late unload — a shard context cleaned up after the shard was
 // reacquired above it — stops the owner that superseded it, since the caller
 // has no other way to say which of the two it means. It is the check
-// [cycle.Manager.Write] makes for the same reason, in the one other door that
-// names an epoch.
+// [cycle.Manager.Write] makes, for the same reason.
 //
 // The stopped cycle stays the shard's, and that is not an omission: its tail is
 // acked entries still in the log, so [Layer.ShardStats] and [Layer.Totals] go
@@ -289,12 +288,16 @@ func (l *Layer) RetireShard(shard wal.ShardID, epoch wal.Epoch) bool {
 }
 
 // Shutdown stops the layer: every shard that still holds a window is drained
-// into the cold store, and the log is released.
+// into the cold store, a halted one excepted, which is reported instead, and
+// the log is released.
 //
 // It must run after the server has stopped: the drain writes to the cold store
 // the mutations of writers the server is shutting down. budget bounds the apply
-// transactions — one per shard, in sequence — and not a trim already in flight,
-// which is waited out on the minute of its own detached context; a drain the
+// transactions — shard by shard, in sequence, one each unless a shard's tail
+// has not been replayed yet, which the replay's own drains apply first — and
+// not a trim already in flight,
+// which is waited out on the minute each attempt has on its own detached
+// context, plus the one follow-up a forced trim may have queued; a drain the
 // budget cuts short leaves a tail, not lost data (invariant I2: it is in the
 // log, acked), which the next owner's replay picks up.
 //
@@ -320,6 +323,9 @@ func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) error {
 
 // UndrainedError is what [Layer.Shutdown] answers when a tail outlived it: the
 // shards still holding acked entries no drain applied, and how many each holds.
+// The count can read zero over entries the log holds — a cycle that halted
+// inside its replay and whose shutdown re-read of the log failed, an open entry
+// in DURABILITY.md — so a listed shard is never clean, whatever its count.
 //
 // It reports neither a lost write nor a failed shutdown. Those entries are in
 // the log and a successor's replay is what they are there for, so a node

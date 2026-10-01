@@ -137,12 +137,12 @@ type Expect struct {
 	// shards being acquired writes nothing, so a mutation there means
 	// something else was writing.
 	ShardsAcquired bool
-	// MutableState is whether the run's suites make any of the six
-	// mutable-state writes.
+	// MutableState is whether the run's suites make any of the four
+	// mutable-state writes or the two tombstones.
 	MutableState bool
 	// HistoryTasks is whether they write history tasks. Those go into the log
-	// like the six mutable-state writes, so the claim follows the path: zero
-	// wherever there is no layer, non-zero wherever there is one.
+	// like those six, so the claim follows the path: zero wherever there is no
+	// layer, non-zero wherever there is one.
 	HistoryTasks bool
 	// TaskReads is whether they read task pages through the merge.
 	TaskReads bool
@@ -192,9 +192,9 @@ func Universal(t cycle.Totals) []error {
 	if len(t.Halted) > 0 {
 		errs = append(errs, fmt.Errorf("a shard halted: %v", t.Halted))
 	}
-	// A trim that fails halts nothing and is retried at the next cadence, so
-	// nothing else in a run says it happened: the log stops being compacted and
-	// every suite stays green. The claim is conditional on the cadence having
+	// A trim that fails halts nothing and is retried at the next cadence or
+	// force, so nothing else in a run says it happened: the log stops being
+	// compacted and every suite stays green. The claim is conditional on the cadence having
 	// fired at all — a run too short to trim says nothing here, which is why
 	// this is a comparison and not `TrimsCommitted == 0`.
 	if t.Trims > 0 && t.TrimsCommitted == 0 {
@@ -282,9 +282,9 @@ var controlClaims = []claim{{
 }}
 
 // layerClaims are what a run with a layer says. The order is the order they are
-// reported in, and it is the order they were written in: the ones that say the
-// layer was reached at all, then the routed equalities, then the coverage
-// claims, then the two windows' inversion, then the emissions.
+// reported in: the ones that say the layer was reached at all, then the routed
+// equalities, then the coverage claims, then the empty layer and its opposite,
+// then the two windows' inversion, then the emissions, then the claimed kinds.
 var layerClaims = []claim{{
 	Name: "W1 every acked entry named a request",
 	// A kind the codec could not name is a bug wherever it appears, so this
@@ -447,9 +447,8 @@ var layerClaims = []claim{{
 	// Sync mode's half of the inversion, and in this window each is a claim
 	// about *nothing happening*. Sync mode drains before it answers, so the
 	// accumulator is empty at every call boundary and no read can cross a
-	// window that holds anything — which is what keeps a whole-folder byte
-	// comparison meaningful with the read path wired in, and the cheapest place
-	// to notice a window that stopped being one mutation.
+	// window that holds anything — which makes this the cheapest place to
+	// notice a window that stopped being one mutation.
 	Gate: inSync,
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Totals.ReadsHeld != 0 {
@@ -494,7 +493,7 @@ var layerClaims = []claim{{
 	// The other half of sync mode's one carve-out, stated outright because it
 	// is the mechanism: a condition failure at a window of one is answered, so
 	// entries acked exceed drains committed. This reads Acked as a count, which
-	// the fresh-folder caveat on [Observed.Totals] is about.
+	// the empty-log caveat on [Observed.Totals] is about.
 	Gate: all(inSync, expectsFailures),
 	Check: func(_ Expect, o Observed, report report) {
 		if int64(o.Totals.Acked) <= int64(o.Totals.Drains) {
@@ -666,10 +665,10 @@ func (e Expect) Check(o Observed) []error {
 }
 
 // Describe is the run as one line, for a person to read beside whatever the
-// witness said. It prints every counter and only the kinds that fired — the
-// zeroes are the interesting half, but printing every name on every line to
-// say so buries the ones that matter, and [Expect.Check] is where a missing
-// kind is a failure rather than a fact.
+// witness said. It prints every counter but the trims and the replay's drops,
+// and only the kinds that fired — the zeroes are the interesting half, but
+// printing every name on every line to say so buries the ones that matter, and
+// [Expect.Check] is where a missing kind is a failure rather than a fact.
 //
 // task-collisions is printed and not asserted, and the asymmetry is the point:
 // the two sources a merged page draws from are disjoint by construction, so a
@@ -709,8 +708,8 @@ func describeKinds(t cycle.Totals) string {
 // drainTriggers summarises what asked for the drains — [walmetrics.Drains]'s
 // trigger tag — which says more about the window a run kept than the number of
 // drains does: a run whose drains are all fold.ErrRefused force-drains never
-// reached a watermark at all, where one the mutation watermark dominates is a
-// window that filled.
+// reached a size or age trigger at all, where one the mutations trigger
+// dominates is a window that filled.
 func drainTriggers(emitted Emissions) string {
 	by := map[string]int{}
 	for _, r := range emitted[seriesDrains] {

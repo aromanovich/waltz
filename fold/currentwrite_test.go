@@ -140,12 +140,11 @@ func TestCurrentWriteTracksTheLastWriter(t *testing.T) {
 			"the store's conflict-resolve path writes the snapshot's own state blob, like every other path that carries one")
 	})
 
-	// The fields a rendering of four scalars dropped. Both are durable: the
-	// row's columns are recovered from this blob, and of the two only the
-	// create request id is ever back-filled by a later read — so a start time
-	// short here is a namespace's reuse interval measured against the zero time
-	// ever after, and an attached start's request id short here is a dedup that
-	// misses.
+	// The start time and the request ids are both durable: the row's columns
+	// are recovered from this blob, and nothing but the create request id is
+	// ever back-filled by a later read — so a start time short here is a
+	// namespace's reuse interval measured against the zero time ever after, and
+	// an attached start's request id short here is a dedup that misses.
 	t.Run("a conflict-resolve keeps the start time and every request id", func(t *testing.T) {
 		began := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 		st := stateOf(runX, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING)

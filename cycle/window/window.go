@@ -2,7 +2,7 @@
 // drain. A package so that emptying it outside [Window.Take] does not compile.
 //
 // Its bytes are not the tail's: this empties when a drain starts, the tail only
-// when that drain's transaction commits. Nothing here publishes — the drain's
+// when that drain's transaction resolves. Nothing here publishes — the drain's
 // numbers are emitted once the transaction has an outcome.
 //
 // It counts what the loop folded and may not name wal.Log or wal.Entry: the
@@ -42,7 +42,7 @@ func (w *Window) Empty() bool { return w.mutations == 0 }
 // Taken is what one take handed over. It exists so the bytes cannot be stated
 // as a number: the only value the tail will release is one a window produced,
 // and it releases it once ([Taken.Release]), so a branch that settles twice
-// subtracts twice from nothing rather than driving the tail below zero — a tail
+// subtracts nothing the second time rather than driving the tail below zero — a tail
 // that never trips I10 again, which is unbounded memory by the road the bound
 // exists to close.
 //
@@ -67,7 +67,7 @@ func (t *Taken) Release() int {
 }
 
 // Take empties the window and reports the bytes the tail goes on holding until
-// the drain commits, and the age of its oldest mutation.
+// the drain resolves, and the age of its oldest mutation.
 //
 // Not the mutation count: what a drain applied is its batch's own, and a window
 // that folded entries can still fold to nothing.
@@ -86,13 +86,14 @@ func (w *Window) Aged(now time.Time, age time.Duration) bool {
 	return !w.Empty() && now.Sub(w.oldest) >= age
 }
 
-// Watermarks is the size a window drains at, in the two units it counts.
+// Watermarks is the size triggers a window drains at, in the two units it
+// counts.
 type Watermarks struct {
 	Mutations int
 	Bytes     int
 }
 
-// Trip is which size watermark a window has reached, if either.
+// Trip is which size trigger a window has reached, if either.
 type Trip int
 
 const (
@@ -105,7 +106,7 @@ const (
 // consults one and not the other.
 //
 // The count is answered first, so a window over both reports it. An empty
-// window trips nothing: a zero watermark means "drain every write".
+// window trips nothing: a zero trigger means "drain every write".
 func (w *Window) Trips(at Watermarks) Trip {
 	switch {
 	case w.Empty():

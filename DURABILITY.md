@@ -23,6 +23,9 @@ Each entry is marked:
 
 * **closed** — a mechanism in this repository prevents it, and the entry names
   the mechanism and a test that fails when it is removed;
+* **refuted** — established as impossible, or as not a loss, and recorded with
+  the argument and how it was established, so that a later pass does not derive
+  it again;
 * **open** — it can happen today, and the entry says what would close it;
 * **accepted** — it can happen, nobody here will close it, and the entry says
   what is being accepted, why, and what a deployment owes in its place. A
@@ -67,7 +70,7 @@ arrived, after which the trim takes the rest. Replay confirms every entry's seqn
 is the one it is waiting for and halts on a gap, which is all that is left to do.
 `TestAReplayRefusesALogTrimmedPastItsWatermark` (`cycle/replay_test.go`).
 
-Its isolation is the part worth keeping: on a tail that trips no watermark
+Its isolation is the part worth keeping: on a tail that trips no trigger
 mid-loop, the end-of-log confirmation catches the same hole one seqno later, so a
 test with a short tail passes with the check deleted and judges nothing. It drains
 per entry for that reason — measured, the first version of it was green against the
@@ -85,7 +88,7 @@ repository ships and defaults away from rather than forbids.
 pass found that closure standing on a coincidence —
 `TestAFullPageThatEndsWhereItBeganStillAdvances` (`wal/read_test.go`). The
 coincidence is worth keeping: every case in the package that *owns* the guard
-pages at 64, where a full page always ends far above its start, so the boundary
+paged at 64, where a full page always ends far above its start, so the boundary
 was reached only through a caller whose page size happened to equal a window of
 one. Raising `max(cfg.Mutations, 1)` to a floor of 2 left the whole of
 `go test ./...` green with the comparison still movable. It is held at the owner
@@ -105,8 +108,8 @@ backend-side obligation is `APageEndsAtItsLimitAndNotAtAByteBudget` in the
 conformance suite.
 
 **A trim that is not isolated from a concurrent append.** The trimmer runs on a
-goroutine of its own so a slow trim cannot stop a shard from acking, so a trim is
-always in flight while the log is being appended to. A backend whose trim is a
+goroutine of its own so a slow trim cannot stop a shard from acking, so any trim
+may be in flight while the log is being appended to. A backend whose trim is a
 read-modify-write over the region the appends land in loses the entry acked while
 it ran — no error, a log that simply ends lower, and the seqno handed out twice.
 `TrimRunsBesideAppends` in the conformance suite; proved by giving `memwal`'s trim
@@ -149,7 +152,9 @@ watermark zero, which tells the store every entry below it is applied and the tr
 behind it takes them out of the log. **A batch folded for another shard** lands one
 shard's rows under another's id, and both are wrong afterwards with nothing in
 either saying so. `TestTheDrainRefusesWhatItCannotWrite`
-(`cold/memcold/apply_test.go`), red in all three of its cases.
+(`cold/memcold/apply_test.go`), red in all three of its cases; the other two refusals
+are default arms over values no fold can produce, reachable only by a batch built
+by hand, which nothing outside `fold` can build — and the test says so.
 
 **A reset's second and third runs, acked and never written** (rung 4). A
 conflict-resolve carries up to three runs — the run being reset, the run that was
@@ -203,8 +208,8 @@ info's and the state's, and it admits **proto3 alone**: any other encoding is
 
 So a mutation whose state blob arrived in another encoding was appended, acked and
 durable, and then failed to decode for **every owner that inherited it**: each
-reads the tail, fails at that blob, leaves the cycle unstarted, and the next
-request retries it. Severity: **unavailable**, for good, on a shard whose log and
+reads the tail, fails at that blob and halts on it, and the next owner fails
+the same way. Severity: **unavailable**, for good, on a shard whose log and
 cold store are both healthy — which the first rule admits only where nothing was
 acked, and here the caller has been told the write succeeded.
 
@@ -217,8 +222,8 @@ for a record some older binary wrote.
 
 *Reachable or not, and why it did not matter.* Temporal's own `ProtoEncode`
 produces proto3, so no stream this layer sees today carries anything else — which
-is the same claim that was made about the parsed-struct-without-a-blob shape in the
-entry above, where two fixtures in this repository were found building it. The
+is the same claim that was made about the parsed-struct-without-a-blob shape in
+that entry, where two fixtures in this repository were found building it. The
 codec already refuses a Cassandra-shaped CHASM blob at encode for the identical
 reason; this was the one blob field where the refusal sat on the far side of the
 ack.
@@ -293,7 +298,7 @@ and staging the defect it exists for needs a fake transaction this store has no
 seam for.
 
 **A range delete that sweeps the task rows the same drain's requests carried**
-(rung 4). The applier's second ordering rule — the range deletes before any task
+(rung 4). The applier's third ordering rule — the range deletes before any task
 row this drain writes — was held by a case staging its task through
 `AddHistoryTasks`, which lands in the shard-level home written *last*. That is
 not where most task rows are: a mutable-state write carries its own, they are
@@ -316,7 +321,7 @@ the transaction rather than opening one.
 failure is how a committed batch is applied twice; rounding it up is how entries
 are trimmed that never landed. It is its own class (`apply.ClassUnknownOutcome`),
 answered by reading the watermark and nothing else, and until it is answered the
-tail carries a floor that refuses every write and both reads.
+tail carries a floor that refuses every write and every read.
 `TestAnUnresolvedDrainStaysInTheTail` (`cycle/backpressure_test.go`).
 
 **A collection of a run the drain acknowledged and never wrote.** Seven
@@ -354,7 +359,7 @@ produce an empty batch, and leaving those entries unsettled strands them.
 `TestADrainOfAnEmptyWindowSettlesNothing` (`cycle/tail_test.go`).
 
 **A buffered batch filed under the wrong run of the same workflow** (rung 4). The
-half the entry below could not reach: a row whose run comes off the batch and whose
+half the buffered-batch entry below could not reach: a row whose run comes off the batch and whose
 workflow comes off the emitted request is wrong in a way no single-run fixture sees.
 It needs one request owning two runs, which a continue-as-new is — the update
 carries the closing run's delta and the new run's whole snapshot, and each run
@@ -366,8 +371,9 @@ flushed into a run it was never sent to.
 every batch filed under the first one's run.
 
 **A delete of a run's collection the drain acknowledged and never applied**
-(rung 4). The entry above enumerates the `Upsert*` fields of a delta, so the
-delete half of the same seven collections was driven by nothing here — and by
+(rung 4). *A collection of a run the drain acknowledged and never wrote*
+enumerates the `Upsert*` fields of a delta, so the delete half of the same seven
+collections was driven by nothing here — and by
 almost nothing anywhere: `mutgen` removes sub-entity keys from **activities and
 timers only**, so the differential oracle exercises two of the seven and the other
 five had no guard at all. Dropping `children`, `requestCancels`, `signals`,
@@ -409,21 +415,20 @@ rows. An earlier pass recorded this as deliberately unguarded on the grounds tha
 a leak is not a loss; the leak is unbounded, which is enough.
 
 **A buffered-event batch the drain acknowledged and never wrote** (rung 4). The
-entry above covers the seven collections named in two literals, and a buffered
+entries above cover the seven collections named in the literals, and a buffered
 batch is none of them: batches never merge, so the fold strips each onto
 `fold.Emitted.BufferedBatches` with its run and the applier writes one row per
 batch. Nothing enumerated off a request shape reaches them, so the guard above
 was blind to the same failure it exists for — deleting the applier's loop over
-them left the whole of `go test ./...` green, 22 packages, the differential oracle
+them left the whole of `go test ./...` green, the differential oracle
 and the e2e server included. What is lost is not a stale answer: a buffered batch
 is what a signal became after its caller was told it had landed, and the run's
 history flushes without it.
 `TestEveryBufferedBatchReachesTheDatabase` (`cold/memcold/apply_test.go`), which
 drives two batches of one run through a real drain and reads them back through
-the store's own read. Its residue is named at the test: a batch filed under the
-wrong run *of the same workflow* is still unguarded, that needing a request which
-carries two runs at once — a continue-as-new or a conflict-resolve — which
-`internal/verify/mutbuild` does not build.
+the store's own read. It cannot see a batch filed under the wrong run *of the
+same workflow*, which needs a request carrying two runs at once; that half is
+*A buffered batch filed under the wrong run of the same workflow* above.
 
 **A snapshot's `Condition` dropped on replay** (rung 4). The codec carries it and
 the decoder reads it back, and for the snapshot shape that line was driven by
@@ -472,8 +477,10 @@ removed. Not hypothetical: two fixtures in this repository were building the
 shape, and both are now built through `internal/verify/mutbuild`.
 
 **Every event batch of a slot but the first, acked and never written** (rung 4).
-An intercepted write puts its own new history events down through the base store
-before the mutation naming them is acked, and the refuted entry below says the
+Over a cold store that does not declare `cold.HistoryApplier`, an intercepted
+write puts its own new history events down through the base store before the
+mutation naming them is acked (`appendEvents`; over one that does, the record
+carries them and the drain writes them), and the refuted entry below says the
 order cannot be got wrong. The *completeness* of that walk was a different
 matter: a slot is a list — upstream's `ExecutionManager` serialises one
 `InternalAppendHistoryNodesRequest` per `WorkflowEvents` it was handed, so a
@@ -483,7 +490,7 @@ exactly one batch in each. It therefore pins which slots a shape has and never
 that a slot is walked to its end, so stopping the inner loop after the first
 append left the whole of `go test ./...` green, all eight of its own kinds
 included. What that costs is the failure that case exists for, one dimension
-over: a mutable state acked pointing at history nodes nobody wrote, durable and
+over: a mutable state acked pointing at history rows nobody wrote, durable and
 correct-looking, which no functional suite sees.
 `TestEverySlotsEventsGoDownAndNotJustItsFirst` (`wrapper/intercept_test.go`).
 
@@ -498,16 +505,19 @@ one case it exists for — without the detach the read fails, and a failed read
 there is "an outcome nobody could read", which **halts the shard**. So every
 expiring deadline would stop a shard. `Cycle.drain` detaches for the causes
 whose window holds work whose callers were acked and have gone
-([`drainCause.detached`]), and flipping the mutations watermark or the
+(`drainCause.detached`), and flipping the mutations trigger or the
 drain-and-retry to keep the caller's clock strands exactly those entries in a
-transaction abandoned on one writer's deadline. All four moves left the whole of
+transaction abandoned on one writer's deadline. All three moves left the whole of
 `go test ./...` green.
 `TestACallersClockCannotDecideADurableEntrysFate` (`cycle/cycle_test.go`)
 stages the deadline *inside* the append, through the log's own fault seam, and
 reads the drain's view of its context off the applier. The third cause,
 `drainWatermarkAge`, is the one that cannot be judged: its only call site is the
 timer, which drains on a context of its own, so its flag is inert and a case
-over it passes with the flag flipped — said at the cause.
+over it passes with the flag flipped — said at the cause. The bytes trigger and
+the storage-pressure drain detach on the same flag, and no case here flips
+either: for those two the flag is held by the table it sits in and nothing
+else.
 
 **A trim past what the cold store holds.** The trim goes to `applied`, which only
 a committed drain moves — never to what the window acked. A forced trim under
@@ -526,7 +536,10 @@ reads as permission to remove the `wal` section: passthrough composes no log, so
 those entries are never replayed by anyone. A shutdown now starts a cycle that
 has not started before draining it, and a close that could not establish what its
 shard holds is a residue of its own rather than a zero.
-`TestAShutdownSeesATailNoRequestEverMadeItLookAt` (`waltz_test.go`).
+`TestAShutdownSeesATailNoRequestEverMadeItLookAt` (`waltz_test.go`). That start
+also runs over a cycle that halted inside its replay, which has not started
+either, and empties the tail the halt was holding — the first entry under
+*Open*.
 
 **The same zero, in the two reads a caller has.** `RetireShard` is how a harness
 stages what a killed process leaves behind, and the cycle it stops stays the
@@ -556,9 +569,9 @@ continuing on the base alone drops the window out of every remaining page, and
 the range the reader completes at the end deletes the acked rows that were in it.
 No route hands out a foreign token any more, and one that arrives is refused
 (`fold.ErrForeignPageToken`). The premise is not hypothetical: upstream's
-`renewRangeLocked` (v1.29.6) drains in-flight task requests, bumps the range id
+`renewRangeLocked` (v1.29.6) drains in-flight task requests, bumps the rangeID
 and updates the task key manager, and unloads nothing — the shard context and its
-queue readers carry on, while `UpdateShard` with a moved range id is exactly what
+queue readers carry on, while `UpdateShard` with a moved rangeID is exactly what
 hands this layer a new epoch.
 
 **A cold store page larger than the batch it was asked for.** Where the window
@@ -583,8 +596,8 @@ or being skipped in silence by `queues/iterator.go`. Refused at the merge
 — the request's range, and the key this pagination last emitted, which no
 conforming store can answer below.
 `TestABaseThatBreaksTheRequirementsIsRefused` (`fold/taskpage_minimal_test.go`),
-red in all three cases without the check; it is the test that used to assert what
-each breach *cost*, over the same three staged breaches.
+red for all three breaches without the check, across its five cases; it is the
+test that used to assert what each breach *cost*, over the same three breaches.
 
 **A range delete that sweeps a row its reader was never shown.** The merge
 subtracts the window's undrained ranges from the cold store's page and from
@@ -718,7 +731,7 @@ request asserts one at all.
 
 **A shard-scoped read answered for a shard nobody holds** (rung 4). `ShardStats`
 and `RetireShard` both answer a shard this node does not hold, and the answer is
-the second return rather than a zero a caller could read as "held and empty". Every
+the `false` each returns rather than a zero a caller could read as "held and empty". Every
 existing case asks about a shard it has just acquired, so both not-held arms were
 reachable from nothing, and without them each dereferences the nil the registry
 hands back. Not a durability entry on its own; it is here because the shutdown's
@@ -735,11 +748,77 @@ self-inflicted failover. `TestTheBackpressureRefusalIsDefinitelyNotCommitted`
 
 ## Open
 
-**Nothing. The one entry here was closed this pass** — a current row written
-without the start time the policy above it measures — and the section being empty
-is a statement about the entries that have been named, never about the code:
-"What this file is not" below is the standing note on that, and the discovery
-sweeps it prescribes are how the next entry arrives.
+**A shutdown that empties the tail a replay halt was holding.** Severity: silent,
+on reads — a mutable-state read of the shard is answered from a cold store that
+lacks an acked, unapplied entry (I3), until a successor replays the log, which
+still holds it. `Cycle.Close` runs `Cycle.start` with no check of the cycle's
+state, where `Cycle.startForRead` returns early for one that is not running. A
+cycle that halted inside its replay has never started, so `start` reads the
+watermark and calls `Tail.Floor` — emptying the tail that was the halt's
+evidence — before replaying again; if that replay cannot read the log, `start`
+takes its halted-inside-replay branch, which keeps the tail it has just emptied.
+`Retire` follows, and `stoppedRoute` passes the read through on an empty
+mirror. Staged with a probe over the existing halt fixtures, for both halt
+classes: the mirror held one entry and refused the read before `Close`, held
+none and passed it to the base store after; with the second log read
+succeeding, the replay rebuilt the tail and the refusal came back.
+
+*What would close it:* `Close` skipping `start` for a cycle that is not running,
+as `startForRead` does — or `start` never flooring a halted cycle's tail — with
+a test that halts a replay, fails the log read, closes, and is watched to go red
+on a read reaching the base store without the guard.
+
+**A tail whose records carry event batches, replayed over a store that never
+said it writes them.** Severity: silent — the mutable state lands, the events it
+points at do not, and the drain reports a commit. A record carries its request's
+event batches only where the store the writer was composed with declares
+`cold.HistoryApplier` (`wrapper/execution_store.go`, `Manager.WritesHistory`).
+Replay does not ask: `fold.Accumulator.addHistory` takes whatever the record held,
+so the batch the replay drain hands `cold.Applier.Apply` carries
+`fold.Batch.History` whatever the successor's store declares. A successor composed
+over a store that does not declare the marker — a later build of a deployment
+whose store drops the declaration, or two builds running side by side that
+disagree about it — meets history on a path nothing else ever hands it, and
+nothing refuses it. The
+contract is unambiguous — the package doc's first obligation owes `Batch.History`
+from every applier handed it, declared or not, and `HistoryApplier`'s doc now says
+so — but no suite hands a history-carrying batch to an applier without the marker,
+so one written against the live path alone, which never sees the field, passes
+everything here and drops the rows on its first replay of such a tail.
+
+*What would close it:* replay refusing — halting the shard as an invariant
+violation — an entry that carries event batches when `Manager.WritesHistory` is
+false, or writing those batches through the base store before the replay drain,
+the way a live write over such a store does; with a test that replays a
+history-carrying tail over an applier without the marker and is watched to go red
+without the refusal.
+
+Found by a documentation pass reading ADR 0014's paragraph on changing stores
+against `fold/history.go`: the paragraph then said such a tail replays correctly
+anyway, and `addHistory` is where that stopped being true.
+
+**A field Temporal adds to a struct the record mirrors and the guard does not
+walk, dropped with every suite green.** Severity: silent, and only for an entry
+that is replayed: the cycle that appended it folds the request it was handed, so
+its own drain writes the field, while a replay folds what it decodes and drains
+what the record held. The field-set guard (`mutation/fieldset_test.go`'s
+`mirroredStructs`) makes a new field of every request struct it walks a named
+failure, and it walks none of five the codec copies field by field:
+
+* `commonpb.DataBlob`, which `encodeBlob` reduces to `Data` and `EncodingType` —
+  every blob of every mutation, so every replayed entry;
+* `InternalAppendHistoryNodesRequest`, `InternalHistoryNode`, `HistoryBranch` and
+  `HistoryBranchRange` (`mutation/history.go`) — an event batch, where the record
+  is the batch's one copy over a store that declares `cold.HistoryApplier`,
+  `cold/memcold` included.
+
+A `go.temporal.io/server` or `go.temporal.io/api` bump that adds a field to one
+of them compiles, encodes without it, and acks.
+
+*What would close it:* the five structs as rows of `mirroredStructs`, each field
+recorded as carried or derived with the reason, so a new one fails the guard the
+way a new field of the mutable-state requests does — watched to go red by adding
+a field to a copy of one of them.
 
 ---
 
@@ -800,9 +879,9 @@ supply the second handle, and a case added for it would be skipped by the one
 backend that could ever watch it go red." Both halves are true and the conclusion
 does not follow: the same two facts are true of *time*, and the answer there was not
 a suite case but a **function a deployment calls, proved in-tree against a
-decorator** — `CheckRetention` against `Expiring`. The entry even names that
-instrument, two paragraphs up, as what the other blind spot has. So the shape was
-sitting in the file and was read past.
+decorator** — `CheckRetention` against `Expiring`. This page names that
+instrument, in the entry on expiring storage below, as what that blind spot has.
+So the shape was sitting in the file and was read past.
 
 `waltest.CheckReopen` is that shape applied here. It takes a way of *opening* a log
 rather than a log: fence, append a run, close, open the storage again, and ask the
@@ -893,8 +972,9 @@ cold store does not hold, which is the whole reason they were in the log.
 *What is accepted* is that no run in this repository can see it. The conformance
 suite finishes in milliseconds and cannot age an entry, so a backend whose storage
 expires rows passes every case of it. This one differs from the three above in
-having an instrument rather than only a boundary, and the instrument is not a
-suite case for a reason no design can remove: the check costs the window it is
+having an instrument for the whole of what it accepts rather than only a boundary,
+and the instrument is not a suite case for a reason no design can remove: the
+check costs the window it is
 given in wall-clock time, and the length worth testing is the deployment's own.
 
 *Why it stays accepted:* `waltest.CheckRetention` is as far as a library can take
@@ -910,11 +990,11 @@ mechanism at all: a policy nobody applied to this table today is one somebody
 applies to it next quarter.
 
 **A store whose execution state omits the request ids.** The conflict a refused
-write carries is built from what `baserow.Current` answered, so such a store gives
+write carries is built from what `baserow.Rows.Current` answered, so such a store gives
 a retried start nothing to deduplicate against — an opaque failure where the layer
 could have named the run it collided with. Not a loss of acked data; it is here
-for the reason the delegated-conflict entry above is, that the effect on a caller
-is the same.
+for the reason *a refusal the caller cannot act on* above is, that the effect on a
+caller is the same.
 
 *What is accepted* is that the obligation is checked for the one store in this
 repository and unverifiable for any other. `memcold` is held to it
@@ -948,7 +1028,7 @@ that a current row's execution state carries the ids the create was issued with.
 
 **A windowed write whose drain loses the shard is told it definitely did not
 commit.** In a windowed mode the entry is appended and acked into the log before
-the watermark trips the drain, so when that drain's `Apply` answers
+a trigger trips the drain, so when that drain's `Apply` answers
 `*p.ShardOwnershipLostError` the error travels out to the writer whose mutation
 tripped it — and upstream reads that class as *guaranteed to have failed*,
 dropping the request's task keys from its tracker and skipping its notifications.
@@ -1008,7 +1088,8 @@ so the watermark it is handed is the seqno the committing transaction wrote. A
 halted cycle does not trim at all: the log is the next owner's evidence. Handing
 that call `Tail.Commit()` — the acked position — instead of `Tail.Applied()` is
 red, so the derivation is no longer the only thing holding it. `Trimmer.Force`
-(read) added two reach paths beside that one and both hand the same field: an
+(read) stands in for `Drained` on that path under storage pressure, and adds two
+reach paths beside it, all three handing the same field: an
 acquire calls it after `Tail.Floor` has planted the cold store's own watermark
 and before anything appends, and the age tick calls it on the loop, where only
 a committed drain has ever moved `applied`. The follow-up a Force queues behind
@@ -1018,12 +1099,16 @@ is one the cold store held.
 
 **The write path cannot ack into a cycle that has not replayed** (measured).
 `Cycle.add` calls `Cycle.start` before it reads the policy, takes a seqno or
-appends anything. `Cycle.Close` was the one door that skipped it, and that is the
-shutdown entry above. Moving the `start` call past the append is red.
+appends anything. `Cycle.Close` is the one door that calls `start` without the
+state check in front of it — `add`'s `Cycle.halted`, `Cycle.startForRead`'s
+running test — and that is the first entry under *Open*. Moving the `start` call past
+the append is red.
 
 **No intercepted write acks before its events are down** (measured). All eight go
-through one `ExecutionStore.write`, which calls `appendEvents` before
-`layer.Write`; a kind with no interception row is refused rather than transited.
+through one `ExecutionStore.write`, which — over a store that does not declare
+`cold.HistoryApplier` — calls `appendEvents` before `layer.Write`, and otherwise
+leaves the batches on the record for the drain (the entry below); a kind with no
+interception row is refused rather than transited.
 There is no second door to keep in step. Swapping the two calls is red — which
 says only that the *order* is held: how much of each slot goes down was a
 separate question, and is the closed entry above about a slot's second batch.
@@ -1035,15 +1120,18 @@ closes the same way on both of the two paths a cold store can choose between
 (ADR 0014), because the *order* is what is pinned and the mechanism is not.
 
 Where the store does not declare `cold.HistoryApplier`, the wrapper puts the
-events down through it *first*, so a crash strands unreachable history nodes and
+events down through it *first*, so a crash strands unreachable history rows and
 never a mutable state pointing at events nobody wrote. Where the store does
 declare it, the events and the state are one record with one ack, so there is no
 interval between them at all; what can then strand is a drain that made the
 history rows durable and failed before its transaction, which leaves the same
 unreachable nodes. **The forbidden order is unreachable in both**: the contract on
-`cold.Applier` is that every history row the batch carried is durable before the
-transaction publishing the state opens, and `memcold` keeps it by putting them
-inside that transaction.
+`cold.Applier` is that every history row the batch carried is durable no later
+than the transaction publishing the state — inside it or before it opens — and
+`memcold` keeps it by putting them inside that transaction. A tail written over
+a store that declares the marker and replayed over one that does not is not
+covered by this: it hands history to an applier that never said it writes it,
+and that is the second entry under *Open*.
 
 The class of garbage is the same in both and is one upstream produces itself and
 has a collector for: its own deletion path leaves a history branch behind
@@ -1054,19 +1142,21 @@ storage leak on a path upstream already leaks on. Nothing acked is missing on
 either path, which is why this stays a read rather than an open entry.
 
 What is *not* closed by it and is named rather than counted: the three history
-methods that transit past a window which may hold their rows
-([ADR 0014](docs/adr/0014-a-record-may-carry-the-event-batches-its-own-request-produced.md)'s
-last consequence). A `DeleteHistoryNodes` from `TrimHistoryBranch` finds no row
-and the drain writes that node after it; a `DeleteHistoryBranch` cannot see a
-branch whose tree row is still in the window. Both leave rows behind rather than
-taking acked ones away — a leak on the same collector's path — and both are
-accepted here because what a deletion aimed at an undrained node *should* do
-depends on where a deployment put its history, which is not this library's to
-decide.
+methods that transit past a window which may hold their rows — `DeleteHistoryNodes`,
+`DeleteHistoryBranch`, `GetHistoryTreeContainingBranch` (named as an exposure
+in [ADR
+0014](docs/adr/0014-a-record-may-carry-the-event-batches-its-own-request-produced.md)).
+A `DeleteHistoryNodes` from `TrimHistoryBranch` finds no row and the drain writes
+that row after it; a `DeleteHistoryBranch` cannot see a branch whose tree row is
+still in the window. Both leave rows behind rather than taking acked ones away — a
+leak on the same collector's path — and both are left as they are because what a
+deletion aimed at an undrained node *should* do depends on where a deployment put
+its history, which is not this library's to decide.
 
-**No error is swallowed on the layer's write paths** (measured, by sweep). One
-discarded error exists — the age tick's drain, which has no caller to answer and
-whose outcome is on the state already.
+**No error is swallowed on the layer's write paths** (measured, by sweep). Two
+discarded errors exist, both on the age tick — its age drain and its
+storage-pressure drain — which have no caller to answer and whose outcome is on
+the state already.
 
 **The registry cannot deadlock a node through a cycle's loop** (read). Every
 `held` method finishes its map arithmetic and returns without calling into a
@@ -1076,16 +1166,18 @@ block.
 **A sparse record cannot lose a field silently** (structural). `mutation`'s
 field-set guard walks every request struct of every kind and fails by name on a
 field that is neither carried nor recorded as deliberately dropped, and
-`TestTheGuardCatchesAnUpgrade` is what says the guard is not vacuous.
+`TestTheGuardCatchesAnUpgrade` is what says the guard is not vacuous. The data blob
+and the event batch's four structs are the exception: they are not among the
+walked ones, and that is the third entry under *Open*.
 
 **Sync mode's window really is one** (read). `Sync` is a section key read once
 when the policy is built, not a dynamic setting, so no shard changes mode under a
 live cycle and "a window of one by construction" holds wherever it is relied on.
 
-**A queue reader does survive a range id renewal** (read, against upstream
-v1.29.6). `renewRangeLocked` drains in-flight task requests, bumps the range id,
+**A queue reader does survive a rangeID renewal** (read, against upstream
+v1.29.6). `renewRangeLocked` drains in-flight task requests, bumps the rangeID,
 updates the task key manager and unloads nothing. This is a premise rather than a
-hazard: it is what makes the task-page routing entry above reachable.
+hazard: it is what makes the two-token-spaces entry above reachable.
 
 **The two `last_write_version` columns cannot drift** (read). The layer's condition
 authority reads `current_executions.last_write_version` where upstream joins and
@@ -1106,12 +1198,16 @@ rather than closed.
 
 **`memcold` writes two columns it never reads back**, and this is the second: the
 current row's `start_time`. `currentRowResponse` builds its answer from the row's
-state blob and `last_write_version` and touches the column not at all, so whether a
+state blob and `last_write_version`, and reads the column only for a row with no
+blob, which neither this store nor the upstream code it embeds writes; so whether a
 state with no start time writes NULL or 1970 is invisible to every read this
 repository has — while for a deployment it is the value upstream's workflow-id
 reuse check measures against, the same hazard the delegated-conflict entry above is
-closed for. Both columns are therefore prose here by necessity, not by choice: an
-assertion over either needs a reader this store does not expose.
+closed for. An assertion over it needs a table read, and it has one now:
+`TestTheCurrentRowsColumnsComeFromItsBlob` (`cold/memcold/currentrow_internal_test.go`)
+reads the row back inside the package, for a state with a start time and one
+without. The executions row's `last_write_version` above has no such read and is
+still prose.
 
 **The oracle comparing the current row by its run alone was hiding nothing**
 (measured). It diffs run rows and task rows whole and compared the current row by
@@ -1215,7 +1311,7 @@ range-delete ordering entry under *The drain* above sat unguarded at one of its
 three homes with every run green: moving the deletes past the request loop
 leaves the oracle alone green, where the buffered-batch ordering and the reset's
 clear beside it turn it red. The same measurement confirms what the collections
-entry below says by reading — swapping the applier's signal and request-cancel
+entry under *Refuted* says by reading — swapping the applier's signal and request-cancel
 *deletes* is invisible to it, those being two of the five the corpus never
 deletes from.
 
@@ -1231,30 +1327,6 @@ unpaired-delete entry above is waiting for. **The rule to take from all three: a
 oracle is bounded by what its generator reaches, by what its arms share, and by
 what it reads back, and those are worth enumerating separately from the code's
 branches.**
-
-**A fourth class: cross two same-typed things.** The three above all remove
-something — a write, a condition, a bound. This one leaves everything present
-and doing the wrong job: a field assigned from its neighbour, a case label on
-the arm beside it, an argument handed to the parameter next to it. It is what
-finds a **hand-filled mirror**, and this tree is full of them — the read
-answer's three, the fold's two merge functions, the applier's delta literals,
-the codec's two facing each other. The reason the other three classes walk past
-it is the reason a guard does: a crossed field is *present* and *non-zero*, so
-every check of the form "is this filled" passes. Nine crossings in the read
-answer's mirrors left the whole of `go test ./...` green, against a guard
-written to enumerate that very answer off Temporal's type.
-
-Two things sharpen it. **Look for the repeated type**: four of the six
-collections are `map[int64]*DataBlob` and five of the merge's scalars are
-`int64`, and those counts are exactly how many ways each line can be wrong while
-compiling. And **cross a fan-out's arms, not only its fields** — routing a
-category to the table beside it is the same defect one level up, which is how
-the task fan-out turned out to be driven at one category of six.
-
-Its own blind spot is worth naming, because it is the oracle's: a crossing
-applied to *both* halves of a mirror pair cancels. The codec's encoder and
-decoder face each other, so swapping two fields' slots in both round-trips
-perfectly — and nothing else in the tree reads a record it did not just write.
 
 **A third class: move a comparison to its adjacent form.** Deleting a write finds
 what never reaches storage; deleting a guard finds a condition that always passes;
@@ -1274,12 +1346,13 @@ of an equal value, a switch arm the case above it already matched.
 fifty-one were chosen; `tools/mutation-sweep.py` enumerates the class instead, and
 **111** comparisons over the whole layer — `fold`, `cycle` and its three
 sub-packages, `apply`, `wrapper`, `baserow`, `mutation`, `wal`, `walmetrics` and the
-root — plus the two shipped implementations, `memwal` and `memcold`, left **28** green, of which **seven** were boundaries nothing drove:
-the window's byte watermark and its age, the trim cadence's time half, a task
-range's inclusive minimum, the task page's own range on both halves, the history
-page's strict ascent, and the length check in front of `basePage[0]` — the last
-one a panic rather than a wrong answer. A chosen list cannot make that claim,
-which is the argument for generating a class rather than writing one down.
+root — plus the two shipped implementations, `memwal` and `memcold`, left **28**
+green, of which **seven** were boundaries nothing drove: the window's byte trigger
+and its age trigger, the trim cadence's time half, a task range's inclusive
+minimum, the task page's own range on both halves, the history page's strict
+ascent, and the length check in front of `basePage[0]` — the last one a panic
+rather than a wrong answer. A chosen list cannot make that claim, which is the
+argument for generating a class rather than writing one down.
 
 **The dismissals were confirmed, and one of them was wrong.** Re-run with every
 package in the judge, 8 of the 28 are caught: seven by the tests this branch added,
@@ -1344,16 +1417,17 @@ expressed" arms unreached — they are the arms no valid stream produces, which 
 exactly why nothing drives them and exactly why `Add` needs them, being where a
 replay arrives with no `Check` in front of it. And **a panic ends the test binary**,
 so the subtests after it never run: a sweep whose count looks one short may be
-reporting one mutation's blast radius rather than a miscount. **The second segment's one finding is the same shape at a seam rather than in the
-fold.** A foreign page token is refused by the frame this layer puts on its own —
-and the test for it used the base store's token, which fails the frame *and* the
-parse, so it said nothing about which did the work. Removing the frame check left
-everything green. What the frame buys over the parse is a token whose body happens
-to unmarshal into this layer's own: four bytes of somebody else's followed by valid
-JSON is adopted as ours at whatever cursor it decodes to, which restarts the
-pagination inside the window, leaves the base's cursor behind, and hands the range
-the reader completes the acked rows that were in it. That is the closed entry above
-about the two token spaces, proved at last against the thing it is actually about.
+reporting one mutation's blast radius rather than a miscount. **The second segment's
+one finding is the same shape at a seam rather than in the fold.** A foreign page
+token is refused by the frame this layer puts on its own — and the test for it used
+the base store's token, which fails the frame *and* the parse, so it said nothing
+about which did the work. Removing the frame check left everything green. What the
+frame buys over the parse is a token whose body happens to unmarshal into this
+layer's own: four bytes of somebody else's followed by valid JSON is adopted as ours
+at whatever cursor it decodes to, which restarts the pagination inside the window,
+leaves the base's cursor behind, and hands the range the reader completes the acked
+rows that were in it. That is the closed entry above about the two token spaces,
+proved at last against the thing it is actually about.
 
 **The third segment took the advice and is the whole of the cheap end**: the
 shipped store, the shipped log, the wrapper, the root package and the emitter —
@@ -1378,7 +1452,7 @@ Of the twenty-one still green, eighteen are `if err != nil` on a call no fixture
 can fail — the untested-error-path class this file already names as coverage rather
 than a defect — and three are `len(x) == 0` or nil early returns the next line
 no-ops through. `memwal`'s `CheckTrim` is the one worth naming: its absence is
-covered by the `upTo < base` check two lines later, which is the guard that does
+covered by the `upTo < base` check further down, which is the guard that does
 the work and is now driven.
 
 **The fourth segment is measured rather than finished, and the measurement is the
@@ -1404,7 +1478,7 @@ So those three are swept and closed, with no candidates to confirm, and the pair
 runs is the cleanest statement of the rule there is: **the judge decides the
 finding, so a green is about the judge until the judge contains whatever guards the
 line.** What is left unswept is `mutation` alone, 72 mutations, and its consumers are
-`fold`, `cycle`, `apply` and `memcold`.
+`fold`, `cycle`, `wrapper` and `memcold`, with `apply`'s tests beside them.
 
 On the evidence of every segment, the interesting question in what remains is the
 same one: **which of its refusals no valid stream reaches.**
@@ -1421,6 +1495,30 @@ encoder's own comment already explains). An *untested error path* is a
 a defect, and chasing it means writing a fault injector per deserialiser. Read each
 green before writing a test, and record the equivalents where the next sweep will
 meet them — otherwise every pass re-triages the same forty lines.
+
+**A fourth class: cross two same-typed things.** The other three all remove
+something — a write, a condition, a bound. This one leaves everything present
+and doing the wrong job: a field assigned from its neighbour, a case label on
+the arm beside it, an argument handed to the parameter next to it. It is what
+finds a **hand-filled mirror**, and this tree is full of them — the read
+answer's three, the fold's two merge functions, the applier's delta literals,
+the codec's two facing each other. The reason the other three classes walk past
+it is the reason a guard does: a crossed field is *present* and *non-zero*, so
+every check of the form "is this filled" passes. Nine crossings in the read
+answer's mirrors left the whole of `go test ./...` green, against a guard
+written to enumerate that very answer off Temporal's type.
+
+Two things sharpen it. **Look for the repeated type**: four of the seven
+collections are `map[int64]*DataBlob` and five of the merge's scalars are
+`int64`, and those counts are exactly how many ways each line can be wrong while
+compiling. And **cross a fan-out's arms, not only its fields** — routing a
+category to the table beside it is the same defect one level up, which is how
+the task fan-out turned out to be driven at one category of six.
+
+Its own blind spot is worth naming, because it is the oracle's: a crossing
+applied to *both* halves of a mirror pair cancels. The codec's encoder and
+decoder face each other, so swapping two fields' slots in both round-trips
+perfectly — and nothing else in the tree reads a record it did not just write.
 
 It is not a suite and should not become one: a mutation run is a thing a session
 does, and a target that had to stay green would be a second copy of the applier.
@@ -1505,26 +1603,26 @@ that does not remember the last, produce nothing but stale documentation.** The
 fresh context is not ceremony: a reader who remembers concluding something is
 checking their own answer.
 
-**The floor is signed. Open went empty, took an entry back, and is empty again.**
+**The floor is signed. Open went empty, took an entry back, emptied, and holds three again.**
 One adversarial pass on a fresh context put an entry there — a current row written
 without its start time — which is what the paragraph below says such a pass is for,
 and the first time it had happened rather than been anticipated. It is closed now,
 along with a second one the same reading turned up beside it, and what closing it
 took is on the entry: a reverse of a decision three documents recorded as
 deliberate, none of which said what the divergence bought. The floor itself is
-unchanged: every entry that was closed, refuted or accepted still is. Three of the acceptances are
-the harness this
-library does not build — a durable log, two processes, a kill, and a judge outside
-all three — and the change that would reopen all three at once is durable storage
-shipping here, which
+unchanged: every entry that was closed, refuted or accepted still is. Three of
+the acceptances are the harness this library does not build — a durable log, two
+processes, a kill, and a judge outside all three — and the change that would
+reopen all three at once is durable storage shipping here, which
 [ADR 0011](docs/adr/0011-each-seam-ships-one-implementation.md) refuses. Two more
 are obligations at a seam, one with an instrument and one with a sentence. The
 sixth is the only one that can be closed from inside and has not been, because
 every way of closing it changes the failover signal and the first three are why
 that cannot be judged here.
 
-**That is the convergence condition and not the end.** What it buys is that a pass
-opening this file has nothing to pick up — which is exactly when the two
+**That is the convergence condition and not the end.** What it buys, once Open is
+empty again, is that a pass opening this file has nothing to pick up — which is
+exactly when the two
 adversarial passes are worth running, each on a context that does not remember the
 last. A pass that finds a named entry again should add nothing but a pointer; a
 pass that finds something *not* named here has found the thing this file admits it

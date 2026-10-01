@@ -18,8 +18,7 @@ import (
 
 // envAcceptanceMutations overrides the stream length. A full-volume run is
 // 10^6 and is set through this variable; the default is a tenth of it, which
-// keeps the test inside a normal run's budget while still being an order of
-// magnitude past anything the cluster-bound runs can afford.
+// keeps the test inside a normal run's budget.
 const envAcceptanceMutations = "WAL_ACCEPTANCE_MUTATIONS"
 
 const defaultAcceptanceMutations = 100_000
@@ -29,7 +28,7 @@ const defaultAcceptanceMutations = 100_000
 // chains (MaxChainLength 8 at Default()) to land inside one window and merge —
 // measured: 256 leaves the fold ratio at 1.30 because a chain keeps straddling
 // the boundary — small enough that the accumulator's memory stays a window and
-// not a stream (a window is ~0.7 MB of encoded payload at Default()'s shapes).
+// not a stream (a window is ~0.56 MiB of encoded payload at Default()'s shapes).
 const acceptanceWindow = 1024
 
 // noClusterRun is what one stream through the path turned out to be. The

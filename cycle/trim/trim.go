@@ -1,6 +1,6 @@
 // Package trim is the lazy deletion of WAL entries the cold store already
 // holds: the cadence that decides when, the one trim in flight, and the two
-// counters that tell a cadence that fired from a trim that reached the log.
+// counters that tell a trim that fired from a trim that reached the log.
 //
 // It runs beside the apply cycle rather than in it, which is the whole of why
 // it is a package. A stuck log may not stop a shard from acking and applying,
@@ -12,7 +12,8 @@
 // Trimming is part of the latency budget rather than hygiene: a backend's
 // reads get dearer as its log gets longer ([wal.Log.Trim]), so a drain is what
 // fires one, rather than a sweeper on a clock of its own. A failed trim is
-// logged and retried at the next cadence, and halts nothing.
+// logged and halts nothing: a cadenced one is retried at the next cadence, a
+// forced one when its caller forces again.
 package trim
 
 import (
@@ -87,7 +88,7 @@ func New(shard wal.ShardID, log wal.Log, clock clock.TimeSource, emit *walmetric
 // Drained tells the Trimmer that a drain committed and left the watermark at
 // applied. It starts a trim when the cadence says so — after the commit, off
 // the critical path, up to the committed watermark with no safety lag, since
-// recovery reads the watermark rather than the log.
+// recovery replays only what lies above the watermark.
 //
 // A cadence that comes due while a trim is in flight is skipped rather than
 // queued: the next one takes a watermark that has moved further, and two trims
@@ -133,14 +134,15 @@ func (t *Trimmer) Force(applied wal.Seqno) {
 }
 
 // Wait blocks until no trim is in flight. Whoever retires a cycle calls it, so
-// that a backend outlives the last read it was asked for.
+// that a backend outlives the last trim it was asked for.
 func (t *Trimmer) Wait() { t.running.Wait() }
 
-// Counters is what this shard's trims have done: cadences that fired, and the
-// subset that reached the log. Two numbers rather than one, because a run whose
-// every trim failed would otherwise read like one whose cadence never fired —
-// and a reading taken while a trim is in flight leaves fired one above
-// committed, which is the honest answer rather than a race.
+// Counters is what this shard's trims have done: trims that fired, cadenced or
+// forced, and the subset that reached the log. Two numbers rather than one,
+// because a run whose every trim failed would otherwise read like one whose
+// cadence never fired — and a reading taken while a trim is in flight, or
+// queued behind one, leaves fired above committed by those, which is the
+// honest answer rather than a race.
 func (t *Trimmer) Counters() (fired, committed int) {
 	return t.fired, int(t.committed.Load())
 }

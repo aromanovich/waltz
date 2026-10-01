@@ -6,8 +6,8 @@ package cycle
 // writers the tail has room for, or admits ones it has not.
 //
 // This file drives the sites that exist. The other half — a new site writing
-// the counters around the mutators — is a type error since they moved into
-// tailstate, and is no longer tested here.
+// the counters around the mutators — is a type error, the counters being
+// unexported in tailstate.
 
 import (
 	"context"
@@ -139,13 +139,13 @@ func TestADrainThatFoldsToNothingStillSettlesWhatItAcked(t *testing.T) {
 }
 
 // TestADrainOfAnEmptyWindowSettlesNothing is the other direction of the same
-// early return, and the more dangerous one: drainNow at shutdown, a read under
+// early return, and the more dangerous one: the shutdown drain, a read under
 // DrainOnRead and replay's terminal drain all reach it with a window that folded
 // nothing, which is what fold.Batch.Settles answers false for. Settling such a
 // drain anyway would put resolved under the whole log and report every entry
 // ever acked as unsettled, which is I10 refusing every write on the shard over
-// memory nobody holds.
-// Replay is where the pre-existing suite goes red without the guard
+// bytes nobody holds.
+// Replay is where the rest of the suite goes red without the guard
 // (TestAProvisionalEntryWhoseConditionFailsIsDropped); drainNow is the cause
 // this test can drive with nothing else left in the tail to mis-settle.
 func TestADrainOfAnEmptyWindowSettlesNothing(t *testing.T) {

@@ -180,8 +180,7 @@ func (b *Backend) Trim(ctx context.Context, shard wal.ShardID, upTo wal.Seqno) e
 	}
 	// Copied rather than re-sliced: the dropped entries would stay reachable
 	// through the backing array, payloads and all, and a continuously trimmed
-	// log would never give a byte back. The tail's memory budget is measured
-	// against this backend.
+	// log would never give a byte back.
 	log.entries = slices.Clone(log.entries[drop:])
 	return nil
 }

@@ -4,15 +4,15 @@ The layer buys fewer cold-store transactions by holding acknowledged work outsid
 Every tuning decision here changes one side of that exchange. A larger window collapses more
 mutations into one transaction, but leaves more work to replay after a crash and more bytes in
 memory. Trimming more often shortens the retained log, but spends a transaction each time. A larger
-per-shard tail bound lets a shard ride out a longer disturbance, but only if the node has memory for
-every shard it may own at once.
+per-shard tail bound lets a shard ride out a longer disturbance, but only if the node's tail budget
+covers every shard it may own at once.
 
 Configuration is easier to reason about as four questions:
 
 1. **Is the layer enabled at all?** The presence of the static `wal` section answers this.
 2. **When should acknowledged work drain or trim?** Five live settings control the running cycle.
 3. **How much unapplied work may one node accept?** Four start-up settings, three of which are the
-   terms of one memory budget.
+   terms of one tail budget.
 4. **Is this production operation or an attribution experiment?** `sync` and `drain_on_read`
    deliberately trade the normal batching path for easier measurement.
 
@@ -40,9 +40,11 @@ it is the one place in the file format that already admits keys the server does 
 own decoder ordinarily drops keys it has no field for, so adding a `wal:` key costs an existing
 deployment nothing.
 
-Only the **default** datastore's options are read (`persistence.defaultStore`), because the
+`waltz.Parse` reads whatever options map it is handed; which one is the composing `main`'s choice,
+and the right one is the **default** datastore's (`persistence.defaultStore`), because the
 ExecutionStore and the ShardStore the layer decorates belong to that datastore. A `wal` section on
-any other datastore is read by nobody.
+any other datastore is read by nobody. The table below is what a node does when its `main` makes
+that choice.
 
 ```yaml
 persistence:
@@ -71,8 +73,7 @@ persistence:
 Where a request's event history goes is **not** a key. It is a property of the cold store the node
 composed: one whose applier declares `cold.HistoryApplier` takes the batches in the drain's own
 publication, and one that does not has them written through it before the append. A deployment's
-answer is which store it brought, so there is no second place for it to disagree with itself
-(ADR 0014).
+answer is which store it brought, so there is no second place for it to disagree with itself.
 
 ### Absent, present, malformed
 
@@ -86,8 +87,8 @@ answer is which store it brought, so there is no second place for it to disagree
 | `WAL:` / `Wal:` instead of `wal:` | **refusal to start**. Both decoders would drop it in silence, and the result would be a node in passthrough under a file that asked for intercept |
 | an unknown key *outside* `wal:` | not this layer's business, and not refused: the rest of the options map belongs to the store |
 
-A refusal here is a non-zero exit with **no listening port**: the parse runs before
-`temporal.NewServer` is built. See [chapter 09](09-operations.md) for the start-up order.
+A refusal here is a non-zero exit with **no listening port**, provided the `main` parses before it
+builds `temporal.NewServer`. See [chapter 09](09-operations.md) for the start-up order.
 
 Diagram — where a key is read and by whom:
 
@@ -174,20 +175,20 @@ the number, so there is no second copy of the measured policy anywhere.
 The nine settings form two groups. Five answer *when should accumulated work move?* They are read at
 the decision that consults them, so a change takes effect on a shard this node already holds, with
 no re-acquire and no replay. Four answer *how much tail may this process accept?* They are **read at
-start-up** — three of them are the factors of a memory budget the node checks before it connects to
-anything, and the fourth is read alongside them. Changing any of the four **needs the history
+start-up** — three of them are the factors of a tail budget the node checks before it boots,
+and the fourth is read alongside them. Changing any of the four **needs the history
 services restarted**.
 
 | key | type | default | when it is read | what it bounds | raising / lowering it |
 |---|---|---|---|---|---|
 | `wal.windowMutations` | int | `256` | **live** — at the decision | the drain trigger in mutations: the window is applied as one transaction when it holds this many | it sits at the measured collapse knee. Lowering gives collapse away; raising holds more unapplied work per shard |
 | `wal.windowBytes` | int | `262144` | **live** | the same trigger in encoded bytes, whichever trips first | as above, in the other unit |
-| `wal.windowAge` | duration | `5s` | **live** | how long an idle shard's acked-but-unapplied work waits before it is drained — and therefore what the next owner would replay | a recovery-budget choice, not a measured one. A change takes effect within one window, since the timer is re-armed at every tick. Raising it lengthens replay after a hard restart |
-| `wal.trimEvery` | int | `16` | **live** | the trim cadence in drains: the log below the applied watermark is deleted after this many drains | at 1 it is a `DeleteRange` per drain — a transaction per drain for no gain. Raising it leaves more of the log behind, which is what a post-mortem reads |
-| `wal.trimAfter` | duration | `1m0s` | **live** | the same cadence in time, whichever trips first | raising `trimEvery` alone does not keep a log: this one fires anyway |
-| `wal.hardMaxEntries` | int | `8192` | **START-UP** | invariant [I10](02-concepts-and-invariants.md#the-invariants)'s bound on one shard's tail in entries — what has been acked and not yet applied. A shard at the bound refuses its writers with `ResourceExhausted` rather than parking them behind the apply | it is one half of a bound whose other half is `hardMaxBytes`; neither unit works alone, and a node honouring one from a different edit than the other is a bound nobody wrote |
+| `wal.windowAge` | duration | `5s` | **live** | how long an idle shard's acked-but-unapplied work waits before it is drained — at least this long and under twice it, since the timer ticks once per `windowAge` — and therefore what the next owner would replay | a recovery-budget choice, not a measured one. A change takes effect within one window, since the timer is re-armed at every tick. Raising it lengthens replay after a hard restart |
+| `wal.trimEvery` | int | `16` | **live** | the trim cadence in drains: the log at or below the applied watermark is deleted after this many drains | at 1 it is a `Log.Trim` per drain — a transaction per drain for no gain. Raising it leaves more of the log behind, which is what a post-mortem reads |
+| `wal.trimAfter` | duration | `1m0s` | **live** | the same cadence in time, whichever trips first — judged when a drain commits, so an idle shard does not trim on this timer | raising `trimEvery` alone does not keep a log: this one fires anyway, at the first drain past it |
+| `wal.hardMaxEntries` | int | `8192` | **START-UP** | invariant [I10](02-concepts-and-invariants.md#the-invariants)'s bound on one shard's tail in entries — what has been acked and not yet settled. A shard at the bound refuses its writers with `ResourceExhausted` rather than parking them behind the apply | it is one half of a bound whose other half is `hardMaxBytes`; neither unit works alone, and a node honouring one from a different edit than the other is a bound nobody wrote |
 | `wal.hardMaxBytes` | int | `8388608` | **START-UP** | the same bound in encoded bytes. One workflow near the server's own 8 MB mutable-state limit turns an entries-only bound into a byte budget with no ceiling | arithmetic, not taste: the node's tail budget divided by the shards it may own. It is a factor of the product asserted before the node boots |
-| `wal.maxShards` | int | `256` | **START-UP** | what one node may own at once — **not** the cluster's shard count. Nothing counts the shards a node actually holds, so this is the figure the budget arithmetic is done against rather than a limit the layer enforces: the default is a steady-state figure doubled, so that the product still covers a node that has picked up a departed neighbour's shards. [Chapter 14](14-where-the-defaults-came-from.md) says the steady-state figure itself is recorded nowhere | the other factor of the same product |
+| `wal.maxShards` | int | `256` | **START-UP** | what one node may own at once — **not** the cluster's shard count. Nothing compares it with the shards a node actually holds, and no acquire is refused past it, so this is the figure the budget arithmetic is done against rather than a limit the layer enforces: the default is a steady-state figure doubled, so that the product still covers a node that has picked up a departed neighbour's shards. [Chapter 14](14-where-the-defaults-came-from.md) says nothing in the tree records where the steady-state figure comes from | the other factor of the same product |
 | `wal.tailBudgetBytes` | int | `2147483648` | **START-UP** | the **encoded** bytes of unapplied tail one node may hold — not heap, which is several times larger ([chapter 14](14-where-the-defaults-came-from.md#what-the-budget-costs-resident)) | `hardMaxBytes × maxShards` must fit in it or the node refuses to start |
 
 > **Why the four marked START-UP are read once rather than live.** Three of them —
@@ -301,8 +302,9 @@ to start.
 
 `waltz.Compose` asserts it, through `cycle.NewManager`, and neither opens anything nor reaches
 anything: the check is arithmetic over values already in memory from the two config surfaces, so a
-node whose numbers do not fit is refused without a round trip. The same assertion is available to
-the composing `main` as `policy().CheckBudget()`. Calling it there, before the log and the cold
+node whose numbers do not fit is refused without a round trip of its own — though by then the
+caller has already opened the log and the cold store it hands over. The same assertion is available
+to the composing `main` as `policy().CheckBudget()`. Calling it there, before the log and the cold
 store are opened, refuses the node before anything connects to anything — that ordering is the
 caller's to choose, but the assertion itself cannot be skipped.
 

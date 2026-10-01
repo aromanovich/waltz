@@ -19,7 +19,10 @@
 // type outright. The cost of an explicit mirror is that a field Temporal adds is
 // a field this format silently omits; that cost is paid by the field-set guard
 // in mutation's tests, which holds one recorded decision per field of every
-// struct mirrored here.
+// struct mirrored here except five: DataBlob, and the history batch's
+// InternalAppendHistoryNodesRequest, InternalHistoryNode, HistoryBranch and
+// HistoryBranchRange are not walked, so a field added to one of them is omitted
+// with the guard green (DURABILITY.md, under Open).
 
 package mutation
 
@@ -673,7 +676,7 @@ func (x *DeleteRequest) GetRunId() string {
 // AddTasksRequest mirrors persistence.InternalAddHistoryTasksRequest.
 //
 // It is the first request in this format that names no run and asserts nothing:
-// a task is a queue entry rather than workflow state. NamespaceID and WorkflowID
+// a task is a queue entry rather than mutable state. NamespaceID and WorkflowID
 // are carried because the request has them, and the store below ignores both —
 // its task rows are keyed by (shard, category, key) alone.
 //
@@ -751,9 +754,9 @@ func (x *AddTasksRequest) GetTasks() []*TaskGroup {
 // one category's task rows in [inclusive_min, exclusive_max) are garbage.
 //
 // The category travels as its id, like every other category in this format, and
-// is re-resolved through the process's registry on decode — so a range naming a
-// category this node does not know is an error rather than a range silently not
-// deleted.
+// is re-resolved through the process's task-category registry on decode — so a
+// range naming a category this node does not know is an error rather than a
+// range silently not deleted.
 type RangeCompleteTasksRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ShardId       int32                  `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
@@ -1867,9 +1870,10 @@ func (x *ChasmNodeEntry) GetData() *Blob {
 //
 // The category travels as its id, because tasks.Category has unexported fields
 // and no way back from its text form. The id is re-resolved through the
-// *process's* registry on decode, and the valid set is a function of cluster
-// configuration — CategoryArchival is registered only when archival is enabled —
-// so an id this process does not know is an error, never a fallback.
+// *process's* task-category registry on decode, and the valid set is a function
+// of cluster configuration — CategoryArchival is registered only when archival
+// is enabled — so an id this process does not know is an error, never a
+// fallback.
 type TaskGroup struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CategoryId    int32                  `protobuf:"varint,1,opt,name=category_id,json=categoryId,proto3" json:"category_id,omitempty"`

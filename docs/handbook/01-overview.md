@@ -1,6 +1,6 @@
 # The layer at a glance
 
-## A workflow writes more history than it keeps
+## A workflow writes far more than it keeps
 
 Temporal's history service is write-heavy by construction. A single workflow can move through
 hundreds of state transitions. Each transition produces an `ExecutionStore` write that the
@@ -25,11 +25,11 @@ for every version of the row and for a task whose entire lifetime fitted between
 transitions.
 
 `ExecutionStore` holds two kinds of data with different shapes, and only one of them can be
-collapsed. **Event history** is what a workflow replays against: a transition *appends* batches of
-events to their own tables and never rewrites a batch it already wrote. **Mutable state** is the
-current state of one run — which activities are started and how often they were retried, which
-timers are set, which children are outstanding, where the history ends and what version all of it is
-at. A transition rewrites the run's row **whole**, and adds and deletes the rows of its collections
+collapsed. **Event history** is what workflow code is re-executed against: a transition *appends*
+batches of events to their own tables and never rewrites a batch it already wrote. **Mutable state**
+is the current state of one run — which activities are started and how often they were retried,
+which timers are set, which children are outstanding, where the history ends and what version all of
+it is at. A transition rewrites the run's row **whole**, and adds and deletes the rows of its collections
 one at a time. `InternalWorkflowMutation` carries exactly that shape: the entire `ExecutionInfoBlob`
 even for a delta, plus a per-member upsert and delete map for each collection.
 
@@ -97,8 +97,10 @@ puts the folded batch, the epoch check and the new `appliedSeqno` into a single 
 ## One write, and the interval it opens
 
 1. The history service calls `UpdateWorkflowExecution` on `wrapper.ExecutionStore`.
-2. The wrapper encodes the call as a `mutation.Mutation` and hands it to that shard's cycle.
-3. The cycle checks the caller's condition and its own tail bound before writing anything.
+2. The wrapper wraps the call in a `mutation.Mutation` and hands it to that shard's cycle, which
+   encodes it.
+3. The cycle checks its backpressure — a drain whose outcome it cannot yet say, a log that has asked
+   for no new appends, and the tail bound — and the caller's condition before writing anything.
 4. It appends the record at the next seqno under the shard's current epoch. The log now contains a
    durable, ordered promise.
 5. The cycle charges that promise to the tail and folds it into the window. If this write fires no
@@ -106,20 +108,20 @@ puts the folded batch, the epoch check and the new `appliedSeqno` into a single 
    the window waits while its own call performs the resulting drain.
 6. A read during this interval combines the old cold row with the window. If the process disappears,
    the next owner reconstructs the same interval by replaying the log.
-7. Eventually a drain starts — fired by the mutation trigger, the byte trigger, the age
-   timer, a read, a replay, a window the accumulator cannot fold any further, or an explicit call
-   at shutdown. One transaction writes the folded requests and advances `appliedSeqno`. A later
-   trim may remove the log entries that transaction covered.
+7. Eventually a drain starts — fired by the mutation trigger, the byte trigger, the age timer, a
+   read, a replay, a window the accumulator cannot fold any further, a log asking for its storage
+   back, or an explicit call at shutdown. One transaction writes the folded requests and advances
+   `appliedSeqno`. A later trim may remove the log entries that transaction covered.
 
 Step 4 is the irreversible boundary. Before the append, an error still belongs to this caller: the
 write can be refused without consuming a seqno, and nothing is in the log. After the append,
 the record exists and cannot be withdrawn, so it will be settled by this process's next drain or,
 if this process dies, by whoever replays the log. The caller does not hear about it until step 5.
 
-That boundary is also what makes a drain failure hard to attribute. A drain runs on some caller's
-call — the one whose write tripped a trigger, at step 5 — and that caller does get the error back.
-But the rest of the batch — up to 255 more mutations at the shipped watermark, fewer when the byte
-trigger fires first — belongs to callers who were acked long ago and have gone, so one caller is
+That boundary is also what makes a drain failure hard to attribute. A drain that a write trips runs
+on that caller's call, at step 5, and that caller does get the error back.
+But the rest of the batch — up to 255 more mutations at the shipped mutation trigger, fewer when the
+byte trigger fires first — belongs to callers who were acked long ago and have gone, so one caller is
 handed a failure for work that is mostly not its own, and its own mutation is durable in the log
 whatever the answer says. The failure is real, it reaches somebody, and it identifies
 nobody. (Sync mode is the one exception, and chapter 08 is where it is described.) [Chapter
@@ -135,7 +137,7 @@ graph TD
   HS(("Temporal history service"))
   ES(("wrapper.ExecutionStore"))
   SS(("wrapper.ShardStore"))
-  CY(("cycle: one goroutine per shard and epoch"))
+  CY(("cycle: one loop per shard and epoch"))
   ACC(("fold.Accumulator: the window"))
   LOG(("wal.Log contract"))
   MW(("memwal: the in-process log"))
@@ -146,12 +148,12 @@ graph TD
 
   HS -->|writes and reads| ES
   HS -->|updates shard| SS
-  SS -->|fences| CY
+  SS -->|reports an acquire| CY
   SS -->|transits| CS
   ES -->|hands mutations| CY
-  ES -->|reads through overlay| CY
+  ES -->|the four reads, through overlay and merges| CY
   ES -->|transits the rest| CS
-  CY -->|appends| LOG
+  CY -->|fences, appends, replays| LOG
   CY -->|folds| ACC
   CY -->|drains| AP
   CY -->|trims| LOG
@@ -165,14 +167,16 @@ graph TD
 
 How to read this. Nothing crosses the shard boundary: every arrow out of `wrapper.ExecutionStore`
 that is not a transit or a metric goes to *that shard's* cycle goroutine, which is the only thing
-that touches that shard's accumulator, log and drain.
+that touches that shard's accumulator and drain, and the only thing that appends to its log.
 
 Three kinds of path reach the cold store, and the diagram draws two of them. **Transits** are the
 calls the layer has no record shape for; they go to the base store unchanged. **The applier** is the
 layer's only door to the base store's own transactions, one per drain. The third path is undrawn:
-the layer also uses the base store on its own account. An intercepted write puts its event slots
-down through it before the append, a read the window cannot answer falls through to it, and an
-assertion the window cannot settle by itself is checked against it.
+the layer also uses the base store on its own account. Over a cold store that does not declare
+`cold.HistoryApplier`, an intercepted write puts its event slots down through it before the append;
+a read the window cannot answer falls through to it, an assertion the window cannot settle by
+itself is checked against it, and a cycle reads the applied watermark back through
+`cold.Watermarker` when it starts and when a drain's outcome is unknown.
 
 The arrows to `walmetrics.Emitter` are one-way: the emitter may not import anything it measures.
 
@@ -198,14 +202,14 @@ moving from the diagram into the tree.
 | `wal/memwal/` | the one shipped implementation of that contract, in process memory, so everything above the log can be tested without a cluster |
 | `wal/waltest/` | the conformance suite: a candidate `wal.Log` runs it against itself to find out whether it satisfies the contract |
 | `mutation/` | what one entry *is*: the protobuf record of one persistence call, plus the record kinds |
-| `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task pages |
+| `fold/` | the accumulator: folds a window of mutations into one merged request per dirty workflow, preserves the assertions that request stands on, answers reads through the overlay, and merges task and history-branch pages |
 | `baserow/` | the cold store's two mutable-state reads as the write path needs them — one run's row, and the current-execution row with `last_write_version` beside it. `wrapper`, `cycle` and `apply` all need the pair and none of them may import another's copy, so it lives here and imports nothing of the layer |
-| `cold/` | the cold store's contract: `Store`, which is what a deployment implements — the `Applier` a drain lands on and the `Watermarker` that reads back the seqno the last drain committed, embedded in one interface because one value has to answer both — and the four things an implementation owes — one publication per drain (the merged requests, the task work and the watermark in one transaction, over event history already durable), the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
+| `cold/` | the cold store's contract: `Store`, which is what a deployment implements — the `Applier` a drain lands on and the `Watermarker` that reads back the seqno the last drain committed, embedded in one interface because one value has to answer both — and the four things an implementation owes — one publication per drain (the merged requests, the task work and the watermark in one transaction — with every event batch the drain hands over durable no later than it, whether or not the store declares `cold.HistoryApplier`, since a replayed tail can carry batches either way), the watermark inside it, the epoch asserted first, and the outcome reported in `apply`'s five classes |
 | `cold/memcold/` | the one implementation of that contract here: Temporal's own SQL execution store, embedded whole, over an in-process SQLite database, with the folded window's transaction added beside its 28 inherited methods |
 | `apply/` | what a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries |
-| `cycle/` | one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the reads and replay — the layer's state machine |
+| `cycle/` | one goroutine per (shard, epoch) owning the accumulator, the drain, the trim's cadence, the reads and replay — the layer's state machine |
 | `wrapper/` | the seam into a running server: a decorator over a base data store factory, whose `ExecutionStore` and `ShardStore` the history service talks to |
-| `waltz` (the module root) | the composition a server builds: the `wal` section of the datastore options, and the components it names |
+| `waltz` (the module root) | the composition a server builds: `Compose`, the `wal` section of the datastore options, the dynamic-config settings, and `AbstractFactory`, the door a custom `main` hands to the server |
 | `walmetrics/` | the layer's metric definitions and the emitter, on the server's own metrics handler |
 
 [Chapter 03](03-components.md#the-packages-in-dependency-order) takes each of these apart
@@ -235,13 +239,16 @@ plus one cold-store transaction per 256 of them, whatever an append costs. Wheth
 gets faster is a different question, and one this layer does not promise — see the note on latency
 below.
 
-Event history costs the same on both sides of that comparison, because the layer does not touch it.
+Event history costs the same rows on both sides of that comparison, because the layer never folds
+it. Where those rows are written depends on the cold store. Over one that declares
+`cold.HistoryApplier` — `cold/memcold` does — the batches ride the record and the drain writes them
+no later than it publishes the state naming them. Over one that does not,
 `wrapper.ExecutionStore.appendEvents` puts each of the mutation's event slots down through the base
 store's `AppendHistoryNodes` before the mutation is acked — the same work the incumbent does, in a
-different shape, which [chapter 12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first)
-takes apart. History rows are append-only and were never amplified, so there is nothing there for
-the layer to collapse. Whatever share of a deployment's write volume is event history is a share the
-layer cannot reduce, and it is therefore the ceiling on everything the layer can save
+different shape. [Chapter 12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first)
+takes both apart. History rows are append-only and were never amplified, so there is nothing there
+for the layer to collapse. Whatever share of a deployment's write volume is event history is a share
+the layer cannot reduce, and it is therefore the ceiling on everything the layer can save
 ([chapter 15](15-the-limits-of-the-evidence.md#where-event-history-lands-is-the-cold-stores-and-neither-path-is-measured)).
 
 Two consequences follow, and they are the project's actual goals:
@@ -274,7 +281,7 @@ commit to; that possibility is why `wal.Log` is a contract rather than a fixed c
 
 ## What "mode" names here
 
-Two settings decide which mode the layer runs in. They are **independent axes**, not one dial with
+Two switches decide which mode the layer runs in. They are **independent axes**, not one dial with
 four positions:
 
 * **what the wrapper does** — passthrough or intercept, chosen by whether the node's config has a
@@ -311,11 +318,12 @@ In intercept the wrapper takes **twelve** of `ExecutionStore`'s 28 methods into 
 [Chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) has the method table; [chapter
 07](07-read-path.md) has the four reads; and what makes the two task calls records at all — they
 name no run and assert nothing — is the **task record** entry of [chapter
-02](02-concepts-and-invariants.md#the-glossary-in-reading-order). Why the two exclusions above are
-excluded is argued where each belongs: [chapter
-13](13-designs-that-were-rejected.md#the-shards-own-writes-deferred-into-the-log) for the shard's
-own writes, and [chapter
-12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first) for event history.
+02](02-concepts-and-invariants.md#the-glossary-in-reading-order). Why the shard's own writes stay
+out of the log is argued in [chapter
+13](13-designs-that-were-rejected.md#the-shards-own-writes-deferred-into-the-log); a standalone
+history append stays out because it has no mutation whose condition, epoch and ack it could share,
+and [chapter 12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first) has
+where event history goes instead.
 
 Two things about the shipped windowed configuration are worth knowing early. The first:
 **a caller's condition is judged before the append**, from the window itself plus a read of the
@@ -397,7 +405,7 @@ above is [chapter 08](08-configuration.md).
   deletions, and which tasks they drop before a drain ever sees them.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the
   twelve-of-28 partition and the refused thirteenth, method by method.
-* [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — the one window onto
+* [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — the one view onto
   shard ownership, and how an acquire is told from a heartbeat.
 * [`../../cycle/cycle.go`](../../cycle/cycle.go) — the state machine and `cycle.Defaults()`'s
   shipped triggers.

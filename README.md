@@ -1,8 +1,8 @@
 # waltz
 
 The logic of a write-ahead log for the Temporal server's history shards. **You bring the storage —
-both ends of it**: the log, [`wal.Log`](wal/wal.go#L148), and the database,
-[`cold.Store`](cold/cold.go#L67). Five methods on the log and two on the database are nearly the
+both ends of it**: the log, [`wal.Log`](wal/wal.go#L154), and the database,
+[`cold.Store`](cold/cold.go#L103). Five methods on the log and two on the database are nearly the
 whole of what waltz asks you to implement.
 
 Temporal's history service is write-heavy: one workflow moves through hundreds of state transitions,
@@ -15,8 +15,8 @@ transaction instead of a hundred — whatever an append costs.
 **waltz is not a persistence implementation, and that is the first thing to understand about it.**
 It writes to no disk, opens no connection and speaks no wire protocol; it contains no line of code
 that would. What it is, is everything between two interfaces you implement: the log an
-acknowledgement lands in ([`wal.Log`](wal/wal.go#L148)) and the database a fold lands on
-([`cold.Store`](cold/cold.go#L67)). Both are yours to write over whatever storage you run. What
+acknowledgement lands in ([`wal.Log`](wal/wal.go#L154)) and the database a fold lands on
+([`cold.Store`](cold/cold.go#L103)). Both are yours to write over whatever storage you run. What
 waltz owns is the part that is genuinely hard — the window, the fold, the fencing, the replay, the
 bound on unapplied work, and what each of them must do when a write, a process or a shard handover
 fails.
@@ -65,8 +65,9 @@ is one transaction with its watermark inside it, and why a drain whose outcome i
 resolved by reading that watermark back rather than by re-applying.
 
 [`DURABILITY.md`](DURABILITY.md) is the standing list of every known way that rule can break: what
-is closed, with the mechanism and a test that fails without it; what is open, including the two
-shipped implementations dying with the process; and what nobody has established, which is treated as
+is closed, with the mechanism and a test that fails without it; what is open; what is accepted,
+including the two shipped implementations dying with the process, with what a deployment owes in its
+place; what is refuted, with the argument; and what nobody has established, which is treated as
 open. Read it before trusting a green run, and add to it before fixing anything it does not name.
 
 ## Try it
@@ -79,9 +80,10 @@ make lint    # golangci-lint plus gopls's modernize, both pinned in the Makefile
 make vuln    # govulncheck over the module and the toolchain
 ```
 
-No cluster, no container, no fixed port, no cgo, no build tag. A fresh clone runs everything there
-is, including a four-service Temporal server booting over waltz and completing a workflow through
-the SDK (`internal/verify/e2e`).
+No cluster, no container, no fixed port, no build tag, and no cgo outside `make race`, whose
+detector needs a C compiler. A fresh clone runs everything there is, including a four-service
+Temporal server booting over waltz and completing a workflow through the SDK
+(`internal/verify/e2e`).
 
 ## The composition
 
@@ -157,6 +159,10 @@ func main() {
 		// After the server has stopped: the shutdown drain still needs a store
 		// to write to. `defer release()` above runs after this one, which is the
 		// order that leaves the drain a database.
+		//
+		// An error here names acked entries no drain applied: they are in the
+		// log for the next owner, and nothing replays them if this node comes
+		// back without the wal section.
 		if err := layer.Shutdown(context.Background(), 30*time.Second); err != nil {
 			panic(err)
 		}
@@ -172,9 +178,11 @@ func main() {
 ```
 
 The lifecycle brackets the server's, and both ends matter. `Compose` opens nothing and reaches
-nothing, so a policy whose memory budget does not add up stops a process that has connected to
-nothing yet, rather than a node already serving. `Layer.Shutdown` runs last so that every window
-still open has somewhere to drain.
+nothing — the backends it is handed are already open — and it checks the policy's tail budget
+before it builds a single cycle, so a budget that does not add up stops a process whose
+server has not started, rather than a node already serving. `Layer.Shutdown` runs after the server
+has stopped and before the store is released, so that every window still open has somewhere to
+drain.
 
 Configuration is a `wal` section inside the custom datastore's own options: absent means
 passthrough, malformed means a refusal to start rather than a node quietly running the other mode.
@@ -188,8 +196,8 @@ waltz sits between two things it does not own, and a deployment replaces both.
 
 | | the contract | shipped here | what judges your implementation |
 |---|---|---|---|
-| the log | [`wal.Log`](wal/wal.go#L148) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: twenty-one cases, one call |
-| the database | [`cold.Store`](cold/cold.go#L67) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
+| the log | [`wal.Log`](wal/wal.go#L154) | `wal/memwal`, in process memory | `wal/waltest` — this repository's conformance suite: twenty-one cases, one call |
+| the database | [`cold.Store`](cold/cold.go#L103) | `cold/memcold`, Temporal's own SQL persistence over in-process SQLite | Temporal's four exported persistence suites, which `memcold` runs unmodified |
 
 `wal.Log` is an append-only, fenced, gap-free sequence of entries per shard — five methods, opaque
 payloads, no Temporal type anywhere in it. Running the suite against your backend is one call:
@@ -226,8 +234,9 @@ The two rows are not mirror images, and the asymmetry is worth knowing before yo
 contract is waltz's own invention, so waltz owes it a suite and ships one. What a *database* owes a
 Temporal server is Temporal's to state, and Temporal states it as four suites it exports — so
 **nothing exported from here judges somebody else's `cold.Store`.** What is written down instead
-is the four obligations an implementation carries, with `cold/memcold` as the worked example of all
-four: [chapter 04](docs/handbook/04-contracts.md) has both.
+is the four obligations an implementation carries, in the `cold` package's own doc, with
+`cold/memcold` as the worked example of all four: [chapter 04](docs/handbook/04-contracts.md) walks
+through both.
 
 ## Documentation
 

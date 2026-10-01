@@ -2,35 +2,31 @@
 // cluster: the request Temporal's ExecutionManager hands the store, as a unit
 // test needs it — one at a time, with the ids named rather than drawn.
 //
-// # Why this is not verify/mutgen
+// # Why this is not internal/verify/mutgen
 //
 // [mutgen] holds the same knowledge and cannot lend it. Every shape there is a
 // method on its `*Generator`, driven by a rand walk over a key space it also
-// owns, so a test that wants *one* create has nothing to ask. Three packages
-// therefore wrote their own, and they disagreed: `cycle`'s create carried
-// `ExecutionStateBlob` because the read path deserialises it and a nil one will
-// not do, `apply`'s carried none, and nothing said which was right. A
-// mutation built here carries the blob — a fixture that omits it is one no read
-// path above the fold could have served, which is not a shape this layer ever
-// receives.
+// owns, so a test that wants *one* create has nothing to ask. A mutation built
+// here carries `ExecutionStateBlob`, because the read path deserialises it and
+// a nil one will not do — a fixture that omits it is one no read path above the
+// fold could have served, which is not a shape this layer ever receives.
 //
 // # Validity is Temporal's own answer, checked at build time
 //
 // Every shape that has a validator runs through it before it is returned, the
-// way `mutgen` runs the same four over its stream: an invalid fixture is a bug
+// way `mutgen` runs the same five over its stream: an invalid fixture is a bug
 // in the test rather than a case a caller handles, so it panics with what
 // the validator said. That is the whole depth of this package — a caller learns
-// eight constructors and gets the store's own admission rules for free, where
-// before each package restated a subset of them in a struct literal and none
-// checked any.
+// ten constructors and gets the store's own admission rules for free.
 //
 // The check covers what a constructor builds, and cannot cover what a caller
-// does to the value afterwards. Two fixtures in this tree deliberately step
+// does to the value afterwards. Three fixtures in this tree deliberately step
 // outside — `apply`'s create at `CreateWorkflowModeBypassCurrent` over a
-// running state, and `cycle`'s continue-as-new out of a running run —
-// and both stay where they are, built here and then mutated at the call site.
-// Neither is a request Temporal would send; both drive a path the layer must
-// still have an answer for, which is why they are not "fixed".
+// running state, and the continue-as-new out of a running run that `cycle` and
+// `memcold` each assemble — and all three stay where they are, built here and
+// then mutated at the call site. None is a request Temporal would send; each
+// drives a path the layer must still have an answer for, which is why they are
+// not "fixed".
 //
 // # What is deliberately absent
 //
@@ -41,13 +37,6 @@
 //     rightly — fold merges, it does not admit. A builder with a
 //     "do not check" mode is a builder whose check nobody trusts, so there is
 //     none.
-//   - nothing, since [Builder.ConflictResolve] arrived. It was absent on the
-//     grounds that adding it with no caller would be a guess at what a caller
-//     wants, and it belonged here the day a validating caller needed one: that
-//     caller is the applier's guard for the two arms a reset's second and third
-//     parts are written by, which a mutation sweep found reachable from no
-//     fixture in the tree. [Builder.Set] is the one shape whose only caller is
-//     still this package's own test.
 package mutbuild
 
 import (
@@ -208,8 +197,9 @@ func (b Builder) Set(ns, wf, run string, version int64, opts ...SnapshotOpt) mut
 // how the four combinations Temporal's mode validator distinguishes are reached.
 //
 // The states are this method's rather than a caller's, because that validator has
-// a rule per combination — with all three parts the current and the reset run must
-// both be closed and the new run may not be a zombie — so a caller choosing them
+// a rule per combination — with all three parts the current run may be neither
+// created nor running, the reset run must be closed, and the new run may not be a
+// zombie — so a caller choosing them
 // would be choosing whether the request is one the store admits.
 //
 // It fills the execution-info blob on all three parts, which no other shape here
@@ -303,19 +293,19 @@ func (b Builder) RangeComplete(category tasks.Category, inclusiveMin, exclusiveM
 	}}
 }
 
-// WithTaskMap is the same across several categories at once, in the shape the
-// request carries them.
+// WithTaskMap sets an update's history tasks, several categories at once, in
+// the shape the request carries them.
 func WithTaskMap(byCategory map[tasks.Category][]p.InternalHistoryTask) MutationOpt {
 	return func(m *p.InternalWorkflowMutation) { m.Tasks = byCategory }
 }
 
-// WithState replaces the run's state and status pair — the one field of a
-// snapshot a fixture legitimately varies, since it is what a chain's last link
+// WithState replaces the run's state and status pair — what a chain's last link
 // moves when the run closes, and the pair every validator above is stated over.
 // It is therefore also what makes this package's own check provable: an
 // invalid pair handed in here is refused, which is what
-// TestAnInvalidStateIsRefusedRatherThanBuilt drives — the two validators told
-// apart by a pair that satisfies one and not the other.
+// TestAnInvalidStateIsRefusedRatherThanBuilt drives, and
+// TestAModeIsCheckedAgainstTheStateItCarries tells the two validators apart by
+// a pair that satisfies one and not the other.
 func WithState(
 	state enumsspb.WorkflowExecutionState, status enumspb.WorkflowExecutionStatus,
 ) SnapshotOpt {
@@ -402,7 +392,7 @@ func named(s string) *commonpb.DataBlob {
 	return &commonpb.DataBlob{Data: []byte(s), EncodingType: enumspb.ENCODING_TYPE_PROTO3}
 }
 
-// check ends the test rather than returning: a fixture the store would refuse
+// check panics rather than returning: a fixture the store would refuse
 // is a bug in whoever asked for it, and there is no caller that could do
 // anything with the error but fail.
 func check(shape string, err error) {

@@ -71,8 +71,8 @@ func TestARangeCompletionWithNobodyWatchingIsATransit(t *testing.T) {
 	require.Equal(t, Counts{}, store.Counts(), "passthrough counts nothing")
 }
 
-// The other half of the task path, counted apart from the six mutable-state
-// writes.
+// The other half of the task path, counted apart from the four mutable-state
+// writes and the two tombstones.
 func TestAddHistoryTasksGoesIntoTheLogToo(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	base := versioned(ctrl)
@@ -110,7 +110,7 @@ func TestTheSingleKeyCompletionIsRefusedInInterceptModeOnly(t *testing.T) {
 		require.True(t, err == ErrCompleteHistoryTaskUnsupported, //nolint:errorlint // identity is the assertion
 			"the refusal is returned unwrapped, like every other answer on this path")
 		require.IsType(t, &serviceerror.Unimplemented{}, err,
-			"the caller is an admin handler and this is the status it has a branch for")
+			"a gRPC status, so the admin API's RemoveTask hands it back to its caller as Unimplemented")
 		require.Empty(t, layer.got, "a refusal writes nothing")
 	})
 

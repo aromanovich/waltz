@@ -8,8 +8,8 @@ paths:
 `wal/` is the seam this library is built on rather than a test of someone else's: the contract
 (`wal/`), the one backend that ships (`wal/memwal/`, in memory) and, in `wal/waltest/`, the
 conformance suite, the fault decorator every caller drives a failing log through, and the
-retention check a deployment runs against its own storage beside the expiring log that check
-is proved against.
+two checks a deployment runs against its own storage — retention and reopen — beside the
+decorators those checks, and a caller reading a whole log, are proved against.
 [ADR 0002](../../docs/adr/0002-wal-contract-is-backend-independent.md) is why the contract exists
 and what it promises; the handbook's
 [04-contracts.md](../../docs/handbook/04-contracts.md) is the long form of the five guarantees.
@@ -17,7 +17,7 @@ and what it promises; the handbook's
 What to know before changing any of it:
 
 * no file in `waltest/` may import a backend, on purpose. The suite imports the
-  contract and an assertion library; the two decorators and the retention check
+  contract and an assertion library; the four decorators and the two checks
   import the contract alone. A test that needs a particular log is asserting the
   wrong thing; so is an assertion only one implementation could satisfy;
 * a caller wanting a log that fails wraps a real backend in `waltest.Faulty`
@@ -113,7 +113,7 @@ What to know before changing any of it:
 * **`Trim` is driven concurrently, because that is the only way it is ever
   called** (`TrimRunsBesideAppends`). The trimmer runs on a goroutine of its own
   so a slow trim cannot stop a shard from acking, so in every deployment a trim
-  is in flight while the loop appends and replays. The other three trim cases are
+  may be in flight while the loop appends and replays. The other three trim cases are
   sequential over a quiescent log, which no deployment is ever in, and a backend
   whose trim is a read-modify-write over the region the appends land in passes
   all three — measured, by giving `memwal`'s trim a snapshot taken before a
@@ -134,11 +134,11 @@ What to know before changing any of it:
   wall-clock time, which is why it cannot be a case in the suite at all. Point it at a
   **deliberately shortened policy**: a pass says the entries outlived that
   window, never that the backend has no retention. `waltest.Expiring` is the
-  backend it is proved against and the one decorator here that is not a log a
-  backend may be — `Faulty` refuses calls, which a correct backend does, while
-  this one breaks the readback guarantee on purpose. Without it a deployment
-  reading a green check cannot tell it from a check that passes anything, which
-  is what `TestTheRetentionCheckIsNotVacuous` exists to say;
+  backend it is proved against and, like `Unfenced` and `Truncating`, a decorator
+  here that is not a log a backend may be — `Faulty` refuses calls, which a
+  correct backend does, while this one breaks the readback guarantee on purpose.
+  Without it a deployment reading a green check cannot tell it from a check
+  that passes anything, which is what `TestTheRetentionCheckIsNotVacuous` exists to say;
 * **the suite's other blind spot is the value it drives, and that one has an
   instrument now too.** Guarantee 3 says an acked append is *durable*, which is a
   claim about storage — and every case in the suite reads back through the same
@@ -156,7 +156,7 @@ What to know before changing any of it:
   `memwal` cannot be reopened at all, being a map in this process, so the suite has
   no log to run it against. `waltest.Unfenced` is the double the ownership half is
   proved against — a log whose epoch lives in this process and whose entries are
-  the wrapped log's, the third decorator here that is not a log a backend may be —
+  the wrapped log's, another decorator here that is not a log a backend may be —
   and `TestTheReopenCheckIsNotVacuous` proves both halves, each against the
   backend shape it exists for;
 * the whole of it runs with nothing installed: `go test ./wal/...` is

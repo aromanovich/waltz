@@ -39,8 +39,8 @@ func TestAReversePageInvertsBothHalvesOfTheKey(t *testing.T) {
 	require.Equal(t, []historyKey{{5, 100}, {5, 101}, {4, 200}}, keysOf(page))
 }
 
-// The whole point of the overlay: a node acked into the window is a node the
-// cold store does not have yet, and a reader that missed it would rebuild a
+// The whole point of the merge: a history row acked into the window is a row
+// the cold store does not have yet, and a reader that missed it would rebuild a
 // workflow short the events its own caller was told were durable.
 func TestAPageInterleavesTheWindowWithTheColdStore(t *testing.T) {
 	acc := New(7)
@@ -61,9 +61,10 @@ func TestANodeInBothHalvesIsEmittedOnce(t *testing.T) {
 }
 
 // The pagination rule, which is taskpage.go's: a page is never larger than the
-// size asked for, and no base page is ever half-emitted — so the store is never
-// asked to answer one token twice, and a caller's own token is never parsed
-// here. Driven across every page size that cuts the stream somewhere different.
+// size asked for, and no base page is ever half-emitted — so the store's own
+// token is never parsed here, and a pagination the window does not overflow
+// never hands the store one token twice. Driven across every page size that
+// cuts the stream somewhere different.
 func TestPagingNeverCutsInsideABasePageAndNeverOverruns(t *testing.T) {
 	for size := 1; size <= 9; size++ {
 		t.Run(fmt.Sprintf("page size %d", size), func(t *testing.T) {
@@ -129,10 +130,8 @@ func TestAPageDropsWindowNodesOutsideTheRange(t *testing.T) {
 
 // TestAWindowOverflowingThePageWithNothingUnderItPaginates drives the one branch
 // where the base page is empty and the window alone is longer than the page.
-// Nothing did: every overflow case in this file has base rows, and the guard that
-// keeps the branch from reading basePage[0] could therefore be removed with the
-// whole of `go test ./...` green — and what it does instead is panic, inside a
-// history read, on the shard's own goroutine.
+// Without the guard that keeps the branch from reading basePage[0] it panics,
+// inside a history read, on the shard's own goroutine.
 //
 // It is reachable rather than defensive: the base answers an empty page for a
 // branch whose nodes are all still in the window, which is every branch of a
@@ -195,11 +194,9 @@ func TestABasePageTheMergeCannotRestOnIsRefused(t *testing.T) {
 	}{
 		"empty beside a token": {nil, []byte("more"), ErrBasePageEmptyBesideAToken},
 		"not ascending":        {[]p.InternalHistoryNode{node(3, 300), node(1, 100)}, nil, ErrBasePageNotAscending},
-		// Ascending means strictly, and only this row says so: the case above
-		// stages a descending pair, so the comparison could be moved to `>` with
-		// the whole of `go test ./...` green. What an equal pair costs is a node
-		// the merge emits twice — mergeHistoryNodes deduplicates *between* the two
-		// sources and walks each of them as a strictly ascending run.
+		// Ascending means strictly. What an equal pair costs is a node the merge
+		// emits twice — mergeHistoryNodes deduplicates *between* the two sources
+		// and walks each of them as a strictly ascending run.
 		"a key twice": {[]p.InternalHistoryNode{node(2, 200), node(2, 200)}, nil, ErrBasePageNotAscending},
 	}
 	for name, c := range cases {
@@ -276,8 +273,8 @@ func rows(ns ...p.InternalHistoryNode) HistoryBasePage {
 	}
 }
 
-// countingBase pages through its rows one ask at a time and records any token it
-// is handed twice, which is the obligation this merge is written not to need.
+// base pages through its rows one ask at a time and counts the tokens it is
+// handed twice.
 type base struct {
 	all []p.InternalHistoryNode
 	// seen counts each cursor handed over, and reAsked is how many were handed
@@ -325,7 +322,7 @@ func readWholeBranch(
 
 // What the drain gets: every batch the window folded, in WAL order, and a
 // watermark at or above the entry that carried the last one. A batch left
-// behind is a mutable state published over nodes nobody wrote.
+// behind is a mutable state published over history rows nobody wrote.
 func TestTheBatchCarriesEveryFoldedBatchInLogOrder(t *testing.T) {
 	acc := New(shardID)
 	require.NoError(t, acc.Add(11, carrying(create(p.CreateWorkflowModeBrandNew), 4, 5)))

@@ -40,10 +40,10 @@ func TestTheCompositionRefusesAPolicyNobodyStated(t *testing.T) {
 	require.ErrorContains(t, err, "no policy")
 }
 
-// The layer decodes an inherited tail with the registry this cluster is
-// configured for, not the default set: an unknown category id is fatal to a
-// replay, so a default registry on a cluster with archival enabled would refuse
-// exactly the entries carrying archival tasks.
+// The layer decodes an inherited tail with the task-category registry this
+// cluster is configured for, not the default set: an unknown category id is
+// fatal to a replay, so a default registry on a cluster with archival enabled
+// would refuse exactly the entries carrying archival tasks.
 func TestTheRegistryIsTheServersOwn(t *testing.T) {
 	dc := dynamicconfig.NewCollection(dynamicconfig.NewNoopClient(), log.NewNoopLogger())
 
@@ -59,9 +59,9 @@ func TestTheRegistryIsTheServersOwn(t *testing.T) {
 		"archival is on, so the entries this cluster writes can name a category a default registry has never heard of")
 }
 
-// composed is the composition over the backends this library ships: a log in
-// memory and a writer that commits nothing, so cfg is the whole of what varies
-// between the callers.
+// composed is the composition over a log in memory and a cold-store double that
+// counts drains and writes no rows, so cfg is the whole of what varies between
+// the callers.
 func composed(t *testing.T, cfg cycle.Config) (*Layer, *coldtest.Cold) {
 	t.Helper()
 	cold := coldtest.New()
@@ -138,7 +138,7 @@ func TestTheShutdownDrainOutlivesTheContextThatAsksForIt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	require.NoError(t, layer.Options().Layer.ShardAcquired(ctx, shard, epoch))
 	require.NoError(t, layer.Options().Layer.Write(ctx, mutation.Mutation{Create: aCreate(shard)}, epoch, baserow.New(emptyStore{})))
-	require.Zero(t, cold.Drains(), "a windowed write of one mutation reaches no watermark")
+	require.Zero(t, cold.Drains(), "a windowed write of one mutation reaches no trigger")
 
 	cancel()
 	require.NoError(t, layer.Shutdown(ctx, time.Minute))
@@ -384,7 +384,7 @@ func TestAShutdownDrainsWhatASupersededCycleLeft(t *testing.T) {
 	require.NoError(t, layer.Options().Layer.Write(ctx,
 		mutbuild.For(int32(shard)).Create(uuid.NewString(), "one-emitter", uuid.NewString()),
 		first, baserow.New(emptyStore{})))
-	require.Zero(t, cold.Drains(), "a windowed write of one mutation reaches no watermark")
+	require.Zero(t, cold.Drains(), "a windowed write of one mutation reaches no trigger")
 
 	// The shard changes hands on this same node, and nothing asks the successor
 	// anything before the process stops.
@@ -556,8 +556,8 @@ func (refusingCold) Apply(context.Context, wal.ShardID, wal.Epoch, fold.Batch) e
 // TestTheNarrowReadsAnswerForAShardNobodyHolds: both of the layer's shard-scoped
 // methods answer a shard this node does not hold, and the answer is the second
 // return rather than a zero value a caller might read as "held and empty". Every
-// existing case asks about a shard it has just acquired, so the not-held arm of
-// each was reachable from nothing — and without it both dereference the nil the
+// other case asks about a shard it has just acquired, so the not-held arm of
+// each is reached from here alone — and without it both dereference the nil the
 // registry hands back, turning a question about an unknown shard into a panic in
 // whatever goroutine asked.
 func TestTheNarrowReadsAnswerForAShardNobodyHolds(t *testing.T) {
@@ -587,13 +587,13 @@ func TestTheColdStoreDecidesWhoWritesTheEventBatches(t *testing.T) {
 	}
 
 	require.False(t, compose(coldtest.New()).Options().Layer.WritesHistory(),
-		"a store that does not write the batches must have them written through it before the append")
+		"a store that does not write the batches must have them written through the base store before the append")
 	require.True(t, compose(historyApplier{coldtest.New()}).Options().Layer.WritesHistory(),
 		"a store that writes them takes them in the record, so nothing writes them twice")
 }
 
-// historyApplier is the seam's own double with the marker on it: what the
-// refusal turns on is the declaration, not what Apply does with the batch.
+// historyApplier is the seam's own double with the marker on it: what
+// WritesHistory turns on is the declaration, not what Apply does with the batch.
 type historyApplier struct{ *coldtest.Cold }
 
 func (historyApplier) AppliesHistory() {}

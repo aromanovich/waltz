@@ -39,9 +39,9 @@ func (*Store) AppliesHistory() {}
 // Apply is the cold package's contract implemented, and the reference for a
 // client implementing it over another database.
 //
-// The order of the transaction is the contract, statement for statement:
+// The order of the transaction, statement for statement:
 //
-//  1. the epoch, as a compare-and-set on the shard's range id. First, so a
+//  1. the epoch, as a locked compare of the shard's rangeID. First, so a
 //     drain that lost the shard reports a lost shard rather than the version
 //     failure a fenced writer would find underneath it — the shard's new owner
 //     has been writing, and every version this drain stands on is stale for a
@@ -72,10 +72,11 @@ func (*Store) AppliesHistory() {}
 // statements take effect in the order they are issued. So an assertion reads
 // the rows as every earlier request of this same batch left them, a run
 // tombstoned and recreated inside one window needs no special case, and the
-// only ordering rules left are the two stated above — the epoch first and the
-// range deletes before the inserts. An engine that gathers a transaction's
-// statements and reorders them by table has to reproduce those orderings some
-// other way, and a batch that lands in a different order is not the same batch.
+// only ordering rules left are the three stated above — the epoch first, the
+// history rows before anything that points at them, and the range deletes
+// before the inserts. An engine that gathers a transaction's statements and
+// reorders them by table has to reproduce those orderings some other way, and
+// a batch that lands in a different order is not the same batch.
 //
 // The outcome: nil is committed; [apply.Refuse] is a drain nothing was written
 // for, refused before the transaction opened; *p.ShardOwnershipLostError is the
@@ -162,9 +163,10 @@ func refusals(shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 }
 
 // drain is everything the transaction carries, in the order the numbered list
-// above states — which is this store's, [cold.Applier] stating what a drain
-// must carry and not the sequence. A store ordering it otherwise would leak
-// every row the window's own range sweep took out.
+// above states. The cold package's doc pins what a drain must carry and three
+// orders in it — the epoch first, the history no later than what names it, the
+// range deletes before the task inserts — and the rest of the sequence is this
+// store's.
 //
 // It does not commit: the caller does, so that a failure here is always a
 // transaction still open and always rolled back.
@@ -181,10 +183,10 @@ func (s *Store) drain(
 		return err
 	}
 
-	// Inside the transaction, which this store may do and a client with a
-	// separate bulk path may not: what the contract pins is that these rows are
-	// durable before the mutable state naming them is, and one transaction is
-	// the strongest way to keep that.
+	// Inside the transaction, which this store can do and a client with a
+	// separate bulk path cannot: what the contract pins is that these rows are
+	// durable no later than the mutable state naming them, and one transaction
+	// is the strongest way to keep that.
 	if err := applyHistory(ctx, tx, batch.History()); err != nil {
 		return err
 	}
@@ -208,7 +210,7 @@ func (s *Store) drain(
 	return SetWatermark(ctx, tx, shard, batch.Watermark())
 }
 
-// assertEpoch is the drain's fence: the shard's range id must still be the one
+// assertEpoch is the drain's fence: the shard's rangeID must still be the one
 // this writer holds. A shard with no row is a lost shard rather than a failure —
 // this writer cannot own a shard that is not there, and reporting an unknown
 // outcome would leave the caller retrying a drain that can never land.
@@ -480,8 +482,8 @@ func assertRuns(
 	return nil
 }
 
-// applyHistory writes the window's event batches: one node row each, and a tree
-// row beside a batch that opens a branch.
+// applyHistory writes the window's event batches: one history_node row each, and
+// a history_tree row beside a batch that opens a branch.
 //
 // Both are upserts, which is what makes a repeated drain safe rather than a
 // duplicate-key failure the shard cannot get past: a history node is immutable

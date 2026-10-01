@@ -15,9 +15,12 @@ import (
 
 // Manager is the node's cycles, one per shard, each pinned to the epoch it was
 // created at. The wrapper's ShardObserver hook talks to it, and it is the only
-// place a cycle is created or retired. An acquire is observable and a close is
-// not, so a cycle is retired only by a higher epoch superseding it and nothing
-// reaps an idle one — one goroutine and an empty accumulator, a bounded leak.
+// place a cycle is created. An acquire is observable and a close is not, so a
+// cycle leaves the map only when a higher epoch supersedes it or the node shuts
+// down, and nothing reaps an idle one — one goroutine and an empty accumulator,
+// a bounded leak. A cycle stopped by name (the root package's
+// Layer.RetireShard) stays in the map, reporting halted-lost, because its tail
+// is acked entries the reports go on reading.
 type Manager struct {
 	deps   Deps
 	policy Policy
@@ -47,8 +50,9 @@ type Totals struct {
 	Acked, Applied wal.Seqno
 	TailEntries    int
 
-	// Halted names every shard whose current cycle is not running. A retired
-	// cycle's state stays out: being superseded is the fence working.
+	// Halted names every shard whose current cycle is not running, a cycle
+	// stopped by name among them. A superseded cycle's state stays out: being
+	// superseded is the fence working.
 	Halted []string
 }
 
@@ -77,18 +81,19 @@ func (m *Manager) Totals() Totals {
 }
 
 // NewManager builds the registry. Every cycle it creates reads the same
-// [Policy] — the source and not a copy, so a watermark that moves reaches the
-// cycles this node already holds. It refuses a node whose hard_max × shards
-// does not fit its tail budget ([Config.CheckBudget]), and a binary with no
-// registry has no cycle at all, so that error is the layer refusing to start.
-// Reading the budget once is sound because those four fields are the ones
+// [Policy] — the source and not a copy, so a setting that moves reaches the
+// cycles this node already holds. It refuses a node whose HardMaxBytes ×
+// MaxShards does not fit its tail budget ([Config.CheckBudget]), and a binary
+// with no task-category registry has no cycle at all, so that error is the
+// layer refusing to start.
+// Reading the budget once is sound because its three fields are among those
 // [Moving] does not carry.
 func NewManager(deps Deps, policy Policy) (*Manager, error) {
 	if err := policy().CheckBudget(); err != nil {
 		return nil, err
 	}
-	// The other startup assertion: without a registry a node recovers nothing,
-	// silently, until the first failover. See [Deps.Registry].
+	// The other startup assertion: without a task-category registry a node
+	// recovers nothing, silently, until the first failover. See [Deps.Registry].
 	if deps.Registry == nil {
 		return nil, ErrNoRegistry
 	}
@@ -107,7 +112,7 @@ func NewManager(deps Deps, policy Policy) (*Manager, error) {
 // record this layer appends, which is a property of the cold store underneath
 // and of nothing else: one that declares [cold.HistoryApplier] writes them in
 // the drain's own publication, and one that does not gets them through the base
-// store before the append, as every store did before that interface existed.
+// store before the append.
 //
 // There is no setting. A deployment's answer is which store it composed, and the
 // deps are fixed at construction, so the two halves of the question — who writes
@@ -190,16 +195,20 @@ type Residue struct {
 	Shard wal.ShardID
 	Epoch wal.Epoch
 	// Entries is the tail as its last publish left it: acked, unsettled, and the
-	// next owner of this shard to apply.
+	// next owner of this shard to apply. For a cycle that halted inside its
+	// replay the last publish can be the floor its shutdown start planted, so
+	// this reads zero over entries the log still holds — an open entry in
+	// DURABILITY.md.
 	Entries int
-	// Cause is what the shutdown drain answered — nil where it committed and
-	// what is left is a halt's tail or a stall's.
+	// Cause is what the shutdown drain answered: the halt or the stall that
+	// kept the tail, or nil where the cycle had already been stopped by name
+	// and the tail is what that stop left.
 	Cause error
 }
 
 // Close drains and stops every cycle, and answers with every shard whose tail it
-// could not empty. Shutdown is the one moment a tail is drained without a
-// watermark asking for it.
+// could not empty. Shutdown is the one moment a tail is drained with no
+// trigger asking for it.
 func (m *Manager) Close(ctx context.Context) []Residue {
 	var left []Residue
 	for _, c := range m.held.takeAll() {
@@ -228,8 +237,10 @@ func (m *Manager) Close(ctx context.Context) []Residue {
 // that is not arithmetic: the counters say what this cycle acked, and a close
 // that failed is one that could not establish what the shard holds — a failed
 // watermark read leaves the tail at its floor, which reads as zero exactly like
-// a shard that is clean. The caller's question is whether removing the layer
-// strands anything, and the only safe answer to "nobody looked" is to say so.
+// a shard that is clean, and so does a failed log read under the start that
+// re-replays a cycle halted inside its replay. The caller's question is whether
+// removing the layer strands anything, and the only safe answer to "nobody
+// looked" is to say so.
 func (c *Cycle) residue(cause error) (Residue, bool) {
 	entries, _ := c.mirror.Size()
 	if entries == 0 && cause == nil {

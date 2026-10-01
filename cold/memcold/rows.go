@@ -805,7 +805,8 @@ func lockRun(
 }
 
 // lockCurrent reads a workflow's current-execution row under the transaction's
-// lock, nil when there is none.
+// lock, nil when there is none. Not upstream's join with the executions row:
+// [applyCurrentRow] says why the drain reads the row the versioned read returns.
 func lockCurrent(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, ns primitives.UUID, workflowID string,
 ) (*sqlplugin.CurrentExecutionsRow, error) {

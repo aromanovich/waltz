@@ -42,19 +42,20 @@ as the default rather than obeyed: it is the interval that timer is re-armed at.
 
 	TrimEvery = dynamicconfig.NewGlobalIntSetting(
 		"wal.trimEvery", measured.TrimEvery,
-		`TrimEvery is the trim cadence in drains: the log below the applied watermark is
-deleted every this many drains. A DeleteRange per drain is a transaction per drain for no
+		`TrimEvery is the trim cadence in drains: the log at or below the applied watermark is
+deleted every this many drains. A Log.Trim per drain is a transaction per drain for no
 gain; raising it leaves more of the log behind, which is what a post-mortem reads.`)
 
 	TrimAfter = dynamicconfig.NewGlobalDurationSetting(
 		"wal.trimAfter", measured.TrimAfter,
-		`TrimAfter is the same cadence in time, whichever trips first. Raising TrimEvery alone
-does not keep a log: this one fires anyway.`)
+		`TrimAfter is the same cadence in time, whichever trips first. It is judged when a drain
+commits, so an idle shard does not trim on this timer. Raising TrimEvery alone does not keep
+a log: this one fires anyway, at the first drain past it.`)
 
 	HardMaxEntries = dynamicconfig.NewGlobalIntSetting(
 		"wal.hardMaxEntries", measured.HardMaxEntries,
 		`HardMaxEntries is invariant I10's bound on one shard's tail in entries: what has been
-acked and not yet applied. A shard at the bound refuses its writers with ResourceExhausted
+acked and not yet settled. A shard at the bound refuses its writers with ResourceExhausted
 rather than parking them behind the apply. READ AT START-UP: a change needs the history
 services restarted. It is read once because it is one half of a bound whose other half is
 wal.hardMaxBytes — neither unit works alone, and a node honouring one of the two from a
@@ -79,7 +80,7 @@ for the steady one. READ AT START-UP.`)
 
 	TailBudgetBytes = dynamicconfig.NewGlobalIntSetting(
 		"wal.tailBudgetBytes", measured.TailBudgetBytes,
-		`TailBudgetBytes is the RAM one node may hold as unapplied tail. hardMaxBytes × maxShards
+		`TailBudgetBytes is the encoded bytes one node may hold as unapplied tail. hardMaxBytes × maxShards
 must fit in it or the node refuses to start — cycle.Config.CheckBudget is run rather than
 written down, because a doc line does not survive a config edit. READ AT START-UP.`)
 )

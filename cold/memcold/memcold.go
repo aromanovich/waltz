@@ -28,19 +28,20 @@
 // The 28 inherited methods know nothing of waltz and must not: they are the
 // store a Temporal server calls, and a store that could see the layer would be
 // judged by the thing it sits under. The layer's vocabulary enters through
-// [Store.Apply] and [Store.Watermark] alone, beside that surface rather than
-// inside it.
+// [Store.Apply], [Store.Watermark], [Store.AppliesHistory] and
+// [Store.GetCurrentExecutionWithLastWriteVersion] alone, beside that surface
+// rather than inside it.
 //
 // # Bringing your own
 //
 // A client running against a real database does not use this and does not
 // subclass it. It supplies cold.Applier and cold.Watermarker over its own
-// store, and what it owes there is the four things the cold package's doc
-// states.
+// store, and what it owes there is what the cold package's doc states: four
+// obligations, and a bound on its own calls besides.
 //
-// This package is the worked example of all four — [Store.Apply] is where they
-// are stated statement by statement — and the shape it lands on is the
-// transferable part. persistence.ExecutionStore has nowhere to
+// This package is the worked example of the four obligations — [Store.Apply] is
+// where they are stated statement by statement — and the shape it lands on is
+// the transferable part. persistence.ExecutionStore has nowhere to
 // declare a transaction spanning many workflows, so the store holds the
 // database handle beside the embedded store and opens the transaction there.
 // An implementer whose driver offers no such handle — no way to reach below the

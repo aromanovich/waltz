@@ -36,9 +36,9 @@ import (
 // The namespace id is parsed rather than asserted, which is where this departs
 // from the read it is derived from: upstream's own uses primitives.MustParseUUID
 // and panics on a malformed one. Every write path in this store already parses
-// through the same helper, and this read is the one obligation the layer puts on
-// the store below — it runs on every delegated condition check — so a panic here
-// is the process rather than the call. That the id cannot be malformed today is a
+// through the same helper, and this read is the one the layer adds to what the
+// store below owes — it runs on every delegated current-row check — so a panic
+// here is the process rather than the call. That the id cannot be malformed today is a
 // claim about today's callers.
 func (s *Store) GetCurrentExecutionWithLastWriteVersion(
 	ctx context.Context,
@@ -83,15 +83,15 @@ func currentRowResponse(row *sqlplugin.CurrentExecutionsRow) (*p.InternalGetCurr
 
 // executionStateOf is the row's serialised state, and the columns beside it only
 // for a record written before that blob existed — upstream's own order, because
-// the two carry different amounts: the blob has the run id and the request ids
-// and the columns do not. What stands on those two is the conflict error the
-// layer refuses a write with, whose run id decides whether the history service
-// resolves the conflict at all and whose request ids are what a retried start
-// deduplicates on.
+// the two carry different amounts: the blob has every request id and the
+// columns only the one that created the run. What stands on them is the
+// conflict error the layer refuses a write with, whose run id decides whether
+// the history service resolves the conflict at all and whose request ids are
+// what a retried start deduplicates on.
 //
 // A blob that will not deserialise is reported rather than quietly answered out
-// of the columns: the caller would get a row that names no run and no way to
-// tell it from one that never had them.
+// of the columns: the caller would get a row missing the request ids and no way
+// to tell it from one that never had them.
 func executionStateOf(row *sqlplugin.CurrentExecutionsRow) (*persistencespb.WorkflowExecutionState, error) {
 	if len(row.Data) > 0 && row.DataEncoding != "" {
 		state, err := serialization.WorkflowExecutionStateFromBlob(p.NewDataBlob(row.Data, row.DataEncoding))

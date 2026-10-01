@@ -1,6 +1,6 @@
-// Package tailstate is the tail's arithmetic, in one place: everything I10
-// bounds — unsettled acked entries, the bytes they hold, how far behind the
-// cold store's watermark is — is counted here and nowhere else.
+// Package tailstate is the tail's arithmetic, in one place: what I10 bounds —
+// unsettled acked entries and the bytes they hold — and how far behind the
+// cold store's watermark is are counted here and nowhere else.
 //
 // The two halves span two goroutines. [Tail] is loop-owned, like the rest of
 // the cycle's state; [Mirror] is those counts and the stall's seqno for
@@ -107,14 +107,15 @@ func (t *Tail) Floor(mark wal.Seqno) {
 }
 
 // Ack takes an entry already durable at seqno into the tail. Its size is the
-// payload's encoded length, which is what both the watermark and I10 count.
+// payload's encoded length, which is what both the window's byte trigger and
+// I10 count.
 func (t *Tail) Ack(seqno wal.Seqno, size int) {
 	t.commit = seqno
 	t.bytes += size
 	t.publish()
 }
 
-// WatermarkMove is the whole of the difference between the three settles: both
+// WatermarkMove is the whole of the difference between the four settles: both
 // readings are right and neither is a default, so the caller states which.
 type WatermarkMove int
 
@@ -261,5 +262,5 @@ func (m *Mirror) StalledAt() wal.Seqno { return wal.Seqno(m.stalled.Load()) }
 
 // Empty is [Tail.Empty] for the reader with no loop left to ask. It can be
 // stale by the writes a successor cycle took, so only the two mutable-state
-// reads may use it.
+// reads and the branch page, which routes as one, may use it.
 func (m *Mirror) Empty() bool { return m.entries.Load() == 0 }

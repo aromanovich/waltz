@@ -16,7 +16,7 @@ import (
 // TestEveryInterceptedKindHasARow: the eight kinds the record format has a
 // shape for are exactly the eight the wrapper takes into the layer, so every
 // one of them needs a row. A ninth kind added to mutation without one fails
-// here rather than at whichever metric goes untagged.
+// here rather than as a refusal of every write of that kind.
 func TestEveryInterceptedKindHasARow(t *testing.T) {
 	var s ExecutionStore
 	for k := mutation.KindInvalid + 1; int(k) < mutation.KindCount; k++ {

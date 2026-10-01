@@ -3,7 +3,7 @@ package fold
 // One page of a history branch, answered from the cold store's rows and the
 // window's undrained nodes.
 //
-// The pagination rule is [taskpage.go]'s, and it is the same rule for the same
+// The pagination rule is taskpage.go's, and it is the same rule for the same
 // reason: the base's token is the plugin's own format, which this layer may not
 // parse or synthesise, so the cut is at the end of a base page or below its
 // first row, never inside one. Either the whole base page is emitted and its
@@ -34,12 +34,12 @@ import (
 //
 // It is held to three of the four requirements [BasePage] states — a page no
 // larger than the ask, rows in the store's own order, and no empty page beside a
-// token — and not to the range one: a history read filters by node id on both
-// sides, so a row outside the range is dropped here rather than reaching a
-// caller. A zero-length returned token means the base is exhausted.
+// token — and not to the range one, which nothing here checks: the store's
+// query filters its rows by node id, and this merge filters the window's the
+// same way. A zero-length returned token means the base is exhausted.
 //
-// There is a fourth, which [BasePage] has too and does not say: **a token may be
-// handed back, and must answer the same rows.** It follows from the cut rule
+// Its fourth, which [BasePage] needs too and does not state: a token may be
+// handed back, and must answer the same rows. It follows from the cut rule
 // rather than from this merge — a base page the cut emits nothing from is left
 // unread, and the only way to reach it again is its own token. The rule bounds
 // where that happens to the one branch where the window alone fills a page, so a
@@ -81,7 +81,7 @@ func compareHistory(a, b historyKey, reverse bool) int {
 // and the last key emitted, which is where the window's half resumes.
 type historyPageToken struct {
 	// Base is the cold store's token for this branch, as the cold store wrote
-	// it. Empty beside BaseDone false means the base has not been asked yet.
+	// it. Empty beside BaseDone false means the base is read from its start.
 	Base []byte `json:"base,omitempty"`
 	// BaseDone says the base is exhausted, so no further call is made to it.
 	BaseDone bool `json:"baseDone,omitempty"`

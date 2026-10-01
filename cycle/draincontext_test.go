@@ -121,7 +121,7 @@ func TestAnAmbiguousDrainIsResolvedOffTheWritersDeadline(t *testing.T) {
 	})
 }
 
-// TestADrainNoCallerWaitsForOutlivesTheWriteItRunsInside: a size watermark trips
+// TestADrainNoCallerWaitsForOutlivesTheWriteItRunsInside: a size trigger trips
 // inside some writer's call, and what the drain then carries is every earlier
 // writer's acked mutation. Those writers have been told their writes succeeded
 // and are gone; the one still on the line is waiting for its own append and not

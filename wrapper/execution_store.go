@@ -39,8 +39,8 @@ type ExecutionStore struct {
 	// reason: a closure per page would allocate one and say nothing more.
 	baseHistory func(context.Context, *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error)
 
-	// emit sends the same numbers to the server's metrics stack, tagged by
-	// store method.
+	// emit sends the same numbers to the server's metrics stack, the writes and
+	// the overlaid reads tagged by store method.
 	emit *walmetrics.Emitter
 
 	// intercepted counts the mutable-state writes and the two tombstones that
@@ -52,7 +52,7 @@ type ExecutionStore struct {
 	tasksCompleted atomic.Int64
 	// overlaid counts the mutable-state reads through the layer, taskReads the
 	// task pages routed at the merge — routed, not merged: a page the layer
-	// answers out of the cold store alone is in it.
+	// refuses, or one the window contributed nothing to, is in it.
 	overlaid  atomic.Int64
 	taskReads atomic.Int64
 	// historyReads counts the branch pages routed through the merge — routed,
@@ -125,8 +125,8 @@ func (s *ExecutionStore) Counts() Counts {
 
 // interceptRow is the per-kind half of an intercepted write: the store method
 // the metrics are tagged with, and the counter it raises. Behaviour stays in
-// the methods; this is the bookkeeping, in the shape [mutation.kinds] already
-// states its own per-kind facts in.
+// the methods; this is the bookkeeping, in the shape the mutation package's own
+// kinds table states its per-kind facts in.
 type interceptRow struct {
 	op      string
 	counter func(*ExecutionStore) *atomic.Int64
@@ -141,7 +141,7 @@ func tasksCompletedOf(s *ExecutionStore) *atomic.Int64 { return &s.tasksComplete
 // interception is that table, indexed by [mutation.Kind]. Every kind the
 // wrapper takes into the layer has a row; the guard is
 // TestEveryInterceptedKindHasARow, so a kind added without one fails by name
-// rather than raising no counter and tagging its metric with the empty string.
+// rather than as a refusal of every write of that kind ([ExecutionStore.write]).
 var interception = [mutation.KindCount]interceptRow{
 	mutation.KindCreate:             {op: "CreateWorkflowExecution", counter: interceptedOf},
 	mutation.KindUpdate:             {op: "UpdateWorkflowExecution", counter: interceptedOf},
@@ -154,13 +154,13 @@ var interception = [mutation.KindCount]interceptRow{
 }
 
 // write is intercept mode's whole write path: one mutation into the log, and
-// whatever the drain that carried it answered — preceded, where the record does
-// not carry them, by the request's new events into the cold store. All eight
-// intercepted writes come through here and read their own row off the kind, so
-// neither step is a method's to remember. The error is returned exactly as it
-// arrives, since
-// ContextImpl.handleWriteErrorLocked type-switches on these values and one %w
-// turns an expected condition failure into a background re-acquire.
+// whatever the layer answered, the drain's outcome in sync mode — preceded,
+// where the record does not carry them, by the request's new events into the
+// cold store. All eight intercepted writes come through here and read their own
+// row off the kind, so neither step is a method's to remember. The error is
+// returned exactly as it arrives, since ContextImpl.handleWriteErrorLocked
+// type-switches on these values and one %w turns an expected condition failure
+// into a background re-acquire.
 func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 	row := interception[m.Kind()]
 	if row.counter == nil {
@@ -184,10 +184,11 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 // appendEvents writes the mutation's new history events through the base store,
 // before the mutation that refers to them is acked, and strips them off the
 // mutation once they are down. It is the writer for records that do not carry
-// the batches: skipping them would ack a mutable state pointing at history nodes
+// the batches: skipping them would ack a mutable state pointing at history rows
 // nobody wrote — which no functional suite sees, the entry being durable and
-// correct. Where the record carries them the drain is the writer instead, under
-// the same rule (ADR 0014).
+// correct. Where the record carries them the drain is the writer instead, durable
+// no later than the transaction that writes the mutable state naming them
+// (ADR 0014).
 //
 // The strip is what lets everything below hold one invariant: a mutation
 // reaching the layer carries exactly the batches nobody has written yet. So the
@@ -216,10 +217,10 @@ func (s *ExecutionStore) GetHistoryBranchUtil() p.HistoryBranchUtil {
 
 // --- the four mutable-state writes: the WAL's traffic ---------------------
 //
-// Each hands its request to write, which puts the events down, acks the
-// mutation, and answers with what the drain said. The epoch is the request's own
-// rangeID, the token the plugin's own write would have conditioned its
-// transaction on (invariant I11).
+// Each hands its request to write, which puts the events down where the record
+// does not carry them, acks the mutation, and answers with what the layer said.
+// The epoch is the request's own rangeID, the token the plugin's own write
+// would have conditioned its transaction on (invariant I11).
 
 func (s *ExecutionStore) CreateWorkflowExecution(
 	ctx context.Context, request *p.InternalCreateWorkflowExecutionRequest,
@@ -360,7 +361,8 @@ func (s *ExecutionStore) GetHistoryTasks(
 // ErrCompleteHistoryTaskUnsupported is what intercept mode answers a single-key
 // task completion with: the log's deletion record is a range per category, and
 // a second deletion shape would be another thing every reader, drain and replay
-// has to agree about. Its one caller is the admin handler's RemoveTask.
+// has to agree about. Its one caller is the history handler's RemoveTask,
+// behind the admin API of the same name.
 var ErrCompleteHistoryTaskUnsupported = serviceerror.NewUnimplemented(
 	"CompleteHistoryTask is not supported by the WAL layer: the log's deletion " +
 		"record is a range per category, not a key")
@@ -377,8 +379,8 @@ func (s *ExecutionStore) CompleteHistoryTask(
 
 // RangeCompleteHistoryTasks goes into the log, so the deletion moves in log
 // order, is rebuilt by replay with the rest of the window, and lands in the same
-// transaction as the rows it covers. Answered at the append like every other
-// intercepted write: a range delete this layer acks is one it will apply.
+// transaction as the rows it covers. Answered like every other intercepted
+// write: a range delete this layer acks is one it will apply.
 func (s *ExecutionStore) RangeCompleteHistoryTasks(
 	ctx context.Context, request *p.RangeCompleteHistoryTasksRequest,
 ) error {
@@ -424,7 +426,7 @@ func (s *ExecutionStore) IsReplicationDLQEmpty(
 //
 // One of the seven is answered by the layer. The other six transit in both
 // modes, which for the two deletions and the tree read is a decision rather than
-// an omission: what a delete aimed at a node still in the window should do
+// an omission: what a delete aimed at a history row still in the window should do
 // depends on where that deployment put its history, and this library does not
 // choose for it. ADR 0014 names the exposure.
 

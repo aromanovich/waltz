@@ -5,7 +5,7 @@
 // Assertions come from the head of the window and data from the tail, because
 // only the head was ever evaluated against the cold store. A snapshot-bearing
 // request resets the run's accumulator (I8); tasks concatenate across that
-// reset, being queue entries rather than workflow state.
+// reset, being queue entries rather than mutable state.
 //
 // Event history is the exception and history.go says why: a window keeps the
 // batches a record carried, in WAL order, and folds none of them. Two appends of
@@ -59,11 +59,12 @@ var ErrRefused = errors.New("fold: window not foldable into merged requests")
 var ErrForeignPageToken = errors.New("fold: task-page token was not written by this layer")
 
 // ErrBasePageTooLarge reports a cold store that answered a page with more rows
-// than it was asked for, which is [BasePage]'s fourth requirement. The cut rests
-// on the count: where the window alone overflows the page the base is asked for
-// one row, and emitting one row is what lets that page's cursor advance. A
-// second row the store sent unasked is one the cursor moves past unemitted, and
-// the reader that completes the range at the end of the pagination deletes it.
+// than it was asked for, which is [BasePage]'s fourth requirement and one
+// [HistoryBasePage] is held to as well. The cut rests on the count: where the
+// window alone overflows the page the base is asked for one row, and emitting
+// one row is what lets that page's cursor advance. A second row the store sent
+// unasked is one the cursor moves past unemitted — on a task page, one the
+// reader that completes the range at the end of the pagination deletes.
 var ErrBasePageTooLarge = errors.New("fold: the cold store answered with more rows than the page asked for")
 
 // ErrBaseRowOutsideRange reports a row outside the range the request named,
@@ -78,17 +79,18 @@ var ErrBaseRowOutsideRange = errors.New("fold: the cold store answered with a ro
 // is what bounds the window's half of it and what goes into the token, so a base
 // row under that bound breaks the ascent across the page boundary, and the
 // reader's iterator skips what does not ascend without saying so: a task nobody
-// asks for again.
+// asks for again. A history page is held to the first half only, ascent being
+// the store's own order in the request's direction ([HistoryBasePage]).
 var ErrBasePageNotAscending = errors.New("fold: the cold store answered a page that does not ascend")
 
 // ErrBasePageEmptyBesideAToken reports a store answering no rows and a token at
 // once, against [BasePage]'s third requirement that no rows means the range is
 // exhausted. The merge would otherwise read it as the end of the pagination,
 // stop calling the base, and hand back a pagination that is over — so rows the
-// store still held are never read, and the range its reader completes at the end
-// deletes them. A store that pages by filtering a chunk and can answer an empty
-// page with more behind it does not satisfy this contract, and is told so here
-// rather than silently losing the remainder.
+// store still held are never read, and on a task page the range its reader
+// completes at the end deletes them. A store that pages by filtering a chunk
+// and can answer an empty page with more behind it does not satisfy this
+// contract, and is told so here rather than silently losing the remainder.
 var ErrBasePageEmptyBesideAToken = errors.New("fold: the cold store answered no rows beside a token saying it holds more")
 
 // RunAssertion is what the head of the window asserted about one run's row in
@@ -180,7 +182,7 @@ type Emitted struct {
 }
 
 // RunAssertions is the head-of-window state of each run this request touches,
-// by run id, which apply's transaction wrapper substitutes for the assertions
+// by run id, which the drain's applier substitutes for the assertions
 // the store would derive from the versions the request writes. The map is the
 // batch's own: writing to it rewrites what the drain stands on.
 //
@@ -194,7 +196,7 @@ func (e *Emitted) RunAssertions() map[string]RunAssertion { return e.runs }
 
 // OrphanedTasks are tasks from mutations a tombstone collapsed, which only a
 // tombstone carries: the Delete that collapsed them has no task slot of its
-// own, and losing them would break I7. Writing them is apply's business.
+// own, and losing them would break I8. Writing them is apply's business.
 func (e *Emitted) OrphanedTasks() map[tasks.Category][]p.InternalHistoryTask {
 	return e.orphanedTasks
 }
@@ -299,8 +301,8 @@ type wfKey struct {
 }
 
 // runKey names one run of one workflow inside a drain. The workflow is the
-// record pointer rather than its ids: [Drain] has the record in hand where it
-// uses this, and two workflows cannot share one.
+// record pointer rather than its ids: [Accumulator.Drain] has the record in hand
+// where it uses this, and two workflows cannot share one.
 type runKey struct {
 	workflow *WorkflowRecord
 	runID    string
@@ -381,8 +383,9 @@ func (w *workflowAcc) recordCurrentWrite(cw *CurrentWrite) {
 // Whether the mutation stands on that row at all is this rule's own question and
 // not each handler's. A handler that carried the test itself and then dropped it
 // would record exactly the claim above, and nothing would say so: the authority
-// refuses it before the append, so only a replayed stream — which reaches [Add]
-// with no [Accumulator.Check] in front of it — would ever meet the difference.
+// refuses it before the append, so only a replayed stream — which reaches
+// [Accumulator.Add] with no [Accumulator.Check] in front of it — would ever meet
+// the difference.
 func currentTaintedRefusal(w *workflowAcc, want asserted) error {
 	if want.current == nil {
 		return nil
@@ -476,8 +479,8 @@ func (a *Accumulator) Stats() Stats {
 	return Stats{MutationsIn: a.mutationsIn, DirtyWorkflows: len(a.workflows)}
 }
 
-// Batch is one drain's whole output: these requests, this task work, and the
-// seqno a transaction that applied both may acknowledge.
+// Batch is one drain's whole output: these requests, this task work, these
+// event batches, and the seqno a transaction that applied them may acknowledge.
 //
 // Only [Accumulator.Drain] builds one, and that is what apply's write path
 // stands on rather than re-deriving: the requests are in tail-seqno order, they
@@ -649,11 +652,11 @@ func (a *Accumulator) Drain() Batch {
 
 	work := a.drainTasks()
 
-	// Above both halves: the folded requests, whose last tail seqno is the
-	// maximum because out is sorted, and the task work, whose seqnos are not in
-	// that ordering. The task work's tail counts even when the work is empty,
-	// since a window whose task rows a range delete all dropped still folded
-	// those entries and a watermark below them would replay them.
+	// Above all three: the folded requests, whose last tail seqno is the
+	// maximum because out is sorted, and the task work and the event batches,
+	// whose seqnos are not in that ordering. The task work's tail counts even
+	// when the work is empty, since an AddHistoryTasks that carried no rows still
+	// folded its entry and a watermark below it would replay it.
 	var watermark wal.Seqno
 	if len(out) > 0 {
 		watermark = out[len(out)-1].TailSeqno
@@ -1013,7 +1016,7 @@ func (a *Accumulator) addDelete(seqno wal.Seqno, req *p.DeleteWorkflowExecutionR
 	pr := newPending(seqno, mutation.Mutation{Delete: req})
 	if rs != nil {
 		// The tombstone collapses the run's pending state; its tasks must
-		// survive (I7), and the Delete has no slot to carry them in.
+		// survive (I8), and the Delete has no slot to carry them in.
 		old := rs.owner
 		pr.orphanedTasks = old.slotTasks(rs.part)
 		w.drop(old)

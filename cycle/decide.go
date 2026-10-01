@@ -5,12 +5,14 @@ package cycle
 // them without a cycle. Four have a method beside the call site that supplies
 // the values; the rest are called where their values already are —
 // [noCycleRoute], [supersededRoute] and [storeError] from [Manager],
-// [tickActionOf] from the loop's own tick.
+// [appendOutcomeOf] from [Cycle.appendFailed], [attribute] from
+// [settlementOf], [tickActionOf] from the loop's own tick.
 //
 // The first family is one rule in five moments — what becomes of a read the
-// layer cannot answer out of both its sources ([readRoute]); then I10's
-// refusal, the store boundary's translation, the drain's attribution, what a
-// drain's outcome means, and what one age tick does.
+// layer cannot answer out of both its sources ([readRoute]); then what a write
+// meets before its append, the store boundary's translation, what an append's
+// error means, the drain's attribution, what a drain's outcome means, and what
+// one age tick does.
 
 import (
 	"errors"
@@ -101,20 +103,21 @@ func noCycleRoute(who reader, shard wal.ShardID) (readRoute, error) {
 // path's rather than a halt's because this state heals: one readable watermark
 // and the shard answers again.
 //
-// Halted, it turns on the tail, which a halt leaves alone, and under
-// [StateHaltedLost] on which read is asking:
+// Halted, it turns on which read is asking, and for a mutable-state read on
+// the tail, which a halt leaves alone:
 //
 //   - task read, either halt: refused whatever the tail says. On halted-lost
 //     that is another owner, whose acks this cycle can neither see nor merge.
 //     On halted-invariant an empty tail does say this cycle applied everything
 //     it acked, and the page would still be refused: what it hands back is the
 //     base store's own page token, and a shard re-acquired mid pagination — a
-//     range id renewal is one, with no unload and the caller's reader still
+//     rangeID renewal is one, with no unload and the caller's reader still
 //     holding that token — answers the next page from a cycle that merges,
-//     which cannot read a token this layer did not write and finishes the
-//     pagination on the base alone. The window dropping out of it is acked task
-//     rows the range the reader completes then deletes. So a task page is
-//     answered by a running cycle or not at all;
+//     which cannot read a token this layer did not write and refuses it
+//     (fold.ErrForeignPageToken). Finishing the pagination on the base alone
+//     instead would drop the window out of it, which is acked task rows the
+//     range the reader completes then deletes. So a task page is answered by a
+//     running cycle or not at all;
 //   - mutable-state read: the tail rule, so the cold store on an empty tail and
 //     ShardOwnershipLost or the halt on a held one.
 //
@@ -148,16 +151,18 @@ func loopRoute(
 	return tailRoute(st, tailEmpty, shard, "it is halted holding an unapplied tail", halt)
 }
 
-// stoppedRoute is the rule for a cycle whose goroutine is gone — retired by a
-// higher epoch, or closed with the node. tailEmpty is the mirrored counter's
-// answer, there being no loop left to ask ([Cycle.stoppedRead]).
+// stoppedRoute is the rule for a cycle whose goroutine is gone — superseded by
+// a higher epoch, stopped by name (the root package's Layer.RetireShard), or
+// closed with the node. tailEmpty is the mirrored counter's answer, there being
+// no loop left to ask ([Cycle.stoppedRead]).
 //
 // A task read is refused whatever that tail says, and this is where the two
-// readers part hardest: a stopped cycle was superseded, so the shard's tail is
-// now the fresh cycle's window, invisible from here. For a mutable-state read
-// that is staleness; for a task page it is a page short exactly those rows,
-// handed to the one caller that completes the range it read.
-// [Manager.taskPage] answers that one on the successor instead.
+// readers part hardest: where the stopped cycle was superseded, the shard's
+// tail is now the fresh cycle's window, invisible from here. For a
+// mutable-state read that is staleness; for a task page it is a page short
+// exactly those rows, handed to the one caller that completes the range it
+// read. [Manager.taskPage] answers that one on the successor instead, and a
+// cycle stopped by name, having none, leaves the refusal standing.
 func stoppedRoute(st State, tailEmpty bool, who reader, shard wal.ShardID, halt error) (readRoute, error) {
 	if who == taskRead {
 		return refuseAsLost, lost(shard,
@@ -171,6 +176,11 @@ func stoppedRoute(st State, tailEmpty bool, who reader, shard wal.ShardID, halt 
 // store can answer; entries in it mean the layer knows the store is incomplete
 // and cannot say by what. lostWhy is what the refusal tells an operator, and
 // the two callers differ in it because the cycle is in different shapes.
+//
+// The rule trusts the tail, and one stop breaks that trust: [Cycle.Close] over
+// a cycle halted inside its replay floors the tail and, when its log read
+// fails, retires it empty, so [stoppedRoute] passes a mutable-state read to a
+// store short those entries. That is an open entry in DURABILITY.md.
 func tailRoute(st State, tailEmpty bool, shard wal.ShardID, lostWhy string, halt error) (readRoute, error) {
 	if tailEmpty {
 		return passThrough, nil
@@ -191,7 +201,7 @@ func tailRoute(st State, tailEmpty bool, shard wal.ShardID, lostWhy string, halt
 // retry, then the shard is declared lost, since two acquires inside one page
 // read is churn faster than a page can be built.
 //
-// Refusing where this retries would be wrong: a retire means this node
+// Refusing where this retries would be wrong: a supersede means this node
 // re-acquired, so the cycle that can answer is in the map already, and
 // converting that into a re-acquire is a self-inflicted failover over a race
 // one map lookup resolves.
@@ -272,11 +282,12 @@ func tickActionOf(
 //     until that clears. The level is the backend's to lower — this shard's
 //     drains and trims are already forced while it stands — so naming a size
 //     here would send an operator to an applier that is not the constraint;
-//   - I10 itself: entries means the applier is behind, bytes a workflow near
-//     the server's own blob limits, and a tail over both is named as bytes. It
-//     reads the tail as it stands, never the tail this mutation would make, so
-//     no mutation is refused for its own size and the tail overshoots by at
-//     most one entry.
+//   - I10 itself: entries means the applier is behind; bytes means the same,
+//     or entries large enough — a workflow near the server's own blob limits —
+//     that a few of them fill the bound, and a tail over both is named as
+//     bytes. It reads the tail as it stands, never the tail this mutation
+//     would make, so no mutation is refused for its own size and the tail
+//     overshoots by at most one entry.
 //
 // The refusal must reach the caller unwrapped: ContextImpl.handleWriteErrorLocked
 // switches on the concrete type, where *serviceerror.ResourceExhausted means
@@ -305,7 +316,7 @@ func writeRefused(
 	return nil, ""
 }
 
-// persistenceLimit is the shape every refusal here is — the two above and the
+// persistenceLimit is the shape every refusal here is — the three above and the
 // read [loopRoute] refuses on the same unreadable drain — spelled once: copies
 // of it agree only while somebody keeps them agreeing, and what the shard reads
 // off them is the type and this pair.

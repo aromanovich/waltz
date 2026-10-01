@@ -11,8 +11,10 @@ window contains the acknowledged changes on top of it. A correct read must combi
 
 * a mutable-state read **overlays** a window snapshot or delta on the cold row;
 * a history-task read **merges** two ordered streams and subtracts acknowledged range deletes;
-* both run on the shard's cycle goroutine — the same goroutine the drain runs on — so no read can
-  land in the gap between a drain emptying the window and its transaction committing.
+* a history-branch read merges the same way, over the event batches the window still holds, with
+  nothing to subtract;
+* all three run on the shard's cycle goroutine — the same goroutine the drain runs on — so no read
+  can land in the gap between a drain emptying the window and its transaction committing.
 
 This chapter derives those rules from the split-state example and then gives the exact routing,
 pagination and accounting contracts. It also explains invariant
@@ -25,7 +27,7 @@ The version-42 example gives the routing rule: a read must enter the layer when 
 can have changed its answer without changing the cold store yet. `wrapper.ExecutionStore`
 decorates the base `ExecutionStore`. Of its 28 methods, intercept mode answers twelve
 differently and refuses a thirteenth (`CompleteHistoryTask`). Eight of the twelve are the writes the
-record format has a shape for; the other three are reads. The remaining 16 transit — the wrapper
+record format has a shape for; the other four are reads. The remaining 15 transit — the wrapper
 calls the base store's method of the same name and returns what it said.
 
 | Read method | Intercept mode | Why |
@@ -34,9 +36,9 @@ calls the base store's method of the same name and returns what it said.
 | `GetCurrentExecution` | **routed** | same, for the current-execution row |
 | `GetHistoryTasks` | **routed**, merged | a page short a task in the window is not stale, it is a lost task (below) |
 | `ListConcreteExecutions` | transits | a scan; no caller of it can be harmed by the window, and the layer has no shape for merging a scan |
-| `ReadHistoryBranch` | transits | event history never enters the log; the wrapper writes new events to the cold store before acking the mutation that names them |
-| `GetHistoryTreeContainingBranch` | transits | as above |
-| `GetAllHistoryTreeBranches` | transits | as above |
+| `ReadHistoryBranch` | **routed**, merged | where a record carries its request's event batches they are in the window until a drain lands them — and whether the window holds any is a fact about the tail this shard inherited, not about this node's store, so it is merged whatever that store does with a write's batches |
+| `GetHistoryTreeContainingBranch` | transits | a decision rather than an omission: what a tree read owes a history row still in the window depends on where the deployment put its history, and the layer does not choose for it |
+| `GetAllHistoryTreeBranches` | transits | a scan, like `ListConcreteExecutions` |
 | `GetReplicationTasksFromDLQ` | transits | the DLQ is not carried by the log |
 | `IsReplicationDLQEmpty` | transits | as above |
 
@@ -120,7 +122,9 @@ Every position in that order is load-bearing.
   a view taken before it is a view of the wrong window.
 * **The count before the routing rule**, so that a read the rule sends to the cold store is still
   counted as a read this shard routed. The count inside the prelude is the two mutable-state reads';
-  a task read counts its page on the way in, before the gate, and §6 says why.
+  a task read counts its page on the way in, before the gate, and §6 says why; a branch page is not
+  counted by the cycle at all, so that the overlay's hit counter cannot be satisfied by a read that
+  never touched the overlay.
 * **The drain last**, and only when `DrainOnRead` is on. Its two reasons for being there are below,
   with the instrument itself.
 
@@ -131,17 +135,17 @@ flowchart TD
     A["a read arrives at wrapper.ExecutionStore"] --> B{"layer nil?"}
     B -->|"yes: passthrough"| Z["the base store answers"]
     B -->|"no"| C{"registry holds a cycle for the shard?"}
-    C -->|"no, mutable-state read"| Z
+    C -->|"no, mutable-state or branch read"| Z
     C -->|"no, task read"| L["refuse: ShardOwnershipLost"]
     C -->|"yes"| D["prelude: replay gate, then count"]
     D --> E{"cycle state and tail"}
     E -->|"running, drain outcome unreadable"| R["refuse: ResourceExhausted"]
     E -->|"halted-lost: a task read, or a non-empty tail"| L
     E -->|"halted-invariant: a task read, or a non-empty tail"| H["refuse: the halt's own error"]
-    E -->|"halted, empty tail, mutable-state read"| Z
+    E -->|"either halted state, empty tail, mutable-state or branch read"| Z
     E -->|"running"| F{"DrainOnRead?"}
     F -->|"on"| G["drain the window, trigger tag read"]
-    G --> Z
+    G --> M
     F -->|"off"| M["merge over the window"]
 ```
 
@@ -151,22 +155,34 @@ type-switch on the concrete error value.
 The two readers part deliberately, and always the same way: a mutable-state read has callers that
 legitimately do not own the shard, so it falls through to the cold store, while a task read has
 exactly one caller, whose page — if short a tail — would be completed and acked past, so it is
-refused. Four moments in the diagram are that difference, and together they are one rule: **a task
+refused. The four rows of the table below are that difference, and together they are one rule: **a task
 page is answered by a running cycle or not at all.**
+
+A branch page is asked as a mutable-state read at every moment: its reader deletes nothing it read,
+so a page short the window's newest nodes is the same staleness rather than a key acked past. Where
+it falls through, the page token it carries is unwrapped first (`fold.BaseHistoryToken`), since it
+may be one this layer wrote on an earlier page.
 
 | The cycle | Mutable-state read | Task read |
 |---|---|---|
 | the registry holds none for this shard (`noCycleRoute`) | the base store answers | `ShardOwnershipLost` |
 | halted-lost (`loopRoute`) | the base store answers if the tail is empty, else `ShardOwnershipLost` | `ShardOwnershipLost`, whatever the tail holds |
 | halted-invariant (`loopRoute`) | the base store answers if the tail is empty, else the halt's own error | the halt's own error, whatever the tail holds |
-| retired, its goroutine gone (`stoppedRoute`) | the same tail rule | `ShardOwnershipLost`, re-issued on the successor by `Manager.taskPage` |
+| retired, its goroutine gone (`stoppedRoute`) | the same tail rule | `ShardOwnershipLost` — re-issued on the successor by `Manager.taskPage` where one has superseded it |
+
+The tail rule is only as good as the tail, and one stop empties a tail it did not apply: a cycle that
+halted inside its replay is replayed again by `Cycle.Close`, which floors the tail first, so a second
+log read that fails leaves the retired cycle's mirror empty and the last row passes a mutable-state
+read to a cold store missing those entries. That is an open defect in
+[the durability ledger](../../DURABILITY.md).
 
 An empty tail does not soften the task read's half of any of them, and the last row is why it cannot:
 a page the cold store answers carries **that store's own page token**. A shard re-acquired mid
-pagination — a range id renewal is one, and it unloads nothing, so the caller's reader keeps
+pagination — a rangeID renewal is one, and it unloads nothing, so the caller's reader keeps
 paginating — answers the next page from a cycle that merges, which cannot read a token this layer did
-not write and so finishes the pagination on the base alone. The window dropping out of it is acked
-task rows, and the range the reader completes on reaching the end deletes them.
+not write and refuses it (§4's page-token rules). Finishing the pagination on the base alone instead
+would drop the window out of it: acked task rows, which the range the reader completes on reaching
+the end deletes.
 
 Each rule is a function of plain values — a state, a tail, which reader is asking — in
 [`../../cycle/decide.go`](../../cycle/decide.go), so its whole domain can be enumerated in a test
@@ -267,9 +283,10 @@ sequenceDiagram
     HS->>ES: GetWorkflowExecution
     ES->>MG: GetWorkflowExecution plus a base thunk
     MG->>LP: queue the read as a job
-    LP->>LP: prelude - gate, count, route
+    LP->>LP: prelude - the replay gate
     LP->>ACC: ViewRun
     ACC-->>LP: RunDelta
+    LP->>LP: prelude - count, route
     LP->>CS: base thunk - the pre-window row
     CS-->>LP: the row at its own version
     LP->>LP: Render - apply the window's delta to a private copy
@@ -325,11 +342,13 @@ still in the window. Returning the base page and appending 20 would produce `10,
 the base alone could let the queue complete past 20. The only valid page is the ordered merge
 `10, 20, 30`, subject to the requested batch size and any range delete already in the window.
 
-`GetHistoryTasks` is therefore the one read that merges rather than renders, and it is answered in
-two halves. The cycle decides **who may answer a page, when, and whether the window is usable yet**,
-which is [section 2](#2-routing-a-read-and-drainonread) above; `fold.Accumulator.TaskPage` decides
-**what one page holds** — the cut, the token, the batch arithmetic, the dedup, the subtraction of
-undrained range deletes — and it sits beside the window it reads.
+`GetHistoryTasks` is therefore one of the two reads that merge rather than render —
+`ReadHistoryBranch` is the other, under the same cut rule and with no deletes to subtract
+(`fold.Accumulator.HistoryPage`) — and it is answered in two halves. The cycle decides **who may
+answer a page, when, and whether the window is usable yet**, which is [section
+2](#2-routing-a-read-and-drainonread) above; `fold.Accumulator.TaskPage` decides **what one page
+holds** — the cut, the token, the batch arithmetic, the dedup, the subtraction of undrained range
+deletes — and it sits beside the window it reads.
 
 The base page reaches `fold` as a callback (`fold.BasePage`, taking a batch size and a token) rather
 than as a page. The merge chooses its own batch size and its own token, but the round trip stays the
@@ -451,14 +470,10 @@ Reaching the branch where the window alone overflows the page means the window c
 page** — and the incoming token is handed back untouched, so that row comes back on the next call
 rather than being lost.
 
-One degenerate case falls out of the same arithmetic. When the base's first row ties the window's
-first, nothing is strictly below it, and cutting there would emit an empty page for ever. So the
-merge emits that single deduplicated entry instead — which is emitting the base page whole, and
-therefore allowed by the cut rule.
-
-A token this layer did not write is refused rather than carried — the rule stated above with the
-token's framing, and the reason it can be: no route hands a caller the base store's token, so such a
-token is not a pagination of this layer's to resume.
+One degenerate case falls out of the same arithmetic. When the base's first row is at or below the
+window's first, no window task is strictly below it, and cutting there would emit an empty page for
+ever. So the merge emits that single base row instead — deduplicated against the window's on a tie —
+which is emitting the base page whole, and therefore allowed by the cut rule.
 
 ### The collision counter
 
@@ -488,8 +503,8 @@ timer, so the database knows less about a queue's progress than the queue does.
 
 The order inside one checkpoint is load-bearing, and it is the server's order, not this layer's: the
 range is completed **first**, and the queue's state is written to the shard row afterwards. Persist
-the state first and a failed deletion leaves the watermark above rows that are still there — the
-shard reloads, and those tasks are never deleted.
+the state first and a failed deletion leaves the queue's deletion watermark above rows that are
+still there — the shard reloads, and those tasks are never deleted.
 
 Because a merged read offers the window, a queue can complete a range covering a task whose row is
 still in the tail. If the drain then wrote that row anyway, it would land **below** the queue's
@@ -588,11 +603,11 @@ The drop share is primarily a function of one dimensionless quantity: **drains p
 checkpoint**. The exact share is a workload measurement, not a constant of the implementation; use
 `wal_dropped_tasks` and `wal_written_tasks` to calculate it for the deployment. The shipped cadence
 gives the anchor to read it against: `history.timerProcessorUpdateAckInterval` and its transfer,
-visibility, outbound and archival siblings default to 30 s in the vendored server, against the
-layer's 5 s age trigger (`cycle.Defaults().Age`) — **six drains per queue checkpoint**. The two
-ends of that ratio have different owners: the 30 s is the server's, the 5 s is this layer's. The
-server's is the larger of the two, so the size of the drop is set mostly by a knob this layer does
-not hold. Two readings follow:
+visibility, outbound and archival siblings default to 30 s in the server this module builds
+on, against the layer's 5 s age trigger (`cycle.Defaults().Age`) — **six drains per queue
+checkpoint**. The two ends of that ratio have different owners: the 30 s is the server's, the 5 s
+is this layer's. The server's is the larger of the two, so the size of the drop is set mostly by a
+knob this layer does not hold. Two readings follow:
 
 * a rising share usually means the window is living longer relative to the queues' checkpoints —
   which is the mechanism working, not a fault. Under load it goes the other way: the mutation and
@@ -620,17 +635,18 @@ those two apart at a glance.
 
 | Counter | Kind | What it counts |
 |---|---|---|
-| `wal_overlaid_reads` (and `wrapper.Counts.Overlaid`) | **routed** | mutable-state reads sent at the layer, tagged by store method |
+| `wal_overlaid_reads` (and `wrapper.Counts.Overlaid`, `wrapper.Counts.HistoryReads`) | **routed** | the two mutable-state reads sent at the overlay and `ReadHistoryBranch` pages sent at the history merge, tagged by store method; `Overlaid` counts the first two, `HistoryReads` the third |
 | `wal_merged_task_pages` (and `wrapper.Counts.TaskReads`) | **routed** | `GetHistoryTasks` pages sent at the layer's merge |
 | `cycle.Counters.TaskReads` | **routed** | pages this shard was asked for — counted before the readiness gate, so a page the gate fails is still in it |
 | `cycle.Counters.Reads` | **routed** | overlay reads this shard routed, counted before the routing rule, so a read the rule passes through to the cold store is still in it |
 | `cycle.Counters.ReadsHeld` | **hit** | the subset for which the window held the run or the row |
 | `cycle.Counters.TaskReadsMerged` | **hit** | pages that carried at least one task **out of the window** |
-| `cycle.Counters.TaskCollisions` | evidence | keys both sources carried; node-wide |
+| `cycle.Counters.TaskCollisions` | evidence | keys both sources carried; per shard, where the series beside it carries no shard tag |
 
-`wal_merged_task_pages` is the one whose name and meaning disagree: it counts pages routed, not pages
-merged. Renaming it would break every alert expression written over it, so the distinction lives in
-the metric's description instead.
+`wal_merged_task_pages` and `wal_overlaid_reads` are the two whose names and meanings disagree: the
+first counts pages routed, not pages merged, and the second predates the branch read it now also
+counts. Renaming either would break every alert expression written over it, so the distinction is
+written down instead — in each one's description, and at each one's definition in `walmetrics`.
 
 The hit counters do the other job, and that is why both kinds exist. A test suite is just as green
 over a layer that came out empty as over one doing its work, so a run needs a **witness**: an
@@ -648,16 +664,21 @@ witness; [chapter 10](10-metrics.md) owns every series named here, with its tags
   function both the overlay and the drain fold with, plus the per-key upsert-vs-delete resolution.
 * [`../../fold/taskpage.go`](../../fold/taskpage.go) — the merged page: the pagination
   rule at length, the token format, `hideDeleted`, `mergeSorted` and `TaskPageStats`.
+* [`../../fold/historypage.go`](../../fold/historypage.go) — the merged branch page: the same
+  cut rule, the store's two orders, and its own token.
 * [`../../fold/histtasks.go`](../../fold/histtasks.go) — I7's half inside the window:
-  `TaskRange.Covers`, the sweep, `taskRows`, and the two drop counters.
+  `TaskRange.Covers`, the sweep, `taskRows`, and `TaskCounts`, the dropped and written counts
+  per category.
 * [`../../fold/tasks.go`](../../fold/tasks.go) — the window's tasks as a reader sees
   them, and why the scan has no index over it.
 * [`../../cycle/read.go`](../../cycle/read.go) — the two mutable-state reads,
   `Cycle.prelude`'s four-step order, and `drainForRead`.
 * [`../../cycle/tasks.go`](../../cycle/tasks.go) — who may answer a task page, and the
   three task-read counters.
-* [`../../cycle/decide.go`](../../cycle/decide.go) — `readRoute` and the four rules that
-  return it, as functions of values.
+* [`../../cycle/history.go`](../../cycle/history.go) — who may answer a branch page, and the
+  token unwrapped on every route that answers without the window.
+* [`../../cycle/decide.go`](../../cycle/decide.go) — `readRoute`, the one rule at its five
+  moments, and the functions of values that return it.
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — the
   twelve-of-28 partition, method by method, and where each read counter is raised.
 * [`../../walmetrics/walmetrics.go`](../../walmetrics/walmetrics.go) — the series, with

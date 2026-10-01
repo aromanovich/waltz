@@ -12,8 +12,8 @@ package witness
 // write nothing and the control that has no layer at all — constructed here
 // rather than captured, since nothing in this package runs a suite. A live
 // run's shape — Totals alone, no store, no emissions — is [Universal] and the
-// claims an absent instrument leaves standing; verify/e2e drives that shape
-// over a server it boots in-process, and is the witness's only caller.
+// claims an absent instrument leaves standing; internal/verify/e2e drives that
+// shape over a server it boots in-process, and is the witness's only caller.
 
 import (
 	"slices"
@@ -172,7 +172,7 @@ func TestTheUniversalClaimsCanFail(t *testing.T) {
 }
 
 // TestTheEmptyLayerIsAssertedNotAssumed: what a run that writes neither path
-// must leave behind — D3 as an assertion — because a method that starts
+// must leave behind, as an assertion, because a method that starts
 // transiting into the log when it should not leaves every suite green.
 //
 // The one case here that the leave-one-out below cannot hold: on a *sync* empty

@@ -73,7 +73,7 @@ func TestAFloorPlantsAllFourNumbers(t *testing.T) {
 	// The attempt is abandoned: nothing settles, and the floor is planted
 	// again at the watermark the cold store still holds.
 	tl.Floor(wal.FirstSeqno - 1)
-	require.Zero(t, tl.Bytes(), "the abandoned attempt's bytes are still counted")
+	require.Zero(t, tl.Bytes(), "the floor drops the abandoned attempt's bytes")
 	require.True(t, tl.Empty())
 	require.EqualValues(t, wal.FirstSeqno-1, tl.Commit())
 

@@ -466,8 +466,8 @@ func TestTheAuthorityDerivesWhatTheFoldRecords(t *testing.T) {
 			require.Lenf(t, byFold.runs, s.runs, "this shape must record %d run assertion(s), and "+
 				"an equality between two sets of the wrong size is what the arity column exists "+
 				"to catch: %+v", s.runs, byFold.runs)
-			require.Equalf(t, s.current, byFold.current != nil, "this shape must record a "+
-				"current-row assertion: %v", s.current)
+			require.Equalf(t, s.current, byFold.current != nil, "whether this shape records a "+
+				"current-row assertion: want %v", s.current)
 			require.Equalf(t, s.write, writeRun(byFold), "this shape must hand the current row "+
 				"to %q: the assertion and the write are separate facts, and a mode that asserts "+
 				"the row without writing it is where they part", s.write)

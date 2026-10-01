@@ -86,7 +86,7 @@ func (m *Manager) taskPage(
 // getHistoryTasks asks this cycle's goroutine for one merged page. Its one
 // caller is [Manager.taskPage], which is where the refusal a stopped cycle
 // gives — this cycle saying it is not the one to answer — is resolved by
-// re-issuing on the successor.
+// re-issuing on the successor where there is one.
 func (c *Cycle) getHistoryTasks(
 	ctx context.Context,
 	req *p.GetHistoryTasksRequest,
@@ -132,11 +132,12 @@ func (c *Cycle) readTasks(
 		// No route answers a task read this way — every one of them merges or
 		// refuses — and this arm is here to keep it that way rather than to run.
 		// What it would do is hand the caller the cold store's own page *token*,
-		// which the cycle that replaces this one cannot read: the pagination
-		// finishes on the base alone with the window dropped out of it, and the
-		// range its reader completes deletes the acked rows that were in it. A
-		// rule held by three functions in decide.go and nothing at the site that
-		// would carry out the loss is a rule one edit away from being gone.
+		// which the cycle that replaces this one cannot read and refuses
+		// (fold.ErrForeignPageToken); finished on the base alone instead, the
+		// pagination would drop the window out of it, and the range its reader
+		// completes deletes the acked rows that were in it. A rule held by three
+		// functions in decide.go and nothing at the site that would carry out the
+		// loss is a rule one edit away from being gone.
 		return nil, fmt.Errorf(
 			"cycle: shard %d: a task page may not be answered by the cold store alone", c.shard)
 	}
@@ -156,7 +157,7 @@ func (c *Cycle) readTasks(
 	}
 
 	// TaskReadsMerged is pages that carried at least one task out of the window
-	// — the honest witness that the merge ran.
+	// — the witness that the merge contributed, not merely that it ran.
 	resp, stats, err := s.acc.TaskPage(req, basePage)
 	if err != nil {
 		return nil, err

@@ -46,9 +46,9 @@ import (
 // Four things are required of it, the first three because this merge builds a
 // page's reach out of what the base last returned rather than out of a cursor of
 // its own. Temporal's SQL and Cassandra plugins satisfy every one, so no run here
-// has had to. All four are checked, each against bounds the merge already
-// holds, and a breach is refused rather than carried: what these cost is spent in
-// somebody else's reader — a queue that panics, an iterator that skips in
+// has had one refused. All four are checked, each against bounds the merge
+// already holds, and a breach is refused rather than carried: what these cost is
+// spent in somebody else's reader — a queue that panics, an iterator that skips in
 // silence, a range completed over rows nobody was shown — and none of those can
 // name the store that caused it.
 //
@@ -149,10 +149,10 @@ func (t *taskPageToken) setAfter(k tasks.Key) {
 }
 
 // taskTokenMagic frames this layer's token so a store's own can be told apart
-// from it. Nothing hands a caller a store's own any more, so what the frame
-// answers is not which of two paginations this is but whether the token is one
-// of ours at all — and one that is not is refused ([ErrForeignPageToken]) rather
-// than resumed against a window cursor nobody handed out.
+// from it. Nothing hands a caller a store's own, so what the frame answers is
+// not which of two paginations this is but whether the token is one of ours at
+// all — and one that is not is refused ([ErrForeignPageToken]) rather than
+// resumed against a window cursor nobody handed out.
 var taskTokenMagic = [4]byte{'w', 'a', 'l', '1'}
 
 func encodeTaskToken(t *taskPageToken) []byte {
@@ -339,15 +339,15 @@ func mergePage(
 
 // refuseBasePage holds the store to [BasePage]'s first three requirements, each
 // of which is one walk of the page just answered against bounds the merge
-// already has. They were written down rather than checked because the loss lands
-// in the reader rather than here — and that is exactly why the check belongs
-// here: the reader is a queue that panics, or an iterator that skips a
-// descending key in silence, and neither can name the store that did it.
+// already has; the fourth is checked by the caller, which holds the ask. The
+// check belongs here because the loss lands in the reader: a queue that panics,
+// or an iterator that skips a descending key in silence, and neither can name
+// the store that did it.
 //
 // from is where this pagination resumes, inclusive: minKey on the first page and
 // the key after the last one emitted on every later one. No conforming store can
-// answer below it. Its own token resumes after its last row, and the two
-// branches that leave that token untouched emit only window keys strictly below
+// answer below it. Its own token resumes after its last row, and the one
+// branch that leaves that token untouched emits only window keys strictly below
 // the base page's first — so the rows it repeats are the ones it has not had
 // emitted yet.
 func refuseBasePage(page []p.InternalHistoryTask, token []byte, minKey, from, maxKey tasks.Key) error {

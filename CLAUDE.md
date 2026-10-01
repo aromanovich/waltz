@@ -13,12 +13,13 @@ cold-store transaction — is an optimisation bought against that rule, so any
 change that trades it away has misunderstood what is being optimised.
 
 [`DURABILITY.md`](DURABILITY.md) is the standing list of every known way the rule
-can break, each marked closed, open, accepted or **unknown** — and unknown means
-nobody established it, which is to be treated as open. A closed entry names the
-mechanism and a test that fails without it; an accepted one names what is being
-accepted and what a deployment owes in its place, and the three of those are the
-page's floor. A new way found belongs there whether or not it is closed the same
-day.
+can break, each marked closed, refuted, open, accepted or **unknown** — and
+unknown means nobody established it, which is to be treated as open. A closed
+entry names the mechanism and a test that fails without it; a refuted one, the
+argument and how it was established; an accepted one names what is being
+accepted and what a deployment owes in its place, and the accepted entries are
+the page's floor. A new way found belongs there whether or not it is closed the
+same day.
 
 **It is the queue, not the report**, and its last section says how it is worked:
 a session takes named entries and ends each one closed, refuted or accepted, and
@@ -70,14 +71,16 @@ may import is the vocabulary the seam is stated in and nothing above it
 ([`.claude/rules/cold.md`](.claude/rules/cold.md)).
 The root package `waltz` is the front door — `Compose`, the `wal` configuration
 section, the dynamic-config settings, `AbstractFactory` — and nothing of the
-layer may import it. The direction the layer reads in is
-`fold → cycle → apply → wrapper → waltz`, which nesting cannot express and the
-handbook's [03-components.md](docs/handbook/03-components.md) carries.
+layer may import it. The layer's dependency order, bottom-up, is
+`wal → fold → apply → cycle → waltz`, with `wrapper` a branch beside `cycle`
+that only `waltz` imports — an order nesting cannot express (`cycle` imports
+`fold`, but so does `apply`) and the handbook's
+[03-components.md](docs/handbook/03-components.md) carries.
 
 ## Running it
 
-Everything runs in process, with nothing installed — no cluster, no container,
-no build tag:
+Everything runs in process — no cluster, no container, no build tag — and the
+one thing to install is a C compiler for `make race`, because `-race` needs cgo:
 
 ```sh
 make test            # go test ./... -count=1; the default target
@@ -133,14 +136,15 @@ past because nothing fails when you break them.
 
 **Comments say what only the code cannot.** No provenance, no ticket numbers as
 citation, no re-tellings of the ADRs or the handbook, no sentences restating the
-line below. The tree sits at ~23% of non-blank lines and a new file well over
-that is the signal to re-read
+line below. The tree sits at ~29% of non-blank lines — 37% in the non-test
+files, 23% in the tests — and a new file well over the figure for its kind is
+the signal to re-read
 [`.claude/rules/comments.md`](.claude/rules/comments.md), which also has the
 token-stream check that proves a compression changed nothing else.
 
 **A test asserts behaviour, never shape.** No parsing Go source, no assertions
-over the import graph, no parsing the handbook or a build file. Seven `_test.go`
-files did those and all seven are gone — they are lint rules in a test's
+over the import graph, no parsing the handbook or a build file. Ten `_test.go`
+files did those and all ten are gone — they are lint rules in a test's
 clothing, and one is on record having been green while the invariant it existed
 for was violable. [`.claude/rules/no-lint-in-tests.md`](.claude/rules/no-lint-in-tests.md)
 has the three places such a rule may live instead, in the order to try them.
@@ -155,10 +159,13 @@ has the three places such a rule may live instead, in the order to try them.
   `paths:` header so it loads when you touch that directory and costs nothing
   otherwise. This is where "what to know before changing this" lives, beside the
   code it is about rather than here.
-* [`docs/adr/`](docs/adr/) — the eight decisions somebody will otherwise try to
+* [`docs/adr/`](docs/adr/) — nine decisions somebody will otherwise try to
   reverse: the log contract, in-process, the configuration's home, the log's
   boundary, the tree, one entry per append, one shipped implementation at each
-  seam, and the cold store embedding Temporal's own persistence;
+  seam, the cold store embedding Temporal's own persistence, and a record
+  carrying the event batches its own request produced. The tenth, what a write
+  must read from the cold store before it appends, is proposed rather than
+  decided: a question left open on purpose.
 * [`docs/handbook/`](docs/handbook/README.md) — the book. 01–11 are the
   reference (components, contracts, the paths, the keys, the series, the
   suites); 12–15 are the deep dives (what a write cost before the layer, the

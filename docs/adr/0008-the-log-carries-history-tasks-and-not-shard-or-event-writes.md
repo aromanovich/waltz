@@ -28,12 +28,12 @@ boundary is**, since the same argument reaches shard writes and event history.
 
 ### Why both halves of the task path, and not only the deletes
 
-Deferring the delete while the write stays immediate is worse than either. A store deletes a
-**scheduled** category's range by fire time and ignores the task ids entirely. A delete applied
-late over a write applied immediately therefore covers a timer created *after* the checkpoint whose
-fire time falls inside the passed window. That is not a garbage row: it is a lost timer, and a
-workflow that never wakes. There is no intermediate state between "both halves in the log" and
-"neither".
+Deferring the delete while the write is still applied at once is worse than either. A store
+deletes a **scheduled** category's range by fire time and ignores the task ids entirely. A delete
+applied late over a write applied immediately therefore covers a timer created *after* the
+checkpoint whose fire time falls inside the passed window. That is not a garbage row: it is a
+lost timer, and a workflow that never wakes. There is no intermediate state between "both halves
+in the log" and "neither".
 
 ### Why not shard writes
 
@@ -48,13 +48,14 @@ Deferring it would reopen the double-write window the shard-acquire ordering exi
 would hand one range of task ids to two owners. It is also circular: the log entry carrying the
 bump would have to be appended under the epoch that bump establishes.
 
-### Why not event history
+### Why not event history (D3)
 
-Decision D3, unchanged: the question is revisited after mutable state **and tasks**, which is where
-this leaves it. Two things make it the wrong next step rather than merely a later one — I10's
-budget is denominated in bytes and event blobs are the bulk of them, and an intercepted write
-already puts its own events down through the base store before it acks, so the tree is never behind
-the tail.
+Decision D3 keeps event history out, and is not changed here: the question is revisited after
+mutable state **and tasks**, which is where this leaves it. Two things make it the wrong next step
+rather than merely a later one — I10's budget is denominated in bytes and event blobs are the bulk
+of them, and an intercepted write then put its own events down through the base store before it
+acked, so the tree was never behind the tail. (ADR 0014 has since changed that for a store that
+declares `cold.HistoryApplier`.)
 
 The replication DLQ is out for the ordinary reason: its writer is not one of the intercepted
 methods and nothing in the window can change its answer.
@@ -70,8 +71,8 @@ because that is what a queue's own checkpoints are — `[old, new)`, butt-joined
 and it is what makes the rule cheap enough to live in the accumulator and be rebuilt by replay.
 A single key is neither, and a second deletion shape would be a second thing every reader, every
 drain and every replay has to agree about. Its one caller in the whole server is the admin
-handler's `RemoveTask`, which today, on a task still in the window, deletes a row that is not
-there and reports success. Passthrough still transits it.
+handler's `RemoveTask`, which, on a task still in the window, deleted a row that was not there
+and reported success before this refusal. Passthrough still transits it.
 
 **The answer is given at the append**, like every other intercepted write (I2), not after the
 drain. The decoupling the old bound bought — a queue checkpoint never parked behind a stuck

@@ -38,7 +38,7 @@ places:
 | where | what it sees |
 |---|---|
 | an append | `wal.ErrFenced` |
-| a drain | `apply.ClassShardLost` |
+| a drain | `apply.ClassShardLost`, or a watermark found past the seqno of a drain whose outcome was unknown, which carries `cycle.FencedAway` too |
 | a replay | `cycle.FencedAway`, the cause it carries when the inherited tail holds an entry above this cycle's own epoch |
 
 Everything a node knows about its own ownership is as fresh as its last attempt to act. A displaced
@@ -194,7 +194,7 @@ that does not answer reads breaks the server immediately — not subtly, and not
 
 The layer pays both prices explicitly. What it accumulates is durable before the caller is answered,
 which is what the log is for; and its window answers reads, which is what the overlay and the merged
-task page are for. That second obligation is the whole of [chapter 07](07-read-path.md).
+task and history pages are for. That second obligation is the whole of [chapter 07](07-read-path.md).
 
 ### A folded window as a concatenation of the store's own queries
 
@@ -232,7 +232,7 @@ applier substitutes for the conditions the store's own request shapes would have
 shape then depends on which kinds of assertion and which delete families the batch contains, never on
 how many mutations it folded. That property belongs to whichever applier a deployment runs rather
 than to anything in this repository, which is why [chapter 11](11-verification.md#the-guards) names
-a drain query-shape guard as one of the two a deployment has to rebuild for itself: drive a real
+a drain query-shape guard as one of the two a deployment has to build for itself: drive a real
 drain at a window of 64 and assert that its largest transaction stays a constant number of
 statements. A constant is the honest form of the claim that the shape does not grow.
 [Chapter 05](05-write-path.md#2-the-drain-itself) owns the drain.
@@ -302,10 +302,10 @@ every time.
 
 The layer cannot stretch that hold, because the tracker lives above the persistence boundary and
 nothing at the store interface can reach it. The only lever the layer has at that seam is when its
-own write returns. So there are only two ways to hold the watermark down for longer, and the layer can
-take neither: answer the caller only once the drain has committed, which gives up the early
-acknowledgement the layer exists for, or answer early anyway, which releases the hold over tasks that
-are not in the store yet — the failure the hold exists to prevent.
+own write returns. So there are only two ways to hold the reader high watermark down for longer,
+and the layer can take neither: answer the caller only once the drain has committed, which gives up
+the early acknowledgement the layer exists for, or answer early anyway, which releases the hold over
+tasks that are not in the store yet — the failure the hold exists to prevent.
 
 So the tasks still sitting in the window can only be supplied where the queue reads, by merging them
 into the page it asked for. [Chapter 07](07-read-path.md#4-merge-tasks-two-ordered-sources-one-page)
@@ -405,10 +405,10 @@ keys, right types, wrong value. `fold.WorkflowRecord.CurrentWrite` exists to car
 separately from the kind.
 
 The second is *in what form*. Each kind writes the row differently: the update path re-serialises the
-mutation's own execution state, while every kind carrying a whole run — a create, a set, a
-conflict-resolve, a continue-as-new — passes that snapshot's blob through untouched. A fold that used
-one rendering for all of them produces a row that is correct in every field a reader would check and
-different in bytes.
+mutation's own execution state, while every kind carrying a whole run that writes the row — a
+create, a conflict-resolve, a continue-as-new — passes that snapshot's blob through untouched, and a
+set does not write the row at all. A fold that used one rendering for all of them produces a row
+that is correct in every field a reader would check and different in bytes.
 
 Neither turned a suite red until a differential run against the incumbent found it. Both are pinned
 by a unit test now — `TestCurrentWriteTracksTheLastWriter` in
@@ -422,11 +422,11 @@ names two instruments below rather than one.** A conflict-resolve was read as wr
 state — run id, create request id, state and status — where upstream passes the snapshot's own blob,
 and the wrong reading was written down as a deliberate divergence in three documents. What it cost was
 a `start_time` column that lands NULL and every non-create request id dropped, durably: nothing
-back-fills either, so the namespace policy above measures every reuse interval against the zero time
-and never refuses again. The rendering it should always have had is the one that needed *less* code —
-`currentWriteOfSnapshot`, which every other snapshot-bearing kind was already using. A divergence is
-worth writing down only with what it buys beside it; this one had an address where a reason should
-have been.
+back-fills either, so a namespace's `WorkflowIdReuseMinimalInterval` measures every reuse interval
+against the zero time and never refuses again. The rendering it should always have had is the one
+that needed *less* code — `currentWriteOfSnapshot`, which every other snapshot-bearing kind was
+already using. A divergence is worth writing down only with what it buys beside it; this one had an
+address where a reason should have been.
 
 The differential run that found both is a **layer against an unwrapped store**: the same stream
 driven through the fold and through the incumbent's own write path, which is the only arm that can see
@@ -453,9 +453,10 @@ promotes those defects to the definition of correct. It is also stationary: it s
 incumbent's own behaviour changes, and that is the one event the comparison exists to notice.
 
 So the baseline is a **live second run of the incumbent**, not an artefact. Both paths execute in the
-same process, against the same store, in the same run, and the incumbent's answer is recomputed every
-time rather than remembered. The one thing that could reasonably be recorded is the *input* corpus,
-and even that need not be checked in: a stream generated from a seed is regenerated by the seed.
+same process, against two instances of the same store, in the same run, and the incumbent's answer
+is recomputed every time rather than remembered. The one thing that could reasonably be recorded is
+the *input* corpus, and even that need not be checked in: a stream generated from a seed is
+regenerated by the seed.
 
 That is why `internal/verify/acceptance` records nothing at all. Its stream comes from a seed, and
 its collapse ratio is asserted against a *control run* at the other end of the locality knob rather
@@ -466,15 +467,16 @@ than against a stored value ([chapter
 
 ## Where this lives in the code
 
-* [`../../wal/refuse.go`](../../wal/refuse.go) — the append's refusals: `ErrFenced` for a
-  superseded epoch, `ErrZeroEpoch` for none, and the order between them.
+* [`../../wal/refuse.go`](../../wal/refuse.go) — the append's refusals: `ErrZeroEpoch` for no
+  epoch, `ErrFenced` for one the log is not fenced at, and the order that puts `ErrFenced` ahead
+  of `ErrAlreadyWritten`.
 * [`../../wal/wal.go`](../../wal/wal.go) — `Append`, which takes exactly one payload; the contract
   itself states why.
 * [`../../apply/failure.go`](../../apply/failure.go) — `ClassShardLost`, one of the three places
   ownership loss is discovered, and `Attribute`, which reads back every row a failed drain asserted
   and names the ones that diverged.
 * [`../../wrapper/shard_store.go`](../../wrapper/shard_store.go) — `UpdateShard` observed
-  rather than intercepted, and why it cannot be logged.
+  rather than intercepted: the log fenced at the new epoch before the rangeID lands.
 * [`../../cycle/replay.go`](../../cycle/replay.go) — the successor folding and applying an
   inherited tail, which is what a second ownership token would have laundered a zombie's entry
   through.
@@ -482,7 +484,7 @@ than against a stored value ([chapter
   goroutine, and `startForRead`: the placement a readiness gate would have replaced with a flag.
 * [`../../fold/fold.go`](../../fold/fold.go) — `WorkflowRecord`, `CurrentWrite` and
   `Emitted.RunAssertions()`: the assertions a merged request cannot carry itself.
-* [`../../fold/assert.go`](../../fold/assert.go) — the three renderings of the
+* [`../../fold/assert.go`](../../fold/assert.go) — each kind's rendering of the
   current-execution row that a single rendering would have collapsed.
 * [`../../fold/overlay.go`](../../fold/overlay.go) — `RunView.Render`, which copies and
   discards rather than materialising.

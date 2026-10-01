@@ -94,13 +94,14 @@ limit entries means the log ends there" is what a caller reading a whole log sto
 reaches. A backend that pages by rows *and* by a response size answers short for the size, and every
 other case passes because none of them weighs anything. So this one appends 24 entries of 256 KiB and
 requires all 24 back in one page: over a 4 MB message, and at an entry size a deployment's own writes
-reach, since the tail's bound is 8 MB rather than a count. Measured the same way — given `memwal` a
-4 MB response budget, every other case stays green and this one alone goes red.
+reach, since the tail is bounded in bytes (8 MB) as well as in entries. Measured the same way —
+given `memwal` a 4 MB response budget, every other case stays green and this one alone goes red.
 
 The layer does not leave that to the suite, because a suite case can only probe one budget and a
 backend with a larger one would pass it and still truncate a production tail. A replay therefore
-**confirms** the end of the log with a one-entry read rather than inferring it from a short page, and
-what that read finds halts the shard before it serves: [chapter 06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail) has it.
+**confirms** the end of the log with a one-entry read rather than inferring it from a short page,
+and what that read finds halts the shard before it serves: [chapter
+06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail) has it.
 
 Refusal *order* is a rule of the same kind, and it sits in the fencing row.
 `FencedOutranksAMissingPredecessor` puts an ex-owner's append two seqnos above the tail, where both
@@ -137,13 +138,15 @@ left the process fails the first; one whose epoch never left it fails the second
 at the first seqno fails the third. None of it needs a kill, a second process, or a judge outside
 both.
 
-It is a function rather than a suite case for a reason that is not `CheckRetention`'s: `memwal` cannot
+It is a function rather than a suite case for a reason of its own: `memwal` cannot
 be reopened at all, being a map in this process, so the suite has no log to run it against. And it is
 proved rather than assumed, in `memwal`'s own tests, against three backend shapes — a `Backend` handed
 back twice (storage that outlived the value, which must pass), a fresh `Backend` per open (appends that
 never left the process), and a `Backend` behind `waltest.Unfenced`, whose entries persist while its
-epoch lives in this process only. That last one is exactly the backend the paragraph above says passes
-every fencing case in the suite.
+epoch lives in this process only. That last one stages the defect the paragraph above names — an
+epoch held in this process — though not as a backend the suite would pass: it fences the log below at
+whatever epoch an append carries, so the fencing cases refuse it too, and it is an instrument for the
+reopen check rather than a log.
 
 **What is still the author's own test** is a fence *racing* a displaced owner's append: two writers
 sharing no memory, each reading the outcome off the log rather than off itself. Whoever supplies the
@@ -190,15 +193,14 @@ persistence, embedded whole. That is what says the embedding ([chapter
 saving.
 
 **Those suites do not judge `Apply`**, and cannot: the folded window's transaction is a method
-upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is nine cases —
+upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is 23 tests —
 the ordering of the transaction, the refusals that must happen before it opens, the attribution a
 condition failure carries, and the rollback that undoes the requests that had already run — each
 proved by staging the defect that makes it red. `internal/verify/acceptance` is the volume half, below.
 
 **Nothing here judges somebody else's `cold.Applier`.** A deployment writing one gets the four
-obligations in [chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for), `memcold`
-as the worked example, and its own store's suites — and that gap is real, where the log seam's is
-covered by an exported suite.
+obligations in [`cold`'s package doc](../../cold/cold.go), `memcold` as the worked example, and its
+own store's suites — and that gap is real, where the log seam's is covered by an exported suite.
 
 Two smaller judgements live in the same package and are worth knowing because they hold up
 everything above: `isolation_test.go` says two stores share no rows and that the store reached
@@ -249,8 +251,8 @@ the control's, which is what makes the ratio visibly a function of the knob.
 
 `internal/verify/mutgen` is the generator, deterministic from its seed: the same config and seed produce the
 same mutations byte for byte, so a failure reproduces from the seed alone. That determinism is a
-constraint on how it is written — no time, no UUIDs, no map iteration, no protobuf maps — and it is
-the reason a red run here is a bug report rather than a mystery.
+constraint on how it is written — no clock, no unseeded UUIDs, no map iteration, no protobuf maps —
+and it is the reason a red run here is a bug report rather than a mystery.
 
 ### The witness, and why a green intercept run proves nothing without it
 
@@ -360,7 +362,8 @@ run that drained everything those entries have been applied and the damage is in
 crash in the middle would have found it. So the run samples the invariant every 64 mutations inside
 the drive loop instead, reading the log's lower end first and the watermark second — the watermark
 only rises, so a drain committing between the two reads can only make the comparison stricter than
-the moment it is about.
+the moment it is about. Beside the sampling, every trim the run makes goes through a guard on the log
+that reads the committed watermark before the delete and fails the run on a trim past it.
 
 A sample can find the log holding nothing at all, and that is the same claim at its boundary rather
 than an exception to it: the legal trim reaches one past the last entry once the drain has caught up,
@@ -369,14 +372,14 @@ watermark instead — allowed exactly when the cold store holds every seqno acke
 does not. Read as loss unconditionally, it was a sample that failed on the machine where the drain
 won the race and passed on the one where the writer did.
 
-`TestAShardThatLosesItsEpochMidRun` is invariant [I2](02-concepts-and-invariants.md#the-invariants)
-with both seams real. After 2,000 mutations another owner takes the shard in the database: the range
-id moves, which is all an acquire is from underneath. The log is left unfenced on purpose — fencing
+`TestAShardThatLosesItsEpochMidRun` is invariant [I4](02-concepts-and-invariants.md#the-invariants)'s
+cold-store half with both seams real. After 2,000 mutations another owner takes the shard in the database: the
+rangeID moves, which is all an acquire is from underneath. The log is left unfenced on purpose — fencing
 it would stop the appends and halt the cycle before any drain reached the database, which is the
 other half of fencing and not this run's subject. Here the loss is discovered inside the drain's own
 transaction, with a window of acknowledged mutations riding on it.
 
-What must hold afterwards is the whole of the invariant. The write path answers a
+What must hold afterwards is that half, and I2 beside it. The write path answers a
 `*persistence.ShardOwnershipLostError` and the cycle is in `StateHaltedLost`. The database matches
 the ledger's snapshot from *before* the loss, and every run that only a refused drain would have
 written is absent from it. The applied position is still the last committed drain's, and the log
@@ -394,10 +397,10 @@ database Temporal's own write path would have left, one mutation at a time.
 real databases, once at the shipped window and once at `Mutations: 1` — a window that holds one
 request when the drain takes it, so no two mutations of a run ever meet and nothing is ever merged.
 Then every run row is read back and diffed whole, blobs included, over the union of both ledgers'
-keys; so is every workflow's current row, and so are all four task categories' rows, paged back out
-of each store in key order. The two arms must differ in transactions and in nothing else: 6,000
-mutations commit 77 transactions folded and 6,000 sequential, and leave 519 identical run rows and
-32 identical current rows.
+keys; so is every workflow's current row, and so is the list of task IDs each of the four
+categories' queues holds, paged back out of each store in key order. The two arms must differ in
+transactions and in nothing else: 6,000 mutations commit 77 transactions folded and 6,000
+sequential, and leave 519 identical run rows and 32 identical current rows.
 
 Staging the merge's upsert-after-delete resolution — dropping the line that takes a re-upserted key
 back out of the delete set, so the store writes the row and then deletes it again — reddens this run
@@ -411,13 +414,13 @@ the condition authority instead.
 ### Recovery: the same stream, a different set of windows
 
 Every run above ends in a shutdown drain, which applies the last window out of memory. So none of
-them ever takes an entry back out of the log, and the run just described stops one step short of the
-claim the first rule is about: it proves the entries a refused drain carried are still in the log,
+them ever takes an entry back out of the log, and `TestAShardThatLosesItsEpochMidRun` stops one step
+short of the claim the first rule is about: it proves the entries a refused drain carried are still in the log,
 not that anybody can turn them back into rows.
 
 `TestARecoveredShardHoldsWhatAnUninterruptedOneDoes` is that step. One seed is driven twice. The
 control run puts all 6,000 mutations through a single cycle. The second puts the same stream through
-six of them: five times, after a thousand mutations, the shard's range id moves and the cycle is
+six of them: five times, after a thousand mutations, the shard's rangeID moves and the cycle is
 superseded without draining — which is the whole of what this layer can observe of a process that
 died, the window going with it and the log keeping everything it acked. The successor finds those
 entries at replay or nowhere.
@@ -428,7 +431,7 @@ invisible to it; the uninterrupted run's own rows are the only expectation that 
 something the second run dropped. Every run row is read back through the store and diffed whole,
 blobs included, over the union of both ledgers' keys, and so is every workflow's current row. The
 watermark must stand at the stream's length, `Replayed` must be non-zero — without it the crashes
-cost the run nothing and it judges nothing — and `Dropped` must be zero, since no entry of an async
+cost the run nothing and it judges nothing — and `Dropped` must be zero, since no entry of a windowed
 stream is provisional and a drop would be a mutation silently forgotten.
 
 What it establishes beyond "recovery works" is that **the fold is boundary-independent**: the two
@@ -466,29 +469,31 @@ cycle and retires the previous one — which stops its goroutine. So the predece
 and neither of the two fences that exist to stop it is asked anything. A node that lost its lease is
 not told: its cycle stays alive with a window in it, its timers keep running, and it finds out by
 acting. Two nodes are two `cycle.Manager`s over one log and one store, and
-`acceptance_twonode_test.go` already builds that pair — for one question, whether a drain's witness is
-owner-scoped, with an applier that parks the drain and answers without passing the batch down.
+`acceptance_twonode_test.go` already builds that pair — for one question, whether the watermark a
+drain reads back is owner-scoped, with an applier that parks the drain and answers without passing
+the batch down.
 `acceptance_handover_test.go` is where a fenced owner's batch reaches the database, in the three cases
 that shape has.
 
 The two fences each stop one of the two things such a node can still do, which is why either looks
-redundant from where the other stands. The log's stops the appends, and it is in place before the range
-id moves ([the order `UpdateShard`
+redundant from where the other stands. The log's stops the appends, and it is in place before the
+`rangeID` moves ([the order `UpdateShard`
 imposes](06-shard-lifecycle.md#what-managershardacquired-does-with-the-epoch-it-is-handed)), so a write
 by the old owner is refused while the database still names him owner. The cold store's epoch CAS stops
 the drains, which need neither an append nor a caller: a shutdown drain and the age timer both fire out
-of a full window on their own.
+of a window that holds something, on their own.
 
-`TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` is the first of them. The successor fences
-the log and takes the range id; the predecessor, holding a tail, writes. The write is refused, the
-cycle is in `StateHaltedLost`, the watermark has not moved and the log has not grown by the entry it
-refused — the append is where this stopped, so the drain's own fence was never reached. Then the
-successor replays exactly the entries between the watermark and the last ack. What the run pins is the
-*translation*: staging a fenced append that raises no halt leaves the caller holding the log's own
-error, which the history service's write path does not recognise and answers with a background
-re-acquire rather than its own. The doomed write is drawn from a stream of its own, because a mutation
-this run's generator handed out and the log refused would leave that generator's model of the run a
-version ahead of the database for every later mutation of it.
+`TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` is the first of them. The successor
+fences the log and takes the `rangeID`; the predecessor, holding a tail, writes. The write is
+refused, the cycle is in `StateHaltedLost`, the watermark has not moved and the log has not grown by
+the entry it refused — the append is where this stopped, so the drain's own fence was never reached.
+Then the successor replays exactly the entries between the watermark and the last ack. What the run
+pins is the *translation*: staging a fenced append that raises no halt leaves the caller holding the
+log's own error, which the history service's write path does not recognise and answers with a
+background re-acquire rather than the shutdown a `ShardOwnershipLostError` asks for. The doomed
+write is drawn from a stream of its own, because a mutation this run's generator handed out and the
+log refused would leave that generator's model of the run a version ahead of the database for every
+later mutation of it.
 
 `TestTheShutdownDrainOfALostShardCommitsNothing` is the composition: 2,000 mutations, a handover in the
 real order, 500 more through the successor — which replays the predecessor's window and writes past it
@@ -517,7 +522,7 @@ underneath every other run in this package, so a defect in its fence would weake
 reddening one.
 
 The same drain also carries a watermark below the successor's, and that half is quieter. It loses no
-row: an owner reading a witness that points under rows the database holds either re-applies entries
+row: an owner reading a watermark that points under rows the database holds either re-applies entries
 whose assertions have moved on, or meets the gap a trim left below it. Both end in a halt. What it
 costs is a shard nobody can recover without a person, which is the failure mode the strict equality in
 `Watermarker`'s contract is written against.
@@ -534,9 +539,10 @@ an activity through the SDK. Ports come from the OS, the databases are `memcold`
 visibility, and nothing is installed.
 
 **The green workflow is the weaker half.** A server whose layer fell out of the path completes the
-same workflow just as fast, which is exactly the failure [the witness](#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it)
-exists for. So the run has two arms, both of which *compose* a layer and differ only in the one
-value the server is handed:
+same workflow just as fast, which is exactly the failure [the
+witness](#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it) exists for. So the
+run has two arms, both of which *compose* a layer and differ only in the one value the server is
+handed:
 
 * `TestAWorkflowRunsThroughTheLayer` states `witness.Windowed`, shards acquired, mutable state,
   history tasks and merged task reads, plus the mutation kinds a workflow of that shape must
@@ -544,11 +550,11 @@ value the server is handed:
   acked, that a drain committed, that the applied position moved, that history tasks were written,
   and that **the shards' watermarks are readable out of the database**, so a run claiming a drain
   committed and a store holding nothing cannot both be believed;
-* `TestAWorkflowRunsWithTheLayerOutOfThePath` is the control: the same store bare, and
-  `witness.NoLayer` over the layer it composed and did not install. That claim is only available
-  because the control composes a layer at all — a run with none could not make it — and it goes red
-  if the "passthrough" arm quietly still had a layer in it. Beside it, no shard's watermark may be
-  in the database, because nothing drained.
+* `TestAWorkflowRunsWithTheLayerOutOfThePath` is the control: the same store behind the wrapper
+  with nothing in its options, and `witness.NoLayer` over the layer it composed and did not
+  install. That claim is only available because the control composes a layer at all — a run with
+  none could not make it — and it goes red if the "passthrough" arm quietly still had a layer in
+  it. Beside it, no shard's watermark may be in the database, because nothing drained.
 
 Two things about the run itself are worth knowing. The drains it counts are the **age** trigger's:
 one workflow is nowhere near 256 mutations or 256 KiB, so the five-second age is the only trigger
@@ -607,8 +613,8 @@ roughly `TrimEvery` drains' worth of windows — about 4,000 entries at the ship
 and window of 256. A post-mortem look at a long run therefore sees a vanishing fraction of it. The
 consequence for any claim of the form *applied ⊆ logged* is sharper still: such a claim is only
 sound over a run whose log was never trimmed away underneath it, so the run has to push both trim
-triggers — `TrimEvery` and `TrimAfter` — out of reach first, and then check that the promise was
-kept.
+triggers — `TrimEvery` and `TrimAfter` — out of reach first, run over a log that reports no storage
+pressure (one that does forces a trim outside both), and then check that the promise was kept.
 
 ---
 
@@ -659,8 +665,8 @@ rather than assuming it inherited them.
 
 * **an append-immediacy guard** for [I9](02-concepts-and-invariants.md#the-invariants) — drive
   ordinary appends through the front door and read the storage engine's own transaction counters out
-  of band, asserting that the appends were immediate, that nothing else was touched, and that no
-  secondary structure exists on the log's tables. It exists because a "harmless" change — an index, a
+  of band, asserting that the appends were immediate transactions, that nothing else was touched,
+  and that no secondary structure exists on the log's tables. It exists because a "harmless" change — an index, a
   changefeed, one read of one other table — quietly makes every append pay for a coordinator tick,
   and *nothing above the layer would notice*: the append still returns success, just later.
 * **a drain query-shape guard** — that the drain's statement is a function of assertion kinds and
@@ -706,9 +712,9 @@ failure mode a double has: two copies that disagree leave a rule green and unjud
   window by window. `foldrun` owns the loop and nothing above it: where the mutations come from is
   the caller's, and so is what a drained batch is for, which is why the drain is a callback.
 
-`foldrun` counts only what every caller counts the same way, deliberately. "Tombstone" means
-`KindDelete` to one caller and `KindDelete`-or-`KindDeleteCurrent` to another, and a shared counter
-would have to pick one and silently change the other's meaning.
+`foldrun` counts only what every caller counts the same way, deliberately. What a "tombstone" is,
+for one, is the caller's — the acceptance run counts `KindDelete` alone — and a shared counter would
+have to pick a meaning for every caller to come.
 
 ---
 
@@ -769,7 +775,7 @@ drive; they assert nothing. **Judgements** say yes or no.
 | `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, end up the same whether the stream crossed one owner or six, lose no row to an owner that kept draining after it had been fenced, and are the rows one mutation per transaction would have left |
 | `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
 | `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
-| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus the nine cases over the one method those suites do not know about |
+| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus its own tests over the three methods those suites do not know about — `Apply` (23 of them), `Watermark` and the versioned current-row read |
 | `wal/waltest` | an implementation of `wal.Log` satisfies the five guarantees — the one judgement here written to be run against somebody else's code |
 
 Who judges what. Circles are judgements, boxes are what they are stated over.
@@ -780,7 +786,7 @@ graph LR
   E(("internal/verify/e2e")) --> S["a Temporal server composed over both seams"]
   G(("internal/verify/guard")) --> D["decisions somebody may revert"]
   W(("wal/waltest")) --> L["any wal.Log implementation"]
-  MC(("cold/memcold")) --> T["Temporal's own four persistence suites"]
+  MC(("cold/memcold")) --> T["the shipped cold store, under Temporal's own four persistence suites"]
   WI["internal/verify/witness"] --> C["the layer's own counters"]
   CH["internal/verify/checker"] --> R["a record of the calls one driver made"]
 ```
@@ -870,28 +876,37 @@ suites above and are stated where they are:
 
 * [`../../wal/waltest/waltest.go`](../../wal/waltest/waltest.go) — `RunContractSuite`, its twenty-one
   cases, and the guarantee each is stated under;
-  [`fault.go`](../../wal/waltest/fault.go) is `Faulty`.
+  [`fault.go`](../../wal/waltest/fault.go) is `Faulty`;
+  [`reopen.go`](../../wal/waltest/reopen.go) and [`retention.go`](../../wal/waltest/retention.go) are
+  `CheckReopen` and `CheckRetention`, the two checks a deployment runs, with `Unfenced` and
+  `Expiring`, the logs each is proved against; [`truncating.go`](../../wal/waltest/truncating.go) is
+  `Truncating`, the log whose short page a whole-log reader must not take for the end.
 * [`../../internal/verify/acceptance/acceptance_fold_test.go`](../../internal/verify/acceptance/acceptance_fold_test.go)
   — the stream, the window, the assertions and the knob control at the other end of the dial;
   [`acceptance_seams_test.go`](../../internal/verify/acceptance/acceptance_seams_test.go) is the same shape
-  over both real seams, with the ledger that says what the database must hold;
+  over both real seams, with the ledger that says what the database must hold, and
+  [`trimguard_test.go`](../../internal/verify/acceptance/trimguard_test.go) is the log it runs over,
+  which records any trim reaching past what the cold store has committed and fails the run on it;
   [`acceptance_recovery_test.go`](../../internal/verify/acceptance/acceptance_recovery_test.go) drives
   that stream twice and holds the recovered database against the uninterrupted one, and
   [`acceptance_handover_test.go`](../../internal/verify/acceptance/acceptance_handover_test.go) is the
-  two registries a failover really has, with each fence taken on its own, and
+  two registries a failover really has, with each fence taken on its own;
+  [`acceptance_twonode_test.go`](../../internal/verify/acceptance/acceptance_twonode_test.go) is two
+  nodes over one log and one store, asking whether a drain's witness is owner-scoped; and
   [`acceptance_oracle_test.go`](../../internal/verify/acceptance/acceptance_oracle_test.go) is the same
   stream folded and unfolded into two databases that must agree.
 * [`../../cold/memcold/conformance_test.go`](../../cold/memcold/conformance_test.go) — Temporal's
   four suites over the shipped store, and why a suite of ours is not beside them;
-  [`apply_test.go`](../../cold/memcold/apply_test.go) is the one method they do not reach, and
-  [`isolation_test.go`](../../cold/memcold/isolation_test.go) is the pair the four suites stay green
-  without.
+  [`apply_test.go`](../../cold/memcold/apply_test.go) is the drain they never call,
+  [`current_test.go`](../../cold/memcold/current_test.go) the versioned current-row read they do not
+  cover, and [`isolation_test.go`](../../cold/memcold/isolation_test.go) is the pair the four suites
+  stay green without.
 * [`../../internal/verify/e2e/server.go`](../../internal/verify/e2e/server.go) — the server's configuration, the
   readiness probe and the log gate; [`e2e_test.go`](../../internal/verify/e2e/e2e_test.go) is the two arms
   and what each claims.
 * [`../../internal/verify/mutgen/mutgen.go`](../../internal/verify/mutgen/mutgen.go) — the generator and the
-  determinism rules it is written under; [`corpus.go`](../../internal/verify/mutgen/corpus.go) is the report
-  a stream makes about itself.
+  determinism rules it is written under, and the report a stream makes about itself;
+  [`corpus.go`](../../internal/verify/mutgen/corpus.go) materialises a stream with that report beside it.
 * [`../../internal/verify/witness/witness.go`](../../internal/verify/witness/witness.go) — `Expect`, `Observed` and
   the named claim tables.
 * [`../../internal/verify/checker/record.go`](../../internal/verify/checker/record.go) — the record's file format, why

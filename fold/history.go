@@ -35,9 +35,12 @@ func (a *Accumulator) branchNodes(treeID, branchID string) []p.InternalHistoryNo
 }
 
 // addHistory takes the mutation's batches into the window. A mutation whose
-// batches were written through the store before the append carries none, so this
-// is the cold store's fork and there is no flag here: what the accumulator holds is
-// what the record held.
+// batches were written through the store before the append carries none, so
+// there is no flag here: what the accumulator holds is what the record held.
+// That makes the record the fork and not the store the drain goes to. A replayed
+// tail whose records carry batches hands them to the drain's applier whether or
+// not it declares cold.HistoryApplier, and nothing here refuses it — an open
+// entry in DURABILITY.md.
 func (a *Accumulator) addHistory(seqno wal.Seqno, m mutation.Mutation) {
 	for _, slot := range m.EventSlots() {
 		for _, r := range slot {
@@ -47,8 +50,9 @@ func (a *Accumulator) addHistory(seqno wal.Seqno, m mutation.Mutation) {
 	}
 }
 
-// History is every event batch this window carries, in WAL order: what a drain
-// writes before it publishes the mutable state pointing at it.
+// History is every event batch this window carries, in WAL order: what the
+// drain's applier must make durable no later than the mutable state pointing at
+// it.
 //
 // The order is the caller's own and matters for one row of it — a batch opening
 // a branch carries the tree info that branch's later batches do not.

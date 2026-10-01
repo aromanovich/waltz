@@ -182,10 +182,10 @@ store rather than a setting. Over a store that does not declare `cold.HistoryApp
 where it was and changes shape: `wrapper.ExecutionStore.appendEvents` walks the mutation's
 `EventSlots()` and puts each batch down through the base store's `AppendHistoryNodes` — one call per
 batch, in order rather than in parallel, before the mutation is handed to the cycle, because a
-mutation acked with its events unwritten would point at history nodes nobody wrote. Over a store that
+mutation acked with its events unwritten would point at history rows nobody wrote. Over a store that
 declares it the stage moves: the batches ride the record, one append makes the transition and its
-events durable together, and the drain writes a window's worth of nodes at once, still before it
-publishes the state naming them. The row count is the same either way — history is append-only and
+events durable together, and the drain writes a window's worth of history rows at once, still no
+later than the state naming them. The row count is the same either way — history is append-only and
 there is nothing to fold — so what that costs the design is unchanged: [the ceiling on the
 win](#therefore-fewer-writes-and-the-ceiling-on-the-win), below.
 
@@ -216,7 +216,7 @@ that meant something narrower than a whole fire-time interval cannot say so in t
 category the store reads only their fire times. This is Temporal's shape rather than one store's —
 the request carries a fire-time interval because that is what a scheduled queue's checkpoint *is*.
 The interface does have a single-key delete, `CompleteHistoryTask`, but no queue checkpoints with
-it: its one caller is the admin handler's `RemoveTask`, and the layer refuses it
+it: its one caller is the history handler's `RemoveTask`, behind the admin API of that name, and the layer refuses it
 ([chapter 04](04-contracts.md#wrapperexecutionstore--28-methods) says with what).
 
 As long as writes and deletes reach the store in the caller's own order, that breadth costs nothing.
@@ -269,10 +269,11 @@ Stated plainly, and carrying the assumption above:
 > **One state transition is one conditional immediate transaction over adjacent keys of one table,
 > plus the history write before it.**
 
-That claim is not one of the numbered invariants, and it could not be. I1–I11 name what the layer's
-own code and suites enforce; this is a property of the system the layer sits in front of, which
-neither can reach. [Chapter 02](02-concepts-and-invariants.md#the-invariants-without-a-number) draws
-the same distinction from the other side.
+That claim is not one of the numbered invariants, and it could not be. I1–I11 are claims about the
+layer and the two seams it is composed over, most of them enforced by its own code and suites; this
+is a property of the system the layer sits in front of, which neither can reach. [Chapter
+02](02-concepts-and-invariants.md#the-invariants-without-a-number) draws the same distinction from
+the other side.
 
 ## What follows: a log on the same database buys no latency
 
@@ -307,13 +308,13 @@ cost of *one* write — each is a cost of the *number* of writes, and neither ha
 how fast the log acknowledges. That is what the rest of the layer is about.
 
 **Event history is the ceiling on that win.** History rows were never amplified in the first place:
-they are append-only, one row per batch, durable before the mutable state that refers to them
-whichever writer puts them down. Nothing about carrying them on the record folds any of them — the
+they are append-only, one row per batch, and owed durable no later than the mutable state that
+refers to them whichever writer puts them down. Nothing about carrying them on the record folds any of them — the
 window holds them, it does not merge them. So a workflow whose transitions carry hundreds of event
-batches still pays hundreds of history rows however wide the window is. Whatever fraction of a deployment's write volume
-is event history is a fraction the layer cannot address at all. So if you tune the window against
-total write volume, you are tuning against a number that includes writes no window can remove; tune
-against the mutable-state half instead.
+batches still pays hundreds of history rows however wide the window is. Whatever fraction of a
+deployment's write volume is event history is a fraction the layer cannot address at all. So if you
+tune the window against total write volume, you are tuning against a number that includes writes no
+window can remove; tune against the mutable-state half instead.
 
 ## What this picture does not give
 
@@ -333,7 +334,8 @@ Almost nothing in this chapter is code in this repository, and that is the point
 thing waltz sits in front of. Three files here are where the description touches the layer.
 
 * [`../../wrapper/execution_store.go`](../../wrapper/execution_store.go) — `appendEvents`, which
-  keeps the history stage exactly where it was when the layer is present.
+  keeps the history stage where it was when the cold store does not declare `cold.HistoryApplier`;
+  `cold/memcold` declares it, so over the one store here the batches ride the record instead.
 * [`../../wal/wal.go`](../../wal/wal.go) — the contract that exists so the log's class can change.
   Read it for what it does not say: no method's documentation mentions what an append costs.
 * [`../../apply/failure.go`](../../apply/failure.go) — the five outcome classes a caller branches on

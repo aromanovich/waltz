@@ -113,7 +113,7 @@ type Config struct {
 // tasks in every category, snapshots inside chains, and deletions.
 //
 // It is a function rather than zero-value defaulting because 0 is a meaningful
-// value for four of the knobs — WorkflowReuse 0 is precisely the corpus an
+// value for most of the knobs — WorkflowReuse 0 is precisely the corpus an
 // acceptance must be able to recognise as worthless — and a Config that filled
 // zeros in would make that stream unaskable-for.
 func Default() Config {
@@ -263,8 +263,8 @@ type Report struct {
 // mutation count: a generator regression that quietly stopped producing
 // tombstones leaves every suite over it judging fold on creates, green.
 //
-// It asks only about what the config could produce, so a stream with the task
-// rates turned off — three suites need one — is not missing history tasks.
+// It asks only about what the config could produce, so a stream with
+// TaskDensity 0 is not missing history tasks.
 func (r Report) Missing() []string {
 	var missing []string
 	want := func(absent bool, what string) {
@@ -348,8 +348,9 @@ type Generator struct {
 	emitted map[int32]*emittedTasks
 	cats    []tasks.Category
 
-	// rep accumulates the stream's counters in place; the config echoes and
-	// the two derived ratios stay zero until [Generator.Report] fills them.
+	// rep accumulates the stream's counters in place; the config echoes,
+	// Workflows and the two derived ratios stay zero until [Generator.Report]
+	// fills them.
 	rep Report
 }
 
@@ -457,8 +458,8 @@ func (g *Generator) Next() (mutation.Mutation, error) {
 }
 
 // Take returns the next n mutations. It is a convenience for tests and for
-// short corpora; a 10^6-mutation run must use [Generator.Next], since a
-// materialised stream of that size is gigabytes of payload.
+// short corpora; a run of 10^5 mutations and up must use [Generator.Next], for
+// the reason [Corpus] gives.
 func (g *Generator) Take(n int) ([]mutation.Mutation, error) {
 	out := make([]mutation.Mutation, 0, n)
 	for range n {
@@ -472,8 +473,8 @@ func (g *Generator) Take(n int) ([]mutation.Mutation, error) {
 }
 
 // Report describes the stream produced so far. The counters are already in
-// [Generator.rep]; this fills the config echoes and the two derived ratios
-// beside them, over a map of its own so the caller's copy stops moving.
+// [Generator.rep]; this fills the config echoes, Workflows and the two derived
+// ratios beside them, over a map of its own so the caller's copy stops moving.
 func (g *Generator) Report() Report {
 	r := g.rep
 	r.cfg = g.cfg

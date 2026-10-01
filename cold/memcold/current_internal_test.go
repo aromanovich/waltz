@@ -24,8 +24,8 @@ import (
 // derivation every current-row assertion in this package is judged against —
 // the drain's, under its own lock, and the layer's versioned read.
 //
-// Neither arm was driven. Every fixture writes the row through a real write,
-// which always fills the blob, so the columns arm was reachable from nothing:
+// Every fixture writes the row through a real write, which always fills the
+// blob, so the columns arm was reachable from nothing:
 // dropping its run id or its status, or forcing every read down it, each left
 // the whole of `go test ./...` green. What those answer is not cosmetic. The
 // conflict a refused write carries is built from this value, and a conflict

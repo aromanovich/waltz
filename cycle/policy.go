@@ -14,13 +14,15 @@ import "time"
 // and a zero age re-arms the loop's timer at a whole CPU per shard.
 type Policy func() Config
 
-// Moving is the half of the policy a decision re-reads: the drain watermarks and
-// the trim cadence, read at [Cycle.add], the age tick and [Cycle.drain].
+// Moving is the half of the policy a decision re-reads: the drain triggers and
+// the trim cadence, read at [Cycle.add], the age tick, [Cycle.drain] and
+// [Cycle.replay].
 //
 // The rest of [Config] is not here. Sync and DrainOnRead are the mode, and a
 // mode that changed mid-flight would change what a caller already inside a write
-// was promised. The four bounds are [Config.CheckBudget]'s arithmetic, whose
-// purpose is to refuse a node before it boots.
+// was promised. The four bounds are I10's per-shard bound and
+// [Config.CheckBudget]'s arithmetic, whose purpose is to refuse a node before it
+// boots.
 //
 // A nil getter means the static value stands, not the zero: a window of no
 // mutations drains every write and a trim cadence of zero trims on every drain.
@@ -41,7 +43,7 @@ func Fixed(c Config) Policy {
 	return func() Config { return c }
 }
 
-// Live is the policy whose watermarks and cadence come from somewhere that can
+// Live is the policy whose triggers and cadence come from somewhere that can
 // change while the node runs — the server's dynamic config, through
 // waltz.NewPolicy.
 //

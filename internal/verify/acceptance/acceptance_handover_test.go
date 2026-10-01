@@ -15,12 +15,12 @@ package acceptance
 // There are two fences, each stopping one of the two things such a node can
 // still do, which is why either one looks redundant from where the other stands:
 //
-//   - the log's stops the appends, and it is in place before the range id moves
+//   - the log's stops the appends, and it is in place before the rangeID moves
 //     (the order wrapper.ShardStore.UpdateShard imposes), so a write by the old
 //     owner is refused while the database still names him owner;
 //   - the cold store's epoch CAS stops the drains, which need neither an append
-//     nor a caller — a shutdown drain and the age timer both fire out of a full
-//     window on their own.
+//     nor a caller — a shutdown drain and the age timer both fire out of a
+//     window that holds something, on their own.
 //
 // [TestAShardThatLosesItsEpochMidRun] leaves the log unfenced deliberately, so it
 // exercises the second alone from inside one process. These are that pair with
@@ -55,7 +55,7 @@ import (
 )
 
 // TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands is the first fence on
-// its own: the successor has fenced the log and taken the range id, and the
+// its own: the successor has fenced the log and taken the rangeID, and the
 // predecessor — told nothing, holding a window — writes.
 func TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands(t *testing.T) {
 	s := newSeams(t, 20260912)
@@ -71,8 +71,8 @@ func TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands(t *testing.T) {
 	s.handOver(t)
 
 	// The predecessor writes. The log refuses it, and the shard is declared lost
-	// to the caller — which is the answer that re-acquires, where the log's own
-	// error would fall to a background retry.
+	// to the caller — which is the answer that stops the shard, where the log's
+	// own error would read as an unknown outcome and set off a re-acquire.
 	err = s.alienWrite(t, predecessor, stale)
 	require.Error(t, err, "a fenced owner appended into a log it no longer holds")
 	require.ErrorAs(t, err, new(*p.ShardOwnershipLostError))
@@ -98,10 +98,10 @@ func TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands(t *testing.T) {
 }
 
 // TestTheShutdownDrainOfALostShardCommitsNothing is the second fence, against
-// the one drain no watermark asks for. The predecessor is not refused a write,
-// because it makes none: it simply shuts down, some thousands of mutations after
-// the database stopped honouring its epoch, and drains the window it has been
-// holding all along.
+// the one drain no size or age trigger asks for. The predecessor is not refused
+// a write, because it makes none: it simply shuts down, some thousands of
+// mutations after the database stopped honouring its epoch, and drains the
+// window it has been holding all along.
 //
 // By then the successor has replayed that very window and gone on writing, so
 // what the drain carries is rows at versions the database has left behind. Two
@@ -285,7 +285,7 @@ func (s *seams) anotherNode(t *testing.T) *cycle.Manager {
 }
 
 // handOver is an acquire in the order a real one has: the log is fenced at the
-// new epoch first and the range id lands second, so the log's epoch never lags
+// new epoch first and the rangeID lands second, so the log's epoch never lags
 // the database's. [seams.takeShard] does it the other way round, which is the
 // order the epoch-loss case needs and the opposite of what these two are about.
 func (s *seams) handOver(t *testing.T) {
@@ -293,7 +293,7 @@ func (s *seams) handOver(t *testing.T) {
 	epoch := s.epoch + 1
 	require.NoError(t, s.mgr.ShardAcquired(s.ctx, seamsShard, epoch))
 	require.EqualValues(t, epoch, s.bumpRange(t),
-		"the range id did not land on the epoch the log was just fenced at")
+		"the rangeID did not land on the epoch the log was just fenced at")
 	s.epoch = epoch
 }
 

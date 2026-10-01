@@ -3,8 +3,8 @@ package mutation
 import p "go.temporal.io/server/common/persistence"
 
 // kindInfo is one row of the kind enumeration: the bookkeeping facts about a
-// [Kind], not its behaviour, which stays in the per-kind switches in fold,
-// check and apply. [Mutation.Kind] and [Mutation.ShardID] stay hand-written
+// [Kind], not its behaviour, which stays in the per-kind switches in fold and
+// in the cold store's applier. [Mutation.Kind] and [Mutation.ShardID] stay hand-written
 // fan-outs; every mutation field must have exactly one row that agrees with
 // both. The last two columns are read at run time —
 // [Mutation.RangeID] and [Mutation.EventSlots] are the table — so a kind added
@@ -33,11 +33,11 @@ type kindInfo struct {
 	rangeID func(Mutation) int64
 
 	// events names the request's slices of new history events, in the order
-	// they must reach the store. This row is the only enumeration of them, and
-	// it is what both writers walk — the one that puts them down through the
-	// store and clears them, and the codec that carries whatever is left — so a
-	// kind whose row omits one is a mutation acked over history nodes nobody
-	// wrote (ADR 0014).
+	// they must reach the store. It is what both writers walk — the wrapper that
+	// puts them down through the store, and the fold that hands whatever the
+	// record carried to the drain — so a kind whose row omits one is a mutation
+	// acked over history rows nobody wrote (ADR 0014). [Mutation.ClearEvents]
+	// and the codec name the same fields again by hand.
 	events func(Mutation) [][]*p.InternalAppendHistoryNodesRequest
 }
 

@@ -2,10 +2,10 @@
 
 Imagine a workflow that lives for ten seconds. In that time, Temporal may rewrite its mutable state
 dozens of times, create and consume timers, and delete the task rows that represented them. The
-event history it appends along the way has to be stored: a workflow replays against it, and no later
-transition rewrites a batch already written. Every intermediate mutable-state image and every task
-row is stored as well — including the images a later transition supersedes and the task rows deleted
-moments after they were created.
+event history it appends along the way has to be stored: workflow code is re-executed against it,
+and no later transition rewrites a batch already written. Every intermediate mutable-state image and
+every task row is stored as well — including the images a later transition supersedes and the task
+rows deleted moments after they were created.
 
 waltz asks whether each of those intermediate forms has to reach the cold store as a write of its
 own. It puts a durable per-shard write-ahead log in front of a Temporal history shard's cold store
@@ -95,7 +95,7 @@ refused, does.
 4. [04-contracts.md](04-contracts.md) — every seam's interface: what it guarantees, what it refuses,
    what the caller owes it.
 5. [05-write-path.md](05-write-path.md) — one mutation end to end, with a diagram per failure class.
-6. [07-read-path.md](07-read-path.md) — the overlay, the merged task page, and invariant I7.
+6. [07-read-path.md](07-read-path.md) — the overlay, the merged task and branch pages, and invariant I7.
 7. [11-verification.md](11-verification.md) — which suites will judge the change, and what a green
    run does not mean.
 8. [13-designs-that-were-rejected.md](13-designs-that-were-rejected.md) — **read this before
@@ -132,11 +132,11 @@ refused, does.
 | [04-contracts.md](04-contracts.md) | Contracts at the failure boundaries | How three failures — an ambiguous append, an unknown drain outcome, a stale owner racing a current one — give every seam its shape, followed by the exact signatures, guarantees, refusals and caller obligations. |
 | [05-write-path.md](05-write-path.md) | A write, end to end | What happens between `UpdateWorkflowExecution` and its return, in the happy path and in every failure path the code enumerates, ending in a table from what the caller saw to what the operator sees. |
 | [06-shard-lifecycle.md](06-shard-lifecycle.md) | When an owner disappears | How fencing turns a new rangeID into a successor cycle, how it replays an inherited tail, why the two halt classes are opposites, and what a stopped node leaves behind. |
-| [07-read-path.md](07-read-path.md) | Reading acknowledged state before it reaches the store | Why mutable state needs an overlay and task pages need an ordered merge, which reads transit to the store untouched, and how invariant I7 makes it legal for a drain to skip a task row whose range a caller has already completed. |
+| [07-read-path.md](07-read-path.md) | Reading acknowledged state before it reaches the store | Why mutable state needs an overlay and task and branch pages need an ordered merge, which reads transit to the store untouched, and how invariant I7 makes it legal for a drain to skip a task row whose range a caller has already completed. |
 | [08-configuration.md](08-configuration.md) | Choosing the operating envelope | How window benefit trades against replay and memory, where the two configuration surfaces divide, every exact key and default, the budget refusal, and three recipes. |
 | [09-operations.md](09-operations.md) | Running, deploying and debugging it | Deployment, start and stop order, rolling restarts and failover, the tree that routes a symptom and the seven runbooks it routes into, and a closing appendix on local development and its traps. |
 | [10-metrics.md](10-metrics.md) | Every series the layer emits | Every series with its type, unit, tag values and emission point; what each counts exactly; the quantities to derive rather than expect; the shape of each alert; and the in-process counters no scrape has. |
-| [11-verification.md](11-verification.md) | How the layer is judged | The log's contract suite and its blind spot; why the cold store's suites are Temporal's rather than ours; the fold acceptance and the control that makes its ratio a measurement; the run over both real seams; the Temporal server that boots in the test process; the witness, the checker, the guards and the doubles; the two house rules; and what is not claimed. |
+| [11-verification.md](11-verification.md) | How the layer is judged | The log's contract suite and its blind spot; why the cold store's suites are Temporal's rather than ours; the fold acceptance and the control that makes its ratio a measurement; the run over both real seams, the fold against not folding, recovery, and two owners at once; the Temporal server that boots in the test process; the witness, the checker, the guards and the doubles; the two house rules; and what is not claimed. |
 
 ### The deep dives
 
@@ -148,8 +148,8 @@ was already decided.
 |---|---|---|
 | [12-the-write-before-the-layer.md](12-the-write-before-the-layer.md) | What one write cost before the layer | What one state transition physically is against a well-built store — adjacent keys, one gated query, history first — what makes a transaction immediate rather than distributed, and why a log built on that same database buys no latency — which is why the goal here is fewer writes rather than faster ones. |
 | [13-designs-that-were-rejected.md](13-designs-that-were-rejected.md) | The designs that were rejected | Every alternative that was tried in the argument and refused — five designs for ownership, three for the window, four for the reads and two for how the fold is judged, among them a lease with a timer and a buffer inside the history service — each with the concrete failure that refused it. |
-| [14-where-the-defaults-came-from.md](14-where-the-defaults-came-from.md) | Where the defaults came from | Every shipped constant with its provenance: the three drain triggers, the trim cadence, the two tail bounds and the node budget, what the budget costs resident, and the closing distinction between a number that is derived and a number that is simply chosen. |
-| [15-the-limits-of-the-evidence.md](15-the-limits-of-the-evidence.md) | The limits of the evidence | What a green run actually asserts, once all of it is read together: what has never been measured, what is never staged, what no external judge can express, what the two in-memory seams cost the evidence, and why the list is not a roadmap. |
+| [14-where-the-defaults-came-from.md](14-where-the-defaults-came-from.md) | Where the defaults came from | Every shipped constant with its provenance: the three drain triggers, the trim cadence, the two tail bounds and the node budget, what the budget costs resident, why a small window costs more than it looks, and the closing distinction between a number that is derived and a number that is simply chosen. |
+| [15-the-limits-of-the-evidence.md](15-the-limits-of-the-evidence.md) | The limits of the evidence | What a green run actually asserts, once all of it is read together: what has never been measured, latency and the two paths event history can take among it, what is never staged, what no external judge can express, what the two in-memory seams cost the evidence, and why the list is not a roadmap. |
 
 ## The system
 
@@ -158,7 +158,7 @@ graph TD
   HS(("Temporal history service"))
   ES(("wrapper.ExecutionStore"))
   SS(("wrapper.ShardStore"))
-  CY(("cycle: one goroutine per shard and epoch"))
+  CY(("cycle: one loop per shard and epoch"))
   ACC(("fold.Accumulator: the window"))
   LOG(("wal.Log contract"))
   MW(("memwal: the in-process log"))
@@ -169,12 +169,12 @@ graph TD
 
   HS -->|writes and reads| ES
   HS -->|updates shard| SS
-  SS -->|fences| CY
+  SS -->|reports an acquire| CY
   SS -->|transits| CS
   ES -->|hands mutations| CY
-  ES -->|reads through overlay| CY
+  ES -->|the four reads, through overlay and merges| CY
   ES -->|transits the rest| CS
-  CY -->|appends| LOG
+  CY -->|fences, appends, replays| LOG
   CY -->|folds| ACC
   CY -->|drains| AP
   CY -->|trims| LOG
@@ -194,8 +194,8 @@ the two start disagreeing.
 
 * **Diagrams are mermaid**, in fenced code blocks tagged `mermaid`, so the source is reviewable in
   the Markdown and renders both on GitHub and in the built site. `npm run check` parses every block
-  in every chapter and fails on one that will not render; `npm run build` writes the HTML edition
-  into `site/`.
+  in every chapter and fails on one that will not render; `npm run build` writes both HTML editions
+  into `site/` — the pages to browse and `waltz-handbook.html`, one self-contained file.
 * **Links into the code are relative** — `../../wal/...` — and point at a file that
   exists, so they resolve from the Markdown, from the built page and from a checkout on disk. A
   chapter's closing "Where this lives in the code" is the list of files it was written from; when

@@ -328,7 +328,7 @@ func TestAProvisionalEntryIsCarriedAlone(t *testing.T) {
 
 // TestReplayRefusesATailWrittenAboveItsEpoch: entries above this cycle's epoch
 // mean somebody fenced the log after we did, so this cycle is the zombie. It
-// halts lost before a row is written, rather than leaving it to the apply
+// goes to halted-lost before a row is written, rather than leaving it to the apply
 // transaction's epoch CAS: the fence and the rangeID move are not atomic, so
 // the CAS could still succeed.
 func TestReplayRefusesATailWrittenAboveItsEpoch(t *testing.T) {
@@ -359,8 +359,8 @@ func TestReplayRefusesATailWrittenAboveItsEpoch(t *testing.T) {
 	// once.
 	require.Contains(t, err.Error(), "the shard has been fenced away")
 	require.Equal(t, "the shard has been fenced away", FencedAway,
-		"FencedAway is an operator-facing cause the handbook's shard-lifecycle "+
-			"and operations chapters name verbatim, so it is not free to change")
+		"FencedAway is an operator-facing cause the handbook's operations chapter "+
+			"names verbatim, so it is not free to change")
 }
 
 // TestAFailedTailReadIsRetriedFromTheWatermark: a failed page read leaves the
@@ -485,9 +485,9 @@ func TestReplayCutsItsTransactionsWhereTheWatermarksSay(t *testing.T) {
 	require.EqualValues(t, []wal.Seqno{2, 4, 5}, second.ap.seqnos)
 }
 
-// TestACycleWithNoRegistryRefuses: a nil registry may not be read as "do not
-// recover". [NewManager] refuses to build such a node, and a cycle constructed
-// directly refuses every request.
+// TestACycleWithNoRegistryRefuses: a nil task-category registry may not be read
+// as "do not recover". [NewManager] refuses to build such a node, and a cycle
+// constructed directly refuses every request.
 func TestACycleWithNoRegistryRefuses(t *testing.T) {
 	ctx := context.Background()
 	ap := &fakeApplier{}
@@ -532,7 +532,7 @@ func inheritShard(t *testing.T, log wal.Log, epoch wal.Epoch, mark *fakeWatermar
 // outcome nobody can read is abandoned with its entries acked, and the retry
 // re-reads every one of them from the watermark. The bytes those acks put in
 // the tail are what I10 refuses writes on, so a tail still holding them after
-// the abandonment counts one incident's memory once per attempt.
+// the abandonment counts one incident's bytes once per attempt.
 func TestAnAbandonedReplayHoldsNoneOfWhatItAcked(t *testing.T) {
 	ctx := context.Background()
 	log := memwal.New()
@@ -630,7 +630,7 @@ func mustEncode(t *testing.T, m mutation.Mutation) []byte {
 // mutations being gone.
 //
 // A drain per entry, because that is what isolates this check from the
-// confirmation at the end of the replay. On a tail that never reaches a watermark
+// confirmation at the end of the replay. On a tail that never trips a size trigger
 // mid-loop, the end confirmation catches the same hole one seqno later, by finding
 // an entry where the miscounted replay thinks the log ends — so a test with a
 // short tail passes with this check deleted and judges nothing.
@@ -668,17 +668,16 @@ func TestAReplayRefusesALogTrimmedPastItsWatermark(t *testing.T) {
 }
 
 // TestATailIsReplayedAPageAtATime: the page a replay reads with is the window's
-// own size, so a node in sync mode — whose window is one by construction — reads
-// its inherited tail one entry per page. Every other case here replays at the
-// shipped window, where a full page ends far above where the read began, and the
-// one-entry page is the shape that makes `last == from` on every call.
+// own size in mutations, so a node whose window is one reads its inherited tail
+// one entry per page. The one-entry page is the shape that makes `last == from`
+// on every call, and no other case here replays a tail through it.
 //
 // [wal.Entries]' livelock guard is what that boundary sits on: a full page whose
 // last seqno is *below* the read's start cannot advance, and a guard that refused
-// `last == from` as well would refuse every page of one. Nothing drove it, so the
-// comparison could be moved and sync mode's whole recovery path would stop at the
-// first entry with "the reads are not advancing" — a shard that cannot come up,
-// on a mode this repository ships.
+// `last == from` as well would refuse every page of one. Without this case the
+// comparison could be moved and every recovery at a window of one would stop at
+// the first entry with "the reads are not advancing" — a shard that cannot come
+// up, on a setting an operator may write.
 func TestATailIsReplayedAPageAtATime(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t, func(c *Config) { c.Mutations = 1 })

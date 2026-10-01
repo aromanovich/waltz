@@ -1,7 +1,7 @@
 package cycle
 
 // The cycle without a cluster: what a drain's outcome does to the state
-// machine, when the watermarks fire, and what the trim cadence allows. The log
+// machine, when the triggers fire, and what the trim cadence allows. The log
 // is memwal behind a fault the test sets; the applier and the watermark are
 // fakes.
 
@@ -34,7 +34,8 @@ import (
 
 const testShard wal.ShardID = 3
 
-// testRegistry is the default registry: nothing here interprets a category.
+// testRegistry is the default task-category registry: nothing here interprets
+// a category.
 func testRegistry() tasks.TaskCategoryRegistry { return tasks.NewDefaultTaskCategoryRegistry() }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +108,7 @@ func (w *fakeWatermark) Watermark(ctx context.Context, _ wal.ShardID) (wal.Seqno
 	return 0, false, nil
 }
 
-// testDeps is the trio a manager here is built over, named once: a new required
+// testDeps is the set a manager here is built over, named once: a new required
 // field of [Deps] is then filled in one place rather than in twelve literals.
 func testDeps(log wal.Log, apply cold.Applier) Deps {
 	return Deps{Log: log, Writer: apply, Recoverer: &fakeWatermark{}, Registry: testRegistry()}
@@ -116,12 +117,12 @@ func testDeps(log wal.Log, apply cold.Applier) Deps {
 // standUp is how a cycle is stood up over fakes here. The cycle does not fence
 // — its manager does, before the rangeID lands — so the fence belongs with the
 // construction: a harness standing one up over an unfenced log is driving a
-// shard nobody acquired. The registry, the policy and the retire are the same
-// everywhere; the applier, the watermark and the emitter are what each harness
-// is about, so they arrive in deps.
+// shard nobody acquired. The task-category registry, the policy and the retire
+// are the same everywhere; the applier, the watermark and the emitter are what
+// each harness is about, so they arrive in deps.
 //
 // Not for a cycle left unfenced at its epoch ([zombie]) or left without a
-// registry: in both the absence is what is under test.
+// task-category registry: in both the absence is what is under test.
 func standUp(t *testing.T, epoch wal.Epoch, deps Deps, cfg Config) *Cycle {
 	t.Helper()
 	require.NoError(t, deps.Log.Fence(context.Background(), testShard, epoch))
@@ -161,7 +162,7 @@ type env struct {
 }
 
 // neverDrains is a cycle that folds and does not drain on its own: no size
-// watermark within reach and an age timer that will not fire inside a test, so
+// trigger within reach and an age timer that will not fire inside a test, so
 // what drains the window is the test. Callers add the bound they are about.
 func neverDrains(c *Config) {
 	c.Sync = false
@@ -320,7 +321,7 @@ func TestAddAcksBeforeItFolds(t *testing.T) {
 	s := e.c.Stats()
 	require.Equal(t, StateRunning, s.State)
 	require.Equal(t, 1, s.Mutations)
-	require.NotZero(t, s.Bytes, "the window is counted in bytes as well as mutations (the size watermark's two units)")
+	require.NotZero(t, s.Bytes, "the window is counted in bytes as well as mutations (the size trigger's two units)")
 	require.EqualValues(t, 1, s.CommitSeqno)
 	require.Zero(t, s.AppliedSeqno)
 }
@@ -367,7 +368,7 @@ func TestSizeWatermarksDrain(t *testing.T) {
 		ns, wf, run := ids()
 		require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
 		require.NoError(t, e.add(t, mkUpdate(ns, wf, run, 2)))
-		require.Empty(t, e.apply.drains, "below the watermark nothing drains")
+		require.Empty(t, e.apply.drains, "below the size trigger nothing drains")
 
 		require.NoError(t, e.add(t, mkUpdate(ns, wf, run, 3)))
 		require.Len(t, e.apply.drains, 1)
@@ -379,7 +380,7 @@ func TestSizeWatermarksDrain(t *testing.T) {
 		e := newEnv(t, func(c *Config) { c.Mutations = 1 << 20; c.Bytes = 1 })
 		ns, wf, run := ids()
 		require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
-		require.Len(t, e.apply.drains, 1, "one encoded mutation is already past a 1-byte size watermark")
+		require.Len(t, e.apply.drains, 1, "one encoded mutation is already past a 1-byte size trigger")
 	})
 }
 
@@ -395,10 +396,10 @@ func TestAgeWatermarkDrainsAnIdleTail(t *testing.T) {
 	require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
 
 	e.advance(t, 4*time.Second) // the tick lands; the window is 4s old
-	require.Empty(t, e.apply.drains, "a tail younger than the age watermark stays")
+	require.Empty(t, e.apply.drains, "a tail younger than the age trigger stays")
 
 	e.advance(t, 5*time.Second) // the next tick; the window is 9s old
-	require.Len(t, e.apply.drains, 1, "an idle tail past the age watermark drains itself")
+	require.Len(t, e.apply.drains, 1, "an idle tail past the age trigger drains itself")
 
 	e.advance(t, 5*time.Second)
 	require.Len(t, e.apply.drains, 1, "an empty window has nothing to drain")
@@ -618,25 +619,18 @@ func TestATakenSeqnoHalts(t *testing.T) {
 	require.ErrorIs(t, err, wal.ErrAlreadyWritten)
 	require.Equal(t, StateHaltedInvariant, e.c.State())
 	require.ErrorIs(t, e.add(t, mkUpdate(ns, wf, run, 2)), ErrTailNotEmpty,
-		"the halt names the gap it cannot fill")
+		"the halt names the seqno somebody else took")
 }
 
-// The append whose outcome the contract has no name for. Three answers, and
-// the log is the witness for all three, as the watermark is for a drain: the
-// one thing that may not follow such an append is another mutation at the same
-// seqno, since with the first attempt possibly still in flight, which of the two
-// ends up there is the backend's race to settle and a caller was told each of
-// the two answers.
 // TestACallersClockCannotDecideADurableEntrysFate is the production sequence
-// this layer meets most often and had no case for: a request deadline expiring
-// while the log is being written to. It is not an exotic failure — a slow log,
-// a GC pause and a busy node all produce it — and by the time it happens the
-// entry may already be durable.
+// this layer meets most often: a request deadline expiring while the log is
+// being written to. It is not an exotic failure — a slow log, a GC pause and a
+// busy node all produce it — and by the time it happens the entry may already
+// be durable.
 //
-// Three lines exist for it, each detaching a read or a transaction from the
-// caller's context, and each was judged by nothing: removing the first left the
-// whole of `go test ./...` green, and so did flipping either of the two drain
-// causes that carry other callers' acked work.
+// Each case below is one line that detaches a read or a transaction from the
+// caller's context: the append's readback, and the detached flag on two of the
+// drain causes that carry other callers' acked work.
 //
 // What they buy is the difference between a blip and an incident. The entry is
 // in the log; the only question is whether this process can still find out. On
@@ -707,7 +701,7 @@ func TestACallersClockCannotDecideADurableEntrysFate(t *testing.T) {
 	})
 
 	t.Run("a drain carrying other callers' work outlives the caller that tripped it", func(t *testing.T) {
-		// A window of one, so the write below trips a size watermark: that drain
+		// A window of one, so the write below trips a size trigger: that drain
 		// is [drainWatermarkMutations], whose window holds work whose callers
 		// were already told it succeeded.
 		e := newEnv(t, func(c *Config) { c.Mutations = 1 })
@@ -736,6 +730,12 @@ func TestACallersClockCannotDecideADurableEntrysFate(t *testing.T) {
 	})
 }
 
+// TestAnAmbiguousAppend: the append whose outcome the contract has no name for.
+// Three answers, and the log is the witness for all three, as the watermark is
+// for a drain: the one thing that may not follow such an append is another
+// mutation at the same seqno, since with the first attempt possibly still in
+// flight, which of the two ends up there is the backend's race to settle and a
+// caller was told each of the two answers.
 func TestAnAmbiguousAppend(t *testing.T) {
 	unreachable := errors.New("the connection went away mid-append")
 
@@ -905,7 +905,7 @@ func TestATrimNeverBlocksADrain(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestCloseDrainsWhatTheWindowHolds: shutdown is the one moment a tail drains
-// with no watermark asking for it.
+// with no trigger asking for it.
 func TestCloseDrainsWhatTheWindowHolds(t *testing.T) {
 	e := newEnv(t, nil)
 	ns, wf, run := ids()
@@ -982,7 +982,7 @@ func TestAFailedFenceLeavesNoCycle(t *testing.T) {
 	require.NoError(t, err)
 
 	err = m.ShardAcquired(context.Background(), testShard, 9)
-	require.Equal(t, wal.ErrFenced, err, "the log's error reaches the shard controller unwrapped")
+	require.Equal(t, wal.ErrFenced, err, "the log's error reaches the shard context unwrapped")
 	require.Nil(t, m.Shard(testShard))
 }
 
@@ -1058,8 +1058,7 @@ func commitToColdStore(store *basetest.Store, batch fold.Batch) {
 // the condition.
 //
 // Both arms of the delegated walk ask it, because which row the store would have
-// judged first is what the refusal names, and neither was driven: deleting either
-// check left the whole tree green. Refusal rather than panic is deliberate — a
+// judged first is what the refusal names. Refusal rather than panic is deliberate — a
 // refused write provably acked nothing, and "unreachable" is a claim about today's
 // callers rather than about tomorrow's.
 func TestAWriteBringingNoBaseRowsIsRefused(t *testing.T) {
@@ -1096,8 +1095,7 @@ func TestAWriteBringingNoBaseRowsIsRefused(t *testing.T) {
 // it is refused, and the shard needs a third acquire before anybody can apply
 // them.
 //
-// The behaviour was driven by nothing: every other case acquires upward. What this
-// pins is the behaviour and not one mechanism, and the distinction is worth stating
+// What this pins is the behaviour and not one mechanism, and the distinction is worth stating
 // because a sweep will find it: deleting the registry's own epoch comparison leaves
 // this green, since the acquire then reaches [wal.Log.Fence] and the log — already
 // fenced at the higher epoch — refuses it there. Two mechanisms, one outcome. The
@@ -1144,8 +1142,6 @@ func TestAnAcquireBelowTheHeldEpochIsRefused(t *testing.T) {
 // next owner inherits.
 //
 // So the write is refused, the shard keeps running, and nothing is appended.
-// basetest.Store.FailAll exists for exactly this and was called by nothing: the
-// double could answer every read successfully with the whole tree green.
 func TestAConditionReadThatFailsRefusesAndKeepsTheShard(t *testing.T) {
 	unreachable := errors.New("the cold store is not answering")
 

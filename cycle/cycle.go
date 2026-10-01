@@ -5,8 +5,8 @@
 // It names no cold store (the seam is [cold]'s); the store is reached only
 // through [cold.Applier], [cold.Watermarker] and the closures a caller passes
 // in. The states exist because ownership loss is discovered rather than
-// announced: a
-// shard close makes no persistence call. [Chapter 06] is what this implements.
+// announced: a shard close makes no persistence call. [Chapter 06] is what this
+// implements.
 //
 // [Chapter 06]: ../docs/handbook/06-shard-lifecycle.md
 package cycle
@@ -46,8 +46,12 @@ const (
 	// StateHaltedLost: the shard was fenced away (I4). The window is dropped,
 	// nothing is trimmed, and the next owner replays the tail.
 	StateHaltedLost
-	// StateHaltedInvariant: an assertion failed in a window whose failure could
-	// not be pinned on one caller, so there is no retry and no failover.
+	// StateHaltedInvariant: something this process owns diverged from what it
+	// acked — an assertion failed in a window whose failure could not be pinned
+	// on one caller, an acked entry would not fold, an ambiguous drain turned
+	// out not to have committed, a second writer holds this epoch
+	// ([ErrTailNotEmpty]), an append's outcome could not be read back, or replay
+	// met an entry it could not take. There is no retry and no failover.
 	StateHaltedInvariant
 )
 
@@ -66,19 +70,19 @@ func (s State) String() string {
 // ErrHalted matches (via errors.Is) every refusal a halted cycle's loop answers
 // with, and the one [ask] gives once that loop is gone. It is not always what
 // the caller sees: [storeError] turns a halted-lost write into
-// ShardOwnershipLost, and a read is [loopRoute]'s, which hands this back only on
-// the route that refuses as halted. The class is in [Cycle.State]; the cause
-// travels wrapped, so a caller can still reach the
+// ShardOwnershipLost, and a read is [loopRoute]'s or [stoppedRoute]'s, which
+// hand this back only on the route that refuses as halted. The class is in
+// [Cycle.State]; the cause travels wrapped, so a caller can still reach the
 // [apply.InvariantViolationError].
 var ErrHalted = errors.New("cycle: the shard is halted")
 
 // ErrTailNotEmpty reports an append refused because the log already holds the
 // seqno the cycle meant to write. A cycle replays past the whole tail before it
-// appends, so either a second writer holds this cycle's epoch, or one of this
-// cycle's own appends failed ambiguously and was durable after all. It halts.
+// appends, and an ambiguous append of its own is read back rather than assumed
+// ([Cycle.settleAppend]), so a second writer holds this cycle's epoch. It halts.
 var ErrTailNotEmpty = errors.New("cycle: the log holds an entry at a seqno this cycle replayed past")
 
-// ErrBudget refuses a policy whose hard_max × shards per node does not fit the
+// ErrBudget refuses a policy whose HardMaxBytes × MaxShards does not fit the
 // node's tail budget. See [Config.CheckBudget].
 var ErrBudget = errors.New("cycle: the per-shard tail bound does not fit the node's budget")
 
@@ -102,18 +106,18 @@ var ErrNoBaseRow = errors.New("cycle: an assertion the window does not determine
 // Config is the cycle's policy. The zero value is not usable; [Defaults] is
 // the measured one.
 type Config struct {
-	// Mutations and Bytes are the size watermark, whichever trips first. Both
+	// Mutations and Bytes are the size trigger, whichever trips first. Both
 	// sit at the measured collapse knee; changing either means re-measuring.
 	Mutations int
 	Bytes     int
-	// Age drains a tail nothing is pushing on, and is also how often a shard
+	// Age drains a window nothing is pushing on, and is also how often a shard
 	// whose last drain had no readable outcome re-asks the cold store — the one
 	// clock a cycle that refuses its writers has left. A recovery-budget choice,
 	// not a measured one. Non-positive is not "no age rule": it is filled with
 	// the default, because the loop arms a timer from it (see [Config.fill]).
 	Age time.Duration
 	// TrimEvery and TrimAfter are the trim cadence, whichever trips first. A
-	// DeleteRange per drain is a transaction per drain for no gain.
+	// Log.Trim per drain is a transaction per drain for no gain.
 	TrimEvery int
 	TrimAfter time.Duration
 	// Sync makes every [Cycle.write] drain before it returns and report the
@@ -126,7 +130,7 @@ type Config struct {
 	DrainOnRead bool
 
 	// HardMaxEntries and HardMaxBytes are I10's bound on one shard's tail: what
-	// has been acked and not yet applied. Neither unit works alone: one workflow
+	// has been acked and not yet settled. Neither unit works alone: one workflow
 	// near the server's 8 MB mutable-state limit turns an entries-only bound
 	// into a byte budget with no ceiling, and bytes alone bound no replay. See
 	// [Config.CheckBudget].
@@ -163,7 +167,7 @@ func Defaults() Config {
 
 // fill defaults the clock, the four bounds and the age, and nothing else: a
 // struct literal may leave any other field at zero on purpose, and the four
-// that stay zero have readings — a size watermark of zero drains every write
+// that stay zero have readings — a size trigger of zero drains every write
 // ([window.Window.Trips]), a trim cadence of zero trims at every drain. What is
 // filled here is what has none. The bounds' zero is "refuse everything", which
 // stops the shard, or "hold everything", which is the unbounded tail I10
@@ -209,8 +213,8 @@ func (c Config) cadence() trim.Cadence {
 	return trim.Cadence{Every: c.TrimEvery, After: c.TrimAfter}
 }
 
-// CheckBudget asserts the node's RAM arithmetic: [Config.HardMaxBytes] per
-// shard over [Config.MaxShards] shards must fit in [Config.TailBudgetBytes],
+// CheckBudget asserts the node's tail-budget arithmetic: [Config.HardMaxBytes]
+// per shard over [Config.MaxShards] shards must fit in [Config.TailBudgetBytes],
 // which [Defaults] does exactly. It bounds encoded bytes, not RSS — what is
 // resident is decoded protos plus the accumulator's indices.
 //
@@ -253,8 +257,8 @@ type Deps struct {
 	Logger    log.Logger
 	// Registry is required ([ErrNoRegistry]): replay decodes a payload's task
 	// groups through it and an unknown category id fails the replay. It must be
-	// the server's own registry, since the archival category exists only where
-	// archival is configured.
+	// the server's own task-category registry, since the archival category
+	// exists only where archival is configured.
 	Registry tasks.TaskCategoryRegistry
 	// Metrics is where the numbers go; nil is the noop emitter.
 	Metrics *walmetrics.Emitter
@@ -269,7 +273,7 @@ type Stats struct {
 	// from its successor's.
 	Epoch wal.Epoch
 	// Mutations and Bytes are the window's size since the last drain, in the two
-	// units the size watermark counts.
+	// units the size trigger counts.
 	Mutations int
 	Bytes     int
 	// CommitSeqno is the last seqno acked into the log; AppliedSeqno is the last
@@ -303,7 +307,7 @@ type Cycle struct {
 	shard wal.ShardID
 	epoch wal.Epoch
 	// policy is read at every decision that consults one, which is what lets a
-	// watermark move under a running shard ([Policy]). Do not cache a [Config]
+	// trigger move under a running shard ([Policy]). Do not cache a [Config]
 	// beside it: the snapshot would hold the numbers this cycle was created
 	// with rather than the ones in force.
 	policy Policy
@@ -415,9 +419,9 @@ func (c *Cycle) Epoch() wal.Epoch   { return c.epoch }
 //
 // A shard the rule in decide.go refuses answers ResourceExhausted instead. It is
 // asked here off the mirrored state, so a writer need not queue behind an applier
-// stuck on the cold store — which is both refusals' reason to exist, the stalled
-// one most of all, since the loop it would queue behind is inside the very
-// watermark read that is failing — and again inside the loop at the append, where
+// stuck on the cold store — which is the unresolved drain's and I10's reason to
+// exist, the first most of all, since the loop it would queue behind is inside
+// the very watermark read that is failing — and again inside the loop at the append, where
 // concurrent callers cannot all pass a tail one short of the bound. A halted or
 // retired cycle skips it and answers with the halt: a shard that lost its epoch
 // must not be told to retry later.
@@ -431,9 +435,9 @@ func (c *Cycle) write(ctx context.Context, m mutation.Mutation, rows *baserow.Ro
 	return tell(ctx, c, func(s *state) error { return c.add(ctx, s, m, rows) })
 }
 
-// drainNow applies the window whatever the watermarks say; a no-op on an empty
-// one. The only drain asked for from outside the loop, and it exists for
-// shutdown.
+// drainNow applies the window whatever the triggers say; a no-op on an empty
+// one. It is [Cycle.Close]'s drain without the start and the stop, and only
+// tests ask for it.
 func (c *Cycle) drainNow(ctx context.Context) error {
 	return tell(ctx, c, func(s *state) error { return c.drain(ctx, s, drainExplicit) })
 }
@@ -444,11 +448,11 @@ func (c *Cycle) Stats() Stats {
 	if stopped {
 		// No loop left to count, so the counters are gone with it — but the tail
 		// is not, and answering zero for it is the one number here that would be
-		// read as a fact. A cycle stopped by [Manager.RetireShard] stays the
-		// shard's, so this is what a caller staging what a dead owner left asks,
-		// and the entries are in the log whether or not a goroutine is left to
-		// say so. Read off the mirror, as [Cycle.residue] and [Cycle.stoppedRead]
-		// already do.
+		// read as a fact. A cycle stopped by the root package's Layer.RetireShard
+		// stays the shard's, so this is what a caller staging what a dead owner
+		// left asks, and the entries are in the log whether or not a goroutine is
+		// left to say so. Read off the mirror, as [Cycle.residue] and
+		// [Cycle.stoppedRead] already do.
 		entries, bytes := c.mirror.Size()
 		return Stats{
 			State: c.State(), Epoch: c.epoch,
@@ -463,8 +467,12 @@ func (c *Cycle) Stats() Stats {
 func (c *Cycle) State() State { return State(c.mirroredState.Load()) }
 
 // Close starts the cycle if nothing has yet, drains what the window holds, waits
-// for any trim in flight and stops the goroutine. A halted cycle drains nothing
-// (its tail is not its to apply) and returns the halt.
+// for any trim in flight and stops the goroutine. A halted cycle whose loop is
+// still running drains nothing (its tail is not its to apply) and returns the
+// halt — except one that halted inside its replay, which has never started, so
+// start runs over it again and floors the tail the halt was holding; if that
+// replay cannot read the log, the tail stays floored and the error returned is
+// the read's. That is an open entry in DURABILITY.md.
 //
 // The start is what makes the answer about the *shard* rather than about this
 // cycle's own window. A cycle replays lazily, on the first request to reach it,
@@ -474,6 +482,7 @@ func (c *Cycle) State() State { return State(c.mirroredState.Load()) }
 // its empty window and reporting nothing held is how a shutdown says "clean"
 // about a shard it never looked at, and a nil here is what an operator removes
 // the layer on.
+//
 // A cycle whose loop is already gone answers nil rather than the stopped
 // refusal: it was retired, so there is no window left to drain and nothing left
 // open — the mirror holds what it stopped holding, which is the answer
@@ -569,8 +578,8 @@ type state struct {
 
 	// Counters is what this cycle counted, the same value [Stats] and [Totals]
 	// carry. When each moves is a rule of this file: AckedRanges at the fold,
-	// because a folded range raised the bound whether or not its drain
-	// committed; DroppedTasks and WrittenTasks only for a committed drain;
+	// because a folded range is in the window whether or not its drain
+	// commits; DroppedTasks and WrittenTasks only for a committed drain;
 	// Kinds at the accept, so it counts what this cycle acked. The two trim
 	// counters are the trimmer's and are read at [Cycle.stats].
 	Counters
@@ -632,9 +641,10 @@ func (c *Cycle) run() {
 	defer func() { c.finished = s.Counters }()
 	ageC, age := c.clock.NewTimer(c.policy().Age)
 	defer age.Stop()
-	// The age timer runs always, and ticks on an empty window are ignored.
-	// Arming it only when the window fills would mean re-arming from inside the
-	// drain, where a missed reset is a tail that never ages out.
+	// The age timer runs always, and a tick on an empty window does nothing
+	// unless a stall or storage pressure stands. Arming it only when the window
+	// fills would mean re-arming from inside the drain, where a missed reset is a
+	// tail that never ages out.
 	for {
 		select {
 		case <-c.stop.Channel():
@@ -798,7 +808,7 @@ func (c *Cycle) add(ctx context.Context, s *state, m mutation.Mutation, rows *ba
 
 // accept takes an entry already durable at s.next into this cycle: the seqno
 // counters move, the tail grows by size (the payload's encoded length, which is
-// what both the watermark and I10 count), and the accumulator folds it.
+// what both the bytes trigger and I10 count), and the accumulator folds it.
 //
 // Shared by [Cycle.add] and [Cycle.replayEntry], and nothing here may depend on
 // which: a replayed entry has no caller to answer and no ack to give.
@@ -927,8 +937,8 @@ func (c *Cycle) refold(s *state, m mutation.Mutation, kind mutation.Kind, size i
 // folds took it.
 func (c *Cycle) folded(s *state, kind mutation.Kind, size int) {
 	if kind == mutation.KindRangeCompleteTasks {
-		// Counted at the fold and not at the drain: the range has already
-		// raised the window's bound.
+		// Counted at the fold and not at the drain: the range is in the
+		// window already, whatever becomes of the drain.
 		s.counted().AckedRanges++
 	}
 	s.window.Add(size, c.clock.Now())
@@ -994,13 +1004,22 @@ func (c *Cycle) checkDelegated(ctx context.Context, del fold.Delegated, rows *ba
 // request, and in this goroutine, which is what makes the readiness gate free
 // rather than a flag: a request arriving mid-replay is already parked in
 // [ask] on its own context. A failure leaves the cycle unstarted and the
-// window empty, so the next request starts again from the watermark.
+// window empty; one that leaves it running is retried from the watermark by the
+// next request.
 //
-// The attempt is abandoned whole, and everything it moved is either dropped
+// That attempt is abandoned whole, and everything it moved is either dropped
 // with it or re-planted at the top of the next one: its counters are a value
 // this never adopts ([state.counted]), its accumulator and window are replaced,
 // and its acked bytes go with the floor, which is read again from the cold
-// store's own watermark. There is no field here to remember to restore.
+// store's own watermark. There is no field here to remember to restore. An
+// attempt that halted is meant to be followed by none, so its tail and
+// counters stay.
+//
+// It does not ask whether the cycle is halted; its callers do, except
+// [Cycle.Close]. So a cycle halted inside its replay is started again there:
+// the floor below empties the tail its halt was holding, the replay counts its
+// entries a second time, and a log read that fails leaves the tail empty. That
+// is an open entry in DURABILITY.md.
 func (c *Cycle) start(ctx context.Context, s *state) error {
 	if s.started {
 		return nil
@@ -1034,10 +1053,10 @@ func (c *Cycle) start(ctx context.Context, s *state) error {
 			s.tail.Floor(s.tail.Applied())
 			return err
 		}
-		// Halted inside the replay, where no attempt follows. The tail stays:
-		// it is the evidence those entries were acked and never applied, which
-		// is what [Cycle.routeRead] refuses reads on. What the attempt counted
-		// stays with it for the same reason — nothing will count it again.
+		// Halted inside the replay, where no attempt follows but Close's. The
+		// tail stays: it is the evidence those entries were acked and never
+		// applied, which is what [Cycle.routeRead] refuses reads on. What the
+		// attempt counted stays with it for the same reason.
 		s.Counters.add(attempt)
 		return err
 	}
@@ -1093,7 +1112,7 @@ var (
 	// waiting for this transaction, which is what makes its clock the right one.
 	drainSync = drainCause{walmetrics.TriggerSync, answersCaller, false}
 
-	// The three watermarks, in [Cycle.add] and on the age timer. Their windows
+	// The size and age triggers, in [Cycle.add] and on the age timer. Their windows
 	// hold work whose callers were already told it succeeded, so a condition
 	// failure is nobody's answer and neither is a deadline.
 	drainWatermarkMutations = drainCause{walmetrics.TriggerMutations, noCaller, true}
@@ -1107,9 +1126,10 @@ var (
 	// waiting for it.
 	drainRefusal = drainCause{walmetrics.TriggerRefusal, noCaller, true}
 
-	// drainExplicit is [Cycle.drainNow]: shutdown, or a test. Its caller asked
-	// for this drain and nothing else, and the shutdown budget is what bounds
-	// the apply transactions one at a time, so this one keeps that clock.
+	// drainExplicit is [Cycle.Close]'s shutdown drain, or [Cycle.drainNow]'s in
+	// a test. Its caller asked for this drain and nothing else, and the
+	// shutdown budget is what bounds the apply transactions one at a time, so
+	// this one keeps that clock.
 	drainExplicit = drainCause{walmetrics.TriggerExplicit, noCaller, false}
 
 	// drainRead is [Config.DrainOnRead]'s arm: a read emptying the window it
@@ -1132,7 +1152,7 @@ var (
 	// drainStoragePressure is the backend asking for its storage back
 	// ([wal.PressureSource]): the window is drained at whatever size it has,
 	// so the trim its commit forces can reach everything acked so far. Its
-	// writers were answered at their acks like the size watermarks', and the
+	// writers were answered at their acks like the size triggers', and the
 	// append that observed the pressure succeeded and stays succeeded.
 	drainStoragePressure = drainCause{walmetrics.TriggerStoragePressure, noCaller, true}
 )
@@ -1226,8 +1246,8 @@ func (c *Cycle) drain(ctx context.Context, s *state, cause drainCause) error {
 }
 
 // settlement classifies what Apply returned and asks [settlementOf] what it
-// means. Beside the call site, like the other four rules, so that what a caller
-// can still get wrong is which values it hands over.
+// means. Beside the call site, like the other three rules that keep a method,
+// so that what a caller can still get wrong is which values it hands over.
 func (c *Cycle) settlement(err error, cause drainCause, mutationsIn int) settlement {
 	return settlementOf(apply.Classify(err), cause, mutationsIn)
 }
@@ -1299,7 +1319,7 @@ func (c *Cycle) resolveStalled(ctx context.Context, s *state) error {
 // unreadable is the caller's own clock running out inside [cold.Applier.Apply],
 // and a read on that context cannot answer in the one case it exists to answer.
 // A drain that had committed would be stalled, its writer told it failed, and
-// the shard would refuse every write and both reads until the age tick asked
+// the shard would refuse every write and every read until the age tick asked
 // again — which is the tick's own [context.Background]. This is that context
 // one drain earlier, so a store that never answers hangs the loop exactly where
 // it already would.
@@ -1354,10 +1374,11 @@ func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause er
 // working and the next owner's to continue, halted-invariant is a divergence this
 // process owns and may never be handed on as an ordinary failover, so a later halt
 // turning one into the other changes what the layer tells a server about a
-// failover. Nothing reaches it twice today, every door a caller has refusing
-// through [Cycle.halted] once the first has landed, which is why no test drives
-// it; it stays because "unreachable" is a claim about today's callers and this one
-// costs a comparison.
+// failover. Every door but one refuses through [Cycle.halted] once the first has
+// landed; [Cycle.Close] runs [Cycle.start] with no such check, so a cycle halted
+// inside its replay replays again, and that replay can reach a second halt,
+// which the early return discards. No test drives that arm. The start floors the tail before that replay, which is
+// an open entry in DURABILITY.md whether or not the second halt comes.
 func (c *Cycle) halt(s *state, st State, cause error) {
 	if s.st != StateRunning {
 		return

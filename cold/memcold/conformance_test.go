@@ -1,9 +1,10 @@
 package memcold_test
 
-// The store is judged by Temporal's own four suites and by nothing written
-// here. They are the definition of done: a suite of ours would be this
-// package's opinion of what a cold store owes, where these are the server's,
-// and the server is the only caller memcold will ever have.
+// The store's inherited methods are judged by Temporal's own four suites and by
+// nothing written here. They are the definition of done: a suite of ours would
+// be this package's opinion of what a cold store owes, where these are the
+// server's. What the store adds beside them has no upstream suite, which is why
+// apply_test.go and current_test.go exist.
 //
 // Each suite gets a store of its own — they number their shards from one and
 // upwards, so two sharing a database would collide.

@@ -15,7 +15,8 @@ paths:
 
 # This repo: what each package may import
 
-These were a table in a guard test until the amendment to
+These were a table in a guard test until the "rules are read, not run"
+amendment to
 [ADR 0009](../../docs/adr/0009-the-tree-separates-the-layer-from-what-judges-it.md), which deleted
 it along with every other lint rule wearing a test's clothes
 ([no-lint-in-tests.md](no-lint-in-tests.md)). The rules themselves did not
@@ -60,6 +61,12 @@ package.
 
 ## The layer
 
+Each row is a ban on the package's own imports — **may not import**. Where it
+also holds on the transitive set, that is stated: `wal`, `wal/memwal` and
+`wal/waltest` have nothing of Temporal in their dependency set at all, while
+`cold` depends on Temporal's persistence types through `fold`, a batch being
+written in them, and only its own files are Temporal-free.
+
 | package | may not | why |
 |---|---|---|
 | `wal` | the Temporal server, a cold store | the contract is backend-independent (ADR 0002): a backend author gets the log, not Temporal |
@@ -90,10 +97,15 @@ Where the one-line *why* is not the whole reason:
   specific: a metric is easiest to add where the number already is, so an import
   of `fold` here would put "just read Stats" one line away, and the emitter would
   end up holding the component under test.
-* **`wrapper`'s ban is transitive and therefore also a ban on `apply` and
-  `cycle` reaching a store**: it is why the wrapper talks to the layer through
-  `wrapper.ShardLayer`, and why translating a cycle's answer into the store's
-  error types lives in `cycle/write.go` rather than here.
+* **`wrapper`'s ban is on what it imports, and cannot be on what it depends
+  on**: the interface it decorates, `client.AbstractDataStoreFactory`, lives in
+  the Temporal package that links upstream's Cassandra and SQL persistence, so
+  the transitive set holds `gocql` and `database/sql` whatever the wrapper does.
+  What the row holds is that no file here names a plugin, a driver or
+  `cold/memcold`, and that the wrapper reaches the layer only through
+  `wrapper.ShardLayer` — which is why
+  translating a cycle's answer into the store's error types lives in
+  `cycle/write.go` rather than here.
 * **`cycle`'s is a direct ban and can only be one** — it defines the seam a cold
   store arrives at. The cycle holds the log, the accumulator and the write path
   at once, which is exactly why it must not hold a store as well: one such import

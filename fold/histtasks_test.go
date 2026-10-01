@@ -72,8 +72,8 @@ func TestTheWindowCarriesTheRowsAnAddPutInIt(t *testing.T) {
 // TestARangeTakesOutWhatTheWindowAlreadyHeld: a drain applies its range deletes
 // before it writes the batch's task rows, so a batch holding both a range and a
 // row inside it would come out written. Both sources of a task are swept — an
-// AddHistoryTasks' rows and a mutable-state write's task map — because both end
-// up in the same UPSERT.
+// AddHistoryTasks' rows and a mutable-state write's task map — because both are
+// written after the range deletes.
 func TestARangeTakesOutWhatTheWindowAlreadyHeld(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,
@@ -225,7 +225,7 @@ func TestAScheduledRangeIsFireTimeOnly(t *testing.T) {
 // places in a window, and the sweep must reach every one the read does. A row
 // the read shows and the sweep misses is a leak — the caller declared it garbage
 // and the drain writes it anyway — and a tombstone's orphans are the case that
-// looks exempt: the collapse preserves them because I7 says a task is durable
+// looks exempt: the collapse preserves them because I8 says a task is durable
 // somewhere, while the range says the caller no longer wants it.
 //
 // Each home carries a row inside the range and one above it, so a sweep that
@@ -321,9 +321,7 @@ func TestAScheduledRangeComparesAtTheStoresResolution(t *testing.T) {
 }
 
 // TestARangeCoversItsOwnMinimumAndNotItsOwnMaximum drives both bounds of
-// [fold.TaskRange.Covers] at the keys they are, in both category types. The
-// maximum's boundary was already driven; the minimum's was not, and moving that
-// comparison to `<` left the whole of `go test ./...` green.
+// [fold.TaskRange.Covers] at the keys they are, in both category types.
 //
 // It is the bound most often landed on exactly. A queue completes to a key and
 // the next range starts at it, so ranges arrive butt-joined and a task sitting
@@ -364,7 +362,7 @@ func TestARangeCoversItsOwnMinimumAndNotItsOwnMaximum(t *testing.T) {
 
 // TestTheRangesAReaderSubtractsAreTheUndrainedOnes: what a merged read hides
 // from the cold store's page is exactly the ranges the drain has not applied.
-// Asserted through the drain's [TaskWork], since the window's pending ranges
+// Asserted through the drain's [fold.TaskWork], since the window's pending ranges
 // are unexported and "undrained" and "carried by this drain" are the same set
 // from the two sides. What the page does with them is
 // [TestThePageHidesTheUndrainedRangesFromTheColdStoresHalfOnly].

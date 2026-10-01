@@ -1,6 +1,6 @@
 package cycle
 
-// The boundary the ExecutionStore wrapper writes through: one method, and the
+// The boundary the ExecutionStore wrapper writes through: one write method, and the
 // translation of what a cycle answers into what the history service's write
 // path understands. It is here because the wrapper may not import cycle.
 //
@@ -26,8 +26,8 @@ import (
 // epoch is the rangeID the caller wrote under, checked here as the plugin's own
 // write would have conditioned its transaction on it (I11): without it a shard
 // context already fenced out has its write re-stamped with this node's epoch and
-// accepted. Zero means no rangeID, as on the deletes, which the drain's epoch
-// CAS fences instead.
+// accepted. Zero means no rangeID, as on the deletes and the range-complete,
+// which the drain's epoch CAS fences instead.
 //
 // A shard this node holds no cycle for is answered with ShardOwnershipLost.
 // Falling through to the store below would be a write around the log, and the

@@ -17,8 +17,8 @@ type Delivery struct {
 	Index int
 	// Mutation is the decoded form and never the generated one: every task is
 	// rebuilt through the registry, and what the payload does not carry — the
-	// rangeID (I11), the new events — is gone, so a codec loss reaches a
-	// consumer here rather than being covered by the value the generator kept.
+	// rangeID (I11) — is gone, so a codec loss reaches a consumer here rather
+	// than being covered by the value the generator kept.
 	Mutation mutation.Mutation
 	// Payload is the encoded form, for a consumer that keeps the bytes — a
 	// second path that must not be handed a request the first has touched, or a
@@ -36,8 +36,8 @@ type Delivery struct {
 // That round trip is the whole of it and there is no way past it, which is what
 // keeps a caller out: a driver modelling the *client* of a store wants the
 // request as the generator built it, so it holds a [mutgen.Generator] of its
-// own. The two are not interchangeable: what a client sent — its rangeID, its
-// new events — and what came back out of the log are different values, and a
+// own. The two are not interchangeable: what a client sent — its rangeID
+// among it — and what came back out of the log are different values, and a
 // driver that confuses them changes what its own calls mean.
 //
 // What shape of stream it is comes from the [mutgen.Config] — [mutgen.Default],

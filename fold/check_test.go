@@ -574,8 +574,8 @@ func TestCheckLeavesTheAccumulatorExactlyAsItWas(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestEveryKindIsDecidedAndAnUnknownOneIsRefused: the authority's switch is
-// exhaustive, and what it does not recognise it refuses. A kind decide forgets
-// yields the zero verdict, which reads as "no assertion refuses this" — the one
+// exhaustive, and what it does not recognise it refuses rather than answer
+// with the zero verdict, which reads as "no assertion refuses this" — the one
 // answer the condition authority forbids, an assertion the window does not
 // determine being admitted rather than refused. The two tables are the
 // partition, so a ninth kind is in neither and fails here by name.
@@ -624,9 +624,6 @@ func TestEveryKindIsDecidedAndAnUnknownOneIsRefused(t *testing.T) {
 // every interval it measures against it is enormous and the minimal-interval
 // refusal never fires. A start that policy forbids is then admitted — by this
 // layer, where the sequential path reading the same row would have refused it.
-//
-// Nothing drove the distinction: the nil check could be deleted with the whole of
-// `go test ./...` green, and what it would answer instead is a pointer to 1970.
 func TestACurrentRowConflictCarriesTheStartTimeOrNothing(t *testing.T) {
 	const held, wanted = "run-held", "run-wanted"
 	began := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)

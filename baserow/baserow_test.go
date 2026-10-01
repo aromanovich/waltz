@@ -43,8 +43,8 @@ func (s *store) GetCurrentExecutionWithLastWriteVersion(
 	return s.currentResp, s.version, s.currentErr
 }
 
-// plainStore is Temporal's own interface and nothing more: the shape a build
-// over an unpatched checkout would hand over.
+// plainStore is Temporal's own interface and nothing more: the shape any of
+// upstream's own stores would hand over.
 type plainStore struct{ p.ExecutionStore }
 
 func TestAnAbsentRowIsANilRowAndNotAnError(t *testing.T) {

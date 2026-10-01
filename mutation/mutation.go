@@ -64,9 +64,10 @@ type Mutation struct {
 	Delete          *p.DeleteWorkflowExecutionRequest
 	DeleteCurrent   *p.DeleteCurrentWorkflowExecutionRequest
 	// AddTasks and RangeCompleteTasks travel through the log so that both take
-	// effect in the order issued. An immediate range delete beside a deferred
-	// add would run before the rows it should have covered existed, losing a
-	// scheduled category's timer outright.
+	// effect in the order issued. A range delete applied at once runs before the
+	// deferred rows it should have covered exist; one deferred beside an add
+	// applied at once covers a scheduled category's timer created after it, by
+	// fire time, and loses it outright.
 	AddTasks           *p.InternalAddHistoryTasksRequest
 	RangeCompleteTasks *p.RangeCompleteHistoryTasksRequest
 }
@@ -207,12 +208,13 @@ func (m Mutation) TaskSlots() []*map[tasks.Category][]p.InternalHistoryTask {
 // order they must reach the store, and nil for a kind whose request carries
 // none.
 //
-// Which of the two writers puts them down is the cold store's, and both keep the same
-// rule: a mutation acked over history nodes nobody wrote is a mutable state the
-// cold store can never be brought to, and no functional suite sees it. The
+// Which of the two writers puts them down is the cold store's, and both keep the
+// same rule: a mutation acked over history rows nobody wrote is a mutable state
+// the cold store can never be brought to, and no functional suite sees it. The
 // writer that puts them down through the store strips them off once they are
 // down, so a mutation still holding batches is one whose append is what makes
-// them durable — and the drain writes the nodes before it publishes the state.
+// them durable — and a cold store declaring cold.HistoryApplier writes the rows
+// in the drain's transaction, beside the state that names them.
 func (m Mutation) EventSlots() [][]*p.InternalAppendHistoryNodesRequest {
 	kind := m.Kind()
 	if kind == KindInvalid {
@@ -274,8 +276,8 @@ var ErrUncarriedProto = errors.New("mutation: parsed execution info or state wit
 // refused here is the same and is the whole of why this error exists: past the
 // append the entry is acked, durable and inherited by every owner, and an entry
 // no owner can decode is a shard that never starts again. Each one reads the
-// tail, fails at this blob, leaves the cycle unstarted, and the next request
-// retries it — so the write is not lost, it is unavailable for good, which the
+// tail, fails at this blob and halts on it, and the next owner fails the same
+// way — so the write is not lost, it is unavailable for good, which the
 // first rule admits only when nothing was acked. Before the append, refusing
 // writes nothing at all.
 var ErrBlobEncoding = errors.New("mutation: execution info or state blob in an encoding Decode cannot parse")

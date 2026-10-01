@@ -1,9 +1,9 @@
 package memcold_test
 
-// The versioned current-row read is the one method this store adds to the
-// embedded one, so no upstream suite covers it. What the layer stands on is
-// here: the version arrives, absence arrives as absence, and the version tracks
-// the write.
+// The versioned current-row read is the one read of Temporal's rows this store
+// adds beside the embedded one, so no upstream suite covers it. What the layer
+// stands on is here: the version arrives, absence arrives as absence, and the
+// version tracks the write.
 
 import (
 	"context"
@@ -77,8 +77,8 @@ func TestTheCurrentRowReadCarriesTheRunAndItsRequestIDs(t *testing.T) {
 
 // A malformed namespace id is a bad request and not a bad process. The read this
 // one is derived from asserts the uuid (primitives.MustParseUUID) and panics, and
-// this read is the one obligation the layer puts on the store below — it stands
-// in front of every delegated condition check — so a panic here takes the node
+// this read is the one the layer adds to what the store below owes — it stands
+// in front of every delegated current-row check — so a panic here takes the node
 // down on a path a request reaches.
 func TestAMalformedNamespaceIsRefusedRatherThanFatal(t *testing.T) {
 	f := newWorkflow(t)

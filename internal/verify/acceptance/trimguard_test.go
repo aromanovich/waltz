@@ -9,12 +9,12 @@ package acceptance
 // reach, which is here.
 //
 // The layer keeps the obligation in three prose sites and no enforced one:
-// Drained is reached only after a settlesForward (cycle.go), Settle moves
-// applied only under MoveWatermark (tailstate.go), and Drained is handed
-// Applied rather than Commit. Break any of the three and the resulting Trim is
-// perfectly contract-legal while deleting an acked entry no store holds, and
-// nothing in wal/, in wal/waltest or in the handbook's contract table would
-// report it. This guard is what reports it.
+// Settle moves applied only under MoveWatermark (tailstate.go), MoveWatermark
+// is passed only after a settlesForward (cycle.go), and the Trimmer — Drained
+// and Force alike — is handed Applied rather than Commit. Break any of the
+// three and the resulting Trim is perfectly contract-legal while deleting an
+// acked entry no store holds, and nothing in wal/, in wal/waltest or in the
+// handbook's contract table would report it. This guard is what reports it.
 //
 // It samples nothing: every trim the run makes goes through Trim below.
 

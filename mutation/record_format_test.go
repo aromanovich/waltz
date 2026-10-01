@@ -95,9 +95,8 @@ const recordedUpdate = "CAEa6AIIBxrjAgoXbmFtZXNwYWNlLW9mLXRoZS1yZWNvcmQSFndvcmtm
 // TestARecordedEntryStillMeansWhatItsWriterMeant decodes those bytes and names
 // every slot two same-typed fields could have been swapped between. Five of the
 // mutation's scalars are int64, four of its upsert collections are
-// map[int64]*DataBlob and five of its deletes are map[int64]struct{} or
-// map[string]struct{} — so each of those lines can be crossed with its
-// neighbours and still compile.
+// map[int64]*DataBlob and its delete sets share two key types — so each of
+// those lines can be crossed with its neighbours and still compile.
 //
 // The round-trip cases cannot see it. Swapping next-event-id with
 // db-record-version in the encoder *and* the decoder together left the whole of
@@ -126,9 +125,7 @@ func TestARecordedEntryStillMeansWhatItsWriterMeant(t *testing.T) {
 }
 
 // requireRecordMeaning names every slot two same-typed fields could have been
-// swapped between. Five of the mutation's scalars are int64, four of its upsert
-// collections are map[int64]*DataBlob, and its delete sets share two key types,
-// so each of those lines can be crossed with its neighbours and still compile.
+// swapped between.
 func requireRecordMeaning(t *testing.T, m Mutation) {
 	t.Helper()
 	require.Equal(t, KindUpdate, m.Kind())

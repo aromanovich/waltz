@@ -144,7 +144,7 @@ func TestAWatermarkBelowAnUnresolvedDrainHalts(t *testing.T) {
 // forward on somebody else's transaction, move applied to a seqno this shard's
 // drains never wrote, and let the trim follow it.
 //
-// Halting lost rather than invariant is the truthful side: the shard really is
+// Halting halted-lost rather than halted-invariant is the truthful side: the shard really is
 // somebody else's, and the caller re-acquires rather than paging anybody.
 func TestAWatermarkAboveAnUnresolvedDrainHaltsLost(t *testing.T) {
 	e := unresolvedEnv(t, wmAnswer{seqno: 9, found: true})

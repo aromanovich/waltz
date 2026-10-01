@@ -50,7 +50,7 @@ func applyDelta[K comparable, V any](state map[K]V, ups map[K]V, dels map[K]stru
 }
 
 // mergeTasks concatenates task groups in arrival order. Tasks are queue entries
-// rather than workflow state: no snapshot or tombstone barrier collapses them
+// rather than mutable state: no snapshot or tombstone barrier collapses them
 // (I8). A range delete still does, out of these slots as out of every other
 // home.
 func mergeTasks(dst, src map[tasks.Category][]p.InternalHistoryTask) map[tasks.Category][]p.InternalHistoryTask {

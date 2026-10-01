@@ -40,8 +40,8 @@ func snapTasks(list ...p.InternalHistoryTask) func(*p.InternalWorkflowSnapshot) 
 }
 
 // taskMap sorts tasks into two categories by key shape, the way the store does:
-// a fire time equal to tasks.DefaultFireTime is immediate, anything else is
-// scheduled.
+// a fire time equal to tasks.DefaultFireTime is an immediate category's key,
+// anything else a scheduled one's.
 func taskMap(list ...p.InternalHistoryTask) map[tasks.Category][]p.InternalHistoryTask {
 	out := make(map[tasks.Category][]p.InternalHistoryTask)
 	for _, t := range list {
@@ -243,10 +243,10 @@ func TestTheTaskViewIsReadOnlyOnTheAccumulator(t *testing.T) {
 	})
 
 	t.Run("and so is the page the merge built", func(t *testing.T) {
-		// [Accumulator.TaskPage] merges over the copy [Accumulator.Tasks] hands
-		// it, so the page comes back as storage of its own whichever branch built
-		// it. The base is empty here, so every row of the page came out of the
-		// window.
+		// [fold.Accumulator.TaskPage] merges over the copy
+		// [fold.Accumulator.Tasks] hands it, so the page comes back as storage of
+		// its own whichever branch built it. The base is empty here, so every row
+		// of the page came out of the window.
 		a := build()
 		empty := func(int, []byte) ([]p.InternalHistoryTask, []byte, error) { return nil, nil, nil }
 		resp, _, err := a.TaskPage(taskReq(tasks.CategoryTransfer,

@@ -14,8 +14,8 @@ import (
 // different meaning:
 //
 //   - renewRangeLocked, on acquire and on rangeID exhaustion, with
-//     RangeID = PreviousRangeID + 1: the shard changing hands, and the birth of
-//     an epoch (I11);
+//     RangeID = PreviousRangeID + 1: the birth of an epoch (I11), whether or
+//     not the shard changed hands;
 //   - updateShardInfo, periodically, with RangeID == PreviousRangeID: a
 //     heartbeat that carries no news.
 //
@@ -53,7 +53,7 @@ func (s *ShardStore) GetOrCreateShard(
 // new epoch first and the rangeID lands second, so the epoch in the log never
 // lags the one in the database. A failed observer fails the acquire without the
 // base store being called and leaves the previous owner's rangeID in place for
-// the controller to retry.
+// the shard context's acquire to retry.
 //
 // The test is inequality rather than "greater than", so that a rangeID which
 // went backwards reaches the observer to be refused instead of passing as a

@@ -61,19 +61,19 @@ and the cycle have handed it on.
 
 | Package | Role, in one line | Key exported types | May not import — and why |
 |---|---|---|---|
-| `wal` | The log's contract: one fenced, gap-free, totally ordered sequence of entries per shard, payloads opaque. | `Log`, `Entry`, `ShardID`, `Seqno`, `Epoch`, `ErrFenced`, `ErrAlreadyWritten`, `ErrGap`, `ErrZeroEpoch` | the Temporal server, and every package above it — the contract is backend-independent, so an implementer gets the log and not Temporal |
+| `wal` | The log's contract: one fenced, gap-free, totally ordered sequence of entries per shard, payloads opaque. | `Log`, `Entry`, `ShardID`, `Seqno`, `Epoch`, `ErrFenced`, `ErrAlreadyWritten`, `ErrGap`, `ErrZeroEpoch`, `PressureSource`, `PressureLevel` | the Temporal server, and every package above it — the contract is backend-independent, so an implementer gets the log and not Temporal |
 | `wal/memwal` | The contract in process memory: the one implementation this library ships, so everything above the log tests without a cluster. | `Backend`, `New` | the same, for the same reason |
-| `wal/waltest` | The conformance suite an implementation runs, plus `Faulty`, a log wrapped so a chosen call fails. | `RunContractSuite`, `Faulty`, `Fault`, `Once`, `Always` | the same, **plus every implementation including `memwal`** — a suite that could name one would special-case it and stop being about the contract |
+| `wal/waltest` | The conformance suite an implementation runs, the two checks only a deployment can (reopen, retention), and `Faulty`, a log wrapped so a chosen call fails. | `RunContractSuite`, `CheckReopen`, `CheckRetention`, `Faulty`, `Fault`, `Once`, `Always` | the same, **plus every implementation including `memwal`** — a suite that could name one would special-case it and stop being about the contract |
 | `mutation` | What one log entry *is*: the protobuf record of one persistence call, and the eight kinds. | `Mutation`, `Kind`, `Part`, `Encode`, `Decode` | any persistence implementation — the record mirrors Temporal's requests; the store that eventually writes them is the applier's business |
 | `baserow` | The cold store's two mutable-state reads as the write path needs them: one run's row, and the current-execution row with `last_write_version` beside it. | `Store`, `Rows`, `New`, `Of`, `ErrNoVersionedRead` | any persistence implementation, and everything else of this layer — `wrapper`, `cycle` and `apply` all need this pair and none of them may name another's copy, so it imports Temporal's persistence and nothing more |
-| `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page merge. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage`, `HistoryBasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
+| `fold` | The accumulator: a window of mutations folded into one merged request per dirty workflow, the assertions it stands on, the overlay that answers reads, the task-page and history-branch merges. | `Accumulator`, `Batch`, `Emitted`, `Stats`, `RunView`, `CurrentView`, `TaskWork`, `TaskRange`, `Delegated`, `Refusal`, `BasePage`, `HistoryBasePage` | any persistence implementation, `apply` — fold folds what it is handed: no cold store, no log |
 | `cold` | The cold store's contract: the applier one drain lands on, the watermarker that reads back what one committed, and the four things an implementation owes. `Store` is the pair as a deployment supplies it — one value, because a watermark read from a store other than the one the drains landed in is no witness at all. | `Store`, `Applier`, `HistoryApplier`, `Watermarker` | any persistence implementation, and `cold/memcold` most of all — the seam is stated for the author of a store that is not in this repository |
 | `cold/memcold` | That contract satisfied, and the one cold store this repository ships: Temporal's own SQL persistence over an in-memory SQLite database, embedded whole, with the folded window's transaction added beside its 28 inherited methods. It sits *under* the layer rather than being part of it. | `Store`, `New`, `SetWatermark`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory` | `cycle`, `wrapper` and the root package — a store that could see the layer would be judged by the thing sitting on top of it. It does name the vocabulary the contract is stated in: `fold`, `wal`, `apply`, `baserow`, `mutation` |
 | `apply` | What a drain's outcome demands of its caller: the five classes an error sorts into, and the attribution a violated invariant carries. | `Class`, `Classify`, `Diverged`, `InvariantViolationError` | `wal.Log` and `wal.Entry` — pacing and trim are the cycle's policy, not the outcome's |
 | `cycle/window` | The size and age of what a cycle folded since its last drain, as a type whose counters cannot be written from outside. | `Window`, `Taken`, `Watermarks`, `Trip` | `fold`, `walmetrics` — the window counts, it does not fold, and it publishes nothing |
 | `cycle/tailstate` | The tail's arithmetic in one place: everything invariant [I10](02-concepts-and-invariants.md#the-invariants) bounds, plus the off-loop mirror of it. | `Tail`, `Mirror`, `New`, `NewMirror`, `WatermarkMove`, `Unresolved` | `fold` — the tail is arithmetic over what the loop acked, not the log those seqnos index nor the window they outlive |
 | `cycle/trim` | The lazy deletion of entries the cold store already holds: the cadence, the one trim in flight, the two counters. | `Trimmer`, `New`, `Cadence` | `fold`, `cycle/tailstate` — a cadence over a watermark it is handed; it may reach neither the thing that moves that watermark nor the thing that folds |
-| `cycle` | The state machine: one goroutine per (shard, epoch) owning the accumulator, the drain, the trim, the four reads and replay, plus the node's registry of them. | `Cycle`, `Manager`, `NewManager`, `Deps`, `Config`, `Defaults`, `Policy`, `Fixed`, `Live`, `Moving`, `State`, `Stats`, `Totals`, `Counters` | any persistence implementation — the cold store arrives as `cold.Applier` and `cold.Watermarker`, and there may be no second door |
+| `cycle` | The state machine: one goroutine per (shard, epoch) owning the accumulator, the drain, the trim's cadence, the four reads and replay, plus the node's registry of them. | `Cycle`, `Manager`, `NewManager`, `Deps`, `Config`, `Defaults`, `Policy`, `Fixed`, `Live`, `Moving`, `State`, `Stats`, `Totals`, `Counters` | any persistence implementation — the cold store arrives as `cold.Applier` and `cold.Watermarker`, and there may be no second door |
 | `wrapper` | The seam into a running server: a decorator over a base data store factory whose `ExecutionStore` and `ShardStore` the history service talks to. | `Options`, `ShardLayer`, `ShardObserver`, `ShardWriter`, `ShardReader`, `MetricsSink`, `AbstractDataStoreFactory`, `NewAbstractDataStoreFactory`, `DataStoreFactory`, `NewDataStoreFactory`, `ErrCompleteHistoryTaskUnsupported` | any persistence implementation, and `cycle` — wrap, don't fork: the decorator is defined over upstream's interface, and composing it with a base store is the binary's job |
 | `waltz` (the module root) | The composition a server builds: the `wal` config section, the dynamic-config settings, the components they name, the lifecycle, and the factory that is the door out. | `Compose`, `Layer`, `Backends`, `Config`, `WAL`, `Parse`, `Registry`, `TaskCategories`, `DefaultTaskCategories`, `NewPolicy`, `AbstractFactory` | — (it composes everything, which is the point) |
 | `walmetrics` | Where the numbers go: the metric definitions and the emitter, on the server's own handler. | `Emitter`, `New`, and the `metrics.*Def` values (`InterceptedWrites`, `Drains`, `TailBytes`, …) | `wal`, `fold`, `apply`, `cycle`, `wrapper`, `mutation` — the metric names are the layer's vocabulary, so nothing that can be measured may be imported here |
@@ -122,13 +122,13 @@ graph TD
   SS -->|"ShardAcquired: fence and create"| MGR
   SS -->|"the shard row itself"| CS
   ES -->|"mutation.Mutation plus the base reads"| MGR
-  ES -->|"the other sixteen methods"| CS
+  ES -->|"the other fifteen methods, and a write's events when the applier does not write them"| CS
   MGR -->|"resolves the shard, checks the epoch"| CY
   CY -->|"Append, ReadFrom"| LOG
-  CY -->|"Add, Drain, TaskPage"| ACC
+  CY -->|"Add, Drain, the read views and pages"| ACC
   CY -->|"Apply: one batch"| AP
-  CY -->|"Drained: a watermark"| TR
-  CY -->|"Watermark: recovery read"| WM
+  CY -->|"Drained or Force: a watermark"| TR
+  CY -->|"Watermark: the floor at start, an unknown outcome"| WM
   TR -->|"Trim"| LOG
   AP -->|"one transaction"| CS
   WM -->|"reads the applied watermark"| CS
@@ -137,11 +137,14 @@ graph TD
 How to read this. Nothing crosses a shard boundary below `cycle.Manager`: the manager resolves a
 shard to its one cycle, and everything under that cycle belongs to that shard alone. Two paths reach
 the cold store through an interface the layer names, and both are the deployment's to implement —
-`cold.Applier`, the layer's only *write* door, and `cold.Watermarker`, which reads back what the last
-drain committed when its outcome was unknown. The wrapper's own arrows to the cold store are the
-transits. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers twelve of them itself — the
+`cold.Applier`, the drain's *write* door, and `cold.Watermarker`, which reads back what the last
+drain committed — once when the cycle starts, for the floor it replays above, and again whenever a
+drain's outcome was unknown. The wrapper's own arrows to the cold store are the
+transits, plus one write: where the applier does not declare `cold.HistoryApplier`, an intercepted
+write's new history events go down through the store below before its mutation is appended, and the
+record carries none. `wrapper.ExecutionStore` has 28 methods; in intercept mode it answers twelve of them itself — the
 eight writes and the four reads on the diagram — refuses a thirteenth, `CompleteHistoryTask`, with
-`wrapper.ErrCompleteHistoryTaskUnsupported`, and hands the other sixteen straight to the store below.
+`wrapper.ErrCompleteHistoryTaskUnsupported`, and hands the other fifteen straight to the store below.
 
 The two mutable-state reads the write path makes against the cold store — `baserow.Rows.Run` for one
 run's row and `baserow.Rows.Current` for the current-execution row — are missing from the diagram on
@@ -161,7 +164,7 @@ graph TD
   ES2 -->|"counts intercepted writes and routed reads"| EM
   CY2 -->|"counts drains, halts, refusals, task rows"| EM
   CY2 -->|"Floor, Ack, Settle, Stall, Resolve"| TS
-  TS -->|"publishes tail entries and bytes"| EM
+  TS -->|"publishes tail entries, bytes and unapplied"| EM
 ```
 
 How to read this. The emitter is a sink and nothing more: every arrow into it is one-way. Every
@@ -188,6 +191,7 @@ graph LR
     C --> A
     N --> C
     N --> WR
+    WR --> W
   end
   STORE["any persistence implementation"]
   MET["walmetrics"]
@@ -291,16 +295,17 @@ that range. Both consequences are [chapter
 | `tailstate.Mirror` | published by every `Tail` mutator | atomics; read by `Cycle.write` *before* it queues anything, and by a retired cycle's read path |
 | `Cycle.State()` | the loop writes, and `Cycle.Retire` as it stops one; anyone reads | one `atomic.Int32`, so a stopped cycle still reports the state it stopped in |
 | `Cycle.finished` | written by the loop on its way out | read by `Cycle.Retire` only after the loop's `done` channel is closed — that is the happens-before, and the reason there is no lock |
-| `trim.Trimmer` | its own goroutine, beside the loop | a `Trimmer` is handed a watermark *by value*; one trim in flight at a time; `Trimmer.Wait` is how a caller waits for it |
-| `walmetrics.Emitter` | shared, one per node | every method is an atomic load and a `Record`; `Emitter.Use` is the only mutation and takes the first handler it is given |
-| the shard map | `cycle.held` | one mutex; every method finishes its map arithmetic and returns without touching a `*Cycle` |
+| `trim.Trimmer` | the loop owns its cadence; each trim in flight runs on a detached goroutine beside it | a `Trimmer` is handed a watermark *by value*; one mutex of its own over the one trim in flight and the one follow-up queued behind it; `Trimmer.Wait` is how a caller waits for it |
+| `walmetrics.Emitter` | shared, one per node | every method is an atomic load and a `Record`; `Emitter.Use` is the only mutation and takes the first non-nil handler it is given |
+| the shard map | `cycle.held` | one mutex; every method finishes its map arithmetic and returns without calling into a `*Cycle` |
 
 Two of those need more than a table cell.
 
 **The trim is off the loop because a stuck log must not stop a shard from acking and applying.** It
 is a package of its own precisely so the `go` statement lives where no `*state` can be named — the
 ownership rule becomes the compiler's job rather than prose. A failed trim halts nothing: it is
-logged and retried at the next cadence.
+logged and retried at the next cadence — or, if storage pressure forced it, forced again while the
+pressure stands.
 
 **There is no mutex on `cycle.Manager`.** The mutex belongs to the unexported `held` type, which owns
 the shard map and the retired counters, and the danger it guards against is a lock inversion. Every
@@ -340,7 +345,8 @@ graph TD
 ```
 
 How to read this. The only shared mutable state on the node is the shard map behind `held`'s mutex
-and the emitter, which is lock-free. Everything else is per-shard and single-threaded.
+and the emitter, which is lock-free. Everything else is per-shard: the loop's alone, or one of the
+off-loop things in the table above.
 
 ### Lifetimes
 
@@ -349,16 +355,18 @@ and the emitter, which is lock-free. Everything else is per-shard and single-thr
   for one shard, each unaware of the other.
 * **A `Cycle` is created by `Manager.ShardAcquired`**, which fences the log at the new epoch and then
   starts the cycle, in that order — the log's epoch may never lag the database's.
-* **A `Cycle` is retired by a higher epoch superseding it, or by the node closing.** The layer reaps
-  none by itself, because it only sees what crosses the persistence interface: an acquire bumps the
+* **A `Cycle` is retired by a higher epoch superseding it, by the node closing, or by a caller
+  naming its epoch.** The layer reaps none by itself, because it only sees what crosses the persistence interface: an acquire bumps the
   rangeID and is therefore visible, while closing a shard makes no persistence call and is not. So a
   shard the server has quietly stopped serving leaves a goroutine and an empty accumulator behind
   until its node stops — a bounded leak, taken knowingly. A caller that knows the shard is gone can
   stop it with `Layer.RetireShard(shard, epoch)`, which retires without draining — the epoch being
-  which acquisition it means, since a caller that knows a shard is gone may be learning it late.
+  which acquisition it means, since a caller that knows a shard is gone may be learning it late. The
+  stopped cycle stays registered — reporting `halted-lost` if it was running — because its tail is
+  acked entries still in the log.
 * **The layer's lifecycle brackets the server's.** `waltz.Compose` runs before the server is built,
-  so its two startup assertions — `cycle.Config.CheckBudget`, and a task-category registry that must
-  not be nil — stop the binary rather than a shard. `Layer.Shutdown(ctx, budget)` runs after the
+  so its startup assertions — a policy that must be given, `cycle.Config.CheckBudget`, and a
+  task-category registry that must not be nil — stop the binary rather than a shard. `Layer.Shutdown(ctx, budget)` runs after the
   server has stopped, so the shutdown drain still has a store to write to. It puts the budget on a
   context of the layer's own, detached from the caller's, because a shutdown drain runs exactly where
   a context has just been cancelled and one inheriting that cancellation would return at once. Start
@@ -374,7 +382,8 @@ second. It opens nothing, reaches nothing and takes no context. It takes five in
 * a `cycle.Policy`;
 * a `waltz.Registry` of task categories;
 * an optional `log.Logger`, which nil replaces with a noop;
-* an optional `metrics.Handler`, which nil replaces with a noop.
+* an optional `metrics.Handler`, and nil is the production value: the server's own arrives after
+  `Compose` has run, as described below.
 
 That is the whole of the door in, and deliberately the only one: there is no second constructor that
 opens a client from a config file. Everything that talks to a cluster has already happened by the

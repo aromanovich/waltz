@@ -35,16 +35,21 @@ where `base` is the plugin whose stores hold the cold data.
 - Process death is an ordinary history-node failure: shards fail over, the new
   owner replays the WAL tail. The separate "node alive, persistence dead" mode
   disappears, and with it the question of how a node survives its sidecar.
-- Shard lifecycle (acquire/close) is observed directly by the wrappers instead
-  of being inferred from the persistence call stream; the fence-before-rangeID
-  ordering on acquire is implemented trivially in the ShardStore wrapper.
+- Shard acquisition is observed by the ShardStore wrapper, in the process whose
+  writes it gates, and the fence-before-rangeID ordering on acquire is
+  implemented trivially there: fence, then delegate `UpdateShard`. A close is
+  not observed — no persistence call carries one — so a cycle is retired by a
+  higher epoch, by the node shutting down, or by the caller naming its epoch to
+  `Layer.RetireShard`.
 - Queue-processor notification needs no work in steady state: the stock
   server already calls `engine.NotifyNewTasks` after each successful persistence
   write (`service/history/workflow/transaction_impl.go` at the required
   v1.29.6), so tasks living only in the tail are known to processors.
 - The cost: tail memory now competes with the history node's caches in one
   process. The backpressure cap (invariant I10) times shards-per-node must be
-  budgeted into node RAM explicitly.
+  budgeted into node RAM explicitly — and the cap counts encoded bytes, not
+  what is resident (decoded protos and the accumulator's indices), so the RAM
+  figure is an estimate over it rather than the number itself.
 - Memory isolation was the sidecar's main argument; it is deliberately traded
   away on the grounds that I10 bounds tail growth by construction — if the cap
   works there is nothing to isolate, and if it doesn't, the sidecar would die

@@ -36,7 +36,7 @@ func Always(err error) Fault {
 // therefore be driven against a backend that keeps the contract and still be
 // shown a failure at the seam.
 //
-// It implements none of the four methods' semantics and holds no log state.
+// It implements none of the contract's semantics and holds no log state.
 // Whatever it wraps is what a test is driving, and a fault refusing a call is
 // the only difference from driving that backend directly.
 //
@@ -105,7 +105,7 @@ func (f *Faulty) set(m method, fault Fault) {
 }
 
 // Fences are the epochs [Faulty.Fence] was called at, in order, the refused
-// calls included. Trims is the same for [Faulty.Trim]'s watermarks.
+// calls included. Trims is the same for [Faulty.Trim]'s upTo.
 //
 // Those two calls are recorded because the log cannot be asked about them
 // afterwards: fencing twice at one epoch leaves a log fenced once, and a trim

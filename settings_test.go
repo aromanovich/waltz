@@ -55,7 +55,7 @@ func distinct(t *testing.T, field any, n int) any {
 func TestEverySettingReachesItsOwnPolicyField(t *testing.T) {
 	base := NewPolicy(nil, section)()
 	require.Equal(t, filled(), base,
-		"a section that names only a folder and a dynamic config that says nothing is the measured policy")
+		"an empty section and a dynamic config that says nothing is the measured policy")
 
 	landed := map[string]dynamicconfig.Key{} // cycle.Config field -> the setting that sets it
 	for i, s := range settings {
@@ -110,8 +110,8 @@ func TestEveryPolicyFieldIsConfigurableOnce(t *testing.T) {
 			continue
 		}
 		require.Contains(t, claimed, f.Name,
-			"cycle.Config.%s is a policy field nothing configures: put it on knobs (if a node "+
-				"cannot change it while it runs) or on settings (if it can), or say here why it "+
+			"cycle.Config.%s is a policy field nothing configures: put it on knobs (if the "+
+				"section sets it) or on settings (if the dynamic config does), or say here why it "+
 				"is neither", f.Name)
 	}
 }

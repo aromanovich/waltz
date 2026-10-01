@@ -19,17 +19,19 @@ import (
 // writes: a nil batch, one belonging to another shard, one with no branch, one
 // whose node carries no events, or one opening a branch with no tree info.
 //
-// It is refused at those two points because they are the two that can refuse.
-// Past the append the entry is acked and every owner inherits it, so a batch
-// first judged where it is applied leaves the choice between a crash loop and a
-// silent hole — the same reasoning [ErrUncarriedProto] carries, at the other
-// half of the request.
+// Encode is the last point that can refuse one. Past the append the entry is
+// acked and every owner inherits it, so a batch first judged where it is
+// applied leaves the choice between a crash loop and a silent hole — the same
+// reasoning [ErrUncarriedProto] carries, at the other half of the request.
+// Decode judges again so that a payload this build did not write is named
+// rather than dereferenced.
 var ErrMalformedHistory = errors.New("mutation: history batch is missing a field the fold or the applier needs")
 
 // validateHistory holds the mutation's batches against what reads them. Every
-// clause is a dereference somewhere else: the shard id is the epoch the batch is
-// applied under, the branch is the fold's key, the node's blob is what the
-// applier writes, and the tree info is the row a new branch needs beside it.
+// clause is a dereference somewhere else: the shard id keys the row the drain
+// of this mutation's shard writes, the branch is the fold's key, the node's blob
+// is what the applier writes, and the tree info is the row a new branch needs
+// beside it.
 func validateHistory(m Mutation) error {
 	shard := m.ShardID()
 	for _, slot := range m.EventSlots() {

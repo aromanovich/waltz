@@ -23,11 +23,12 @@ import (
 )
 
 // TestEveryDrainNamesWhatTriggeredIt: the drain counter without its trigger tag
-// is a number nobody can act on. Five of the tag's eight values are driven here
+// is a number nobody can act on. Five of the tag's nine values are driven here
 // and each is its own diagnosis — size, in either unit, is the design working,
 // age is a shard nobody is pushing on, refusal is fold's drain-and-retry, sync
-// is intercept mode. The explicit drain below is of an empty window and emits
-// nothing; replay's value is replay_test.go's and read's drainonread_test.go's.
+// is the window of one. The explicit drain below is of an empty window and
+// emits nothing; replay's value is replay_test.go's, read's
+// drainonread_test.go's and storage_pressure's pressure_test.go's.
 func TestEveryDrainNamesWhatTriggeredIt(t *testing.T) {
 	ns := uuid.NewString()
 
@@ -101,7 +102,7 @@ func TestTheCollapseGoesOutAsTwoCountersAndNotAsARatio(t *testing.T) {
 
 // TestTheTailIsRecordedInBothUnitsWhereverItMoves. The tail goes out in bytes,
 // entries and age, and the three are not interchangeable: entries alone cannot
-// bound memory, bytes alone bound no replay, and age is what the idle watermark
+// bound memory, bytes alone bound no replay, and age is what the age trigger
 // fires on.
 //
 // It also pins that the tail and commitSeqno − appliedSeqno go out as two
@@ -132,9 +133,10 @@ func TestTheTailIsRecordedInBothUnitsWhereverItMoves(t *testing.T) {
 }
 
 // TestBackpressureNamesTheUnitThatBound: a write is refused before the append
-// for three reasons, and which one is the diagnosis — entries means a stalled
-// applier, bytes one workflow near the server's own blob limits, unresolved an
-// applier that cannot say whether its last drain committed.
+// for four reasons, and which one is the diagnosis — entries means an applier
+// that is behind, bytes the same or mutations near the server's own blob limits,
+// unresolved an applier that cannot say whether its last drain committed. The
+// fourth, storage_pressure, is pressure_test.go's.
 func TestBackpressureNamesTheUnitThatBound(t *testing.T) {
 	ns := uuid.NewString()
 
@@ -243,7 +245,7 @@ func TestASyncConditionFailureIsCountedAndIsNotADrain(t *testing.T) {
 }
 
 // TestTrimsAreCountedByOutcome. A failed trim halts nothing and is retried at
-// the next cadence, so this counter is the only way it is visible from outside
+// the next cadence or force, so this counter is the only way it is visible from outside
 // the process.
 func TestTrimsAreCountedByOutcome(t *testing.T) {
 	ns := uuid.NewString()

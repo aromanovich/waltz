@@ -9,7 +9,7 @@ package cycle
 //     triggers it as much as a write does, or a read on an inherited tail is
 //     answered from a cold store the log is ahead of;
 //   - it ends in a drain, so the window is empty when the first caller is
-//     served. Left to the ordinary watermarks it would mix entries whose
+//     served. Left to the ordinary triggers it would mix entries whose
 //     callers are gone with a fresh caller's write, where a condition failure
 //     is attributable to nobody and halts;
 //   - a provisional entry is carried alone and its condition failure is a drop
@@ -56,14 +56,14 @@ import (
 // replay reads the tail the previous owner left and applies it. The floor has
 // already been read: s.next is the watermark's successor.
 //
-// A failure leaves the cycle unstarted and the window empty, so the next
-// request retries from the watermark. It does not halt — a log read that failed
-// is not an answer.
+// A failed log read leaves the cycle unstarted and the window empty, so the
+// next request retries from the watermark. It does not halt — a log read that
+// failed is not an answer.
 func (c *Cycle) replay(ctx context.Context, s *state) error {
 	if c.deps.Registry == nil {
 		// A payload's task groups name their category by id, so a cycle with no
-		// registry could not decode a tail even if it found one. See
-		// [Deps.Registry].
+		// task-category registry could not decode a tail even if it found one.
+		// See [Deps.Registry].
 		return fmt.Errorf("%w (shard %d)", ErrNoRegistry, c.shard)
 	}
 	// One read of the policy for the whole replay, for the reason [Cycle.add]
@@ -155,7 +155,7 @@ func (c *Cycle) fencedAway(e wal.Entry) error {
 }
 
 // replayEntry folds one entry of the tail, drains around it when it is
-// provisional, and lets the ordinary size watermarks cut the rest.
+// provisional, and lets the ordinary size triggers cut the rest.
 func (c *Cycle) replayEntry(
 	ctx context.Context, s *state, e wal.Entry, marks window.Watermarks,
 ) error {
@@ -200,9 +200,9 @@ func (c *Cycle) replayEntry(
 	if provisional {
 		return c.drain(ctx, s, drainReplayProvisional)
 	}
-	// The steady state's size watermarks, so a replayed transaction is the size
+	// The steady state's size triggers, so a replayed transaction is the size
 	// of an ordinary one: a tail at I10's bound applied whole would be a
-	// transaction nothing has ever executed. The age watermark is not consulted,
+	// transaction nothing has ever executed. The age trigger is not consulted,
 	// since every entry here is already as old as the incident — which is why
 	// the rule is asked for by name rather than off the whole policy.
 	if s.window.Trips(marks) != window.NoTrip {
@@ -215,19 +215,22 @@ func (c *Cycle) replayEntry(
 // charges that entry to the tail on the way — which is the whole of the
 // difference between this and a bare [Cycle.halt].
 //
-// The three callers all halt *before* [Cycle.accept], so nothing else would put
-// the entry in the tail, and the entry is acked and in no cold store. A tail
-// left empty here is read one way only: [tailRoute] takes it as "everything this
-// shard acked is in the cold store" and passes both readers through. For a task
-// read that is the loss the merge exists to prevent — the queue is handed a page
-// that is short exactly these rows, completes the range it asked for, and acks
-// past keys no owner will ever write, since the entry that carries them cannot
-// be decoded by this build at all.
+// The four callers — a seqno gap, an entry that will not decode, an entry naming
+// another shard, and a log that still holds an entry past where the read ended —
+// all halt *before* [Cycle.accept], so nothing else would put the entry in the
+// tail, and the entry is acked and in no cold store. A tail left empty here is
+// read one way only: [tailRoute] takes it as "everything this shard acked is in
+// the cold store" and passes a mutable-state read through to a store that is
+// short exactly this entry's rows — an acked write the reader never sees. A task
+// read is refused on a halt whatever the tail says ([loopRoute],
+// [stoppedRoute]); a mutable-state read and a history read are not.
 //
 // What the tail then reports is not a count anybody should read: whatever sits
 // above the entry was never looked at, and a seqno gap moves the commit over
 // the hole it names. Non-empty is the whole of what is needed — it is the only
-// thing [tailRoute] asks, and a halted cycle's bound is read by nobody.
+// thing [tailRoute] asks, and a halted cycle's bound is read by nobody. The
+// charge holds until [Cycle.Close], whose start floors it away and puts it back
+// only if its replay reads the log again; that is an open entry in DURABILITY.md.
 func (c *Cycle) strand(s *state, e wal.Entry, cause error) {
 	s.tail.Ack(e.Seqno, len(e.Payload))
 	c.halt(s, StateHaltedInvariant, cause)

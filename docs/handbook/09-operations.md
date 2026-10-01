@@ -12,8 +12,8 @@ can demand opposite responses depending on whether the tail is full or a transac
 unknown.
 
 This chapter follows the system through deployment and a rolling restart, turns to incident
-diagnosis — the routing tree first, then the runbooks it routes into — and closes with a developer
-appendix that nothing before it depends on. Configuration keys are defined in [chapter
+diagnosis — the routing tree first, then the runbooks, three of which it routes into — and closes
+with a developer appendix that nothing before it depends on. Configuration keys are defined in [chapter
 08](08-configuration.md) and metric names and tag values in [chapter
 10](10-metrics.md#3-the-reference-table); here they appear only as evidence for a decision you have
 to make.
@@ -70,11 +70,14 @@ Two rules, and moving either is not a refactor:
 * **compose the layer before the server.** `waltz.Compose` runs before `temporal.NewServer`. The
   node-budget assertion is inside `Compose`, so numbers that do not fit stop the binary before it
   starts, rather than appearing as a log line behind a port that is already listening. `Compose`
-  opens nothing and dials nothing, so an operator whose numbers do not fit is told so without
-  waiting for a connection to any store.
+  takes backends the `main` has already opened, though, so by the time it refuses, the log and the
+  cold store have been connected to. A `main` that wants the refusal to cost no connection calls
+  `policy().CheckBudget()` itself, before it opens either
+  ([08-configuration.md](08-configuration.md#5-the-budget-refusal)).
 * **drain the layer after the server has stopped.** `Layer.Shutdown(ctx, budget)` is the shutdown
-  drain: every shard that still holds a window is applied into the cold store, one transaction per
-  shard, in sequence. It must run when the writers are gone, and `temporal.Server.Start` does not
+  drain: every shard that still holds a window is applied into the cold store, shard by shard, in
+  sequence — one transaction each, unless a shard's tail has not been replayed yet, whose replay
+  drains first. It must run when the writers are gone, and `temporal.Server.Start` does not
   give you that moment — it returns as soon as the services are up. A `main` therefore waits for its
   own signal, calls `Server.Stop`, and only then calls `Shutdown`. **The cold store must still be
   open at that point**, which is the one ordering constraint the composing binary owns: the server
@@ -95,14 +98,15 @@ owner replays them. It costs that owner a read loop and a transaction before it 
 
 **The budget bounds the drains `Shutdown` issues and not the whole call, so size a stop timeout above
 it.** Two waits sit outside it, both deliberately. A drain already running on the loop — an age tick's,
-or a size watermark's — carries earlier writers' acked mutations on a context of its own with no
-deadline, and stopping the cycle waits for the loop to come back; the only bound on that is the cold
-store's own, which is why
+a size trigger's, a refusal's or a storage-pressure drain's — carries earlier writers' acked
+mutations on a context of its own with no deadline, and stopping the cycle waits for the loop to
+come back; the only bound on that is the cold store's own, which is why
 [04-contracts.md](04-contracts.md#apply--what-a-drains-outcome-demands) states bounding `Apply` as an
 obligation of the store rather than something this layer can impose — a drain this layer cut short is
 an unknown outcome, which stalls the shard. And a trim in flight is waited for unconditionally, since
 the log is closed after the drains and closing it under a trim would fail one: that wait is bounded by
-the trimmer's own one minute, per shard. So a node whose cold store has wedged does not return from
+the trimmer's own one minute per attempt, per shard — two, if a forced trim queued its one follow-up
+behind the running one. So a node whose cold store has wedged does not return from
 `Shutdown` on schedule, and what happens next is the supervisor's `SIGKILL` — which costs exactly what
 a budget that ran out costs, a replay by the next owner, and nothing more.
 
@@ -110,7 +114,11 @@ That holds while there *is* a next owner, so `Shutdown` names what it could not 
 returning nothing. Given a budget it can use, its error is a `*waltz.UndrainedError` and nothing
 else, carrying one `cycle.Residue` per shard — the shard, its epoch, how many acked entries the tail
 still held, and what that shard's drain answered, which is what tells a halted cycle from a budget
-that ran out. Nil means every tail emptied. Log it: it is the only moment those entries are nameable,
+that ran out. One halted cycle it does not tell apart: a cycle that halted inside its replay is
+replayed again by the shutdown, its tail floored first, and if that log read fails the residue
+carries zero entries and the read's error rather than the halt — an open defect in
+[the durability ledger](../../DURABILITY.md), and a residue the procedure below still keeps.
+Nil means every tail emptied. Log it: it is the only moment those entries are nameable,
 and the next section is the one procedure that needs the answer.
 
 **Size the budget for every shard the node holds, not for the ones it wrote to.** A cycle replays
@@ -145,10 +153,12 @@ So the order is:
    ([runbook (b)](#b-a-shard-halted--and-which-of-the-two-classes)).
    **Read the cause before acting on the count.** A residue carrying zero entries is this node saying
    it could not establish what that shard holds, and the cause says which kind. One naming
-   `the shard has been fenced away` is a shard another node took: nothing on this node will ever
-   drain it, restarting in intercept mode will report it again, and the entries — if any — are the
-   new owner's, whose own shutdown is where they appear. Finish that node's step 2 instead. Any
-   other cause is this node's own failure to look, and a restart is the remedy;
+   `halted-lost` — `the shard has been fenced away` is one wording of it, an append or a drain
+   refused at the fence the other — is a shard another node took: this node's halted cycle will
+   never drain it, and the entries — if any — are the new owner's, whose own shutdown is where they
+   appear. Finish that node's step 2 instead. One
+   naming `halted-invariant` is runbook (b). Any other cause is this node's own failure to look,
+   and a restart is the remedy;
 4. only once every node's `Shutdown` has answered nil, remove the section and restart.
 
 A node killed rather than stopped skips steps 2 and 3 entirely, which is why a decommission starts
@@ -173,7 +183,7 @@ sequenceDiagram
     Ops->>Main: start
     Main->>Main: open the log and the cold store
     Main->>Layer: waltz.Compose: budget assert
-    Layer-->>Main: layer, or a non-zero exit
+    Layer-->>Main: layer, or an error the main exits non-zero on
     Main->>Srv: NewServer(WithCustomDataStoreFactory(layer.AbstractFactory(base)))
     Main->>Srv: Start
     Srv-->>Main: returns once the services are up
@@ -249,7 +259,7 @@ flowchart TD
     C -->|"storage_pressure"| SP["the backend is out of headroom: runbook (a)"]
     B -->|"ShardOwnershipLost"| F["wal_halts state=halted-lost: normal failover, runbook (b)"]
     B -->|"refusal matching ErrHalted"| G["wal_halts state=halted-invariant: page, runbook (b)"]
-    B -->|"condition failure"| H["expected traffic: answered before the append, not a layer fault"]
+    B -->|"condition failure"| H["expected traffic, not a layer fault: answered before the append, or by the drain in sync mode"]
     B -->|"none of these"| I["the cold store, or the log, on its own"]
     D --> J{"wal_unapplied_entries rising?"}
     J -->|"yes"| K["runbook (c): cold store behind"]
@@ -316,10 +326,11 @@ conditions below; the keys are
   succeed. The error says `shard N's WAL backend reports storage pressure and takes no new appends
   until it clears`.
 * **What to do for `storage_pressure`.** Act on the backend's storage — capacity, or whatever the
-  backend's own monitoring names. The layer is already doing everything it can: every drain commits
-  at once (`wal_drains{trigger="storage_pressure"}`) and every trim runs with the cadence bypassed,
-  so `wal.trimEvery`/`wal.trimAfter` are not the knobs and no key of the layer's clears the
-  refusal. The backend lowers the level itself, and writes resume with nothing to reset.
+  backend's own monitoring names. The layer is already doing everything it can: the age tick drains
+  whatever window is left without waiting for a trigger (`wal_drains{trigger="storage_pressure"}`)
+  and every trim runs with the cadence bypassed, so `wal.trimEvery`/`wal.trimAfter` are not the
+  knobs and no key of the layer's clears the refusal. The backend lowers the level itself, and writes
+  resume with nothing to reset.
 
 No refused call in this runbook wrote anything: all four refusals — `entries`, `bytes`,
 `unresolved` and `storage_pressure` — are decided before the append. The history node's handling of
@@ -347,10 +358,11 @@ import ban in [03-components.md](03-components.md) exist to allow.
   * `state="halted-lost"` — the shard was fenced away. This is fencing working: the halted cycle
     discards its *window*, the acked entries stay in the log, nothing is trimmed, and the next owner
     replays them. Writes come back as `ShardOwnershipLost`, which the server handles by re-acquiring.
-    Expect it on every failover and on every rolling restart. **Not an alert.**
-  * `state="halted-invariant"` — an assertion failed inside a window whose failure could not be
-    pinned on one caller. There is no retry and no failover: the layer deliberately does not convert
-    this into an ownership-lost, because handing a divergence to the next owner as an ordinary
+    Expect it around failovers and rolling restarts, wherever an old owner is still alive to try a
+    write or a drain after the fence — a retire emits nothing. **Not an alert.**
+  * `state="halted-invariant"` — a divergence this process owns, most often an assertion that failed
+    inside a window whose failure could not be pinned on one caller. There is no retry and no
+    failover: the layer deliberately does not convert this into an ownership-lost, because handing a divergence to the next owner as an ordinary
     failover would spread it. **This is the one that pages.**
 * **What to check.** For `halted-invariant`, the `apply cycle halted` log line. It carries the shard
   id, the state and the cause, and the cause is the only thing that says which assertion failed.
@@ -358,19 +370,21 @@ import ban in [03-components.md](03-components.md) exist to allow.
   `cycle.ErrTailNotEmpty` — "the log holds an entry at a seqno this cycle replayed past", which is a
   second writer holding this cycle's own epoch; an append whose outcome nobody could read, which
   carries "the append at seqno N has an outcome nobody could read" and means the log answered
-  neither the append nor the read that would have settled it; a decode failure, a seqno gap or a shard-id mismatch
-  while replaying the tail; a drain whose outcome was unreadable and which a later watermark then
-  proved had not committed; an acked entry this cycle could not fold at all; and any apply class
-  nobody enumerated. The metrics cannot narrow it further:
-  none of the series here carry a shard tag ([chapter 10](10-metrics.md#2-three-shape-decisions-because-they-change-how-you-read-the-numbers)),
-  so one shard's state comes from the log lines and from `waltz.Layer.ShardStats(shard)`.
-  **A zero tail there is not by itself a clean shard.** A cycle replays on the first request that
-  reaches it, so one nothing has asked anything reports zeros because it has not looked, not because
-  the log is empty — and a cycle whose goroutine is gone reports the tail off its mirror and no
-  counters at all. `Layer.Shutdown` is the reading that establishes rather than reports, and it is
-  the one to act on.
+  neither the append nor the read that would have settled it; a decode failure, a seqno gap or a
+  shard-id mismatch while replaying the tail; a drain whose outcome was unreadable and which a later
+  watermark then proved had not committed; an acked entry this cycle could not fold at all; and any
+  apply class nobody enumerated. The metrics cannot narrow it further: none of the series here carry
+  a shard tag ([chapter
+  10](10-metrics.md#2-three-shape-decisions-because-they-change-how-you-read-the-numbers)), so one
+  shard's state comes from the log lines and from `waltz.Layer.ShardStats(shard)`. **A zero tail
+  there is not by itself a clean shard.** A cycle replays on the first request that reaches it, so
+  one nothing has asked anything reports zeros because it has not looked, not because the log is
+  empty — and a cycle whose goroutine is gone reports the tail off its mirror and no counters at
+  all. `Layer.Shutdown` is the reading that establishes rather than reports, and it is the one to
+  act on.
 * **What to do.** `halted-lost`: nothing. `halted-invariant`: capture the shard's log before
-  anything trims it (a halted cycle's log is not its own to shorten, so it will still be there), and
+  anything trims it (a halted cycle's log is not its own to shorten, so it is still there while that
+  cycle holds the shard — a successor that replays it cleanly will trim it), and
   treat it as a correctness incident.
 * **There is no path back.** No tool, no supported edit and no documented procedure returns a
   `halted-invariant` shard to service. `Cycle.State` is terminal: for as long as that cycle exists
@@ -379,7 +393,9 @@ import ban in [03-components.md](03-components.md) exist to allow.
   so the shard's queues stop draining too — judge the blast radius on that, not on the writes alone.
   One that halted holding a tail refuses
   every routed read, and it will never drain that tail — a halted cycle does not drain, so only a
-  fresh cycle at a higher epoch clears it. The layer asks nobody to take the shard over, because the
+  fresh cycle at a higher epoch clears it. (A shutdown can empty the tail of one that halted inside
+  its replay without applying it, after which its mutable-state reads pass through — the open entry
+  in [the durability ledger](../../DURABILITY.md).) The layer asks nobody to take the shard over, because the
   halt is deliberately not an ownership loss — which is not the same as pinning ownership: the
   server re-acquires a shard in the background when a write comes back with an error it does not
   recognise, and the halt's own error is one of those. The halt is not durable either. Its state is
@@ -387,9 +403,9 @@ import ban in [03-components.md](03-components.md) exist to allow.
   cycle, which reads the watermark and replays the same tail. Whether the shard writes again then
   depends on what diverged: an ambiguous apply outcome need not recur on the replay, while a
   genuine disagreement between what the layer folded and what the store holds is met again by the
-  replaying cycle and halts again. The log survives either way, which is why capturing it comes
-  first: that capture is what you decide on, and deciding whether to restart at all is the whole
-  of what the layer offers here.
+  replaying cycle and halts again. The log survives until a replay applies it, which is why
+  capturing it comes first: that capture is what you decide on, and deciding whether to restart at
+  all is the whole of what the layer offers here.
 
 ### (c) The cold store is falling behind
 
@@ -416,21 +432,23 @@ import ban in [03-components.md](03-components.md) exist to allow.
 
 * **Symptom.** `wal_trims` with `outcome="failed"` — the counter's other value is
   `outcome="started"`.
-* **What it means.** The trim is the lazy deletion of log entries below the applied watermark. It
-  runs beside the apply cycle, not in it, and a failed trim is logged, retried at the next cadence,
-  and **halts nothing**. This counter is the only series a failing trim appears in.
+* **What it means.** The trim is the lazy deletion of log entries at or below the applied
+  watermark. It runs beside the apply cycle, not in it, and a failed trim is logged, retried at the
+  next cadence — or, if storage pressure forced it, forced again while the pressure stands — and
+  **halts nothing**. This counter is the only series a failing trim appears in.
 * **What to check.** Whether it is failing on every cadence or only occasionally. Trimming is part
   of the latency budget rather than hygiene: a backend's reads get dearer as its log gets longer, so
   a permanently failing trim degrades the layer's latency over hours rather than minutes. How much
   dearer is the log implementation's business, not this layer's.
 * **What to do.** The cadence knobs are `wal.trimEvery` (in drains) and `wal.trimAfter` (in time),
   whichever trips first; both are read at the decision, so no restart. Note that raising
-  `wal.trimEvery` alone does not keep a log around for a post-mortem — `wal.trimAfter` fires anyway.
+  `wal.trimEvery` alone does not keep a log around for a post-mortem — `wal.trimAfter` fires anyway,
+  at the first drain past it.
 * **How much log is left to read is computable.** The cycle trims to the applied watermark with no
-  safety lag, so what survives is bounded by `wal.trimEvery` × `wal.windowMutations` entries plus
-  whatever the tail currently holds — 4096 entries at the shipped defaults, however long the shard
-  has been running, and less on a low-traffic shard where the age trigger fires first. Where those
-  two numbers came from is
+  safety lag, so while trims succeed and none is still in flight when a cadence comes due, what
+  survives is bounded by `wal.trimEvery` × `wal.windowMutations` entries — 4096 at the shipped
+  defaults — plus whatever the tail currently holds, however long the shard has been running, and
+  less on a low-traffic shard where `wal.trimAfter` trips first. Where those two numbers came from is
   [14-where-the-defaults-came-from.md](14-where-the-defaults-came-from.md#the-trim-cadence-16-drains-or-60-seconds).
 
 ### (e) Task drops are climbing
@@ -480,11 +498,13 @@ import ban in [03-components.md](03-components.md) exist to allow.
 Three distinct refusals, all before anything listens:
 
 * **Budget refusal.** `wal.hardMaxBytes × wal.maxShards` must fit in `wal.tailBudgetBytes`.
-  `waltz.Compose` asserts that before it builds anything — `cycle.Config.CheckBudget`, reached
+  `waltz.Compose` asserts that before it builds the registry — `cycle.Config.CheckBudget`, reached
   through `cycle.NewManager` — and the error wraps `cycle.ErrBudget` and spells the arithmetic out
-  with the node's own numbers: *N shards × B bytes is that many bytes of tail, over the node's
-  budget of T*. `Compose` opens nothing, so this refusal costs no connection and no round trip. Fix
-  the arithmetic; all three settings are read once at start-up, so all three need a restart anyway.
+  with the node's own numbers: `N shards × B bytes is X bytes of tail, over the node's budget of
+  T`. The check itself is arithmetic and makes no round trip, but `Compose` runs after the
+  `main` has opened its backends; `policy().CheckBudget()` called before that refuses the node with
+  nothing connected. Fix the arithmetic; all three settings are read once at start-up, so all three
+  need a restart anyway.
 * **A log that will not open.** This one is the composing binary's, not the layer's: `Compose` takes
   a `wal.Log` that already exists, so a log that cannot be constructed is a refusal in the `main`
   before the layer is reached, and its message is that binary's to write.
@@ -492,8 +512,9 @@ Three distinct refusals, all before anything listens:
   spelling as a key of the section, and writing that spelling is refused **by name**: the message
   says which setting to write instead, and whether it is read at each decision or once at start-up.
   Any other unrecognised key in the section is refused by the strict decoder, so `snyc: true` stops
-  the node rather than leaving it quietly running the mode nobody asked for. The numbers do not
-  behave this way: a misspelt *dynamic-config* key is a warning, and the default stands.
+  the node rather than leaving it quietly running the mode nobody asked for. A section spelt `WAL:`
+  or `Wal:`, which neither parser would see, is refused too. The numbers do not behave this way: a
+  misspelt *dynamic-config* key is a warning, and the default stands.
 
 A fourth failure used to belong here and no longer does: **a drain landing in one cold store while
 the watermark is read from another.** It is worth knowing because the symptom is unlike the other
@@ -546,7 +567,8 @@ the readers that are off it and a trim running beside it — so whether that con
 question a run without the detector does not ask at all, and it stays unasked however green the run
 is. It is its own target because the cost is not symmetric: under `-race` the acceptance stream is
 25× its own wall clock, so this target runs it at a tenth of the length. Nothing the detector looks
-for needs the extra volume; the volume claim is `make test`'s.
+for needs the extra volume; the volume claim is `make test`'s. It is also the one of the four checks
+that needs something installed: the detector needs cgo, so a C compiler on the PATH.
 
 `make lint` is the third — golangci-lint and gopls's `modernize`, both pinned in the
 Makefile — and `.golangci.yml` says which linters are deliberately off and why: a check switched off
@@ -597,10 +619,11 @@ line here is only what waltz's own builds and CI use.
   refusal.
 * [`../../walmetrics/walmetrics.go`](../../walmetrics/walmetrics.go) — every series and every
   tag value named in the runbooks above.
-* [`../../cycle/decide.go`](../../cycle/decide.go) — the backpressure refusal, its exact
-  message and its unwrapped error type.
-* [`../../cycle/cycle.go`](../../cycle/cycle.go) — the halted state and its terminality, the
-  refusal every call gets while it stands, and the trim a halted cycle does not do.
+* [`../../cycle/decide.go`](../../cycle/decide.go) — the backpressure refusals — an
+  unresolved drain, storage pressure, I10's two sizes — their exact messages and their unwrapped
+  error type.
+* [`../../cycle/cycle.go`](../../cycle/cycle.go) — the two halted states and their terminality, the
+  refusal every write gets while one stands, and the trim a halted cycle does not do.
 * [`../../cycle/trim/trim.go`](../../cycle/trim/trim.go) — the trim's cadence, budget and outcome
   counters.
 * [`../../patches/README.md`](../../patches/README.md) — the one patch in this repository, what it

@@ -100,7 +100,7 @@ func events(t *testing.T, path string) []string {
 }
 
 // The order is the whole of it: a process killed inside the call must leave a
-// call nothing accounts for, never an entry nothing accounts for. Nothing but
+// call with no outcome, never an entry nothing accounts for. Nothing but
 // this can check it: a run that is killed leaves the record as its evidence,
 // which is no use if the order it was written in is unknown.
 func TestTheCallIsDurableBeforeTheStoreIsTouched(t *testing.T) {

@@ -27,8 +27,9 @@ read the constant, do the arithmetic. Others are **observations** — a curve me
 machine, at one revision. An observation is not worth less, but it is worth exactly what the saved
 result says and no more, and this chapter marks which of the two stands behind each number.
 
-**Every observation below was made on the research prototype this library was extracted from, on one
-workload against one store.** None of them can be re-run here. The two backends in this tree,
+**Every observation below, except the generated corpus's mean entry size and its refusal cadence,
+which a test in this tree measures, was made on the research prototype this library was extracted
+from, on one workload against one store.** None of those can be re-run here. The two backends in this tree,
 `wal/memwal` and `cold/memcold`, exist to exercise the layer in process, so a curve taken against
 them would describe a map under a mutex and a SQLite database in memory. The observations are quoted
 so you know a number had evidence behind it, and attributed so nobody mistakes that evidence for
@@ -37,7 +38,7 @@ their own deployment's.
 ## The premise under all of them
 
 Every number below sits somewhere on a curve, and the curve is drawn by a workload:
-[chapter 01](01-overview.md#a-workflow-writes-more-history-than-it-keeps)'s picture of many
+[chapter 01](01-overview.md#a-workflow-writes-far-more-than-it-keeps)'s picture of many
 thousands of workflows, each moving through hundreds of state transitions and dying within seconds,
 rewriting the same mutable-state rows dozens of times on the way.
 
@@ -123,20 +124,24 @@ Two things the number does *are* recorded, and they bound how far it may sensibl
 ## The trim cadence: 16 drains or 60 seconds
 
 `TrimEvery: 16` and `TrimAfter: 60 * time.Second`. What the code records is a floor rather than a
-derivation: at `TrimEvery: 1`, a trim is a `DeleteRange` per drain — a transaction per drain for no
+derivation: at `TrimEvery: 1`, a trim is a `Log.Trim` per drain — a transaction per drain for no
 gain. Nothing records why 16 rather than 8 or 32, and nothing records why 60 seconds. They are start
 values, free to move on read-cost grounds. **Both are chosen.**
 
 What the pair derives matters more than where it came from, because it is the bound a post-mortem
 depends on: how much of the log is still there when you go looking. Trim goes to the committed
-applied watermark **with no safety lag**, so what survives is at most `TrimEvery × Mutations`
-entries, plus whatever the tail currently holds. At the shipped defaults that is 16 × 256 =
-**4096 entries**, and it is the same 4096 whether the shard has been running for a minute or a
-month. The time trigger only shortens it: a low-traffic shard trims at 60 seconds whether or not
-sixteen drains have happened.
+applied watermark **with no safety lag**, so while trims succeed and none is still in flight when a
+cadence comes due, what survives is at most `TrimEvery × Mutations` entries, plus whatever the tail
+currently holds. At the shipped defaults
+that is 16 × 256 = **4096 entries**, and it is the same 4096 whether the shard has been running
+for a minute or a month. A failed trim is retried at the next cadence, and a cadence that comes due
+while a trim is still in flight is skipped, so either leaves more behind until then, never less.
+The time trigger only shortens it: a low-traffic shard trims at its first drain past 60 seconds
+whether or not sixteen drains have happened. So does storage pressure, which forces a trim outside
+the cadence altogether.
 
 The two triggers are therefore one knob and not two, and a run that needs the whole log has to move
-**both**. Raise `TrimEvery` alone and `TrimAfter` deletes the history anyway, and the run comes back
+**both**. Raise `TrimEvery` alone and `TrimAfter` trims the log anyway, and the run comes back
 red against a layer that did nothing wrong.
 
 ## The per-shard tail bound: 8192 entries and 8 MiB
@@ -181,15 +186,15 @@ load-bearing, and they bound two different resources.
   the shard up.
 
 The corpus makes the gap between the two units concrete: its entries are tight, at a mean of 572
-bytes, while the server's own limits allow a single mutation thousands of times that: some three and
-a half thousand at the 2 MB blob, fourteen thousand at 8 MB of mutable state. A bound stated in one
-unit is a bound that admits the other unit's worst case unchecked.
+bytes, while the server's own limits allow a single mutation thousands of times that: over three and
+a half thousand at the 2 MB blob, over fourteen thousand at 8 MB of mutable state. A bound stated in
+one unit is a bound that admits the other unit's worst case unchecked.
 
 Which unit tripped is on the refusal's `limit` tag, and its two unit values are different operator
 sentences. `bytes` says this node is close to holding more than it should, which
-[`cycle/decide.go`](../../cycle/decide.go) reads as one workflow near the server's own blob limits.
-`entries` says a failover would take longer than it should, which the same file reads as an applier
-that is simply behind. The refusal itself is [chapter
+[`cycle/decide.go`](../../cycle/decide.go) reads as an applier behind or one workflow near the
+server's own blob limits. `entries` says a failover would take longer than it should, which the
+same file reads as an applier that is simply behind. The refusal itself is [chapter
 05](05-write-path.md#4-failed-write--backpressure-i10)'s.
 
 ## The node budget: 256 shards and 2 GiB
@@ -226,7 +231,7 @@ graph TD
   TB -->|"divided by"| HB
   MS -->|"divided into"| HB
   WM -.->|"32 windows, after the fact"| HE
-  WM -.->|"times the trim cadence: 4096 entries survive a trim"| TR
+  WM -.->|"times the trim cadence: at most 4096 entries survive a trim"| TR
 ```
 
 How to read this. A solid edge is a derivation the tree records. A dotted edge is arithmetic that
@@ -247,10 +252,10 @@ hardMaxBytes × maxShards  ≤  tailBudgetBytes
 ```
 
 `cycle.Config.CheckBudget` states it, `cycle.NewManager` runs it before it returns a manager, and
-`waltz.Compose` therefore fails over it — before the layer has opened anything, since composing
-reaches no cluster. At the shipped defaults the product fits exactly: 8388608 × 256 = 2147483648.
-There is no headroom, so raising either factor without raising the budget gives you a node that
-refuses to start. [Chapter 08](08-configuration.md#5-the-budget-refusal) owns that refusal.
+`waltz.Compose` therefore fails over it — with no round trip of its own, though the backends it is
+handed were opened by its caller first. At the shipped defaults the product fits exactly:
+8388608 × 256 = 2147483648. There is no headroom, so raising either factor without raising the budget gives
+you a node that refuses to start. [Chapter 08](08-configuration.md#5-the-budget-refusal) owns that refusal.
 
 **It is a budget of encoded bytes, and not a promise about heap.** `Config.CheckBudget` says so in
 its own doc comment: what is resident is decoded protos plus the accumulator's indices, not the wire
@@ -266,8 +271,8 @@ has a measurement behind it, taken on the research prototype rather than here.
 The probe filled one accumulator the way a stuck applier leaves one — drained only when fold refuses,
 every drained batch held exactly as an unfinished apply holds it — and weighed the live heap against
 a second pass that generated the same stream and threw it away. It needed no cluster, so of every
-measurement in this chapter it is the one easiest to rebuild. Two locality settings, three tail
-sizes:
+prototype measurement in this chapter it is the one easiest to rebuild. Two locality settings, three
+tail sizes:
 
 | workflow reuse | encoded | mutations | collapse in/out | resident bytes | resident per encoded byte |
 |---:|---:|---:|---:|---:|---:|
@@ -351,8 +356,8 @@ assumption nobody wrote down.
 What "derived" does buy you is that the number resists being moved on its own. Three ways it
 resists, and only the first two announce themselves:
 
-* the three factors of the budget product are checked before the node boots, so raising one of them
-  is a refusal to start until the others follow;
+* the budget product's two factors and the budget they must fit are checked before the node boots,
+  so raising a factor alone is a refusal to start until another of the three moves with it;
 * `hardMaxEntries` and `hardMaxBytes` are two units of **one** bound, which is why both are read once
   at start-up: a node honouring one of them from a different edit than the other is a bound nobody
   wrote;

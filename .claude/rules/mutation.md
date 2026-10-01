@@ -6,7 +6,7 @@ paths:
 # This repo: the WAL's record format
 
 `mutation/` turns one ExecutionStore write request into the bytes a
-`wal.Entry` carries, and back (#11). `mutation.proto` is the record's
+`wal.Entry` carries, and back. `mutation.proto` is the record's
 specification and `mutation.pb.go` is generated from it: the message an entry
 carries is `Payload`, while `Mutation` — the hand-written struct in
 `mutation.go` — is the in-memory request the codec maps onto it. The proto's own
@@ -18,7 +18,7 @@ reflective codec. What to know before changing any of it:
   `Decode` refuses every value but the one this build writes
   (`TestFormatVersionIsChecked`), so a bump refuses an inherited tail rather
   than upgrading it. A tail written by the previous binary is replayed by this
-  one (#98), so a field whose meaning moved is a tail that decodes into
+  one, so a field whose meaning moved is a tail that decodes into
   something the writer did not mean. Adding a field at the end is safe,
   renumbering or repurposing one is not. **What holds that is a recorded
   entry**, not the round trip: the round trip drives both halves of one build,
@@ -34,9 +34,12 @@ reflective codec. What to know before changing any of it:
   field the mirror has no home for. *Which* structs it walks is decided by
   `kinds.go` rather than by the list: every kind's payload type must have a row,
   so a kind added without one fails by name instead of being walked by nobody,
-  which is what the two history-task requests were between #142 and #212. A
+  which is what the two history-task requests once were. A
   temporal bump that adds a field is expected to fail it — that failure *is* the
-  mechanism, not a broken test;
+  mechanism, not a broken test. `commonpb.DataBlob` and the event batch's four
+  structs (`InternalAppendHistoryNodesRequest`, `InternalHistoryNode`,
+  `HistoryBranch`, `HistoryBranchRange`) are not rows of `mirroredStructs`, so a field added to
+  one of them is dropped with the guard green — an Open entry in `DURABILITY.md`;
 
 * **a kind is declared once, and the spokes it can be forgotten in fail by
   name.** `kinds.go` holds one row per kind — its name, the `Mutation` field it
@@ -52,8 +55,7 @@ reflective codec. What to know before changing any of it:
   `kinds_test.go` walks `reflect` over `Mutation` and fails on a field with no
   row — the one direction Go cannot state, there being no sum type — an
   accessor reading its neighbour's, and a `Kind` or `ShardID` case that
-  disagrees with its row. #142 added two kinds and had to find every spoke by
-  hand. What the table deliberately does not cover is behaviour — the per-kind
+  disagrees with its row. What the table deliberately does not cover is behaviour — the per-kind
   switches in fold, check and apply do genuinely different things and keep their
   own guards — and the invariant all of them share is now
   `ErrNotExactlyOneRequest` rather than six typed copies of one sentence;
@@ -81,7 +83,7 @@ reflective codec. What to know before changing any of it:
   fold an object that differed from the one it appended. The bit it read is the
   cold store's own (`cold.HistoryApplier`) and has no second home. Three things hold this
   safe and each is easy to undo by accident. An empty slot must encode to an
-  *absent* field, which is what makes a record written in the default mode the
+  *absent* field, which is what makes a record carrying no batches the
   record this codec wrote before those fields existed.
   `rejectUnknownFields` is what stops a rollback from replaying
   a history-bearing record short its events — it recurses into nested messages,
@@ -103,7 +105,7 @@ reflective codec. What to know before changing any of it:
   field, and an absent field decodes to a nil set — one generic per direction
   (`sortedKeys`, `setOf`) so the rule is a single edit and not one per key type;
 
-* **the registry is a parameter and not a package default** (`Decode`,
+* **the task-category registry is a parameter and not a package default** (`Decode`,
   `DecodeEntry`). It is the one input that is not a function of the bytes: the
   same payload decodes on one node and fails on another, because the archival
   task category exists only where archival is configured. Replay inherits that
@@ -111,7 +113,7 @@ reflective codec. What to know before changing any of it:
   server's own;
 
 * **`DecodeEntry` carries one thing `Decode` does not**: whether the entry's ack
-  was provisional (#93). Sync mode acks before the condition is verified, so the
+  was provisional. Sync mode acks before the condition is verified, so the
   flag rides the payload and replay reads it back to know that a condition
   failure on that entry is a drop rather than a halt. It is the only field about
   the *entry* rather than about the request.

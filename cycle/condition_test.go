@@ -17,7 +17,7 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// asyncEnv is a cycle that accumulates: no sync drain and no watermark within
+// asyncEnv is a cycle that accumulates: no sync drain and no trigger within
 // reach, so the window is what the authority is asked about.
 func asyncEnv(t *testing.T, store *basetest.Store) *env {
 	t.Helper()
