@@ -122,8 +122,9 @@ func TestAFencedShardAnswersShardOwnershipLost(t *testing.T) {
 // arm re-acquires the shard in the background.
 func TestAHaltedInvariantIsNotAFailover(t *testing.T) {
 	ctx := context.Background()
-	// Async: at a window of one a condition failure is the caller's answer
-	// rather than a halt.
+	// Async: sync mode's window of one makes a condition failure the caller's
+	// answer rather than a halt. A window of two acks the create and fails the
+	// drain the update trips.
 	m := newManager(t, &fakeApplier{errs: []error{&p.WorkflowConditionFailedError{Msg: "stale"}}},
 		func(c *Config) { c.Sync = false; c.Mutations = 2 })
 	require.NoError(t, m.ShardAcquired(ctx, testShard, 7))
@@ -163,8 +164,8 @@ func TestTheRefusalReachesTheBoundaryUntouched(t *testing.T) {
 // assertion, since a wrapped copy would satisfy errors.As and is what is
 // forbidden.
 //
-// A condition failure found at drain time is attributable only at a window of
-// one, because every other caller has been acked. One the accumulator answers
+// A condition failure found at drain time is attributable only at sync mode's
+// window of one, because every other caller has been acked. One the accumulator answers
 // is attributable at any window: its subject is the mutation in this caller's
 // own call, and the check runs before the append, so nothing was acked.
 func TestAConditionTheWindowAnswersIsTheCallersOwnError(t *testing.T) {

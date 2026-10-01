@@ -157,7 +157,7 @@ func (c *Cycle) readTasks(
 	}
 
 	// TaskReadsMerged is pages that carried at least one task out of the window
-	// — the honest witness that the merge ran.
+	// — the witness that the merge contributed, not merely that it ran.
 	resp, stats, err := s.acc.TaskPage(req, basePage)
 	if err != nil {
 		return nil, err

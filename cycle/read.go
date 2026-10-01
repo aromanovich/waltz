@@ -301,8 +301,8 @@ func (c *Cycle) startForRead(ctx context.Context, s *state) error {
 // A halted cycle may not drain, which is why [Cycle.prelude] runs it after the
 // routing rule — and a stalled one is refused there, so the resolve every drain
 // begins with is not this instrument's to reach. What goes to zero here is
-// task-reads-merged, the honest witness that the merge did not run. A drain that
-// fails fails the read.
+// task-reads-merged: the merge still runs, over the window this drain emptied,
+// and carries nothing out of it. A drain that fails fails the read.
 func (c *Cycle) drainForRead(ctx context.Context, s *state) (bool, error) {
 	if !c.policy().DrainOnRead {
 		return false, nil

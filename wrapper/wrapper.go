@@ -36,7 +36,7 @@ type ShardObserver interface {
 	// ShardAcquired runs before the base store commits the bump, and an error
 	// from it fails the acquire without the base store being called, so a failed
 	// fence never leaves a moved rangeID behind. The error reaches the shard
-	// controller unwrapped.
+	// context unwrapped, and its acquire retries with backoff.
 	ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wal.Epoch) error
 }
 

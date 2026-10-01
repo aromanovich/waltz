@@ -360,7 +360,8 @@ func (s *ExecutionStore) GetHistoryTasks(
 // ErrCompleteHistoryTaskUnsupported is what intercept mode answers a single-key
 // task completion with: the log's deletion record is a range per category, and
 // a second deletion shape would be another thing every reader, drain and replay
-// has to agree about. Its one caller is the admin handler's RemoveTask.
+// has to agree about. Its one caller is the history handler's RemoveTask,
+// behind the admin API of the same name.
 var ErrCompleteHistoryTaskUnsupported = serviceerror.NewUnimplemented(
 	"CompleteHistoryTask is not supported by the WAL layer: the log's deletion " +
 		"record is a range per category, not a key")

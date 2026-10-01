@@ -215,14 +215,15 @@ func (c *Cycle) replayEntry(
 // charges that entry to the tail on the way — which is the whole of the
 // difference between this and a bare [Cycle.halt].
 //
-// The three callers all halt *before* [Cycle.accept], so nothing else would put
-// the entry in the tail, and the entry is acked and in no cold store. A tail
-// left empty here is read one way only: [tailRoute] takes it as "everything this
-// shard acked is in the cold store" and passes both readers through. For a task
-// read that is the loss the merge exists to prevent — the queue is handed a page
-// that is short exactly these rows, completes the range it asked for, and acks
-// past keys no owner will ever write, since the entry that carries them cannot
-// be decoded by this build at all.
+// The four callers — a seqno gap, an entry that will not decode, an entry naming
+// another shard, and a log that still holds an entry past where the read ended —
+// all halt *before* [Cycle.accept], so nothing else would put the entry in the
+// tail, and the entry is acked and in no cold store. A tail left empty here is
+// read one way only: [tailRoute] takes it as "everything this shard acked is in
+// the cold store" and passes a mutable-state read through to a store that is
+// short exactly this entry's rows — an acked write the reader never sees. A task
+// read is refused on a halt whatever the tail says ([loopRoute],
+// [stoppedRoute]); a mutable-state read and a history read are not.
 //
 // What the tail then reports is not a count anybody should read: whatever sits
 // above the entry was never looked at, and a seqno gap moves the commit over

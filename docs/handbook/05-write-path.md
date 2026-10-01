@@ -54,7 +54,7 @@ need no row — *the next owner's cycle* and *the operator*.
 | `cycle.Cycle` | one goroutine per (shard, epoch): the accumulator, the drain, the trim cadence, the reads |
 | `fold.Accumulator` | the window — merged requests per dirty workflow, plus the assertions they stand on |
 | `wal.Log` | the log contract; `memwal` is the implementation this tree ships |
-| `cold.Applier` | one drain, one publication — the layer's only write door; `memcold` is the implementation this tree ships |
+| `cold.Applier` | one drain, one publication — the drain's write door, and the only one over a store that declares `cold.HistoryApplier`; `memcold` is the implementation this tree ships |
 | `the cold store` | a persistence implementation, on the other side of that door: `memcold` here, a deployment's own otherwise |
 
 Two positions run through the whole chapter. **commitSeqno** is the last seqno acked into the log.
