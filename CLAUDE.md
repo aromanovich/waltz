@@ -18,8 +18,8 @@ unknown means nobody established it, which is to be treated as open. A closed
 entry names the mechanism and a test that fails without it; a refuted one, the
 argument and how it was established; an accepted one names what is being
 accepted and what a deployment owes in its place, and the accepted entries are
-the page's floor. A new way found belongs there whether or not it is closed the same
-day.
+the page's floor. A new way found belongs there whether or not it is closed the
+same day.
 
 **It is the queue, not the report**, and its last section says how it is worked:
 a session takes named entries and ends each one closed, refuted or accepted, and
@@ -137,8 +137,8 @@ past because nothing fails when you break them.
 **Comments say what only the code cannot.** No provenance, no ticket numbers as
 citation, no re-tellings of the ADRs or the handbook, no sentences restating the
 line below. The tree sits at ~29% of non-blank lines — 37% in the non-test
-files, 23% in the tests — and a new file well over its half is the signal to
-re-read
+files, 23% in the tests — and a new file well over the figure for its kind is
+the signal to re-read
 [`.claude/rules/comments.md`](.claude/rules/comments.md), which also has the
 token-stream check that proves a compression changed nothing else.
 

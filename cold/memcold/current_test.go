@@ -1,9 +1,9 @@
 package memcold_test
 
 // The versioned current-row read is the one read of Temporal's rows this store
-// adds beside the embedded one, so no upstream suite covers it. What the layer stands on is
-// here: the version arrives, absence arrives as absence, and the version tracks
-// the write.
+// adds beside the embedded one, so no upstream suite covers it. What the layer
+// stands on is here: the version arrives, absence arrives as absence, and the
+// version tracks the write.
 
 import (
 	"context"

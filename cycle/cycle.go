@@ -5,7 +5,8 @@
 // It names no cold store (the seam is [cold]'s); the store is reached only
 // through [cold.Applier], [cold.Watermarker] and the closures a caller passes
 // in. The states exist because ownership loss is discovered rather than
-// announced: a shard close makes no persistence call. [Chapter 06] is what this implements.
+// announced: a shard close makes no persistence call. [Chapter 06] is what this
+// implements.
 //
 // [Chapter 06]: ../docs/handbook/06-shard-lifecycle.md
 package cycle
@@ -66,8 +67,8 @@ func (s State) String() string {
 // with, and the one [ask] gives once that loop is gone. It is not always what
 // the caller sees: [storeError] turns a halted-lost write into
 // ShardOwnershipLost, and a read is [loopRoute]'s or [stoppedRoute]'s, which
-// hand this back only on the route that refuses as halted. The class is in [Cycle.State]; the cause
-// travels wrapped, so a caller can still reach the
+// hand this back only on the route that refuses as halted. The class is in
+// [Cycle.State]; the cause travels wrapped, so a caller can still reach the
 // [apply.InvariantViolationError].
 var ErrHalted = errors.New("cycle: the shard is halted")
 
@@ -208,8 +209,8 @@ func (c Config) cadence() trim.Cadence {
 	return trim.Cadence{Every: c.TrimEvery, After: c.TrimAfter}
 }
 
-// CheckBudget asserts the node's tail-budget arithmetic: [Config.HardMaxBytes] per
-// shard over [Config.MaxShards] shards must fit in [Config.TailBudgetBytes],
+// CheckBudget asserts the node's tail-budget arithmetic: [Config.HardMaxBytes]
+// per shard over [Config.MaxShards] shards must fit in [Config.TailBudgetBytes],
 // which [Defaults] does exactly. It bounds encoded bytes, not RSS — what is
 // resident is decoded protos plus the accumulator's indices.
 //
@@ -252,8 +253,8 @@ type Deps struct {
 	Logger    log.Logger
 	// Registry is required ([ErrNoRegistry]): replay decodes a payload's task
 	// groups through it and an unknown category id fails the replay. It must be
-	// the server's own task-category registry, since the archival category exists only where
-	// archival is configured.
+	// the server's own task-category registry, since the archival category
+	// exists only where archival is configured.
 	Registry tasks.TaskCategoryRegistry
 	// Metrics is where the numbers go; nil is the noop emitter.
 	Metrics *walmetrics.Emitter
@@ -415,8 +416,8 @@ func (c *Cycle) Epoch() wal.Epoch   { return c.epoch }
 // A shard the rule in decide.go refuses answers ResourceExhausted instead. It is
 // asked here off the mirrored state, so a writer need not queue behind an applier
 // stuck on the cold store — which is the unresolved drain's and I10's reason to
-// exist, the first most of all, since the loop it would queue behind is inside the very
-// watermark read that is failing — and again inside the loop at the append, where
+// exist, the first most of all, since the loop it would queue behind is inside
+// the very watermark read that is failing — and again inside the loop at the append, where
 // concurrent callers cannot all pass a tail one short of the bound. A halted or
 // retired cycle skips it and answers with the halt: a shard that lost its epoch
 // must not be told to retry later.
@@ -1108,8 +1109,8 @@ var (
 
 	// drainExplicit is [Cycle.Close]'s shutdown drain, or [Cycle.drainNow]'s in
 	// a test. Its caller asked for this drain and nothing else, and the
-	// shutdown budget is what bounds
-	// the apply transactions one at a time, so this one keeps that clock.
+	// shutdown budget is what bounds the apply transactions one at a time, so
+	// this one keeps that clock.
 	drainExplicit = drainCause{walmetrics.TriggerExplicit, noCaller, false}
 
 	// drainRead is [Config.DrainOnRead]'s arm: a read emptying the window it
@@ -1226,8 +1227,8 @@ func (c *Cycle) drain(ctx context.Context, s *state, cause drainCause) error {
 }
 
 // settlement classifies what Apply returned and asks [settlementOf] what it
-// means. Beside the call site, like the other three rules that keep a method, so that what a caller
-// can still get wrong is which values it hands over.
+// means. Beside the call site, like the other three rules that keep a method,
+// so that what a caller can still get wrong is which values it hands over.
 func (c *Cycle) settlement(err error, cause drainCause, mutationsIn int) settlement {
 	return settlementOf(apply.Classify(err), cause, mutationsIn)
 }

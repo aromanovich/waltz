@@ -74,7 +74,7 @@ Two rules, and moving either is not a refactor:
   cold store have been connected to. A `main` that wants the refusal to cost no connection calls
   `policy().CheckBudget()` itself, before it opens either
   ([08-configuration.md](08-configuration.md#5-the-budget-refusal)).
-* **shut the layer down after the server has stopped.** `Layer.Shutdown(ctx, budget)` is the shutdown
+* **drain the layer after the server has stopped.** `Layer.Shutdown(ctx, budget)` is the shutdown
   drain: every shard that still holds a window is applied into the cold store, one transaction per
   shard, in sequence. It must run when the writers are gone, and `temporal.Server.Start` does not
   give you that moment — it returns as soon as the services are up. A `main` therefore waits for its
@@ -97,9 +97,9 @@ owner replays them. It costs that owner a read loop and a transaction before it 
 
 **The budget bounds the drains `Shutdown` issues and not the whole call, so size a stop timeout above
 it.** Two waits sit outside it, both deliberately. A drain already running on the loop — an age tick's,
-a size trigger's, a refusal's or a storage-pressure drain's — carries earlier writers' acked mutations on a context of its own with no
-deadline, and stopping the cycle waits for the loop to come back; the only bound on that is the cold
-store's own, which is why
+a size trigger's, a refusal's or a storage-pressure drain's — carries earlier writers' acked
+mutations on a context of its own with no deadline, and stopping the cycle waits for the loop to
+come back; the only bound on that is the cold store's own, which is why
 [04-contracts.md](04-contracts.md#apply--what-a-drains-outcome-demands) states bounding `Apply` as an
 obligation of the store rather than something this layer can impose — a drain this layer cut short is
 an unknown outcome, which stalls the shard. And a trim in flight is waited for unconditionally, since
@@ -320,9 +320,8 @@ conditions below; the keys are
 * **What to do for `storage_pressure`.** Act on the backend's storage — capacity, or whatever the
   backend's own monitoring names. The layer is already doing everything it can: the age tick drains
   whatever window is left without waiting for a trigger (`wal_drains{trigger="storage_pressure"}`)
-  and every trim runs with the cadence bypassed,
-  so `wal.trimEvery`/`wal.trimAfter` are not the knobs and no key of the layer's clears the
-  refusal. The backend lowers the level itself, and writes resume with nothing to reset.
+  and every trim runs with the cadence bypassed, so `wal.trimEvery`/`wal.trimAfter` are not the
+  knobs and no key of the layer's clears the refusal. The backend lowers the level itself, and writes resume with nothing to reset.
 
 No refused call in this runbook wrote anything: all four refusals — `entries`, `bytes`,
 `unresolved` and `storage_pressure` — are decided before the append. The history node's handling of
@@ -392,9 +391,9 @@ import ban in [03-components.md](03-components.md) exist to allow.
   cycle, which reads the watermark and replays the same tail. Whether the shard writes again then
   depends on what diverged: an ambiguous apply outcome need not recur on the replay, while a
   genuine disagreement between what the layer folded and what the store holds is met again by the
-  replaying cycle and halts again. The log survives until a replay applies it, which is why capturing
-  it comes first: that capture is what you decide on, and deciding whether to restart at all is the whole
-  of what the layer offers here.
+  replaying cycle and halts again. The log survives until a replay applies it, which is why
+  capturing it comes first: that capture is what you decide on, and deciding whether to restart at
+  all is the whole of what the layer offers here.
 
 ### (c) The cold store is falling behind
 
@@ -421,9 +420,9 @@ import ban in [03-components.md](03-components.md) exist to allow.
 
 * **Symptom.** `wal_trims` with `outcome="failed"` — the counter's other value is
   `outcome="started"`.
-* **What it means.** The trim is the lazy deletion of log entries at or below the applied watermark. It
-  runs beside the apply cycle, not in it, and a failed trim is logged, retried at the next cadence,
-  and **halts nothing**. This counter is the only series a failing trim appears in.
+* **What it means.** The trim is the lazy deletion of log entries at or below the applied
+  watermark. It runs beside the apply cycle, not in it, and a failed trim is logged, retried at the
+  next cadence, and **halts nothing**. This counter is the only series a failing trim appears in.
 * **What to check.** Whether it is failing on every cadence or only occasionally. Trimming is part
   of the latency budget rather than hygiene: a backend's reads get dearer as its log gets longer, so
   a permanently failing trim degrades the layer's latency over hours rather than minutes. How much
@@ -432,9 +431,9 @@ import ban in [03-components.md](03-components.md) exist to allow.
   whichever trips first; both are read at the decision, so no restart. Note that raising
   `wal.trimEvery` alone does not keep a log around for a post-mortem — `wal.trimAfter` fires anyway.
 * **How much log is left to read is computable.** The cycle trims to the applied watermark with no
-  safety lag, so while trims succeed what survives is bounded by `wal.trimEvery` × `wal.windowMutations` entries plus
-  whatever the tail currently holds — 4096 entries at the shipped defaults, however long the shard
-  has been running, and less on a low-traffic shard where the age trigger fires first. Where those
+  safety lag, so while trims succeed what survives is bounded by `wal.trimEvery` ×
+  `wal.windowMutations` entries plus whatever the tail currently holds — 4096 entries at the shipped
+  defaults, however long the shard has been running, and less on a low-traffic shard where the age trigger fires first. Where those
   two numbers came from is
   [14-where-the-defaults-came-from.md](14-where-the-defaults-came-from.md#the-trim-cadence-16-drains-or-60-seconds).
 
@@ -490,7 +489,8 @@ Three distinct refusals, all before anything listens:
   with the node's own numbers: *N shards × B bytes is that many bytes of tail, over the node's
   budget of T*. The check itself is arithmetic and makes no round trip, but `Compose` runs after the
   `main` has opened its backends; `policy().CheckBudget()` called before that refuses the node with
-  nothing connected. Fix the arithmetic; all three settings are read once at start-up, so all three need a restart anyway.
+  nothing connected. Fix the arithmetic; all three settings are read once at start-up, so all three
+  need a restart anyway.
 * **A log that will not open.** This one is the composing binary's, not the layer's: `Compose` takes
   a `wal.Log` that already exists, so a log that cannot be constructed is a refusal in the `main`
   before the layer is reached, and its message is that binary's to write.
@@ -498,9 +498,8 @@ Three distinct refusals, all before anything listens:
   spelling as a key of the section, and writing that spelling is refused **by name**: the message
   says which setting to write instead, and whether it is read at each decision or once at start-up.
   Any other unrecognised key in the section is refused by the strict decoder, so `snyc: true` stops
-  the node rather than leaving it quietly running the mode nobody asked for, and so is a section
-  spelt `WAL:` or `Wal:`, which neither parser would see. The numbers do not
-  behave this way: a misspelt *dynamic-config* key is a warning, and the default stands.
+  the node rather than leaving it quietly running the mode nobody asked for. A section spelt `WAL:`
+  or `Wal:`, which neither parser would see, is refused too. The numbers do not behave this way: a misspelt *dynamic-config* key is a warning, and the default stands.
 
 A fourth failure used to belong here and no longer does: **a drain landing in one cold store while
 the watermark is read from another.** It is worth knowing because the symptom is unlike the other

@@ -38,7 +38,7 @@ places:
 | where | what it sees |
 |---|---|
 | an append | `wal.ErrFenced` |
-| a drain | `apply.ClassShardLost`, or a watermark found past an unreadable drain's own seqno, which carries `cycle.FencedAway` too |
+| a drain | `apply.ClassShardLost`, or a watermark found past the seqno of a drain whose outcome was unknown, which carries `cycle.FencedAway` too |
 | a replay | `cycle.FencedAway`, the cause it carries when the inherited tail holds an entry above this cycle's own epoch |
 
 Everything a node knows about its own ownership is as fresh as its last attempt to act. A displaced
@@ -407,9 +407,8 @@ separately from the kind.
 The second is *in what form*. Each kind writes the row differently: the update path re-serialises the
 mutation's own execution state, while every kind carrying a whole run that writes the row — a
 create, a conflict-resolve, a continue-as-new — passes that snapshot's blob through untouched, and a
-set does not write the row at all. A fold that used
-one rendering for all of them produces a row that is correct in every field a reader would check and
-different in bytes.
+set does not write the row at all. A fold that used one rendering for all of them produces a row
+that is correct in every field a reader would check and different in bytes.
 
 Neither turned a suite red until a differential run against the incumbent found it. Both are pinned
 by a unit test now — `TestCurrentWriteTracksTheLastWriter` in
@@ -424,10 +423,10 @@ state — run id, create request id, state and status — where upstream passes 
 and the wrong reading was written down as a deliberate divergence in three documents. What it cost was
 a `start_time` column that lands NULL and every non-create request id dropped, durably: nothing
 back-fills either, so a namespace's `WorkflowIdReuseMinimalInterval` measures every reuse interval
-against the zero time and never refuses again. The rendering it should always have had is the one that needed *less* code —
-`currentWriteOfSnapshot`, which every other snapshot-bearing kind was already using. A divergence is
-worth writing down only with what it buys beside it; this one had an address where a reason should
-have been.
+against the zero time and never refuses again. The rendering it should always have had is the one
+that needed *less* code — `currentWriteOfSnapshot`, which every other snapshot-bearing kind was
+already using. A divergence is worth writing down only with what it buys beside it; this one had an
+address where a reason should have been.
 
 The differential run that found both is a **layer against an unwrapped store**: the same stream
 driven through the fold and through the incumbent's own write path, which is the only arm that can see

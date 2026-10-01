@@ -66,8 +66,8 @@ func (a *parkedApplier) Apply(ctx context.Context, shard wal.ShardID, epoch wal.
 	return errAmbiguous
 }
 
-// TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark is that question,
-// staged rather than argued.
+// TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark is whether a
+// drain's witness is owner-scoped, staged rather than argued.
 //
 // Node A runs sync mode, where the drain is what answers the caller and the ack
 // is therefore provisional: the condition has not been verified when the entry

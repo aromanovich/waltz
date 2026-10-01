@@ -46,9 +46,9 @@ import (
 // Four things are required of it, the first three because this merge builds a
 // page's reach out of what the base last returned rather than out of a cursor of
 // its own. Temporal's SQL and Cassandra plugins satisfy every one, so no run here
-// has had one refused. All four are checked, each against bounds the merge already
-// holds, and a breach is refused rather than carried: what these cost is spent in
-// somebody else's reader — a queue that panics, an iterator that skips in
+// has had one refused. All four are checked, each against bounds the merge
+// already holds, and a breach is refused rather than carried: what these cost is
+// spent in somebody else's reader — a queue that panics, an iterator that skips in
 // silence, a range completed over rows nobody was shown — and none of those can
 // name the store that caused it.
 //
@@ -151,8 +151,8 @@ func (t *taskPageToken) setAfter(k tasks.Key) {
 // taskTokenMagic frames this layer's token so a store's own can be told apart
 // from it. Nothing hands a caller a store's own, so what the frame answers is
 // not which of two paginations this is but whether the token is one of ours at
-// all — and one that is not is refused ([ErrForeignPageToken]) rather
-// than resumed against a window cursor nobody handed out.
+// all — and one that is not is refused ([ErrForeignPageToken]) rather than
+// resumed against a window cursor nobody handed out.
 var taskTokenMagic = [4]byte{'w', 'a', 'l', '1'}
 
 func encodeTaskToken(t *taskPageToken) []byte {

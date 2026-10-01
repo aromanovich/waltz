@@ -14,9 +14,9 @@ package fold_test
 // everything it is left free to do: it parts with one or two rows at a time
 // whatever it was asked for, it hands a token back beside its last row and
 // reports the range exhausted only with an empty page, and it can be seeded so
-// that a window task ties a key of a base page. If the merge is correct over every base like
-// it, the stated requirements are *sufficient* — which is the property the
-// corpus run cannot state, however long it runs.
+// that a window task ties a key of a base page. If the merge is correct over
+// every base like it, the stated requirements are *sufficient* — which is the
+// property the corpus run cannot state, however long it runs.
 
 import (
 	"fmt"

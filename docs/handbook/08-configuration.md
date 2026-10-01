@@ -303,8 +303,8 @@ to start.
 `waltz.Compose` asserts it, through `cycle.NewManager`, and neither opens anything nor reaches
 anything: the check is arithmetic over values already in memory from the two config surfaces, so a
 node whose numbers do not fit is refused without a round trip of its own — though by then the
-caller has already opened the log and the cold store it hands over. The same assertion is available to
-the composing `main` as `policy().CheckBudget()`. Calling it there, before the log and the cold
+caller has already opened the log and the cold store it hands over. The same assertion is available
+to the composing `main` as `policy().CheckBudget()`. Calling it there, before the log and the cold
 store are opened, refuses the node before anything connects to anything — that ordering is the
 caller's to choose, but the assertion itself cannot be skipped.
 

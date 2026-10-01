@@ -2,8 +2,8 @@ package walmetrics_test
 
 // The emitter's own contract. Every other test of these numbers drives a
 // component and reads what came out, so it sees the combinations that
-// component happens to produce. The two pairs below exist to
-// be read together, and each is a pair rather than a ratio for one reason —
+// component happens to produce. The two pairs below exist to be read
+// together, and each is a pair rather than a ratio for one reason —
 // "everything was dropped" has to stay distinguishable from "there was nothing
 // to drop", which a pre-divided share cannot say. That is a claim about which
 // of the four combinations emit, and a run that never produces the lopsided
@@ -92,8 +92,8 @@ func TestEachHalfOfAPairIsEmittedOnItsOwnCount(t *testing.T) {
 // TestACollisionCountOfZeroIsNotARecording is the one gated counter outside
 // the pairs, and its gate says the opposite thing: the two sources a merged
 // page draws from are disjoint by construction, so a non-zero value means
-// something is wrong and a zero is every healthy page. Recording those zeroes would put a
-// series on every scrape whose only reading is "no news".
+// something is wrong and a zero is every healthy page. Recording those zeroes
+// would put a series on every scrape whose only reading is "no news".
 func TestACollisionCountOfZeroIsNotARecording(t *testing.T) {
 	e, snap := capture(t)
 

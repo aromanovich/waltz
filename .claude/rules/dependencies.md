@@ -98,10 +98,11 @@ Where the one-line *why* is not the whole reason:
   end up holding the component under test.
 * **`wrapper`'s ban is on what it imports, and cannot be on what it depends
   on**: the interface it decorates, `client.AbstractDataStoreFactory`, lives in
-  the Temporal package that links every plugin upstream ships, so the transitive
-  set holds the SQL and Cassandra drivers whatever the wrapper does. What the row
-  holds is that no file here names a plugin, a driver or `cold/memcold`, and that
-  the layer reaches the wrapper only as `wrapper.ShardLayer` — which is why
+  the Temporal package that links upstream's Cassandra and SQL persistence, so
+  the transitive set holds `gocql` and `database/sql` whatever the wrapper does.
+  What the row holds is that no file here names a plugin, a driver or
+  `cold/memcold`, and that the wrapper reaches the layer only through
+  `wrapper.ShardLayer` — which is why
   translating a cycle's answer into the store's error types lives in
   `cycle/write.go` rather than here.
 * **`cycle`'s is a direct ban and can only be one** — it defines the seam a cold

@@ -7,8 +7,9 @@ package fold_test
 // shard does with a page is cycle's.
 //
 // The base is a model of a persistence plugin's pagination
-// (internal/verify/coldtasks) rather than a stub, because the base's pagination is the merge's whole difficulty: a store that
-// answered everything in one page would leave the cut untested.
+// (internal/verify/coldtasks) rather than a stub, because the base's pagination
+// is the merge's whole difficulty: a store that answered everything in one page
+// would leave the cut untested.
 
 import (
 	"context"

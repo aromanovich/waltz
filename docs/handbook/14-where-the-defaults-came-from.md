@@ -27,9 +27,9 @@ read the constant, do the arithmetic. Others are **observations** — a curve me
 machine, at one revision. An observation is not worth less, but it is worth exactly what the saved
 result says and no more, and this chapter marks which of the two stands behind each number.
 
-**Every observation below, except the two taken from the generated corpus by a test in this tree, was
-made on the research prototype this library was extracted from, on one workload against one store.**
-None of those can be re-run here. The two backends in this tree,
+**Every observation below, except the generated corpus's mean entry size, which a test in this tree
+measures, was made on the research prototype this library was extracted from, on one workload
+against one store.** None of those can be re-run here. The two backends in this tree,
 `wal/memwal` and `cold/memcold`, exist to exercise the layer in process, so a curve taken against
 them would describe a map under a mutex and a SQLite database in memory. The observations are quoted
 so you know a number had evidence behind it, and attributed so nobody mistakes that evidence for
@@ -185,14 +185,14 @@ load-bearing, and they bound two different resources.
 
 The corpus makes the gap between the two units concrete: its entries are tight, at a mean of 572
 bytes, while the server's own limits allow a single mutation thousands of times that: over three and
-a half thousand at the 2 MB blob, over fourteen thousand at 8 MB of mutable state. A bound stated in one
-unit is a bound that admits the other unit's worst case unchecked.
+a half thousand at the 2 MB blob, over fourteen thousand at 8 MB of mutable state. A bound stated in
+one unit is a bound that admits the other unit's worst case unchecked.
 
 Which unit tripped is on the refusal's `limit` tag, and its two unit values are different operator
 sentences. `bytes` says this node is close to holding more than it should, which
-[`cycle/decide.go`](../../cycle/decide.go) reads as an applier behind or one workflow near the server's own blob limits.
-`entries` says a failover would take longer than it should, which the same file reads as an applier
-that is simply behind. The refusal itself is [chapter
+[`cycle/decide.go`](../../cycle/decide.go) reads as an applier behind or one workflow near the
+server's own blob limits. `entries` says a failover would take longer than it should, which the
+same file reads as an applier that is simply behind. The refusal itself is [chapter
 05](05-write-path.md#4-failed-write--backpressure-i10)'s.
 
 ## The node budget: 256 shards and 2 GiB

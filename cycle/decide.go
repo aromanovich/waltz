@@ -280,10 +280,9 @@ func tickActionOf(
 //   - I10 itself: entries means the applier is behind; bytes means the same,
 //     or entries large enough — a workflow near the server's own blob limits —
 //     that a few of them fill the bound, and a tail over both is named as
-//     bytes. It
-//     reads the tail as it stands, never the tail this mutation would make, so
-//     no mutation is refused for its own size and the tail overshoots by at
-//     most one entry.
+//     bytes. It reads the tail as it stands, never the tail this mutation
+//     would make, so no mutation is refused for its own size and the tail
+//     overshoots by at most one entry.
 //
 // The refusal must reach the caller unwrapped: ContextImpl.handleWriteErrorLocked
 // switches on the concrete type, where *serviceerror.ResourceExhausted means

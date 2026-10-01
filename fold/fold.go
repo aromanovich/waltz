@@ -299,8 +299,8 @@ type wfKey struct {
 }
 
 // runKey names one run of one workflow inside a drain. The workflow is the
-// record pointer rather than its ids: [Accumulator.Drain] has the record in hand where it
-// uses this, and two workflows cannot share one.
+// record pointer rather than its ids: [Accumulator.Drain] has the record in hand
+// where it uses this, and two workflows cannot share one.
 type runKey struct {
 	workflow *WorkflowRecord
 	runID    string
@@ -381,8 +381,9 @@ func (w *workflowAcc) recordCurrentWrite(cw *CurrentWrite) {
 // Whether the mutation stands on that row at all is this rule's own question and
 // not each handler's. A handler that carried the test itself and then dropped it
 // would record exactly the claim above, and nothing would say so: the authority
-// refuses it before the append, so only a replayed stream — which reaches [Accumulator.Add]
-// with no [Accumulator.Check] in front of it — would ever meet the difference.
+// refuses it before the append, so only a replayed stream — which reaches
+// [Accumulator.Add] with no [Accumulator.Check] in front of it — would ever meet
+// the difference.
 func currentTaintedRefusal(w *workflowAcc, want asserted) error {
 	if want.current == nil {
 		return nil
@@ -651,9 +652,10 @@ func (a *Accumulator) Drain() Batch {
 
 	// Above all three: the folded requests, whose last tail seqno is the
 	// maximum because out is sorted, and the task work and the event batches,
-	// whose seqnos are not in that ordering. The task work's tail counts even when the work is empty,
-	// since a window whose task rows a range delete all dropped still folded
-	// those entries and a watermark below them would replay them.
+	// whose seqnos are not in that ordering. The task work's tail counts even
+	// when the work is empty, since a window whose task rows a range delete all
+	// dropped still folded those entries and a watermark below them would replay
+	// them.
 	var watermark wal.Seqno
 	if len(out) > 0 {
 		watermark = out[len(out)-1].TailSeqno

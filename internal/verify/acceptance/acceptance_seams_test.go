@@ -40,9 +40,9 @@ import (
 	"github.com/aromanovich/waltz/wal/memwal"
 )
 
-// seamsShard is the one shard every seams run drives. One shard is one accumulator
-// and one apply transaction, so a second would add a second cycle and judge
-// nothing new here.
+// seamsShard is the one shard every seams run drives. One shard is one
+// accumulator and one apply transaction, so a second would add a second cycle
+// and judge nothing new here.
 const seamsShard = 1
 
 // seamsMutations is how long a run is. It is a stream length rather than a
@@ -317,10 +317,10 @@ func (s *seams) drive(t *testing.T, n int) error {
 // crossed.
 //
 // An empty log is that same claim at its boundary and not an exception to it. A
-// legal trim leaves the lower end at applied+1, one past the last entry once the drain
-// has caught up — so a log holding nothing is allowed exactly when the cold store
-// holds everything acked, and a log that empties while the watermark is behind is
-// the loss this samples for. At a window of one mutation the drain does catch up
+// legal trim leaves the lower end at applied+1, one past the last entry once the
+// drain has caught up — so a log holding nothing is allowed exactly when the cold
+// store holds everything acked, and a log that empties while the watermark is
+// behind is the loss this samples for. At a window of one mutation the drain does catch up
 // between writes, which is why the case is reached at all.
 func (s *seams) trimStaysBehind(t *testing.T) {
 	t.Helper()
@@ -352,9 +352,9 @@ func (s *seams) logFirst(t *testing.T) (wal.Seqno, bool) {
 
 // TestASampleOverAnEmptyLogIsTheBoundaryAndNotALoss stages the state
 // [seams.trimStaysBehind] must not read as a lost entry: the drain has caught up
-// and a legal trim has taken the log's lower end one past the last seqno. A drive
-// reaches it only by a race — at a window of one mutation, where the drain wins —
-// so a green drive says nothing about it.
+// and a legal trim has taken the log's lower end one past the last seqno. A
+// drive reaches it only by a race — at a window of one mutation, where the drain
+// wins — so a green drive says nothing about it.
 //
 // Staged through the log directly rather than by driving a stream, since what is
 // judged is the sample and not the trim: the guard the drives run behind

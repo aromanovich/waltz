@@ -13,8 +13,8 @@ window contains the acknowledged changes on top of it. A correct read must combi
 * a history-task read **merges** two ordered streams and subtracts acknowledged range deletes;
 * a history-branch read merges the same way, over the event batches the window still holds, with
   nothing to subtract;
-* all three run on the shard's cycle goroutine — the same goroutine the drain runs on — so no read can
-  land in the gap between a drain emptying the window and its transaction committing.
+* all three run on the shard's cycle goroutine — the same goroutine the drain runs on — so no read
+  can land in the gap between a drain emptying the window and its transaction committing.
 
 This chapter derives those rules from the split-state example and then gives the exact routing,
 pagination and accounting contracts. It also explains invariant
@@ -335,12 +335,13 @@ still in the window. Returning the base page and appending 20 would produce `10,
 the base alone could let the queue complete past 20. The only valid page is the ordered merge
 `10, 20, 30`, subject to the requested batch size and any range delete already in the window.
 
-`GetHistoryTasks` is therefore a read that merges rather than renders — `ReadHistoryBranch` is the
-other, under the same cut rule and with no deletes to subtract (`fold.Accumulator.HistoryPage`) —
-and it is answered in two halves. The cycle decides **who may answer a page, when, and whether the window is usable yet**,
-which is [section 2](#2-routing-a-read-and-drainonread) above; `fold.Accumulator.TaskPage` decides
-**what one page holds** — the cut, the token, the batch arithmetic, the dedup, the subtraction of
-undrained range deletes — and it sits beside the window it reads.
+`GetHistoryTasks` is therefore one of the two reads that merge rather than render —
+`ReadHistoryBranch` is the other, under the same cut rule and with no deletes to subtract
+(`fold.Accumulator.HistoryPage`) — and it is answered in two halves. The cycle decides **who may
+answer a page, when, and whether the window is usable yet**, which is [section
+2](#2-routing-a-read-and-drainonread) above; `fold.Accumulator.TaskPage` decides **what one page
+holds** — the cut, the token, the batch arithmetic, the dedup, the subtraction of undrained range
+deletes — and it sits beside the window it reads.
 
 The base page reaches `fold` as a callback (`fold.BasePage`, taking a batch size and a token) rather
 than as a page. The merge chooses its own batch size and its own token, but the round trip stays the
@@ -600,10 +601,10 @@ checkpoint**. The exact share is a workload measurement, not a constant of the i
 `wal_dropped_tasks` and `wal_written_tasks` to calculate it for the deployment. The shipped cadence
 gives the anchor to read it against: `history.timerProcessorUpdateAckInterval` and its transfer,
 visibility, outbound and archival siblings default to 30 s in the server this module builds
-against, set beside the layer's 5 s age trigger (`cycle.Defaults().Age`) — **six drains per queue checkpoint**. The two
-ends of that ratio have different owners: the 30 s is the server's, the 5 s is this layer's. The
-server's is the larger of the two, so the size of the drop is set mostly by a knob this layer does
-not hold. Two readings follow:
+on, against the layer's 5 s age trigger (`cycle.Defaults().Age`) — **six drains per queue
+checkpoint**. The two ends of that ratio have different owners: the 30 s is the server's, the 5 s
+is this layer's. The server's is the larger of the two, so the size of the drop is set mostly by a
+knob this layer does not hold. Two readings follow:
 
 * a rising share usually means the window is living longer relative to the queues' checkpoints —
   which is the mechanism working, not a fault. Under load it goes the other way: the mutation and

@@ -451,11 +451,10 @@ func TestTheEpochTravelsWithTheWrite(t *testing.T) {
 // TestTheEventsGoDownBeforeTheMutation: over a store that does not declare
 // cold.HistoryApplier the record carries no event batches, so a write's event
 // blobs go to the cold store through AppendHistoryNodes before the mutation is
-// acked. Otherwise the log holds a
-// mutable state pointing at history rows nobody wrote — an entry that is
-// durable and correct, which is why no functional suite sees it. Every
-// intercepted kind is driven, so a request shape whose events go nowhere fails
-// by name; which slots each shape has is
+// acked. Otherwise the log holds a mutable state pointing at history rows
+// nobody wrote — an entry that is durable and correct, which is why no
+// functional suite sees it. Every intercepted kind is driven, so a request
+// shape whose events go nowhere fails by name; which slots each shape has is
 // [mutation.Mutation.EventSlots]' own suite.
 func TestTheEventsGoDownBeforeTheMutation(t *testing.T) {
 	ctx := context.Background()

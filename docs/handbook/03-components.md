@@ -351,8 +351,8 @@ off-loop things in the table above.
   for one shard, each unaware of the other.
 * **A `Cycle` is created by `Manager.ShardAcquired`**, which fences the log at the new epoch and then
   starts the cycle, in that order — the log's epoch may never lag the database's.
-* **A `Cycle` is retired by a higher epoch superseding it, by the node closing, or by name.** The layer reaps
-  none by itself, because it only sees what crosses the persistence interface: an acquire bumps the
+* **A `Cycle` is retired by a higher epoch superseding it, by the node closing, or by a caller
+  naming its epoch.** The layer reaps none by itself, because it only sees what crosses the persistence interface: an acquire bumps the
   rangeID and is therefore visible, while closing a shard makes no persistence call and is not. So a
   shard the server has quietly stopped serving leaves a goroutine and an empty accumulator behind
   until its node stops — a bounded leak, taken knowingly. A caller that knows the shard is gone can

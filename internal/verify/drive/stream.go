@@ -17,8 +17,8 @@ type Delivery struct {
 	Index int
 	// Mutation is the decoded form and never the generated one: every task is
 	// rebuilt through the registry, and what the payload does not carry — the
-	// rangeID (I11) — is gone, so a codec loss reaches a
-	// consumer here rather than being covered by the value the generator kept.
+	// rangeID (I11) — is gone, so a codec loss reaches a consumer here rather
+	// than being covered by the value the generator kept.
 	Mutation mutation.Mutation
 	// Payload is the encoded form, for a consumer that keeps the bytes — a
 	// second path that must not be handed a request the first has touched, or a

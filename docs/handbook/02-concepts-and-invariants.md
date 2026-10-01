@@ -226,9 +226,8 @@ pass and measures nothing.
 **Drain.** One pass of the apply cycle over a folded window. A non-empty batch is written in one
 transaction and moves appliedSeqno; an empty batch writes no transaction and settles its entries in
 memory without moving the watermark. A transactional drain is all-or-nothing over everything it
-publishes — event history excepted, which may be written ahead of the transaction and must be durable no
-later than it — and appliedSeqno is
-the witness to whether that transaction committed. *Not to be confused with:* stopping a layer or a
+publishes — event history excepted, which may be written ahead of the transaction and must be
+durable no later than it — and appliedSeqno is the witness to whether that transaction committed. *Not to be confused with:* stopping a layer or a
 node, which is `Shutdown` (it drains *and* closes).
 
 **Apply.** The step that turns folded summary updates into cold-store writes: one transaction
@@ -392,7 +391,7 @@ own SQL persistence, embedded whole, over a SQLite database that lives in this p
 it. Everything above the seam is exercised against it, and it is a real store rather than a stub —
 Temporal's own persistence suites judge it exactly as they judge a plugin. A deployment supplies its
 own as one `cold.Store` — one value answering both halves of the seam — and what it owes is four
-obligations: one drain is one publication (the merged requests, the task work and the watermark in
+things: one drain is one publication (the merged requests, the task work and the watermark in
 one transaction, with every history row the batch carried durable no later than it), the watermark
 commits inside it, the epoch is asserted first, and the outcome comes back in `apply`'s five
 classes. A fifth thing is owed beside them: an applier bounds its own calls. What
@@ -698,9 +697,9 @@ known.
 ### I10, at more length
 
 The bound has two units — entries and bytes — and both come off `tailstate.Tail`, not off the
-window. They are not two spellings of one budget: **bytes stand in for memory** — encoded bytes, a proxy
-for the resident cost of an unapplied tail in the heap of the process that also runs the history service, and **entries bound
-recovery time**, since a successor must decode and fold every inherited entry and that work is per
+window. They are not two spellings of one budget: **bytes stand in for memory** — encoded bytes, a
+proxy for the resident cost of an unapplied tail in the heap of the process that also runs the
+history service — and **entries bound recovery time**, since a successor must decode and fold every inherited entry and that work is per
 entry rather than per byte. Whichever trips first raises the refusal, and the `limit` tag says
 which. Why neither unit works alone, and where the two defaults come from, is [chapter
 14](14-where-the-defaults-came-from.md#why-the-bound-counts-entries-as-well-as-bytes).

@@ -51,8 +51,8 @@ const reopenShortfall = "guarantee 3 is that a completed append means every entr
 // continuedShortfall is the shortfall of the last read, where no open came between:
 // the value that appended is the value being read, so what it means is the
 // readback guarantee and not the durability one. Separate from [reopenShortfall]
-// and [retentionShortfall] because the whole reason a shortfall carries a diagnosis is that it points at
-// what to go and look at.
+// and [retentionShortfall] because the whole reason a shortfall carries a
+// diagnosis is that it points at what to go and look at.
 const continuedShortfall = "this is the same value that appended, with no open in between, so what it " +
 	"says is guarantee 5: ReadFrom returns every entry a completed append acked and no trim has " +
 	"removed. RunContractSuite's first case is the narrower form of it"

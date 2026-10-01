@@ -485,7 +485,7 @@ func assertRuns(
 // a history_tree row beside a batch that opens a branch.
 //
 // Both are upserts, which is what makes a repeated drain safe rather than a
-// duplicate-key failure the shard cannot get past: a history row is immutable
+// duplicate-key failure the shard cannot get past: a history node is immutable
 // and keyed by (shard, tree, branch, node, transaction), so the row written
 // twice is the same row. The plugin is the one doing that — sqlite REPLACEs and
 // postgres takes the conflict — and a store whose insert is not an upsert owes

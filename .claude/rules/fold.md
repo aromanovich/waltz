@@ -191,8 +191,8 @@ thing to keep in mind below. What to know before changing the fold itself:
   about the answer rather than a gap: `mutableStateOf` rebuilds it as a sorted
   slice, so that map never leaves the package;
 
-* **the contract with apply**: an emitted request's RangeID is not the epoch
-  it is applied under — a replayed one lost it in `mutation.Decode` (I11), a
+* **the contract with apply**: an emitted request's RangeID is not what the
+  drain is fenced by — a replayed one lost it in `mutation.Decode` (I11), a
   hot-path one carries the caller's — and the applier is handed the epoch
   beside the batch (`cold.Applier.Apply`) and asserts that. The collapse
   ratio — mutations in over dirty workflows out — is derivable

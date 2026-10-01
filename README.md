@@ -81,9 +81,9 @@ make vuln    # govulncheck over the module and the toolchain
 ```
 
 No cluster, no container, no fixed port, no build tag, and no cgo outside `make race`, whose
-detector needs a C compiler. A fresh clone runs everything there
-is, including a four-service Temporal server booting over waltz and completing a workflow through
-the SDK (`internal/verify/e2e`).
+detector needs a C compiler. A fresh clone runs everything there is, including a four-service
+Temporal server booting over waltz and completing a workflow through the SDK
+(`internal/verify/e2e`).
 
 ## The composition
 
@@ -179,7 +179,7 @@ func main() {
 
 The lifecycle brackets the server's, and both ends matter. `Compose` opens nothing and reaches
 nothing — the backends it is handed are already open — and it checks the policy's tail budget
-before it builds a single cycle, so a budget whose encoded bytes do not add up stops a process whose
+before it builds a single cycle, so a budget that does not add up stops a process whose
 server has not started, rather than a node already serving. `Layer.Shutdown` runs after the server
 has stopped and before the store is released, so that every window still open has somewhere to
 drain.

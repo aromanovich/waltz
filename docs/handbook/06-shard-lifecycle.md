@@ -48,9 +48,9 @@ exclusion.
 
 Before a successor examines the inherited tail, it must make further appends by the predecessor
 impossible. Otherwise replay and live writes interleave under two owners, and no watermark can say
-which owner's entries are authoritative. That exclusion is **fencing**: a check made at the point of the
-write, not a term the owner keeps in its own memory. The distinction matters because the failed owner
-is frequently not gone at all — a collection pause, a swap or a partition returns a process that
+which owner's entries are authoritative. That exclusion is **fencing**: a check made at the point of
+the write, not a term the owner keeps in its own memory. The distinction matters because the failed
+owner is frequently not gone at all — a collection pause, a swap or a partition returns a process that
 learned nothing about its own death. [Chapter
 13](13-designs-that-were-rejected.md#a-lease-with-a-timer) has the lease that was refused and what its
 refusal forces.
@@ -335,14 +335,14 @@ Seven rules the loop applies, entry by entry:
   required and `NewManager` refuses a nil one with `cycle.ErrNoRegistry`: a node that decoded with no
   task-category registry would recover nothing, silently, until its first failover.
 * **an entry the two rules above stop on is charged to the tail first** (`Cycle.strand`). All three
-  of their stops — the seqno gap, the decode failure and the foreign shard — halt before `Cycle.accept`, so
-  nothing else would put the entry there, and a tail left empty is read exactly one way:
-  [§5](#5-halts-the-two-classes)'s rule passes a mutable-state read through to the cold store on it,
-  which does not hold this entry. The task read no longer rests on the charge — it is refused at
-  either halt whatever the tail holds — so what the charge still buys is the refusal's *reach*:
-  every read on the shard rather than that one class. What the tail then *counts* is not a number to
-  read: the entries above the one it stopped on were never looked at. Non-empty is the whole of what
-  it is for.
+  of their stops — the seqno gap, the decode failure and the foreign shard — halt before
+  `Cycle.accept`, so nothing else would put the entry there, and a tail left empty is read exactly
+  one way: [§5](#5-halts-the-two-classes)'s rule passes a mutable-state read through to the cold
+  store on it, which does not hold this entry. The task read no longer rests on the charge — it is
+  refused at either halt whatever the tail holds — so what the charge still buys is the refusal's
+  *reach*: every read on the shard rather than that one class. What the tail then *counts* is not a
+  number to read: the entries above the one it stopped on were never looked at. Non-empty is the
+  whole of what it is for.
 * **the ack is the answer — with one exception the writer records.** Normally every assertion is
   verified before the entry becomes durable, so a condition failure at apply time is a genuine
   divergence and halts the shard. Sync mode is the exception: there the drain answers the caller
@@ -439,10 +439,10 @@ What a halted shard answers a *reader* is [chapter
 07](07-read-path.md#2-routing-a-read-and-drainonread). Briefly: an empty tail passes through to the
 cold store in either halt, and a non-empty one refuses. The refusal is `ShardOwnershipLost` under
 `halted-lost`, and the halt's own error, cause included, under `halted-invariant`. That is the rule
-for a **mutable-state** read, and for a branch page, which routes as one. A task read never reaches it: it is refused at either halt whatever
-the tail holds, because its one caller would complete a range it was handed short — and because a
-page the cold store answers carries that store's own token, which the cycle that replaces this one
-cannot read.
+for a **mutable-state** read, and for a branch page, which routes as one. A task read never reaches
+it: it is refused at either halt whatever the tail holds, because its one caller would complete a
+range it was handed short — and because a page the cold store answers carries that store's own
+token, which the cycle that replaces this one cannot read.
 
 Every transition in this chapter is instrumented. The table below is the whole of it in one place —
 a reference to come back to once the transitions above are familiar, not a way of learning them:
@@ -558,9 +558,9 @@ latency budget rather than hygiene.
   for the shard, every committed drain forces a trim to its watermark (`Trimmer.Force`), and so
   does an acquire once its replay is done — the previous owner's applied entries are owed back
   before this cycle appends; on a started cycle with an empty window, the age tick forces one
-  itself, since no commit is coming to. A forced trim that finds one in flight queues a single
-  follow-up, coalesced to the highest watermark asked for, rather than being skipped; one a trim
-  has already reached, or is reaching, schedules nothing.
+  itself, since no commit is coming to force it. A forced trim that finds one in flight queues a
+  single follow-up, coalesced to the highest watermark asked for, rather than being skipped; one a
+  trim has already reached, or is reaching, schedules nothing.
 * **A failed trim halts nothing.** It is logged, retried at the next cadence, and counted — and
   `wal_trims{outcome="started"|"failed"}` is the only series that reports it. Two counters
   rather than one, because a run whose every trim failed would otherwise read exactly like one whose

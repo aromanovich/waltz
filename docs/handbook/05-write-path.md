@@ -5,8 +5,7 @@
 Start with one `UpdateWorkflowExecution`. The history service has produced new events and a
 mutable-state update. The wrapper turns the persistence request into one mutation — writing the
 history rows through to the cold store first, unless that store takes them in the drain — and hands
-that mutation to the shard's cycle. So far the
-layer has promised the caller nothing.
+that mutation to the shard's cycle. So far the layer has promised the caller nothing.
 
 Three questions come before anything is logged. Is the write still stamped with the epoch this node
 holds? Is the shard's tail below its bound? Does the request's condition hold against the state at
@@ -109,9 +108,9 @@ wrapper handed it, and imports nothing that reaches a store.
 The caller's answer is the **append**, not the drain. When `UpdateWorkflowExecution` returns nil,
 three things are true and no more: the request's new history events are in the cold store or
 carried in the entry itself, the mutation is one durable entry of the shard's log, and the
-accumulator holds it. The workflow's
-mutable-state rows still hold what they held before, and any read those rows would now answer
-wrongly is answered by the layer instead ([chapter 07](07-read-path.md)).
+accumulator holds it. The workflow's mutable-state rows still hold what they held before, and any
+read those rows would now answer wrongly is answered by the layer instead
+([chapter 07](07-read-path.md)).
 
 **What the delegated read costs.** It is per delegated assertion, not per mutation. The
 current-execution row is one read (`baserow.Rows.Current`, which returns the row's
@@ -484,7 +483,7 @@ sequenceDiagram
   AP-->>CY: ShardOwnershipLostError — apply.ClassShardLost
   Note over CY: halt, state = halted-lost — the window is dropped, nothing is trimmed
   Note over CY: wal_halts{state="halted-lost"} + 1
-  CY-->>CY: every later write and task read is refused, and the two mutable-state reads while the tail is non-empty
+  CY-->>CY: every later write and task read is refused, and the mutable-state reads and the branch page while the tail is non-empty
   NX->>CS: read the watermark, the log already fenced at the new epoch
   NX->>NX: replay every entry above appliedSeqno, then drain
 ```
@@ -493,12 +492,12 @@ This is fencing working, not an incident. The halted cycle **keeps its log entri
 nothing: those entries are exactly what the next owner replays. They are also why the mutable-state
 reads, and the branch page that routes as one, refuse here — a non-empty tail means the layer knows
 the cold store is incomplete and cannot say by what. A halted-lost cycle whose tail *is* empty
-passes a mutable-state read through to that store instead ([chapter
-07](07-read-path.md#2-routing-a-read-and-drainonread)). A caller still on the line — the write whose
-drain this was — gets `*p.ShardOwnershipLostError`. `storeError` is the function that turns a
-cycle's answer into the store's own error type, and halted-lost is the one cycle state it
-translates, so the shard re-acquires. What the next owner does with the inherited tail is [chapter
-06](06-shard-lifecycle.md).
+passes a mutable-state read through to that store instead
+([chapter 07](07-read-path.md#2-routing-a-read-and-drainonread)). A caller still on the line — the
+write whose drain this was — gets `*p.ShardOwnershipLostError`. `storeError` is the function that
+turns a cycle's answer into the store's own error type, and halted-lost is the one cycle state it
+translates, so the shard re-acquires. What the next owner does with the inherited tail is
+[chapter 06](06-shard-lifecycle.md).
 
 ## 6. Failed drain — an invariant was violated
 
@@ -689,8 +688,8 @@ State this exactly, because it is the whole trade:
 
 Where the wrapper writes the events first, a **refused** write leaves them behind: batches of
 history events that nothing references, since the mutable state that would have pointed at them was
-never written. Every pre-append refusal in this chapter has that residue — a condition failure, backpressure, a lost
-shard — even though the layer's own accounting is exact, with nothing in the log and no seqno
+never written. Every pre-append refusal in this chapter has that residue — a condition failure,
+backpressure, a lost shard — even though the layer's own accounting is exact, with nothing in the log and no seqno
 consumed. It is the safe direction of the two: an event tree ahead of confirmed state is inert,
 while confirmed state pointing at events that do not exist is a broken workflow.
 

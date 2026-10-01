@@ -28,10 +28,10 @@ boundary is**, since the same argument reaches shard writes and event history.
 
 ### Why both halves of the task path, and not only the deletes
 
-Deferring the delete while the write is still applied at once is worse than either. A store deletes a
-**scheduled** category's range by fire time and ignores the task ids entirely. A delete applied
-late over a write applied immediately therefore covers a timer created *after* the checkpoint whose
-fire time falls inside the passed window. That is not a garbage row: it is a lost timer, and a
+Deferring the delete while the write is still applied at once is worse than either. A store
+deletes a **scheduled** category's range by fire time and ignores the task ids entirely. A delete
+applied late over a write applied immediately therefore covers a timer created *after* the
+checkpoint whose fire time falls inside the passed window. That is not a garbage row: it is a lost timer, and a
 workflow that never wakes. There is no intermediate state between "both halves in the log" and
 "neither".
 
@@ -50,11 +50,11 @@ bump would have to be appended under the epoch that bump establishes.
 
 ### Why not event history (D3)
 
-Decision D3 keeps event history out: the question is revisited after mutable state **and tasks**,
-which is where this leaves it. Two things make it the wrong next step rather than merely a later
-one — I10's budget is denominated in bytes and event blobs are the bulk of them, and an intercepted
-write already put its own events down through the base store before it acked, so the tree was never
-behind the tail.
+Decision D3 keeps event history out, and is not changed here: the question is revisited after
+mutable state **and tasks**, which is where this leaves it. Two things make it the wrong next step
+rather than merely a later one — I10's budget is denominated in bytes and event blobs are the bulk
+of them, and an intercepted write already puts its own events down through the base store before it
+acks, so the tree is never behind the tail.
 
 The replication DLQ is out for the ordinary reason: its writer is not one of the intercepted
 methods and nothing in the window can change its answer.

@@ -38,9 +38,9 @@
 // store, and what it owes there is what the cold package's doc states: four
 // obligations, and a bound on its own calls besides.
 //
-// This package is the worked example of the four obligations — [Store.Apply] is where they
-// are stated statement by statement — and the shape it lands on is the
-// transferable part. persistence.ExecutionStore has nowhere to
+// This package is the worked example of the four obligations — [Store.Apply] is
+// where they are stated statement by statement — and the shape it lands on is
+// the transferable part. persistence.ExecutionStore has nowhere to
 // declare a transaction spanning many workflows, so the store holds the
 // database handle beside the embedded store and opens the transaction there.
 // An implementer whose driver offers no such handle — no way to reach below the

@@ -452,8 +452,9 @@ func (h *drains) fold(ms ...mutation.Mutation) fold.Batch {
 }
 
 // create and update carry an execution-info blob, which mutbuild's Create and
-// Update leave nil because every other caller of those writes to a double. A store dereferences it: a
-// request without one is not a shape this layer receives.
+// Update leave nil because every other caller of those writes to a double. A
+// store dereferences it: a request without one is not a shape this layer
+// receives.
 // Options are forwarded rather than applied to what comes back, so a caller's
 // own fields are in the request mutbuild validates rather than written past it.
 func (h *drains) create(workflowID, runID string, opts ...mutbuild.SnapshotOpt) mutation.Mutation {
@@ -1168,13 +1169,13 @@ func TestARetriedStartIsRefusedWithTheConflictItCanActOn(t *testing.T) {
 }
 
 // TestATimerTaskLandsInTheTimerTable pins the timer arm of the category fan-out
-// on its own. A scheduled category is
-// written by fire time, and the timer category has a table of its own
-// (`timer_tasks`) that the timer queue is the only reader of. Delete the branch
-// that picks it and the rows go to the generic scheduled table instead: the drain
-// commits, the watermark moves, the log is trimmed, and the timer queue reads its
-// own table and finds nothing. An acked timer that never fires is not a stale
-// answer — nothing retries it, and the workflow waits for ever.
+// on its own. A scheduled category is written by fire time, and the timer
+// category has a table of its own (`timer_tasks`) that the timer queue is the
+// only reader of. Delete the branch that picks it and the rows go to the
+// generic scheduled table instead: the drain commits, the watermark moves, the
+// log is trimmed, and the timer queue reads its own table and finds nothing. An
+// acked timer that never fires is not a stale answer — nothing retries it, and
+// the workflow waits for ever.
 //
 // The differential oracle cannot see this: both of its arms run through this same
 // applier, so a row sent to the wrong table is sent there twice and the comparison

@@ -192,8 +192,9 @@ func withChecksum(name string) func(*p.InternalWorkflowMutation) {
 // snapshot the window holds, which answers with no base at all.
 //
 // It claims a field is filled and not what with — which source each comes from
-// is [TestEveryCollectionOfAReadAnswerComesFromItsOwnSource]'s. What a zero
-// costs is in .claude/rules/fold.md.
+// is judged case by case in the tests around it, the collections' in
+// [TestEveryCollectionOfAReadAnswerComesFromItsOwnSource]. What a zero costs is
+// in .claude/rules/fold.md.
 func TestEveryFieldOfAReadAnswerIsFilled(t *testing.T) {
 	answer := reflect.TypeFor[p.InternalWorkflowMutableState]()
 	require.NotZero(t, answer.NumField(), "the answer's type has no fields: this judges nothing")

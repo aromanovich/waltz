@@ -22,8 +22,8 @@ What to know before changing any of it:
   upstream is a store that Temporal's suites judge and this repository's
   opinion overrules. What may be added beside them is what Temporal has no
   method for, which today is three things: the folded window's transaction —
-  which, the store declaring `cold.HistoryApplier`, writes the batch's event
-  history too — the watermark, and the current row's `last_write_version`;
+  which, since the store declares `cold.HistoryApplier`, writes the batch's
+  event history too — the watermark, and the current row's `last_write_version`;
 * **what judges it is Temporal's four exported suites**
   (`conformance_test.go`), and a suite of ours at this seam would be this
   repository's opinion of what a store owes. `Apply` is the exception, because

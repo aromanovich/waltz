@@ -197,9 +197,8 @@ condition failure carries, and the rollback that undoes the requests that had al
 proved by staging the defect that makes it red. `internal/verify/acceptance` is the volume half, below.
 
 **Nothing here judges somebody else's `cold.Applier`.** A deployment writing one gets the four
-obligations in [`cold`'s package doc](../../cold/cold.go), `memcold`
-as the worked example, and its own store's suites — and that gap is real, where the log seam's is
-covered by an exported suite.
+obligations in [`cold`'s package doc](../../cold/cold.go), `memcold` as the worked example, and its
+own store's suites — and that gap is real, where the log seam's is covered by an exported suite.
 
 Two smaller judgements live in the same package and are worth knowing because they hold up
 everything above: `isolation_test.go` says two stores share no rows and that the store reached
@@ -250,8 +249,8 @@ the control's, which is what makes the ratio visibly a function of the knob.
 
 `internal/verify/mutgen` is the generator, deterministic from its seed: the same config and seed produce the
 same mutations byte for byte, so a failure reproduces from the seed alone. That determinism is a
-constraint on how it is written — no clock, no unseeded UUIDs, no map iteration, no protobuf maps — and it is
-the reason a red run here is a bug report rather than a mystery.
+constraint on how it is written — no clock, no unseeded UUIDs, no map iteration, no protobuf maps —
+and it is the reason a red run here is a bug report rather than a mystery.
 
 ### The witness, and why a green intercept run proves nothing without it
 
@@ -663,8 +662,8 @@ rather than assuming it inherited them.
 
 * **an append-immediacy guard** for [I9](02-concepts-and-invariants.md#the-invariants) — drive
   ordinary appends through the front door and read the storage engine's own transaction counters out
-  of band, asserting that the appends were immediate transactions, that nothing else was touched, and that no
-  secondary structure exists on the log's tables. It exists because a "harmless" change — an index, a
+  of band, asserting that the appends were immediate transactions, that nothing else was touched,
+  and that no secondary structure exists on the log's tables. It exists because a "harmless" change — an index, a
   changefeed, one read of one other table — quietly makes every append pay for a coordinator tick,
   and *nothing above the layer would notice*: the append still returns success, just later.
 * **a drain query-shape guard** — that the drain's statement is a function of assertion kinds and

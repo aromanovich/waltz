@@ -37,10 +37,10 @@ and **the root package is the front door** — `Compose`, the configuration, the
 ## Consequences
 
 **The dependency order is documented, not nested.** Bottom-up it is `wal → fold → apply → cycle →
-waltz`, with `wrapper` a branch beside `cycle` that only `waltz` imports, and nesting cannot express
-it: `cycle` imports `fold`, but so does `apply`, and `fold` stands alone, so putting it inside `cycle`
-would be a lie. The handbook's
-[03-components.md](../handbook/03-components.md) carries the order. This is the one place where the
+waltz`, with `wrapper` a branch beside `cycle` that no other layer package imports, and nesting
+cannot express it: `cycle` imports `fold`, but so does `apply`, and `fold` stands alone, so putting
+it inside `cycle` would be a lie. The handbook's [03-components.md](../handbook/03-components.md)
+carries the order. This is the one place where the
 tree's legibility rests on prose.
 
 **The root package holds Go files, and that is the whole point of it.** It is not an index: it is

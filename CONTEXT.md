@@ -135,16 +135,15 @@ one below the lowest entry answering for any diverged row. Nothing re-drains
 partially, so `apply.InvariantViolationError.CutSeqno` is forensic — and a zero
 there is not a position but "acknowledge nothing", covering three cases at once:
 no divergence was found, the log's first entry (`wal.FirstSeqno`) diverged,
-and the readback failed with rows unread. Applying anything above a cut point would leave entries
-applied above any watermark the drain could set.
+and the readback failed with rows unread. Applying anything above a cut point
+would leave entries applied above any watermark the drain could set.
 
 **Replay**:
 What a new owner does with the tail it inherits: read
 `(appliedSeqno, commitSeqno]`, fold it into a fresh accumulator, drain. It runs
 on the shard's first request rather than inside the acquire, and that request is
 served behind it — that placement is the readiness gate, and there is no flag
-to check — and it
-is triggered by a read as much as by a write.
+to check — and it is triggered by a read as much as by a write.
 _Avoid_: recovery (the layer's other recovery is one drain whose outcome was
 lost, and the rule they share is the interesting part: read the watermark
 first, never re-derive from base versions)
@@ -250,8 +249,8 @@ it is given at the append)
 What a running server composes the layer out of: the `wal` section of the
 custom datastore's options — the mode — plus the nine policy
 settings the server's dynamic config carries, the backends they run over and
-the task-category registry a tail is decoded with. A composition, not a cluster member —
-the server is the node, this is what it builds. It is the root package,
+the task-category registry a tail is decoded with. A composition, not a cluster
+member — the server is the node, this is what it builds. It is the root package,
 `waltz`: `waltz.Compose` is the call, and `waltz.Layer` is what it hands back.
 _Avoid_: node where the difference matters (the node is the history process
 that builds this; "the node's budget" and "the node's config" are this

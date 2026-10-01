@@ -25,11 +25,11 @@ for every version of the row and for a task whose entire lifetime fitted between
 transitions.
 
 `ExecutionStore` holds two kinds of data with different shapes, and only one of them can be
-collapsed. **Event history** is what workflow code is re-executed against: a transition *appends* batches of
-events to their own tables and never rewrites a batch it already wrote. **Mutable state** is the
-current state of one run — which activities are started and how often they were retried, which
-timers are set, which children are outstanding, where the history ends and what version all of it is
-at. A transition rewrites the run's row **whole**, and adds and deletes the rows of its collections
+collapsed. **Event history** is what workflow code is re-executed against: a transition *appends*
+batches of events to their own tables and never rewrites a batch it already wrote. **Mutable state**
+is the current state of one run — which activities are started and how often they were retried,
+which timers are set, which children are outstanding, where the history ends and what version all of
+it is at. A transition rewrites the run's row **whole**, and adds and deletes the rows of its collections
 one at a time. `InternalWorkflowMutation` carries exactly that shape: the entire `ExecutionInfoBlob`
 even for a delta, plus a per-member upsert and delete map for each collection.
 
@@ -119,8 +119,8 @@ if this process dies, by whoever replays the log. The caller does not hear about
 
 That boundary is also what makes a drain failure hard to attribute. A drain runs on some caller's
 call — the one whose write tripped a trigger, at step 5 — and that caller does get the error back.
-But the rest of the batch — up to 255 more mutations at the shipped mutation trigger, fewer when the byte
-trigger fires first — belongs to callers who were acked long ago and have gone, so one caller is
+But the rest of the batch — up to 255 more mutations at the shipped mutation trigger, fewer when the
+byte trigger fires first — belongs to callers who were acked long ago and have gone, so one caller is
 handed a failure for work that is mostly not its own, and its own mutation is durable in the log
 whatever the answer says. The failure is real, it reaches somebody, and it identifies
 nobody. (Sync mode is the one exception, and chapter 08 is where it is described.) [Chapter
@@ -173,8 +173,8 @@ calls the layer has no record shape for; they go to the base store unchanged. **
 layer's only door to the base store's own transactions, one per drain. The third path is undrawn:
 the layer also uses the base store on its own account. Over a cold store that does not declare
 `cold.HistoryApplier`, an intercepted write puts its event slots down through it before the append;
-a read the window cannot answer falls through to it, and an
-assertion the window cannot settle by itself is checked against it.
+a read the window cannot answer falls through to it, and an assertion the window cannot settle by
+itself is checked against it.
 
 The arrows to `walmetrics.Emitter` are one-way: the emitter may not import anything it measures.
 
@@ -245,8 +245,8 @@ no later than it publishes the state naming them. Over one that does not,
 store's `AppendHistoryNodes` before the mutation is acked — the same work the incumbent does, in a
 different shape. [Chapter 12](12-the-write-before-the-layer.md#event-history-rides-separately-and-first)
 takes both apart. History rows are append-only and were never amplified, so there is nothing there
-for the layer to collapse. Whatever share of a deployment's write volume is event history is a share the
-layer cannot reduce, and it is therefore the ceiling on everything the layer can save
+for the layer to collapse. Whatever share of a deployment's write volume is event history is a share
+the layer cannot reduce, and it is therefore the ceiling on everything the layer can save
 ([chapter 15](15-the-limits-of-the-evidence.md#where-event-history-lands-is-the-cold-stores-and-neither-path-is-measured)).
 
 Two consequences follow, and they are the project's actual goals:

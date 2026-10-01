@@ -83,16 +83,17 @@ func (m *Manager) Totals() Totals {
 // NewManager builds the registry. Every cycle it creates reads the same
 // [Policy] — the source and not a copy, so a setting that moves reaches the
 // cycles this node already holds. It refuses a node whose HardMaxBytes ×
-// MaxShards does not fit its tail budget ([Config.CheckBudget]), and a binary with no
-// registry has no cycle at all, so that error is the layer refusing to start.
+// MaxShards does not fit its tail budget ([Config.CheckBudget]), and a binary
+// with no task-category registry has no cycle at all, so that error is the
+// layer refusing to start.
 // Reading the budget once is sound because its three fields are among those
 // [Moving] does not carry.
 func NewManager(deps Deps, policy Policy) (*Manager, error) {
 	if err := policy().CheckBudget(); err != nil {
 		return nil, err
 	}
-	// The other startup assertion: without a task-category registry a node recovers nothing,
-	// silently, until the first failover. See [Deps.Registry].
+	// The other startup assertion: without a task-category registry a node
+	// recovers nothing, silently, until the first failover. See [Deps.Registry].
 	if deps.Registry == nil {
 		return nil, ErrNoRegistry
 	}

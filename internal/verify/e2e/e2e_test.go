@@ -11,8 +11,8 @@ package e2e
 // layer fell out of the path completes the same workflow just as fast, which is
 // what internal/verify/witness exists for: the intercept arm states what it was
 // supposed to be and hands over what the layer's own counters saw, and the
-// control arm states that the layer was empty — a claim that goes red if this "passthrough"
-// run quietly still had a layer in it.
+// control arm states that the layer was empty — a claim that goes red if this
+// "passthrough" run quietly still had a layer in it.
 
 import (
 	"context"

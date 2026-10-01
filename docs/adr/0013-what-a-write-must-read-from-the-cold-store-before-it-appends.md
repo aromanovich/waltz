@@ -12,8 +12,8 @@ their cost. None of the options under *Consequences* is built: the reads are sti
 *Context* describes. It is here rather than in the handbook because the handbook says what is
 true of the shipped layer, and this is about what the layer might become.
 
-The durability half is not restated here. It lives in `DURABILITY.md` beside the entry
-*A backend whose `Fence` never reaches storage*, because that is the entry it changes.
+The durability half is not restated here. It lives in `DURABILITY.md` beside the accepted
+entry *A backend whose `Fence` never reaches storage*, because that is the entry it changes.
 
 ## Context
 

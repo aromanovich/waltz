@@ -98,10 +98,10 @@ func TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands(t *testing.T) {
 }
 
 // TestTheShutdownDrainOfALostShardCommitsNothing is the second fence, against
-// the one drain no size or age trigger asks for. The predecessor is not refused a write,
-// because it makes none: it simply shuts down, some thousands of mutations after
-// the database stopped honouring its epoch, and drains the window it has been
-// holding all along.
+// the one drain no size or age trigger asks for. The predecessor is not refused
+// a write, because it makes none: it simply shuts down, some thousands of
+// mutations after the database stopped honouring its epoch, and drains the
+// window it has been holding all along.
 //
 // By then the successor has replayed that very window and gone on writing, so
 // what the drain carries is rows at versions the database has left behind. Two

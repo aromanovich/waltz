@@ -217,9 +217,9 @@ func (s *ExecutionStore) GetHistoryBranchUtil() p.HistoryBranchUtil {
 // --- the four mutable-state writes: the WAL's traffic ---------------------
 //
 // Each hands its request to write, which puts the events down where the record
-// does not carry them, acks the mutation, and answers with what the layer said. The epoch is the request's own
-// rangeID, the token the plugin's own write would have conditioned its
-// transaction on (invariant I11).
+// does not carry them, acks the mutation, and answers with what the layer said.
+// The epoch is the request's own rangeID, the token the plugin's own write
+// would have conditioned its transaction on (invariant I11).
 
 func (s *ExecutionStore) CreateWorkflowExecution(
 	ctx context.Context, request *p.InternalCreateWorkflowExecutionRequest,

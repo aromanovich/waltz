@@ -40,10 +40,10 @@ func TestTheCompositionRefusesAPolicyNobodyStated(t *testing.T) {
 	require.ErrorContains(t, err, "no policy")
 }
 
-// The layer decodes an inherited tail with the task-category registry this cluster is
-// configured for, not the default set: an unknown category id is fatal to a
-// replay, so a default registry on a cluster with archival enabled would refuse
-// exactly the entries carrying archival tasks.
+// The layer decodes an inherited tail with the task-category registry this
+// cluster is configured for, not the default set: an unknown category id is
+// fatal to a replay, so a default registry on a cluster with archival enabled
+// would refuse exactly the entries carrying archival tasks.
 func TestTheRegistryIsTheServersOwn(t *testing.T) {
 	dc := dynamicconfig.NewCollection(dynamicconfig.NewNoopClient(), log.NewNoopLogger())
 

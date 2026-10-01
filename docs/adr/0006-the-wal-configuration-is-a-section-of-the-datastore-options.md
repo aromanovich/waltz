@@ -81,8 +81,8 @@ layer learns something.
 
 **Configuration errors are refusals to start.** The parse and the composition both run before
 `temporal.NewServer`, so an unknown key or (since the amendment below, at the composition) a tail
-budget the node cannot hold is a non-zero exit and no listening port, rather
-than a log line from a server that is already serving.
+budget the node cannot hold is a non-zero exit and no listening port, rather than a log line from
+a server that is already serving.
 
 **A second custom datastore is out of scope.** The layer reads the *default* store's options,
 since the ExecutionStore and ShardStore it decorates are the default store's. A section on a

@@ -18,12 +18,12 @@
 //     folded and collapsed, so what a replay re-drives is that same window
 //     against rows the half that landed has already moved.
 //
-//     [Batch.History] is the one part that may be written outside it, and the
+//     [fold.Batch.History] is the one part that may be written outside it, and the
 //     freedom is deliberate: a store whose bulk path cannot join its
 //     mutable-state transaction may write those rows first, by whatever means it
 //     likes. What is pinned is the order and not the mechanism — every history
 //     row must be durable no later than the mutable state that names it: inside
-//     that transaction, or before it starts. History rows are immutable and
+//     that transaction, or before it starts. History nodes are immutable and
 //     keyed by (tree, branch, node, transaction), so a repeated write is the same
 //     row and a drain that failed after writing them first leaves orphans nobody
 //     references. The other order is the one that cannot be recovered
