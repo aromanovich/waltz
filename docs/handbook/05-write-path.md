@@ -299,7 +299,8 @@ flowchart TD
 
 How to read this. What the diagram does not show is who is waiting while the drain runs, and that is
 what the triggers really differ in. `mutations`, `bytes` and `refusal` run inside some caller's
-write, and the window they drain is full of other people's work. Under `mutations`, `bytes` and a
+write — or, for a `refusal`, inside a replay, which folds through the same `Cycle.accept` — and the
+window they drain is full of other people's work. Under `mutations`, `bytes` and a
 `refusal` raised at the fold, that caller has already been acked for its own mutation; a `refusal`
 raised at the condition check runs before the append, so that caller has consumed no seqno. `age` has
 nobody waiting at all; `replay` and `explicit` do — the request that started the cycle waits through

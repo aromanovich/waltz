@@ -55,9 +55,11 @@ by `internal/verify/mutbuild`. What to know before changing any of it:
   resumable, since a second generator on one seed re-emits creates the store
   already holds. **A caller that models the store's *client* rather than its
   contents keeps its own generator**, deliberately: the request it makes is the
-  generated one and not what a replay would produce. That is the one exception
-  and it is a decision about what such a run's calls mean, not an unconverted
-  call site;
+  generated one and not what a replay would produce. So does a fold test that
+  stands where the hot path does (`fold/check_corpus_test.go`,
+  `fold/taskpage_corpus_test.go`, `fold/refusal_test.go`), since the hot path
+  folds the caller's request too. Each is a decision about what such a run's
+  calls mean, not an unconverted call site;
 * determinism is load-bearing and easy to lose. The seed is the only source of
   randomness, timestamps come off a fixed base, and **no protobuf map field may
   be populated** in anything the generator builds: the serializer's output for a

@@ -343,7 +343,8 @@ from.
 **`cycle.Totals`** — every cycle this node has held, summed, through `Manager.Totals()` (exposed as
 `waltz.Layer.Totals()`). It carries `Shards` (cycles held now) and `Epochs` (every cycle ever
 created, so `Epochs > Shards` is a node that has re-acquired); the same embedded `Counters`; the
-positions `Acked`, `Applied` and `TailEntries`, taken from the cycles held now; and `Halted`, a
+positions `Acked` and `Applied` and the count `TailEntries`, all three taken from the cycles held
+now; and `Halted`, a
 string per shard whose current cycle is not running.
 
 **`cycle.Counters`**, embedded by both, is the summable half: `Drains`, `Trims`, `TrimsCommitted`,

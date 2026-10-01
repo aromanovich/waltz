@@ -359,12 +359,14 @@ Seven rules the loop applies, entry by entry:
   unmarked entry can never be dropped silently. A drain is all-or-nothing, so a provisional entry
   travels a batch alone — the window in front of it is drained first and it is drained by itself
   after, both under `trigger="replay"`.
-* **an entry the previous owner had already settled re-folds to nothing.** `resolved` lived only in
-  that process's memory, so the successor cannot tell a settled no-op from work — and does not need
-  to. Re-folding one costs a decode and produces no database statement, which is exactly what the old
-  owner concluded about it. That is why `resolved` may die with the process while the other two
-  positions survive it: `commitSeqno` is readable from the log and `appliedSeqno` from the cold
-  store.
+* **an entry the previous owner had already settled replays to the same outcome.** `resolved` lived
+  only in that process's memory, so the successor cannot tell a settled no-op from work — and does
+  not need to. An entry settled above the watermark is one whose condition failed and whose caller
+  was answered, which only sync mode does, so it is provisional: replay drains it alone, its
+  condition fails again against the state it failed on before, and it is dropped. It costs a decode
+  and a transaction that writes no row, which is exactly what the old owner concluded about it. That
+  is why `resolved` may die with the process while the other two positions survive it:
+  `commitSeqno` is readable from the log and `appliedSeqno` from the cold store.
 * **transactions are cut by the two size triggers only** — `Mutations` and `Bytes`, the same pair
   a running cycle drains on, so a replayed transaction is the size of an ordinary one. The age
   trigger is not consulted, since every entry here is already as old as the incident. Replay also

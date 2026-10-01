@@ -351,8 +351,9 @@ not the call that noticed.
 
 What each level buys, on the layer's side:
 
-* **`PressureDrain`** — stop accumulating. Every accepted write drains the window at whatever size
-  it has (`wal_drains{trigger="storage_pressure"}`), every committed drain trims at the new applied
+* **`PressureDrain`** — stop accumulating. Every accepted windowed write drains the window at
+  whatever size it has (`wal_drains{trigger="storage_pressure"}`; a sync write drains anyway, under
+  its own trigger), every committed drain trims at the new applied
   watermark with the cadence bypassed, and an acquire trims what the previous owner left applied
   before the first new append. The age tick covers the shard nothing is writing to, and retries a
   forced trim that failed.
@@ -1072,9 +1073,9 @@ than something it builds — that is the point of the type, and the point of the
 seams through which the layer is testable without a cluster, and the layer itself implements
 neither: the implementations shipped here, `wal/memwal` for the log and `cold/memcold` for the
 store, sit *under* the seam, where a deployment's own storage sits.
-`Registry` is constructible only by `TaskCategories(dc, cfg)` or `DefaultTaskCategories()`: a
+`waltz.Registry` is constructible only by `TaskCategories(dc, cfg)` or `DefaultTaskCategories()`: a
 composition accepting upstream's interface directly would accept the plain default task-category
-registry too, which is a second answer to which registry a node decodes a tail with.
+registry too, which is a second answer to which task-category registry a node decodes a tail with.
 
 `Layer`'s narrow surface:
 

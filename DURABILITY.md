@@ -1328,30 +1328,6 @@ oracle is bounded by what its generator reaches, by what its arms share, and by
 what it reads back, and those are worth enumerating separately from the code's
 branches.**
 
-**A fourth class: cross two same-typed things.** The other three all remove
-something — a write, a condition, a bound. This one leaves everything present
-and doing the wrong job: a field assigned from its neighbour, a case label on
-the arm beside it, an argument handed to the parameter next to it. It is what
-finds a **hand-filled mirror**, and this tree is full of them — the read
-answer's three, the fold's two merge functions, the applier's delta literals,
-the codec's two facing each other. The reason the other three classes walk past
-it is the reason a guard does: a crossed field is *present* and *non-zero*, so
-every check of the form "is this filled" passes. Nine crossings in the read
-answer's mirrors left the whole of `go test ./...` green, against a guard
-written to enumerate that very answer off Temporal's type.
-
-Two things sharpen it. **Look for the repeated type**: four of the seven
-collections are `map[int64]*DataBlob` and five of the merge's scalars are
-`int64`, and those counts are exactly how many ways each line can be wrong while
-compiling. And **cross a fan-out's arms, not only its fields** — routing a
-category to the table beside it is the same defect one level up, which is how
-the task fan-out turned out to be driven at one category of six.
-
-Its own blind spot is worth naming, because it is the oracle's: a crossing
-applied to *both* halves of a mirror pair cancels. The codec's encoder and
-decoder face each other, so swapping two fields' slots in both round-trips
-perfectly — and nothing else in the tree reads a record it did not just write.
-
 **A third class: move a comparison to its adjacent form.** Deleting a write finds
 what never reaches storage; deleting a guard finds a condition that always passes;
 flipping `<` to `<=` finds the off-by-one, which neither of the others can see — the
@@ -1519,6 +1495,30 @@ encoder's own comment already explains). An *untested error path* is a
 a defect, and chasing it means writing a fault injector per deserialiser. Read each
 green before writing a test, and record the equivalents where the next sweep will
 meet them — otherwise every pass re-triages the same forty lines.
+
+**A fourth class: cross two same-typed things.** The other three all remove
+something — a write, a condition, a bound. This one leaves everything present
+and doing the wrong job: a field assigned from its neighbour, a case label on
+the arm beside it, an argument handed to the parameter next to it. It is what
+finds a **hand-filled mirror**, and this tree is full of them — the read
+answer's three, the fold's two merge functions, the applier's delta literals,
+the codec's two facing each other. The reason the other three classes walk past
+it is the reason a guard does: a crossed field is *present* and *non-zero*, so
+every check of the form "is this filled" passes. Nine crossings in the read
+answer's mirrors left the whole of `go test ./...` green, against a guard
+written to enumerate that very answer off Temporal's type.
+
+Two things sharpen it. **Look for the repeated type**: four of the seven
+collections are `map[int64]*DataBlob` and five of the merge's scalars are
+`int64`, and those counts are exactly how many ways each line can be wrong while
+compiling. And **cross a fan-out's arms, not only its fields** — routing a
+category to the table beside it is the same defect one level up, which is how
+the task fan-out turned out to be driven at one category of six.
+
+Its own blind spot is worth naming, because it is the oracle's: a crossing
+applied to *both* halves of a mirror pair cancels. The codec's encoder and
+decoder face each other, so swapping two fields' slots in both round-trips
+perfectly — and nothing else in the tree reads a record it did not just write.
 
 It is not a suite and should not become one: a mutation run is a thing a session
 does, and a target that had to stay green would be a second copy of the applier.
