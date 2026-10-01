@@ -232,8 +232,8 @@ What *is* a gap is the difference between the two paths. Carrying the batches on
 foreground round trip per batch and lets a drain write a window's worth of nodes at once; it also
 spends I10's byte budget on event blobs, so the window holds fewer mutations and drains sooner. **No
 run here measures either side of that trade.** The shipped composition takes the batches
-(`cold/memcold` declares `cold.HistoryApplier`), so every green target in this tree exercises that path — and
-[chapter 14](14-where-the-defaults-came-from.md#the-drain-triggers-256-mutations-and-256-kib)'s two
+(`cold/memcold` declares `cold.HistoryApplier`), so every green target in this tree exercises that
+path — and [chapter 14](14-where-the-defaults-came-from.md#the-drain-triggers-256-mutations-and-256-kib)'s two
 size triggers were derived on a corpus whose records carry no event blobs.
 
 ## No partition between layer nodes is staged
@@ -293,8 +293,8 @@ Stated exactly, a green `go test ./...` says this and no more:
   the watermark the batches said it would — including when the shard's epoch moved under a running
   cycle, where it left exactly the drains that had committed and nothing after them;
 * the same stream driven twice — folded at the shipped window, and one mutation per transaction —
-  left two databases holding identical rows: every run row, every current row, all four task
-  categories;
+  left two databases holding identical rows: every run row, every current row, and the task IDs
+  of all four task categories;
 * a shard handed to successor after successor mid-window, each replaying the tail it inherited, left
   the database an uninterrupted run of the same stream leaves; and a node parked inside its applier
   while another took the shard was not told its write succeeded on the other's watermark;

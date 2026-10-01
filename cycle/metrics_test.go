@@ -134,9 +134,9 @@ func TestTheTailIsRecordedInBothUnitsWhereverItMoves(t *testing.T) {
 
 // TestBackpressureNamesTheUnitThatBound: a write is refused before the append
 // for four reasons, and which one is the diagnosis — entries means an applier
-// that is behind, bytes one workflow near the server's own blob limits, unresolved an
-// applier that cannot say whether its last drain committed. The fourth,
-// storage_pressure, is pressure_test.go's.
+// that is behind, bytes one workflow near the server's own blob limits,
+// unresolved an applier that cannot say whether its last drain committed. The
+// fourth, storage_pressure, is pressure_test.go's.
 func TestBackpressureNamesTheUnitThatBound(t *testing.T) {
 	ns := uuid.NewString()
 

@@ -2,10 +2,10 @@
 
 Imagine a workflow that lives for ten seconds. In that time, Temporal may rewrite its mutable state
 dozens of times, create and consume timers, and delete the task rows that represented them. The
-event history it appends along the way has to be stored: workflow code is re-executed against it, and no later
-transition rewrites a batch already written. Every intermediate mutable-state image and every task
-row is stored as well — including the images a later transition supersedes and the task rows deleted
-moments after they were created.
+event history it appends along the way has to be stored: workflow code is re-executed against it,
+and no later transition rewrites a batch already written. Every intermediate mutable-state image and
+every task row is stored as well — including the images a later transition supersedes and the task
+rows deleted moments after they were created.
 
 waltz asks whether each of those intermediate forms has to reach the cold store as a write of its
 own. It puts a durable per-shard write-ahead log in front of a Temporal history shard's cold store

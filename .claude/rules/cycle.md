@@ -48,13 +48,13 @@ What to know before changing it:
   Before changing any rule about a page's contents, read that file: the cut has
   no freedom and its reasoning is stated there, at length;
 * a task read on a shard this node does not hold is **refused** with
-  `ShardOwnershipLost`, which is the opposite of what the two mutable-state reads — and
-  the branch page, which routes as one — do with the same case, and is not an
-  inconsistency: those have callers that legitimately do not own the shard, and this
-  one has exactly one caller — whose page, if it came back short a tail, would be
-  completed and acked past. That difference is one row of `readRoute` (below), which is
-  where the whole question "who may answer this read while the shard changes hands"
-  lives;
+  `ShardOwnershipLost`, which is the opposite of what the two mutable-state
+  reads — and the branch page, which routes as one — do with the same case, and
+  is not an inconsistency: those have callers that legitimately do not own the
+  shard, and this one has exactly one caller — whose page, if it came back short
+  a tail, would be completed and acked past. That difference is one row of
+  `readRoute` (below), which is where the whole question "who may answer this
+  read while the shard changes hands" lives;
 * the cold store is reached through a **thunk the wrapper passes**, never named
   here — the store is the caller's, behind `cold.Applier`, and `wrapper` still
   may not name one. The routing rule for a **mutable-state** read turns on the
@@ -95,8 +95,8 @@ What to know before changing it:
 * **the policy is a source, not a value**: a `Cycle` holds a
   `cycle.Policy` — `func() Config` — and reads it *at* the decision, which is what
   lets the five trigger and cadence numbers (`cycle.Moving`) move under a shard
-  this node is already holding, with no re-acquire and no replay. So do not cache a `Config` on
-  the cycle beside it: the field a later read reaches for by mistake would be the
+  this node is already holding, with no re-acquire and no replay. So do not
+  cache a `Config` on the cycle beside it: the field a later read reaches for by mistake would be the
   one the cycle was created with. `Fixed` and `Live` are the only constructors and
   both fill, which is how "every call answers a complete Config" holds for callers
   that cannot call `fill` themselves. The clock is the deliberate exception, taken
@@ -198,8 +198,9 @@ What to know before changing it:
   one caller): a fenced cycle's refusal *becomes* `ShardOwnershipLost`, and a
   halted-invariant one deliberately stays unrecognised;
 * **the condition authority is checked before the append** (`cycle.check`):
-  what the window determines it answers with the store's own error at *any* window, because the subject is the
-  mutation in this caller's own call and nothing has been acked. The predicate is
+  what the window determines it answers with the store's own error at *any*
+  window, because the subject is the mutation in this caller's own call and
+  nothing has been acked. The predicate is
   `fold/check.go`, the checked set is the assertions `adopt` discards — do not
   turn it into a list — and the position is forced twice: after I10's bound
   (which is also checked outside the loop) and before `Log.Append`. It is inert
@@ -244,8 +245,8 @@ What to know before changing it:
   place this layer asks the store below for something `p.ExecutionStore` does
   not declare: `baserow.Store` is an interface a store satisfies by **shape**,
   never by naming it, and `baserow.Of` takes it off the store once at
-  construction — refusing by name where the wrapper used to assert unchecked. That is the only conversion left on the path
-  and it is Temporal's own seam, since the store arrives as `p.ExecutionStore`;
+  construction — refusing by name where the wrapper used to assert unchecked.
+  That is the only conversion left on the path and it is Temporal's own seam, since the store arrives as `p.ExecutionStore`;
   a caller holding a concrete store that already answers the shape passes
   `baserow.New` and the obligation is the compiler's. **This is the one
   obligation this library puts on the store below**, and a store that does not
@@ -270,10 +271,11 @@ What to know before changing it:
 * **whose clock may cut a drain short is a field of `drainCause` and not the
   context the call site happens to hold** (`detached`). Five drains carry it —
   both size triggers, the age trigger, the refusal drain and the storage-pressure
-  drain, four of them inside a call whose caller is not waiting for their
-  outcome, the age tick's on a `context.Background` of its own — and what they
-  carry is earlier writers' acked mutations, those writers having been told it succeeded and gone. Bounding the
-  transaction by whichever writer is on the line turns one expired client
+  drain, issued inside a call whose caller is not waiting for their outcome or
+  by the age tick on a `context.Background` of its own (the age drain always,
+  the storage-pressure drain when pressure stands) — and what they carry is
+  earlier writers' acked mutations, those writers having been told it succeeded
+  and gone. Bounding the transaction by whichever writer is on the line turns one expired client
   deadline into a drain that did not commit, which is `halted-invariant` and a
   failover for the whole window. The entries survive in the log, so the cost is
   availability rather than data — but the trigger is an ordinary timeout, which
@@ -322,8 +324,8 @@ What to know before changing it:
     is the whole of the rule.** A retry reads the watermark again and re-acks
     everything above it, so an attempt the cycle will repeat gives back what it
     took: its accumulator and window are replaced, its acked bytes go back to
-    the floor (`Tail.Floor` plants every number, the stall included, which is what makes it safe
-    to run twice), and what it counted is a `Counters` value `start` never
+    the floor (`Tail.Floor` plants every number, the stall included, which is
+    what makes it safe to run twice), and what it counted is a `Counters` value `start` never
     adopts (`state.counted`). Keeping any of it counts one incident once per
     attempt — and the tail is the number `Cycle.write` reads off the mirror
     *before* it queues anything, so the leak's first symptom is a working shard

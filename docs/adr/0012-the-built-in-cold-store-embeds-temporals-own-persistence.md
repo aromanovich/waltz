@@ -61,8 +61,9 @@ Beside that surface — never inside it — the store adds exactly what Temporal
   refuse it.
 * **`AppliesHistory`**, added since by
   [ADR 0014](0014-a-record-may-carry-the-event-batches-its-own-request-produced.md): the marker
-  that declares `cold.HistoryApplier`, so a window's event batches arrive in its batch and `Apply`
-  writes them as `history_node` and `history_tree` rows inside the same transaction, through `TableCRUD`.
+  that declares `cold.HistoryApplier`, so a window's event batches arrive in the drain's batch and
+  `Apply` writes them as `history_node` and `history_tree` rows inside the same transaction,
+  through `TableCRUD`.
 
 **What judges the inherited surface is Temporal's own four exported suites** —
 `NewShardSuite`, `NewExecutionMutableStateSuite`, `NewExecutionMutableStateTaskSuite` and
@@ -72,8 +73,8 @@ store per suite. A suite written here would be this repository's opinion again, 
 ## Consequences
 
 **The hand-written store is deleted**, and what replaced it is wiring plus the apply path. The
-apply path is not upstream's to keep in step: upstream writes one workflow with unexported
-functions, so their statement sequences are copied into it, and `NOTICE` lists each one. The
+apply path is ours to keep in step with upstream: the functions upstream writes a single workflow
+with are unexported, so their statement sequences are copied into it, and `NOTICE` lists each. The
 evidence that this is the right shape rather than a saving is that the four suites passed on the
 first wiring attempt with **no store code written at all**: everything that had to be chased was
 setup, not semantics.

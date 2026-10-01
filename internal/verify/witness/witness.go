@@ -141,8 +141,8 @@ type Expect struct {
 	// mutable-state writes or the two tombstones.
 	MutableState bool
 	// HistoryTasks is whether they write history tasks. Those go into the log
-	// like those six, so the claim follows the path: zero
-	// wherever there is no layer, non-zero wherever there is one.
+	// like those six, so the claim follows the path: zero wherever there is no
+	// layer, non-zero wherever there is one.
 	HistoryTasks bool
 	// TaskReads is whether they read task pages through the merge.
 	TaskReads bool

@@ -32,9 +32,9 @@ ride the record and the drain writes them (ADR 0014), and this visit does not ha
 append, and in a windowed mode whatever the window cannot determine is delegated:
 `checkDelegated` reads the pre-window rows the assertions stand on. In sync mode the drain
 inside the call asserts them and the reads are skipped. The reason the check happens *before*
-the append is the whole of it — the ack is the answer, so a condition this layer means to answer has to be
-evaluated while the caller is still on the line. After the ack a refusal has no addressee and
-no undo.
+the append is the whole of it — the ack is the answer, so a condition this layer means to
+answer has to be evaluated while the caller is still on the line. After the ack a refusal has
+no addressee and no undo.
 
 Three facts about that second cost, each checked rather than assumed:
 

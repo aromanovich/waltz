@@ -28,10 +28,10 @@ before the entry that names them is in the log.
 
 What changed is that both have answers now that cost less than the property
 they buy. The byte budget is a number, and a deployment whose store takes the
-batches is choosing to spend it on history — the bound still holds, the window just holds
-fewer mutations. And the ordering becomes stronger rather than weaker when the
-batches ride the record: the events and the state are one object with one ack,
-so there is no order left to get wrong at the append. It moves to the drain,
+batches is choosing to spend it on history — the bound still holds, the window
+just holds fewer mutations. And the ordering becomes stronger rather than weaker
+when the batches ride the record: the events and the state are one object with
+one ack, so there is no order left to get wrong at the append. It moves to the drain,
 where it is one statement of the cold-store contract.
 
 ## Decision
@@ -67,8 +67,8 @@ task work and the watermark stay one transaction, and `fold.Batch.History` may b
 written outside it by whatever means a store has. What may not move is that a
 history row written outside it is durable **before** that transaction opens.
 History rows are immutable and keyed by `(tree, branch, node, transaction)`, so a
-repeated write is the same row and a drain that failed after them leaves orphans nobody
-references; the other order cannot be recovered from.
+repeated write is the same row and a drain that failed after them leaves orphans
+nobody references; the other order cannot be recovered from.
 
 **A store that does not declare it is not refused, it is served the old way.**
 `cold.HistoryApplier` is the marker, and an applier without it gets a layer that
@@ -79,8 +79,8 @@ with every suite green — is unreachable from the write path rather than refuse
 no write puts history in a batch a store did not say it would write. Replay is
 the exception, and the paragraph on changing stores names it.
 
-**`ReadHistoryBranch` is merged on read, always.** Whether the window holds history rows
-is a fact about the tail this shard inherited — a log written under one store is
+**`ReadHistoryBranch` is merged on read, always.** Whether the window holds
+history rows is a fact about the tail this shard inherited — a log written under one store is
 replayed by a node composed with another — rather than about this node. The merge is
 `fold.Accumulator.HistoryPage`, under the pagination rule the task page already
 had.
@@ -103,8 +103,8 @@ Three things ride on that and are named here rather than discovered: the tail's
 byte budget starts spending on event blobs, the three transiting history methods
 below become an exposure of the shipped composition, and a node returning to a
 build without these fields meets records that have them (which it refuses — see
-*Changing builds*). A deployment that wants the old path composes a store that does not
-declare the marker.
+*Changing builds*). A deployment that wants the old path composes a store that
+does not declare the marker.
 
 **One append makes a state transition and its events durable together**, and a
 refused write leaves nothing behind — where the base-store path leaves the events
@@ -144,7 +144,7 @@ an undrained history row should do depends on where that deployment put its hist
   it, so the branch is not deleted and its rows stay.
 * Both are also reachable from the worker service's history scavenger, which
   holds no shard and so runs passthrough: it reads and deletes through a cold
-  store no window is merged into, whatever its applier declares.
+  store no window is merged into, even where that store takes the batches.
 
 A deployment that wants these closed can drain the window before such a call, or
 refuse them outright. Neither is done here, whatever its applier declares.

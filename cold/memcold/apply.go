@@ -72,10 +72,11 @@ func (*Store) AppliesHistory() {}
 // statements take effect in the order they are issued. So an assertion reads
 // the rows as every earlier request of this same batch left them, a run
 // tombstoned and recreated inside one window needs no special case, and the
-// only ordering rules left are the two stated above — the epoch first and the
-// range deletes before the inserts. An engine that gathers a transaction's
-// statements and reorders them by table has to reproduce those orderings some
-// other way, and a batch that lands in a different order is not the same batch.
+// only ordering rules left are the three stated above — the epoch first, the
+// history rows before anything that points at them, and the range deletes
+// before the inserts. An engine that gathers a transaction's statements and
+// reorders them by table has to reproduce those orderings some other way, and
+// a batch that lands in a different order is not the same batch.
 //
 // The outcome: nil is committed; [apply.Refuse] is a drain nothing was written
 // for, refused before the transaction opened; *p.ShardOwnershipLostError is the

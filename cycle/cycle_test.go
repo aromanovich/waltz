@@ -34,7 +34,8 @@ import (
 
 const testShard wal.ShardID = 3
 
-// testRegistry is the default task-category registry: nothing here interprets a category.
+// testRegistry is the default task-category registry: nothing here interprets
+// a category.
 func testRegistry() tasks.TaskCategoryRegistry { return tasks.NewDefaultTaskCategoryRegistry() }
 
 // ---------------------------------------------------------------------------
@@ -622,10 +623,10 @@ func TestATakenSeqnoHalts(t *testing.T) {
 }
 
 // TestACallersClockCannotDecideADurableEntrysFate is the production sequence
-// this layer meets most often: a request deadline expiring
-// while the log is being written to. It is not an exotic failure — a slow log,
-// a GC pause and a busy node all produce it — and by the time it happens the
-// entry may already be durable.
+// this layer meets most often: a request deadline expiring while the log is
+// being written to. It is not an exotic failure — a slow log, a GC pause and a
+// busy node all produce it — and by the time it happens the entry may already
+// be durable.
 //
 // Three lines exist for it, each detaching a read or a transaction from the
 // caller's context, and each was judged by nothing: removing the first left the

@@ -179,7 +179,7 @@ func TestAReuseCreateIsDecidedByTheVersionColumn(t *testing.T) {
 	_, wf2, run2 := ids()
 	store.SetCompleted(wf2, "previous-run", 3)
 	require.NoError(t, e.add(t, mkReuseCreate(ns, wf2, run2, "previous-run", 3)))
-	require.Empty(t, e.apply.drains, "a confirmed assertion costs no drain")
+	require.Empty(t, e.apply.drains, "a confirmed assertion costs no drain: this is the collapse the settle used to spend")
 	require.EqualValues(t, 1, e.c.Stats().CommitSeqno)
 	require.Equal(t, 1, e.c.Stats().Mutations, "and the mutation is in the window, not behind it")
 }
