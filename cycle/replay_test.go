@@ -328,7 +328,7 @@ func TestAProvisionalEntryIsCarriedAlone(t *testing.T) {
 
 // TestReplayRefusesATailWrittenAboveItsEpoch: entries above this cycle's epoch
 // mean somebody fenced the log after we did, so this cycle is the zombie. It
-// halts lost before a row is written, rather than leaving it to the apply
+// goes to halted-lost before a row is written, rather than leaving it to the apply
 // transaction's epoch CAS: the fence and the rangeID move are not atomic, so
 // the CAS could still succeed.
 func TestReplayRefusesATailWrittenAboveItsEpoch(t *testing.T) {

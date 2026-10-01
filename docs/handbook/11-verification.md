@@ -712,9 +712,9 @@ failure mode a double has: two copies that disagree leave a rule green and unjud
   window by window. `foldrun` owns the loop and nothing above it: where the mutations come from is
   the caller's, and so is what a drained batch is for, which is why the drain is a callback.
 
-`foldrun` counts only what every caller counts the same way, deliberately. "Tombstone" means
-`KindDelete` to one caller and `KindDelete`-or-`KindDeleteCurrent` to another, and a shared counter
-would have to pick one and silently change the other's meaning.
+`foldrun` counts only what every caller counts the same way, deliberately. What a "tombstone" is,
+for one, is the caller's — the acceptance run counts `KindDelete` alone — and a shared counter would
+have to pick a meaning for every caller to come.
 
 ---
 

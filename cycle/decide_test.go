@@ -58,7 +58,8 @@ func requireRoute(t *testing.T, want, got readRoute, refusal, halt error) {
 // constraints rather than behaviour — halted-lost refuses a task read whatever
 // the tail says, a stopped cycle refuses one whatever its state, an unreadable
 // drain refuses both whoever is asking, and halted-invariant is never converted
-// to ShardOwnershipLost — are marked where they sit.
+// to ShardOwnershipLost while its loop is there to ask — are marked where they
+// sit.
 func TestEveryMomentAReadCanArriveInRoutesBothReaders(t *testing.T) {
 	// The value [Cycle.halted] would have built; every [refuseAsHalt] row
 	// asserts this exact value comes back.

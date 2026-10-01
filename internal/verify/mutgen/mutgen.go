@@ -458,8 +458,8 @@ func (g *Generator) Next() (mutation.Mutation, error) {
 }
 
 // Take returns the next n mutations. It is a convenience for tests and for
-// short corpora; a 10^6-mutation run must use [Generator.Next], since a
-// materialised stream of that size is gigabytes of payload.
+// short corpora; a run of 10^5 mutations and up must use [Generator.Next], for
+// the reason [Corpus] gives.
 func (g *Generator) Take(n int) ([]mutation.Mutation, error) {
 	out := make([]mutation.Mutation, 0, n)
 	for range n {

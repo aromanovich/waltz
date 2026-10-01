@@ -75,8 +75,9 @@ Two rules, and moving either is not a refactor:
   `policy().CheckBudget()` itself, before it opens either
   ([08-configuration.md](08-configuration.md#5-the-budget-refusal)).
 * **drain the layer after the server has stopped.** `Layer.Shutdown(ctx, budget)` is the shutdown
-  drain: every shard that still holds a window is applied into the cold store, one transaction per
-  shard, in sequence. It must run when the writers are gone, and `temporal.Server.Start` does not
+  drain: every shard that still holds a window is applied into the cold store, shard by shard, in
+  sequence — one transaction each, unless a shard's tail has not been replayed yet, whose replay
+  drains first. It must run when the writers are gone, and `temporal.Server.Start` does not
   give you that moment — it returns as soon as the services are up. A `main` therefore waits for its
   own signal, calls `Server.Stop`, and only then calls `Shutdown`. **The cold store must still be
   open at that point**, which is the one ordering constraint the composing binary owns: the server
@@ -153,9 +154,9 @@ So the order is:
    **Read the cause before acting on the count.** A residue carrying zero entries is this node saying
    it could not establish what that shard holds, and the cause says which kind. One naming
    `halted-lost` — `the shard has been fenced away` is one wording of it, an append or a drain
-   refused at the fence the other — is a shard another node took: nothing on this node will ever
-   drain it, restarting in intercept mode will report it again, and the entries — if any — are the
-   new owner's, whose own shutdown is where they appear. Finish that node's step 2 instead. One
+   refused at the fence the other — is a shard another node took: this node's halted cycle will
+   never drain it, and the entries — if any — are the new owner's, whose own shutdown is where they
+   appear. Finish that node's step 2 instead. One
    naming `halted-invariant` is runbook (b). Any other cause is this node's own failure to look,
    and a restart is the remedy;
 4. only once every node's `Shutdown` has answered nil, remove the section and restart.
@@ -360,8 +361,8 @@ import ban in [03-components.md](03-components.md) exist to allow.
     Expect it around failovers and rolling restarts, wherever an old owner is still alive to try a
     write or a drain after the fence — a retire emits nothing. **Not an alert.**
   * `state="halted-invariant"` — a divergence this process owns, most often an assertion that failed
-    inside a window whose failure could not be pinned on one caller. There is no retry and no failover: the layer deliberately does not convert
-    this into an ownership-lost, because handing a divergence to the next owner as an ordinary
+    inside a window whose failure could not be pinned on one caller. There is no retry and no
+    failover: the layer deliberately does not convert this into an ownership-lost, because handing a divergence to the next owner as an ordinary
     failover would spread it. **This is the one that pages.**
 * **What to check.** For `halted-invariant`, the `apply cycle halted` log line. It carries the shard
   id, the state and the cause, and the cause is the only thing that says which assertion failed.

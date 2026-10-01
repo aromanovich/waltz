@@ -21,8 +21,9 @@ changing either:
   made twice for the same reason: a writer with no reader is exactly the
   configuration that reads stale, and a write path nobody told about the acquire
   refuses every write for a shard it never got — a misconfiguration the layer
-  cannot detect, since that refusal is indistinguishable from fencing. Separate
-  fields put both mistakes one config line away; one field makes them
+  cannot detect, since that refusal is indistinguishable from fencing — and a
+  layer nobody handed the metrics handler emits nothing with every suite green.
+  Separate fields put each of those one config line away; one field makes them
   unrepresentable. `ShardLayer` once held one more face — the layer being
   told what its queues had deleted — and that is gone with the compensation it
   existed for. Consequence for the tests: a fake that fills one half now owes

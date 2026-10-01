@@ -587,8 +587,8 @@ What to know before changing it:
   is unreachable through a cycle and enumerable here alone). Four of
   them keep a method beside the call site that supplies the values — the rest
   are called where their values already are, `noCycleRoute`, `supersededRoute`
-  and `storeError` from `Manager`, `appendOutcomeOf` from `Cycle.appendFailed`
-  and `tickActionOf` from the loop's tick — so
+  and `storeError` from `Manager`, `appendOutcomeOf` from `Cycle.appendFailed`,
+  `attribute` from `settlementOf` and `tickActionOf` from the loop's tick — so
   the loop reads as it
   did and what a call site can still get wrong is *which* values it hands over.
   The argument is that the module that answers for a divergence must be
@@ -667,7 +667,7 @@ What to know before changing it:
   and their reasoning are in [dependencies.md](dependencies.md); nothing checks
   them. `tailstate` and `window` are listed there separately, because
   that rule is a statement about one package and a sub-package of `cycle` would
-  otherwise be covered by nothing. What they forbid is different anyway: the log
-  and the accumulator, which are the two things a counter of seqnos and bytes
-  would grow reach into first, plus — for `window` alone — the emitter, which is
+  otherwise be covered by nothing. What they forbid is different anyway: a cold
+  store and the accumulator (`fold`), which are the two things a counter of seqnos
+  and bytes would grow reach into first, plus — for `window` alone — the emitter, which is
   what would move a drain's numbers off the outcome that earns them.

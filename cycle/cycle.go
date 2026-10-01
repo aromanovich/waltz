@@ -1376,8 +1376,8 @@ func (c *Cycle) resolve(ctx context.Context, s *state, seqno wal.Seqno, cause er
 // turning one into the other changes what the layer tells a server about a
 // failover. Every door but one refuses through [Cycle.halted] once the first has
 // landed; [Cycle.Close] runs [Cycle.start] with no such check, so a cycle halted
-// inside its replay replays again, and that replay can halt a second time. No
-// test drives that arm. The start floors the tail before that replay, which is
+// inside its replay replays again, and that replay can reach a second halt,
+// which the early return discards. No test drives that arm. The start floors the tail before that replay, which is
 // an open entry in DURABILITY.md whether or not the second halt comes.
 func (c *Cycle) halt(s *state, st State, cause error) {
 	if s.st != StateRunning {

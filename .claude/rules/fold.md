@@ -18,7 +18,7 @@ thing to keep in mind below. What to know before changing the fold itself:
   v2..v4 onto a base row at v1 must assert 1 and write 4, and no request type
   expresses that — every one derives its assertion from the version it writes.
   So the accumulator carries the assertion set (`Emitted.RunAssertions`) beside the merged
-  request and apply's transaction wrapper substitutes it. Fold's whole job
+  request and the drain's applier substitutes it. Fold's whole job
   is to know what it asserted;
 
 * **that assertion set is derived once, in `assert.go`, and applied twice.**

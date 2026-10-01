@@ -182,7 +182,7 @@ type Emitted struct {
 }
 
 // RunAssertions is the head-of-window state of each run this request touches,
-// by run id, which apply's transaction wrapper substitutes for the assertions
+// by run id, which the drain's applier substitutes for the assertions
 // the store would derive from the versions the request writes. The map is the
 // batch's own: writing to it rewrites what the drain stands on.
 //

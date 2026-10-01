@@ -300,8 +300,8 @@ func TestCassandraBlobIsRefused(t *testing.T) {
 // parses — the execution info and the execution state — so a mutation carrying
 // a JSON-encoded state that [Encode] let through would append, ack, and then
 // fail to decode for every owner that inherited it: each reads the tail, fails
-// at this blob, leaves the cycle unstarted, and the next request retries it.
-// The write is not lost, it is unavailable for good.
+// at this blob and halts halted-invariant, and the next owner fails the same
+// way. The write is not lost, it is unavailable for good.
 //
 // Which is [ErrUncarriedProto]'s failure one field along, and this test is that
 // one's shape too: the refusal is checked where it still writes nothing, and the
@@ -604,7 +604,7 @@ func sampleSnapshot() p.InternalWorkflowSnapshot {
 		DBRecordVersion:  1,
 		// Non-zero, because a zero here cannot tell a field the codec carries
 		// from one it drops: the round trip below compares what came back, and
-		// this fixture held the only snapshot Condition in the tree.
+		// this fixture holds the only snapshot Condition in the tree.
 		Condition: 11,
 
 		ActivityInfos:       map[int64]*commonpb.DataBlob{1: blob("activity-1")},

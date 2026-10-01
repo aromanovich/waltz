@@ -20,12 +20,13 @@
 // ten constructors and gets the store's own admission rules for free.
 //
 // The check covers what a constructor builds, and cannot cover what a caller
-// does to the value afterwards. Two fixtures in this tree deliberately step
+// does to the value afterwards. Three fixtures in this tree deliberately step
 // outside — `apply`'s create at `CreateWorkflowModeBypassCurrent` over a
-// running state, and `cycle`'s continue-as-new out of a running run —
-// and both stay where they are, built here and then mutated at the call site.
-// Neither is a request Temporal would send; both drive a path the layer must
-// still have an answer for, which is why they are not "fixed".
+// running state, and the continue-as-new out of a running run that `cycle` and
+// `memcold` each assemble — and all three stay where they are, built here and
+// then mutated at the call site. None is a request Temporal would send; each
+// drives a path the layer must still have an answer for, which is why they are
+// not "fixed".
 //
 // # What is deliberately absent
 //
@@ -196,8 +197,9 @@ func (b Builder) Set(ns, wf, run string, version int64, opts ...SnapshotOpt) mut
 // how the four combinations Temporal's mode validator distinguishes are reached.
 //
 // The states are this method's rather than a caller's, because that validator has
-// a rule per combination — with all three parts the current and the reset run must
-// both be closed and the new run may not be a zombie — so a caller choosing them
+// a rule per combination — with all three parts the current run may be neither
+// created nor running, the reset run must be closed, and the new run may not be a
+// zombie — so a caller choosing them
 // would be choosing whether the request is one the store admits.
 //
 // It fills the execution-info blob on all three parts, which no other shape here

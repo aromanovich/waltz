@@ -26,7 +26,7 @@ func TestTakeEmptiesTheWindowAndReportsIt(t *testing.T) {
 
 	held := w.Take(epoch.Add(5 * time.Second))
 	require.Equal(t, 5*time.Second, held.Age(), "the age is the oldest mutation's, not the newest")
-	require.Equal(t, 140, held.Release(), "the bytes stay in the tail until the transaction commits")
+	require.Equal(t, 140, held.Release(), "the bytes stay in the tail until the drain resolves")
 	require.Zero(t, held.Release(), "and they are released once: a second settle subtracts nothing")
 
 	require.True(t, w.Empty())
@@ -46,7 +46,7 @@ func TestAnEmptyWindowHasNoAge(t *testing.T) {
 	require.Zero(t, held.Release())
 
 	require.False(t, w.Aged(epoch.Add(time.Hour), time.Second),
-		"the age trigger drains a tail nothing is pushing on, and there is nothing here")
+		"the age trigger drains a window nothing is pushing on, and there is nothing here")
 
 	// The age runs from the mutation that opened the window.
 	w.Add(10, epoch.Add(time.Minute))

@@ -10,7 +10,8 @@
 // selection and not a pin, so a consumer already on a newer one builds against
 // it with no diagnostic: the WAL record format mirrors v1.29.6's request
 // structs field-for-field, and the mirror's completeness is checked against
-// that version here, never in a consumer's build. A field a newer server adds
+// that version here, never in a consumer's build — and not for every struct
+// the codec copies, an open entry in DURABILITY.md. A field a newer server adds
 // is a field this codec drops from a write it has already acked.
 //
 // [Compose] is the only composition; a new caller's need belongs there as a
@@ -292,7 +293,9 @@ func (l *Layer) RetireShard(shard wal.ShardID, epoch wal.Epoch) bool {
 //
 // It must run after the server has stopped: the drain writes to the cold store
 // the mutations of writers the server is shutting down. budget bounds the apply
-// transactions — one per shard, in sequence — and not a trim already in flight,
+// transactions — shard by shard, in sequence, one each unless a shard's tail
+// has not been replayed yet, which the replay's own drains apply first — and
+// not a trim already in flight,
 // which is waited out on the minute each attempt has on its own detached
 // context, plus the one follow-up a forced trim may have queued; a drain the
 // budget cuts short leaves a tail, not lost data (invariant I2: it is in the

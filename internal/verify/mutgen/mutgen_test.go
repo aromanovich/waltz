@@ -203,8 +203,8 @@ func TestKeyReuseSetsThePerKeyCollapse(t *testing.T) {
 // state is already a snapshot — and the refusal is not a defect on either side:
 // it is a valid stream fold cannot express as merged requests, recovered by
 // draining and letting the refused mutation head a fresh window. Every consumer
-// of a generated stream needs that loop, so the corpus's own test is where it
-// is written down.
+// of a generated stream needs that loop, [fold.Accumulator.AddOrDrain], and this
+// test is what says the default stream still makes it run.
 func TestChainsFold(t *testing.T) {
 	stream, report := take(t, config(6), 400)
 

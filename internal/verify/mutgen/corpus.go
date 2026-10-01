@@ -23,8 +23,8 @@ type Stream struct {
 // of what reproduces the failure.
 //
 // A run of 10^5 mutations and up drives [Generator.Next] itself: a materialised
-// stream of that size is gigabytes of payload, and a consumer folding as it
-// goes needs none of it kept.
+// stream holds every request and every payload at once, and a consumer folding
+// as it goes needs none of it kept.
 func Corpus(cfg Config, n int) (Stream, error) {
 	g, err := New(cfg)
 	if err != nil {

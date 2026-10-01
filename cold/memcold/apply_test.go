@@ -170,8 +170,8 @@ func TestTheLastWriteFailingUndoesTheEarlierOnes(t *testing.T) {
 // TestARangeDeleteActsBeforeTheDrainsOwnInserts pins the order the cold
 // package's first obligation states inside the transaction: fold keeps a task
 // that arrived after a range delete, because the sequential path keeps it, and
-// it only survives if the delete runs before the insert. Getting it backwards deletes a timer nobody
-// asked to be gone.
+// it only survives if the delete runs before the insert. Getting it backwards
+// deletes an acked task nobody asked to be gone.
 func TestARangeDeleteActsBeforeTheDrainsOwnInserts(t *testing.T) {
 	h := newDrains(t)
 	category := tasks.CategoryTransfer
@@ -844,9 +844,9 @@ func requireEveryCollectionEmptied(t *testing.T, state *p.InternalWorkflowMutabl
 	}
 }
 
-// TestASnapshotClearsWhatTheRunHeldBefore is the third literal of seven, after
-// the applier's upserts and its deletes: the clears a snapshot-bearing write runs
-// before it writes whole state. A snapshot replaces a run's tables rather than
+// TestASnapshotClearsWhatTheRunHeldBefore is the fourth literal naming the seven,
+// after a delta's upserts, its deletes and a snapshot's collections: the clears a
+// snapshot-bearing write runs before it writes whole state. A snapshot replaces a run's tables rather than
 // amending them, so a collection missing from that literal leaves rows from before
 // the snapshot in place — state the sequential path does not have, answered to the
 // next reader and written back by the next snapshot-bearing write.
@@ -1232,7 +1232,7 @@ func TestBufferedBatchesLandUnderTheirOwnRun(t *testing.T) {
 	}
 	// The continue-as-new: assembled rather than asked for, mutbuild validating a
 	// plain update and the new run being set past it — the same concession its own
-	// doc names for the two fixtures that already do this.
+	// doc names for the other two fixtures that do this.
 	continued := h.update(wf, closing, 3, buffered("closing run's signal"))
 	fresh := h.build.Create(h.namespaceID, wf, next, mutbuild.WithInfoBlob(blob("info")))
 	continued.Update.NewWorkflowSnapshot = &fresh.Create.NewWorkflowSnapshot

@@ -186,8 +186,9 @@ func (s *ExecutionStore) write(ctx context.Context, m mutation.Mutation) error {
 // mutation once they are down. It is the writer for records that do not carry
 // the batches: skipping them would ack a mutable state pointing at history rows
 // nobody wrote — which no functional suite sees, the entry being durable and
-// correct. Where the record carries them the drain is the writer instead, inside
-// the transaction that writes the mutable state naming them (ADR 0014).
+// correct. Where the record carries them the drain is the writer instead, durable
+// no later than the transaction that writes the mutable state naming them
+// (ADR 0014).
 //
 // The strip is what lets everything below hold one invariant: a mutation
 // reaching the layer carries exactly the batches nobody has written yet. So the
@@ -378,8 +379,8 @@ func (s *ExecutionStore) CompleteHistoryTask(
 
 // RangeCompleteHistoryTasks goes into the log, so the deletion moves in log
 // order, is rebuilt by replay with the rest of the window, and lands in the same
-// transaction as the rows it covers. Answered at the append like every other
-// intercepted write: a range delete this layer acks is one it will apply.
+// transaction as the rows it covers. Answered like every other intercepted
+// write: a range delete this layer acks is one it will apply.
 func (s *ExecutionStore) RangeCompleteHistoryTasks(
 	ctx context.Context, request *p.RangeCompleteHistoryTasksRequest,
 ) error {

@@ -200,8 +200,9 @@ type Residue struct {
 	// this reads zero over entries the log still holds — an open entry in
 	// DURABILITY.md.
 	Entries int
-	// Cause is what the shutdown drain answered — nil where it committed and
-	// what is left is a halt's tail or a stall's.
+	// Cause is what the shutdown drain answered: the halt or the stall that
+	// kept the tail, or nil where the cycle had already been stopped by name
+	// and the tail is what that stop left.
 	Cause error
 }
 
@@ -237,8 +238,9 @@ func (m *Manager) Close(ctx context.Context) []Residue {
 // that failed is one that could not establish what the shard holds — a failed
 // watermark read leaves the tail at its floor, which reads as zero exactly like
 // a shard that is clean, and so does a failed log read under the start that
-// re-replays a cycle halted inside its replay. The caller's question is whether removing the layer
-// strands anything, and the only safe answer to "nobody looked" is to say so.
+// re-replays a cycle halted inside its replay. The caller's question is whether
+// removing the layer strands anything, and the only safe answer to "nobody
+// looked" is to say so.
 func (c *Cycle) residue(cause error) (Residue, bool) {
 	entries, _ := c.mirror.Size()
 	if entries == 0 && cause == nil {

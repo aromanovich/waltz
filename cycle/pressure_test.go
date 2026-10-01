@@ -143,7 +143,7 @@ func TestAnAcquireUnderPressureReclaimsThePreviousOwnersEntries(t *testing.T) {
 
 // TestStandingPressureRetriesAFailedForcedTrimAtTheAgeTick: under the stop
 // level the writers are refused, so no write brings a drain or a trim with it
-// — the tick is the retry, on the same arm that re-asks a stalled watermark.
+// — the tick is the retry, on the same arm that re-asks a stalled drain.
 func TestStandingPressureRetriesAFailedForcedTrimAtTheAgeTick(t *testing.T) {
 	e, pl := pressureEnv(t, nil)
 	ns, wf, run := ids()

@@ -7,10 +7,10 @@
 // for — applying it to a cold store, holding on to it, or only counting it.
 // That is why the drain is a callback and not something this package performs.
 //
-// It counts only what every caller counts the same way. Anything read off a
-// [fold.Batch] stays with the caller, deliberately: "tombstone" means
-// KindDelete to one of them and KindDelete-or-KindDeleteCurrent to another, and
-// a shared counter would have to pick one and silently change the other.
+// It counts only the loop's own events. Anything read off a [fold.Batch] stays
+// with the caller, deliberately: what a "tombstone" is, for one, is the caller's
+// definition — the acceptance run counts KindDelete and not KindDeleteCurrent —
+// and a shared counter would have to pick one for every caller.
 package foldrun
 
 import (

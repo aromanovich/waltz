@@ -115,7 +115,8 @@ func TestAPageFromACycleSupersededBeforeTheCallIsRebuiltByItsSuccessor(t *testin
 }
 
 // TestAnAcquireLandingWhileThePageIsBuiltRebuildsItToo is the second half of
-// the window, and why the check is made after the answer as well as before it.
+// the window, and why the one check is made after the answer rather than before
+// it.
 //
 // The interleave is real: the acquire runs in its own goroutine and the cycle
 // answering the page waits for the fresh cycle to be installed before returning

@@ -36,9 +36,10 @@ What to know before changing any of it:
   reason the store holds a handle at all, and the transferable half of the
   design: an implementer whose driver offers nothing below the per-workflow
   interface cannot satisfy the contract by trying harder inside it;
-* **the seven collections are named in three literals, and all three are held
+* **the seven collections are named in four literals, and all four are held
   to the type.** `applyMutation` names their upserts and their deletes off a
-  delta and `applySnapshotCollections` names them off whole state, and a
+  delta, `applySnapshotCollections` names them off whole state and
+  `clearCollections` empties them before whole state is written, and a
   collection missing from any of them is a write the drain
   *acknowledged* and never made — with the watermark committed beside them, so
   the log is trimmed past them. It is the only failure on this path with nothing
@@ -58,17 +59,21 @@ What to know before changing any of it:
   both directions: an `Upsert*` with no entry, and an entry for a collection a
   delta no longer has, each fail by name. The deletes literal has the same
   guard in `TestEveryCollectionsDeletesReachTheDatabase`: a dropped delete is a
-  row the acked write removed and the store still holds. A buffered batch is the eighth thing
-  with the same failure and neither literal names it: batches never merge, so
+  row the acked write removed and the store still holds. The clears have
+  theirs in `TestASnapshotClearsWhatTheRunHeldBefore`: a dropped clear is a row
+  from before a snapshot surviving a write that does not carry it. A buffered
+  batch is the eighth thing
+  with the same failure and no literal names it: batches never merge, so
   they travel on neither a delta nor a snapshot, and the applier's own loop
   over them is what `TestEveryBufferedBatchReachesTheDatabase` holds;
 
-* **two orderings in `Apply` are the contract and not transcription** — the
+* **three orderings in `Apply` are the contract and not transcription** — the
   epoch CAS first, so a lost shard is reported as one rather than as the version
-  failure underneath it; and the task range deletes before any task row the
-  drain writes, because fold deliberately keeps a task that arrived after a
-  range and a delete running later would take it away. SQL executes in issue
-  order; an engine that reorders by table has to reproduce both some other way;
+  failure underneath it; the event history no later than the mutable state that
+  names it; and the task range deletes before any task row the drain writes,
+  because fold deliberately keeps a task that arrived after a range and a delete
+  running later would take it away. SQL executes in issue order; an engine that
+  reorders by table has to reproduce all three some other way;
 * **the attribution readback runs after the rollback, never before.** The
   database is served by one connection, so a read taken while the drain's
   transaction still holds it waits for a transaction waiting for the read. The

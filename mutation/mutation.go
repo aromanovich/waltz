@@ -64,9 +64,10 @@ type Mutation struct {
 	Delete          *p.DeleteWorkflowExecutionRequest
 	DeleteCurrent   *p.DeleteCurrentWorkflowExecutionRequest
 	// AddTasks and RangeCompleteTasks travel through the log so that both take
-	// effect in the order issued. A range delete applied at once beside a deferred
-	// add would run before the rows it should have covered existed, losing a
-	// scheduled category's timer outright.
+	// effect in the order issued. A range delete applied at once runs before the
+	// deferred rows it should have covered exist; one deferred beside an add
+	// applied at once covers a scheduled category's timer created after it, by
+	// fire time, and loses it outright.
 	AddTasks           *p.InternalAddHistoryTasksRequest
 	RangeCompleteTasks *p.RangeCompleteHistoryTasksRequest
 }

@@ -5,8 +5,8 @@ package cycle
 // them without a cycle. Four have a method beside the call site that supplies
 // the values; the rest are called where their values already are —
 // [noCycleRoute], [supersededRoute] and [storeError] from [Manager],
-// [appendOutcomeOf] from [Cycle.appendFailed], [tickActionOf] from the loop's
-// own tick.
+// [appendOutcomeOf] from [Cycle.appendFailed], [attribute] from
+// [settlementOf], [tickActionOf] from the loop's own tick.
 //
 // The first family is one rule in five moments — what becomes of a read the
 // layer cannot answer out of both its sources ([readRoute]); then what a write
@@ -103,8 +103,8 @@ func noCycleRoute(who reader, shard wal.ShardID) (readRoute, error) {
 // path's rather than a halt's because this state heals: one readable watermark
 // and the shard answers again.
 //
-// Halted, it turns on the tail, which a halt leaves alone, and under
-// [StateHaltedLost] on which read is asking:
+// Halted, it turns on which read is asking, and for a mutable-state read on
+// the tail, which a halt leaves alone:
 //
 //   - task read, either halt: refused whatever the tail says. On halted-lost
 //     that is another owner, whose acks this cycle can neither see nor merge.

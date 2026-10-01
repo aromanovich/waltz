@@ -100,8 +100,8 @@ fold/check.go
     One error string, verbatim: "Encounter workflow db version mismatch,
     request db version: %v, actual db version: %v", from
     common/persistence/cassandra/errors.go. The layer refuses a run-row
-    assertion in the store's own words so that a halted shard's log reads the
-    same whichever of the two raised it. No logic here is upstream's.
+    assertion in the store's own words so that a halted-invariant shard's log
+    reads the same whichever of the two raised it. No logic here is upstream's.
 
 cycle/read.go
     One error string, verbatim: "workflow execution not found for workflow ID

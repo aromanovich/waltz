@@ -498,8 +498,9 @@ returns the read's error instead of the halt — the open entry in
 [the durability ledger](../../DURABILITY.md).
 
 **`Layer.Shutdown(ctx, budget)` — the node's stop.** It puts `budget` on a context and calls
-`Manager.Close`, which empties the registry in one step and closes every cycle it took, in sequence,
-one transaction per shard; the layer closes the log after that. A drain that does not commit is logged
+`Manager.Close`, which empties the registry in one step and closes every cycle it took, in sequence —
+one transaction per shard, unless a shard has not replayed yet and its replay drains first; the layer
+closes the log after that. A drain that does not commit is logged
 (`WARN apply cycle: the shutdown drain did not commit`) and does not stop the rest.
 
 Emptying the registry also **closes** it. An acquire arriving behind that step is refused with
