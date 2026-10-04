@@ -1,19 +1,14 @@
 package fold
 
-// The window's half of event history: the batches a mutable-state record
-// carried, kept until the drain writes them.
+// The window's event history: batches carried by mutable-state records, held
+// until the drain writes them.
 //
-// One slice, in WAL order, because that is what the drain writes: a row per
-// request and a tree row beside a new branch. A read wants one branch's nodes
-// and derives them from it — an index kept beside the slice would be a second
-// thing to append to and a second thing to reset, and both divergences are
-// silent in opposite directions (a node in one and not the other is either
-// history no read shows or history no drain writes).
+// They live in one slice in WAL order, which is what the drain writes. Reads
+// scan it per branch rather than keep an index, so no node can be in one and
+// missing from the other.
 //
-// Nothing here folds. Two appends of one node are two rows the store dedupes on
-// the key it writes them under, and a window that dropped the second would
-// answer a read with the first — a node's blob is the caller's, not a state this
-// layer may collapse.
+// History is never folded. Two appends of one node stay two rows; the store
+// dedupes them by key. Dropping the second would make a read return the first.
 
 import (
 	p "go.temporal.io/server/common/persistence"
@@ -34,13 +29,11 @@ func (a *Accumulator) branchNodes(treeID, branchID string) []p.InternalHistoryNo
 	return out
 }
 
-// addHistory takes the mutation's batches into the window. A mutation whose
-// batches were written through the store before the append carries none, so
-// there is no flag here: what the accumulator holds is what the record held.
-// That makes the record the fork and not the store the drain goes to. A replayed
-// tail whose records carry batches hands them to the drain's applier whether or
-// not it declares cold.HistoryApplier, and nothing here refuses it — an open
-// entry in DURABILITY.md.
+// addHistory adds the mutation's batches to the window. Batches already written
+// through the store before the append are not in the record, so the window
+// holds exactly what the record held. Open hole (DURABILITY.md): a replayed
+// tail with batches hands them to the applier even if it does not declare
+// cold.HistoryApplier.
 func (a *Accumulator) addHistory(seqno wal.Seqno, m mutation.Mutation) {
 	for _, slot := range m.EventSlots() {
 		for _, r := range slot {
@@ -50,10 +43,8 @@ func (a *Accumulator) addHistory(seqno wal.Seqno, m mutation.Mutation) {
 	}
 }
 
-// History is every event batch this window carries, in WAL order: what the
-// drain's applier must make durable no later than the mutable state pointing at
-// it.
-//
-// The order is the caller's own and matters for one row of it — a batch opening
-// a branch carries the tree info that branch's later batches do not.
+// History is every event batch in the window, in WAL order. The applier must
+// make each durable no later than the mutable state that points at it, and
+// must keep the order: a branch's first batch carries the tree info its later
+// batches lack.
 func (b Batch) History() []*p.InternalAppendHistoryNodesRequest { return b.history }

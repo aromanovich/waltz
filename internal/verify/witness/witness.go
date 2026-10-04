@@ -1,23 +1,17 @@
-// Package witness is the WAL layer's witness as one judged module: the claims
-// a run over the layer must be able to make about the layer's own counters,
-// stated once and checked the same way by every run that composes one.
+// Package witness checks the claims a run over the WAL layer must make about
+// the layer's own counters, the same way for every run.
 //
-// A witness exists because the failure it catches is silent in both directions,
-// and green is what it looks like either way: a layer that came out empty is
-// passthrough, and somebody else's suites are green over it; a method that
-// starts transiting into the log when it should not leaves them just as green.
-// So a run states what it was supposed to be ([Expect]), hands over what its
-// instruments saw ([Observed]), and the witness says whether the two agree.
+// It catches failures that leave suites green: a layer that ended up as
+// passthrough, or a method that reaches the log when it should not. A run
+// states what it was meant to be ([Expect]) and what its instruments saw
+// ([Observed]); the witness says whether they agree.
 //
-// Everything here is a pure function of values a table test can build — no
-// cluster, no server, no environment: the module whose job is to catch a silent
-// pass must be judgeable itself.
+// Everything here is a pure function of values a table test can build, so the
+// witness itself can be tested.
 //
-// [Observed] takes a [cycle.Totals] and nothing weaker. A witness that adds up
-// the shards a node holds now — [cycle.Cycle.Stats] apiece — sums the current
-// cycles only, so a shard re-acquired mid-suite drops its counters out of the
-// witness silently, and a hand-written copy of the totals loses whichever
-// counters it was not updated for.
+// [Observed] requires a [cycle.Totals]. Summing [cycle.Cycle.Stats] over the
+// shards held now would silently drop the counters of a shard re-acquired
+// mid-run.
 package witness
 
 import (
@@ -32,16 +26,13 @@ import (
 	"github.com/aromanovich/waltz/wrapper"
 )
 
-// Window is what window the run's cycle kept — the axis the witness's two
-// central claims invert on, and neither reading is the other's default:
-// in sync mode no read ever crosses a held workflow and nothing is left in the
-// tail, and in a windowed mode both must have happened, or the run was sync
-// mode wearing a window's name. NoLayer is the control's claim — the
-// layer was out of the path entirely, and everything it counts must be zero.
+// Window is the window the run's cycle kept. In Sync no read crosses a held
+// workflow and the tail ends empty; in Windowed both must have happened, or
+// the run was really sync. NoLayer is the control: the layer was out of the
+// path and everything it counts must be zero.
 //
-// The zero value is deliberately not a window. An Expect that states no window
-// is a witness that asserts nothing, which is the failure this package exists
-// to catch, so [Expect.Check] refuses it rather than defaulting it.
+// The zero value is not a window, and [Expect.Check] refuses it: an Expect
+// with no window would assert nothing.
 type Window int
 
 const (
@@ -51,7 +42,7 @@ const (
 	Windowed
 )
 
-// String names the window for a refusal message.
+// String names the window for error messages.
 func (w Window) String() string {
 	switch w {
 	case NoLayer:
@@ -65,10 +56,8 @@ func (w Window) String() string {
 	}
 }
 
-// KindClaim is one coverage claim: this kind of entry reached the log, and the
-// reason a zero is a loss rather than a fact. The why names what went missing
-// and what in the run should have produced it, because a red run must tell its
-// reader which half of the layer went missing rather than that something did.
+// KindClaim claims that entries of Kind reached the log. Why says what in the
+// run should have produced them, so a failure says what went missing.
 type KindClaim struct {
 	Kind mutation.Kind
 	Why  string
@@ -81,100 +70,68 @@ type Emission struct {
 	Tags  map[string]string
 }
 
-// Emissions is a run's captured metric emissions, by series name. It is
-// deliberately this package's own type rather than metricstest's: the judged
-// module may not depend on upstream test machinery to be judged, and a table
-// test builds an Emissions literal where it could not build a captured
-// recording. A run holding a capture handler converts its snapshot in a few
-// lines; a run without one passes nil.
+// Emissions is a run's captured metric emissions by series name. It is this
+// package's own type, not metricstest's, so table tests can build literals.
+// A run without a capture handler passes nil.
 type Emissions map[string][]Emission
 
-// Observed is what a run's instruments saw. Totals is required and is the
-// layer's own account — the seam that cannot lose a counter. The other two are
-// optional because not every run has them: a live server's store counters and
-// metric emissions are not reachable from its test process, so a nil instrument
-// skips exactly the claims that read it, and the claims that remain are the
-// ones the run can actually make.
+// Observed is what a run's instruments saw. Totals is required. Store and
+// Emitted are optional (a live server's are not reachable from its test
+// process); a nil one skips only the claims that read it.
 //
-// The sharpest claims here are equalities *between* instruments — the store's
-// count of what it sent at the layer against the layer's count of what it
-// answered, and the counters against the emissions, because a series nobody
-// emits looks exactly like a system doing no work. Those run whenever both
-// sides of an equality are present.
+// The strongest claims compare instruments: what the store sent against what
+// the layer answered, and counters against emissions, since an unemitted
+// series looks like idleness. They run whenever both sides are present.
 type Observed struct {
-	// Totals is the layer's own account of the whole run: every cycle the node
-	// has held, retired ones included. Taken from [cycle.Manager.Totals] —
-	// never assembled by hand out of the cycles held now, which lose every
-	// re-acquired shard's counters.
+	// Totals is the layer's account of the whole run, retired cycles
+	// included, from [cycle.Manager.Totals].
 	//
-	// One caveat travels with Acked: it is a position, not a count, and the
-	// claims that read it as "how many entries went into the log" (the
-	// condition-failure arithmetic below) hold only over shards whose log
-	// started empty. Both of those claims are gated on [Sync], so a run over
-	// shards that inherited a tail must not claim that window with
+	// Acked is a log position, not a count. The condition-failure claims
+	// read it as a count, which holds only if each shard's log started
+	// empty; a run over inherited tails must not claim [Sync] with
 	// ConditionFailures.
 	Totals cycle.Totals
-	// Store is the wrapper's own traffic counters — what was sent *at* the
-	// layer, counted on the way in, against which Totals says what the layer
-	// did with it. Nil for a run that cannot reach the store it decorated.
+	// Store is the wrapper's counters of what was sent to the layer. Nil if
+	// the run cannot reach the store.
 	Store *wrapper.Counts
-	// Emitted is the run's captured metric emissions. Nil for a run with no
-	// capture handler.
+	// Emitted is the captured emissions; nil with no capture handler.
 	Emitted Emissions
 }
 
-// Expect is what the run was supposed to be: which window its cycle kept, and
-// what its suites drove at the layer. Each false field is a claim of absence,
-// not a shrug — a run that reads no task ranges must have routed zero pages at
-// the merge, because a suite reading around the layer is as green as one
-// reading through it.
+// Expect is what the run was meant to be: its window and what its suites
+// drove at the layer. A false field claims absence: for example, no task
+// reads means zero pages went through the merge.
 type Expect struct {
-	// Window is required; see [Window] for why the zero value is refused.
+	// Window is required; the zero value is refused.
 	Window Window
-	// ShardsAcquired claims at least one shard was acquired through the layer
-	// — the ShardObserver fired. It is fencing's positive claim, where the
-	// *absence* of everything else is the point: a run whose suites only watch
-	// shards being acquired writes nothing, so a mutation there means
-	// something else was writing.
+	// ShardsAcquired claims the ShardObserver saw at least one acquire. In a
+	// run that only acquires shards, any write means something else wrote.
 	ShardsAcquired bool
-	// MutableState is whether the run's suites make any of the four
-	// mutable-state writes or the two tombstones.
+	// MutableState: the suites make mutable-state writes or deletes.
 	MutableState bool
-	// HistoryTasks is whether they write history tasks. Those go into the log
-	// like those six, so the claim follows the path: zero wherever there is no
-	// layer, non-zero wherever there is one.
+	// HistoryTasks: the suites write history tasks (logged like state).
 	HistoryTasks bool
-	// TaskReads is whether they read task pages through the merge.
+	// TaskReads: the suites read task pages through the merge.
 	TaskReads bool
-	// Ranges is whether a range delete was completed — and it is a separate
-	// claim from HistoryTasks because the two come apart in time: a queue's
-	// checkpoint is on a 30s timer per queue per shard, so a run shorter than
-	// that legitimately raises no range, and a witness that demanded one
-	// would fail honest runs.
+	// Ranges: a range delete completed. Separate from HistoryTasks because
+	// queue checkpoints run on a 30s timer, so a short run has none.
 	Ranges bool
-	// TailHeld claims the run *ends* with entries still in the tail — acked
-	// and not applied — which is a windowed run's half of the inversion. It is
-	// as much a claim about when the counters were read as about the window: a
-	// run that waits for a drain before sampling must not make it, since its
-	// tail may honestly be empty by then.
+	// TailHeld claims the run ends with acked, unapplied entries in the tail.
+	// A run that waits for a drain before sampling must not claim it.
 	TailHeld bool
-	// ConditionFailures claims the run's suites write conditions they expect
-	// to fail. Its sync-mode reading is the mode's carve-out stated outright: a
-	// condition failure at a window of one is answered, so entries acked exceed
-	// drains committed, and a run where every acked entry committed is a run
-	// that stopped expecting its own failures. Read only under [Sync]: in a
-	// windowed mode every condition is decided before the append, and the claim
-	// there is the emission's emptiness, made unconditionally.
+	// ConditionFailures claims the suites expect some conditions to fail.
+	// Read only under [Sync], where a failed condition is answered after the
+	// append, so acked entries exceed committed drains. In windowed
+	// mode conditions are decided before the append, and the answered
+	// failure series must always be empty.
 	ConditionFailures bool
-	// Kinds is the run's coverage claims, nil for none: which of the
-	// intercepted methods must have reached the log at all. A claim about
-	// which, never about how much.
+	// Kinds lists the entry kinds that must have reached the log (nil for
+	// none). It claims presence, not amounts.
 	Kinds []KindClaim
 }
 
-// The series the witness reads, taken from the declarations rather than
-// restated, so a renamed series fails to compile here instead of silently
-// emptying a claim.
+// The series the witness reads, taken from their declarations so a rename
+// cannot silently empty a claim.
 var (
 	seriesIntercepted               = walmetrics.InterceptedWrites.Name()
 	seriesDrains                    = walmetrics.Drains.Name()
@@ -183,20 +140,15 @@ var (
 	seriesHalts                     = walmetrics.Halts.Name()
 )
 
-// Universal is the claims every run makes, whatever it was — including a run
-// that opted out of every other claim. A halt is not a statement about what a
-// run covered; it is a shard that stopped, and a passthrough or opted-out run
-// that halted a shard has something to say about the layer either way.
+// Universal checks the claims every run makes, even one that opted out of all
+// others: no shard halted, and trims that started committed.
 func Universal(t cycle.Totals) []error {
 	var errs []error
 	if len(t.Halted) > 0 {
 		errs = append(errs, fmt.Errorf("a shard halted: %v", t.Halted))
 	}
-	// A trim that fails halts nothing and is retried at the next cadence or
-	// force, so nothing else in a run says it happened: the log stops being
-	// compacted and every suite stays green. The claim is conditional on the cadence having
-	// fired at all — a run too short to trim says nothing here, which is why
-	// this is a comparison and not `TrimsCommitted == 0`.
+	// A failed trim halts nothing and is retried, so nothing else notices the
+	// log is no longer compacted. A run too short to start a trim is exempt.
 	if t.Trims > 0 && t.TrimsCommitted == 0 {
 		errs = append(errs, fmt.Errorf(
 			"no trim committed: the cadence started %d and the log was never compacted", t.Trims))
@@ -204,28 +156,21 @@ func Universal(t cycle.Totals) []error {
 	return errs
 }
 
-// report is how a claim states a violation: one line per thing it saw, with
-// the claim's own name put in front of it by [Expect.Check].
+// report records one violation; [Expect.Check] prefixes the claim's name.
 type report func(format string, args ...any)
 
-// claim is one thing the witness says about a run, and it carries a name for
-// two reasons: a claim that has one can be shown by a leave-one-out to catch a
-// defect no other claim catches, and a failure tells its reader which half of
-// the layer went missing rather than that something did.
+// claim is one check on a run. Its name labels failures and keys the
+// leave-one-out table that shows each claim catches something unique.
 type claim struct {
-	// Name is what a failure reports under, and what the leave-one-out table is
-	// keyed on.
 	Name string
-	// Gate is what must hold before the predicate means anything — an absent
-	// instrument, or a coverage the run never claimed. Nil is a claim every run
-	// with a layer makes.
+	// Gate must hold for Check to apply (instrument present, coverage
+	// claimed). Nil means every run with a layer makes the claim.
 	Gate func(Expect, Observed) bool
 	// Check reports once per violation.
 	Check func(Expect, Observed, report)
 }
 
-// The gates. Each names one fact about the run or its instruments, so that a
-// claim's row reads as "this, when that" rather than as a nested condition.
+// The gates, each one fact about the run or its instruments.
 func hasStore(_ Expect, o Observed) bool        { return o.Store != nil }
 func hasEmissions(_ Expect, o Observed) bool    { return o.Emitted != nil }
 func acquiresShards(e Expect, _ Observed) bool  { return e.ShardsAcquired }
@@ -243,8 +188,7 @@ func inWindowed(e Expect, _ Observed) bool      { return e.Window == Windowed }
 func tasksOnly(e Expect, o Observed) bool       { return writesTasks(e, o) && !writesState(e, o) }
 func drainsCommitted(_ Expect, o Observed) bool { return o.Totals.Drains > 0 }
 
-// all is the conjunction of gates, so a claim standing on two facts names both
-// instead of retesting one inside its predicate.
+// all is the conjunction of gates.
 func all(gates ...func(Expect, Observed) bool) func(Expect, Observed) bool {
 	return func(e Expect, o Observed) bool {
 		for _, gate := range gates {
@@ -256,12 +200,9 @@ func all(gates ...func(Expect, Observed) bool) func(Expect, Observed) bool {
 	}
 }
 
-// controlClaims are what a [NoLayer] run says, and they have to be asserted
-// rather than assumed: a "passthrough" run that quietly still had the layer in
-// it answers the question of what a difference is attributable to with the
-// layer's own behaviour, which is the one thing it exists to exclude. Every
-// counter on both instruments is zero by construction when Options.Layer is
-// nil, which is what makes these cheap.
+// controlClaims check that a [NoLayer] run really had no layer; otherwise the
+// control would include the behaviour it exists to exclude. With
+// Options.Layer nil every counter is zero by construction.
 var controlClaims = []claim{{
 	Name: "C1 the control reached no shard",
 	Check: func(_ Expect, o Observed, report report) {
@@ -281,15 +222,12 @@ var controlClaims = []claim{{
 	},
 }}
 
-// layerClaims are what a run with a layer says. The order is the order they are
-// reported in: the ones that say the layer was reached at all, then the routed
-// equalities, then the coverage claims, then the empty layer and its opposite,
-// then the two windows' inversion, then the emissions, then the claimed kinds.
+// layerClaims are checked for a run with a layer, in report order: layer
+// reached, routed equalities, coverage, empty layer and its opposite, the sync
+// and windowed inversion, emissions, claimed kinds.
 var layerClaims = []claim{{
 	Name: "W1 every acked entry named a request",
-	// A kind the codec could not name is a bug wherever it appears, so this
-	// claim is made for any layer window rather than for any particular
-	// coverage.
+	// An unnameable kind is a bug in any run with a layer.
 	Check: func(_ Expect, o Observed, report report) {
 		if n := o.Totals.Kinds[mutation.KindInvalid]; n > 0 {
 			report("%d entries were acked holding no request, or more than one: [mutation.Mutation.Kind] reports "+
@@ -306,10 +244,8 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W3 every read the store sent was answered by a shard",
-	// The routed equalities, which the two layer windows make identically. The
-	// directions are not symmetric and both matter — a read counted at the
-	// store and not at a shard is a read answered somewhere it should not have
-	// been.
+	// Routed equality: a read counted at the store but not at a shard was
+	// answered somewhere it should not have been.
 	Gate: hasStore,
 	Check: func(_ Expect, o Observed, report report) {
 		if int64(o.Totals.Reads) != o.Store.Overlaid {
@@ -334,8 +270,6 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W6 no task page in a run that reads none",
-	// A suite that routes none of its task pages at the merge is reading around
-	// the layer, which is as green as reading through it.
 	Gate: all(hasStore, readsNoTasks),
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Store.TaskReads != 0 {
@@ -344,10 +278,7 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W7 this run's history tasks reached the log",
-	// Both task calls go into the log in the runs that make them and in no
-	// other run: the count is zero without a layer and non-zero wherever the
-	// run writes tasks, and a run reporting the opposite is a task path that
-	// went round the accumulator.
+	// Zero here means the task path bypassed the accumulator.
 	Gate: all(hasStore, writesTasks),
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Store.TasksWritten == 0 {
@@ -382,11 +313,8 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W11 an empty layer acked nothing",
-	// The empty layer: what a run that writes neither must leave behind — an
-	// empty log, in every window that has a layer at all, and
-	// the same claim in both windows on purpose: a suite that writes nothing
-	// has an empty window whatever the window is configured to be, so a
-	// difference here would be the layer having grown a path.
+	// A run that writes nothing leaves an empty log in every window; anything
+	// else means the layer grew a path of its own.
 	Gate: writesNothing,
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Totals.Acked != 0 {
@@ -444,11 +372,8 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W18 sync mode's overlay is a no-op",
-	// Sync mode's half of the inversion, and in this window each is a claim
-	// about *nothing happening*. Sync mode drains before it answers, so the
-	// accumulator is empty at every call boundary and no read can cross a
-	// window that holds anything — which makes this the cheapest place to
-	// notice a window that stopped being one mutation.
+	// Sync mode drains before answering, so the accumulator is empty at every
+	// call boundary and no read can cross a held workflow.
 	Gate: inSync,
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Totals.ReadsHeld != 0 {
@@ -458,13 +383,10 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W19 sync mode's tail is empty at a drain boundary",
-	// The claim a "no replay needed" boundary rests on: at a window of one
-	// every acked entry is resolved before its caller is answered, so a restart
-	// here would have nothing to reconstruct.
-	//
-	// TailEntries is deliberately not Acked−Applied: sync mode's expected
-	// condition failures legitimately leave those apart (see [cycle.Stats]),
-	// and merging the two counters is the bug the cycle's own notes warn about.
+	// At a window of one every acked entry is resolved before its caller is
+	// answered, so a restart has nothing to replay. TailEntries is not
+	// Acked−Applied: expected condition failures separate those (see
+	// [cycle.Stats]).
 	Gate: inSync,
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Totals.TailEntries != 0 {
@@ -490,10 +412,8 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W22 sync mode answered a condition failure rather than committing it",
-	// The other half of sync mode's one carve-out, stated outright because it
-	// is the mechanism: a condition failure at a window of one is answered, so
-	// entries acked exceed drains committed. This reads Acked as a count, which
-	// the empty-log caveat on [Observed.Totals] is about.
+	// A failed condition at a window of one is answered, not committed, so
+	// acked exceeds drains. Reads Acked as a count; see [Observed.Totals].
 	Gate: all(inSync, expectsFailures),
 	Check: func(_ Expect, o Observed, report report) {
 		if int64(o.Totals.Acked) <= int64(o.Totals.Drains) {
@@ -503,11 +423,8 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W23 a windowed read crossed a held workflow",
-	// The inversion, and the reason the mode exists: sync mode's claims are that
-	// no read ever crossed a held workflow and that nothing was left in the
-	// tail, and here each must be false or the run was sync mode wearing a
-	// window's name — the same silent failure the witness was built for, one
-	// phase further on.
+	// The inverse of W18 and W19: in windowed mode each must happen, or the
+	// run was really sync.
 	Gate: all(inWindowed, writesState),
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Totals.ReadsHeld == 0 {
@@ -535,13 +452,9 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W26 a windowed range took a task out of a window",
-	// The drop, where a drain committed to count it: a range folding in takes
-	// the tasks the window already holds out of the batch. It is counted at the
-	// commit and not at the fold, because an uncommitted drain's entries stay
-	// in the log and replay folds them again — so a run whose window never
-	// filled commits nothing and legitimately reports zero, which is the mode
-	// working rather than the mechanism missing. What says the deletion path
-	// ran at all is W10.
+	// A folded range drops tasks the window holds. Drops are counted at commit
+	// (an uncommitted drain is replayed), so a run with no committed drain
+	// reports zero honestly; W10 covers the deletion path itself.
 	Gate: all(inWindowed, completesRanges, drainsCommitted),
 	Check: func(_ Expect, o Observed, report report) {
 		if o.Totals.DroppedTasks == 0 {
@@ -551,12 +464,8 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W27 intercepted writes were emitted",
-	// Every one of those numbers went out as a metric. Asserting the counters
-	// and the emissions against each other is what makes this more than a
-	// "something was recorded" check: the unit tests pin what each series
-	// means, and these pin that the composition emits them at all — which is
-	// the failure mode a metrics stack actually has, since a series nobody
-	// emits looks exactly like a system doing no work.
+	// Counters against emissions: unit tests pin what each series means,
+	// these pin that the composition emits them at all.
 	Gate: all(hasEmissions, writesState, hasStore),
 	Check: func(_ Expect, o Observed, report report) {
 		if n := len(o.Emitted[seriesIntercepted]); int64(n) != o.Store.Intercepted {
@@ -599,9 +508,8 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W32 a windowed drain collapsed something",
-	// wal_drained_mutations records one value per committed drain, so the run
-	// says outright that the accumulator folded a batch rather than a sequence
-	// of windows of one — the collapse itself, which no counter above can show.
+	// One value per committed drain; a value above 1 shows an actual collapse,
+	// which no counter can.
 	Gate: all(hasEmissions, writesState, inWindowed),
 	Check: func(_ Expect, o Observed, report report) {
 		if maxEmitted(o.Emitted[seriesDrainedMutations]) <= 1 {
@@ -610,12 +518,10 @@ var layerClaims = []claim{{
 	},
 }, {
 	Name: "W33 no condition reached a windowed drain",
-	// Where the run's expected condition failures were answered, and the answer
-	// is: all of them, before the append. The series counts failures that came
-	// back from a *drain* and were attributed to the one caller in its window,
-	// which in this mode nothing is — so a non-zero here is a condition that
-	// reached a transaction: either the check let one through, or a drain
-	// answered a batch whose caller it did not have.
+	// In windowed mode every condition is decided before the append, so the
+	// series of failures answered from a drain must be empty. A value means a
+	// condition reached a transaction, or a drain answered a caller it did
+	// not have.
 	Gate: all(hasEmissions, writesState, inWindowed),
 	Check: func(_ Expect, o Observed, report report) {
 		if n := len(o.Emitted[seriesAnsweredConditionFailures]); n != 0 {
@@ -634,11 +540,8 @@ var layerClaims = []claim{{
 	},
 }}
 
-// Check says whether the run the instruments saw is the run Expect claims, as a
-// list of failed claims — empty for a run that is what it says it is. Each
-// error is prefixed with the name of the claim that raised it, so a red run
-// says which half of the layer went missing rather than that something did.
-// Pure; the callers turn the errors into their own failure shape.
+// Check returns the failed claims, each prefixed with the claim's name; empty
+// means the run is what Expect says. It is pure.
 func (e Expect) Check(o Observed) []error {
 	switch e.Window {
 	case NoLayer, Sync, Windowed:
@@ -655,8 +558,7 @@ func (e Expect) Check(o Observed) []error {
 		if c.Gate != nil && !c.Gate(e, o) {
 			continue
 		}
-		// errors.New over a second Errorf: the formatted message is data by
-		// this point and a % in it is not a verb.
+		// errors.New, not Errorf: a % in the message is not a verb.
 		c.Check(e, o, func(format string, args ...any) {
 			errs = append(errs, errors.New(c.Name+": "+fmt.Sprintf(format, args...)))
 		})
@@ -664,16 +566,11 @@ func (e Expect) Check(o Observed) []error {
 	return errs
 }
 
-// Describe is the run as one line, for a person to read beside whatever the
-// witness said. It prints every counter but the trims and the replay's drops,
-// and only the kinds that fired — the zeroes are the interesting half, but
-// printing every name on every line to say so buries the ones that matter, and
-// [Expect.Check] is where a missing kind is a failure rather than a fact.
+// Describe renders the run as one line for people. It prints every counter
+// except trims and replay drops, and only the kinds that fired.
 //
-// task-collisions is printed and not asserted, and the asymmetry is the point:
-// the two sources a merged page draws from are disjoint by construction, so a
-// non-zero here is the one observation that would say that construction broke —
-// worth looking into rather than worth failing on.
+// task-collisions is printed but not asserted: a merged page's two sources are
+// disjoint by construction, so non-zero is worth investigating, not failing.
 func Describe(o Observed) string {
 	t := o.Totals
 	line := fmt.Sprintf("shards=%d epochs=%d acked=%d applied=%d tail=%d drains=%d "+
@@ -694,7 +591,7 @@ func Describe(o Observed) string {
 	return line
 }
 
-// describeKinds prints only the kinds a run actually saw.
+// describeKinds lists the kinds with a non-zero count.
 func describeKinds(t cycle.Totals) string {
 	var parts []string
 	for k, n := range t.Kinds {
@@ -705,11 +602,9 @@ func describeKinds(t cycle.Totals) string {
 	return strings.Join(parts, " ")
 }
 
-// drainTriggers summarises what asked for the drains — [walmetrics.Drains]'s
-// trigger tag — which says more about the window a run kept than the number of
-// drains does: a run whose drains are all fold.ErrRefused force-drains never
-// reached a size or age trigger at all, where one the mutations trigger
-// dominates is a window that filled.
+// drainTriggers counts drains by [walmetrics.Drains]'s trigger tag, which
+// shows how the window behaved (for example, all refusal force-drains means no
+// size or age trigger was ever reached).
 func drainTriggers(emitted Emissions) string {
 	by := map[string]int{}
 	for _, r := range emitted[seriesDrains] {
@@ -723,7 +618,7 @@ func drainTriggers(emitted Emissions) string {
 	return strings.Join(parts, ", ")
 }
 
-// maxEmitted is the largest value a series was recorded with.
+// maxEmitted returns the largest recorded value.
 func maxEmitted(rs []Emission) int64 {
 	var largest int64
 	for _, r := range rs {

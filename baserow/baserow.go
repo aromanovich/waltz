@@ -1,17 +1,12 @@
-// Package baserow is the cold store's two mutable-state reads, as the write
-// path needs them: one run's row, and a workflow's current-execution row with
-// the last_write_version beside it.
+// Package baserow provides the cold store's two mutable-state reads the write
+// path needs: one run's row, and a workflow's current-execution row with its
+// last_write_version.
 //
-// It exists because three packages need the same pair and none of them may name
-// each other's version of it. The wrapper holds a store and may import nothing
-// that reaches the plugin; the cycle stands a delegated assertion on a
-// pre-window row and may not name a store at all; apply reads the same two rows
-// back to attribute a condition failure. What it imports is upstream Temporal
-// and nothing of this layer, so all three may reach it.
+// The wrapper, the cycle and apply all need these reads and may not import one
+// another, so this package imports only upstream Temporal.
 //
-// What it owns is the three things every caller of those reads was repeating:
-// the shard is stamped onto the request, absence arrives as a nil row rather
-// than as an error, and the current row's version travels beside it.
+// It stamps the shard onto each request, returns absence as a nil row rather
+// than an error, and returns the current row's version beside it.
 package baserow
 
 import (
@@ -23,16 +18,12 @@ import (
 	p "go.temporal.io/server/common/persistence"
 )
 
-// Store is the pair of reads as Temporal's own store spells them, and the cold
-// store underneath satisfies it or intercept mode does not start: the layer
-// converts what the factory handed it, and answers [ErrNoVersionedRead] when
-// the conversion fails.
+// Store is the pair of reads, in Temporal's signatures. The cold store must
+// satisfy it or intercept mode does not start ([ErrNoVersionedRead]).
 //
-// The current-row read is the one that carries last_write_version, and it is
-// the store extension rather than the plain read because Temporal's own
-// [p.InternalGetCurrentExecutionResponse] has nowhere to hold that column. A
-// layer deciding the same condition through the plain read could confirm the
-// assertion and never refuse it.
+// The current-row read is a store extension because
+// [p.InternalGetCurrentExecutionResponse] cannot hold last_write_version.
+// Judging the assertion through the plain read could wrongly confirm it.
 type Store interface {
 	GetWorkflowExecution(
 		context.Context, *p.GetWorkflowExecutionRequest,
@@ -42,15 +33,12 @@ type Store interface {
 	) (*p.InternalGetCurrentExecutionResponse, int64, error)
 }
 
-// ErrNoVersionedRead is what [Of] answers for a store that does not implement
-// [Store]: the cold store below has not been extended with the
-// version-carrying current-row read, so intercept mode cannot be served over
-// it.
+// ErrNoVersionedRead is returned by [Of] for a store that does not implement
+// [Store]; intercept mode cannot run over it.
 var ErrNoVersionedRead = errors.New("baserow: the store below cannot read a current row's last_write_version")
 
-// Rows reads the pre-window rows one shard's write path stands on. A nil *Rows
-// is a caller that brought no store, which every caller of a delegated
-// assertion has to answer for itself.
+// Rows reads the pre-window rows a shard's write path depends on. A nil *Rows
+// means no store; callers with a delegated assertion must handle that.
 type Rows struct {
 	store Store
 }
@@ -58,10 +46,8 @@ type Rows struct {
 // New wraps a store that answers both reads.
 func New(store Store) *Rows { return &Rows{store: store} }
 
-// Of is [New] for a caller holding Temporal's own interface, which cannot
-// declare the version-carrying read. It is a conversion and not a parameter
-// type because that is how the store arrives: through the factory, as
-// [p.ExecutionStore].
+// Of is [New] for a store that arrives from the factory as [p.ExecutionStore],
+// which cannot declare the version-carrying read.
 func Of(store p.ExecutionStore) (*Rows, error) {
 	versioned, ok := store.(Store)
 	if !ok {
@@ -92,13 +78,11 @@ func (r *Rows) Run(
 // Current reads a workflow's current-execution row and its last_write_version,
 // or nil and zero if there is none.
 //
-// Where the store puts what it answers with is load-bearing past the read: the
-// conflict error a refused write carries is built out of this value, so the run
-// belongs in RunID — upstream's own read fills that field and leaves the
-// execution state's copy empty — and the state must carry the request ids. A
-// conflict naming no run is one the history service declines to resolve, and
-// one carrying no request ids is a retried start that deduplicates against
-// nothing.
+// The store must put the run in RunID (as upstream does, leaving the execution
+// state's copy empty) and the request ids in the state: a refused write's
+// conflict error is built from this row. Without a run, history will not
+// resolve the conflict; without request ids, a retried start does not
+// deduplicate.
 func (r *Rows) Current(
 	ctx context.Context, shard int32, namespaceID, workflowID string,
 ) (*p.InternalGetCurrentExecutionResponse, int64, error) {
@@ -116,8 +100,7 @@ func (r *Rows) Current(
 	return row, version, nil
 }
 
-// absent is how "there is no such row" arrives from a store: an error and not
-// an empty answer, on both reads.
+// absent reports whether err means "no such row"; stores signal it as an error.
 func absent(err error) bool {
 	return errors.As(err, new(*serviceerror.NotFound))
 }

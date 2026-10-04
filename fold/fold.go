@@ -1,20 +1,17 @@
-// Package fold is the tail's compaction: it accumulates the mutations of a
-// window and emits, per dirty workflow, one merged request plus the assertions
-// that request stands on.
+// Package fold compacts the tail: it accumulates a window of mutations and
+// emits, per dirty workflow, one merged request plus the assertions that
+// request stands on.
 //
 // Assertions come from the head of the window and data from the tail, because
-// only the head was ever evaluated against the cold store. A snapshot-bearing
-// request resets the run's accumulator (I8); tasks concatenate across that
-// reset, being queue entries rather than mutable state.
+// only the head was evaluated against the cold store. A snapshot-bearing
+// request resets the run's accumulator (I8); tasks are queue entries, not
+// state, so they concatenate across that reset.
 //
-// Event history is the exception and history.go says why: a window keeps the
-// batches a record carried, in WAL order, and folds none of them. Two appends of
-// one node are two rows the store dedupes on its own key, and a blob is the
-// caller's rather than a state this layer may collapse.
+// Event history is not folded (see history.go): a window keeps each record's
+// batches in WAL order, and the store dedupes repeated nodes on its own key.
 //
-// This package folds what it is handed and may not name wal.Log or
-// wal.Entry: reaching the log is how trim and pacing land here one
-// convenience at a time, and both are the apply cycle's policy.
+// This package may not name wal.Log or wal.Entry: trim and pacing are the
+// apply cycle's policy, and reaching the log is how they would leak in.
 package fold
 
 import (
@@ -38,11 +35,11 @@ import (
 // still produces one is corrupt: fatal, not folded over.
 var ErrAfterTombstone = errors.New("fold: mutation on a run this window already deleted")
 
-// ErrInvalidStream reports a mutation that cannot follow the window's mutations
-// in any acked stream: a create of a run the window already holds live, a second
-// continue-as-new out of the same run. The single writer would have seen the
-// request fail, so the log is corrupt. A double continue-as-new is the one case
-// [Accumulator.Check] cannot pre-empt, no assertion standing in its way.
+// ErrInvalidStream reports a mutation that no acked stream could put after the
+// window's mutations, such as a create of a run the window holds live or a
+// second continue-as-new out of one run. The log is corrupt. A double
+// continue-as-new is the one case [Accumulator.Check] cannot pre-empt, since no
+// assertion stands in its way.
 var ErrInvalidStream = errors.New("fold: mutation cannot follow the window's mutations in any acked stream")
 
 // ErrRefused reports a valid window this accumulator cannot express as merged
@@ -50,47 +47,33 @@ var ErrInvalidStream = errors.New("fold: mutation cannot follow the window's mut
 // by draining and starting the refused mutation on a fresh window.
 var ErrRefused = errors.New("fold: window not foldable into merged requests")
 
-// ErrForeignPageToken reports a task-page token this layer did not write.
-// Nothing can hand one back: a task page is answered by a running cycle or not
-// at all, so every token a caller has of this layer's is one [Accumulator.TaskPage]
-// minted. Continuing on the base alone would be readable and wrong — the window
-// would drop out of the rest of that pagination, and the range its reader
-// completes at the end deletes the acked task rows that were in it.
+// ErrForeignPageToken reports a task-page token that [Accumulator.TaskPage] did
+// not mint. Paging on the base alone would drop the window from the rest of the
+// pagination, and the range completed at its end would delete acked task rows.
 var ErrForeignPageToken = errors.New("fold: task-page token was not written by this layer")
 
-// ErrBasePageTooLarge reports a cold store that answered a page with more rows
-// than it was asked for, which is [BasePage]'s fourth requirement and one
-// [HistoryBasePage] is held to as well. The cut rests on the count: where the
-// window alone overflows the page the base is asked for one row, and emitting
-// one row is what lets that page's cursor advance. A second row the store sent
-// unasked is one the cursor moves past unemitted — on a task page, one the
-// reader that completes the range at the end of the pagination deletes.
+// ErrBasePageTooLarge reports a cold store that answered with more rows than
+// asked, against [BasePage]'s fourth requirement (also held by
+// [HistoryBasePage]). The page cut relies on the count: an extra row is one the
+// cursor skips unemitted, and on a task page the range completion deletes it.
 var ErrBasePageTooLarge = errors.New("fold: the cold store answered with more rows than the page asked for")
 
-// ErrBaseRowOutsideRange reports a row outside the range the request named,
-// which is [BasePage]'s first requirement. What comes back is filtered against
-// the window's undrained deletes and against nothing else, so such a row reaches
-// the reader — where the queue panics on one, in a loop with no recover.
+// ErrBaseRowOutsideRange reports a row outside the requested range, against
+// [BasePage]'s first requirement. Nothing else filters such a row, and the
+// queue reader panics on one with no recover.
 var ErrBaseRowOutsideRange = errors.New("fold: the cold store answered with a row outside the range asked for")
 
-// ErrBasePageNotAscending reports a page whose rows do not ascend, or one
-// starting at or below a key this pagination has already passed — [BasePage]'s
-// second requirement, whose two halves fail the same way. The last key of a page
-// is what bounds the window's half of it and what goes into the token, so a base
-// row under that bound breaks the ascent across the page boundary, and the
-// reader's iterator skips what does not ascend without saying so: a task nobody
-// asks for again. A history page is held to the first half only, ascent being
-// the store's own order in the request's direction ([HistoryBasePage]).
+// ErrBasePageNotAscending reports a page whose rows do not ascend, or that
+// starts at or below a key this pagination already passed ([BasePage]'s second
+// requirement). The reader silently skips a row that does not ascend, so that
+// task would never be read again. A history page is held only to ascending
+// within the page, in the request's direction ([HistoryBasePage]).
 var ErrBasePageNotAscending = errors.New("fold: the cold store answered a page that does not ascend")
 
-// ErrBasePageEmptyBesideAToken reports a store answering no rows and a token at
-// once, against [BasePage]'s third requirement that no rows means the range is
-// exhausted. The merge would otherwise read it as the end of the pagination,
-// stop calling the base, and hand back a pagination that is over — so rows the
-// store still held are never read, and on a task page the range its reader
-// completes at the end deletes them. A store that pages by filtering a chunk
-// and can answer an empty page with more behind it does not satisfy this
-// contract, and is told so here rather than silently losing the remainder.
+// ErrBasePageEmptyBesideAToken reports a store answering no rows together with
+// a token, against [BasePage]'s third requirement that no rows means the range
+// is exhausted. Read as the end, the remaining rows would be skipped, and on a
+// task page the range completion would delete them.
 var ErrBasePageEmptyBesideAToken = errors.New("fold: the cold store answered no rows beside a token saying it holds more")
 
 // RunAssertion is what the head of the window asserted about one run's row in
@@ -120,20 +103,18 @@ const (
 )
 
 // CurrentAssertion is what the head of the window asserted about the workflow's
-// current-execution row. Fixed by the first mutation of the window that touches
-// the row and shared by every request emitted for the workflow: apply asserts it
-// once per workflow, not once per request.
+// current-execution row. The first mutation touching the row fixes it, and
+// apply asserts it once per workflow.
 type CurrentAssertion struct {
 	Kind             CurrentKind
 	RunID            string
 	LastWriteVersion int64 // CurrentEqualsWithVersion only
 }
 
-// CurrentWrite is the current-execution row's content as the sequential path
-// would have left it: the window's last mutation that writes the row, rendered
-// the way the store's own path for that kind renders it. Apply swallows the
-// write the store derives from the merged request's kind (the head of the
-// window) and registers this one instead.
+// CurrentWrite is the current-execution row as the sequential path would have
+// left it, rendered from the window's last mutation that writes the row. Apply
+// registers it in place of the write the store derives from the merged
+// request's kind.
 type CurrentWrite struct {
 	RunID            string
 	StateBlob        *commonpb.DataBlob
@@ -141,38 +122,30 @@ type CurrentWrite struct {
 	State            enumsspb.WorkflowExecutionState
 }
 
-// BufferedBatch is one batch of buffered events and the run that accumulated
-// it. The run travels with the blob because apply keys the row by it, and a
-// window whose merged state is a snapshot carries no mutation to read it from.
+// BufferedBatch is one batch of buffered events and its run. Apply keys the row
+// by run, and a snapshot-merged window has no mutation to read the run from.
 type BufferedBatch struct {
 	RunID string
 	Blob  *commonpb.DataBlob
 }
 
 // Emitted is one merged request: the unit apply drives through the store.
-//
-// Its fields are what the request is — whose it is, which slice of the window
-// it came from, the request itself. What the fold recorded about it is behind
-// the methods below, each of them a claim only [Accumulator.Drain] can make
-// true.
+// Fields describe the request; methods expose what only [Accumulator.Drain]
+// records about it.
 type Emitted struct {
 	NamespaceID string
 	WorkflowID  string
-	// HeadSeqno is the seqno of the mutation that opened this request and
-	// TailSeqno the last folded into it. A snapshot arriving over a pending
-	// update opens a new request at its own seqno and carries the superseded
-	// update's tasks and head assertion into it, so a mutation below HeadSeqno
-	// can still be part of what is here. Drain returns requests in TailSeqno
-	// order and apply must keep that order: a merged request's writes are its
-	// folded tail state, so a sequentially interleaved request must land before
-	// that tail rather than before its earliest constituent.
+	// HeadSeqno is the mutation that opened this request and TailSeqno the last
+	// folded into it. A snapshot over a pending update carries that update's
+	// tasks and head assertion, so a mutation below HeadSeqno can be included.
+	// Drain returns requests in TailSeqno order and apply must keep it, since a
+	// request writes its tail state.
 	HeadSeqno wal.Seqno
 	TailSeqno wal.Seqno
 	// Request holds exactly one of the six request kinds a window can emit.
 	Request mutation.Mutation
 	// BufferedBatches are the window's buffered-event batches in arrival order,
-	// one row per batch. They do not merge, so the request's own
-	// NewBufferedEvents slot is always nil.
+	// one row each. They do not merge; the request's NewBufferedEvents is nil.
 	BufferedBatches []BufferedBatch
 
 	runs          map[string]RunAssertion
@@ -182,46 +155,35 @@ type Emitted struct {
 }
 
 // RunAssertions is the head-of-window state of each run this request touches,
-// by run id, which the drain's applier substitutes for the assertions
-// the store would derive from the versions the request writes. The map is the
-// batch's own: writing to it rewrites what the drain stands on.
+// by run id. The applier substitutes it for the assertions the store would
+// derive from the written versions. The map is the batch's own; do not write
+// to it.
 //
-// Two kinds of run have no entry, and a consumer needs neither apart: one that
-// came in asserting nothing (a Delete-headed window), and one whose head an
-// earlier request of this batch already carries. The head is the *window's*
-// claim about the pre-window row, so it is placed once — see [Accumulator.Drain],
-// where the only window that can emit two requests for one run is also the one
-// where placing it twice contradicts itself.
+// A run has no entry if it asserted nothing (a Delete-headed window) or if an
+// earlier request of the batch already carries its head: the head is placed
+// once (see [Accumulator.Drain]).
 func (e *Emitted) RunAssertions() map[string]RunAssertion { return e.runs }
 
-// OrphanedTasks are tasks from mutations a tombstone collapsed, which only a
-// tombstone carries: the Delete that collapsed them has no task slot of its
-// own, and losing them would break I8. Writing them is apply's business.
+// OrphanedTasks are tasks of mutations a tombstone collapsed; only a tombstone
+// carries them, as a Delete has no task slot. Apply must write them (I8).
 func (e *Emitted) OrphanedTasks() map[tasks.Category][]p.InternalHistoryTask {
 	return e.orphanedTasks
 }
 
-// Workflow is the current-row facts this request's workflow carries, which are
-// the workflow's and not this request's, and never nil. Every request of one
-// workflow returns the same pointer, which is what makes "two requests cannot
-// disagree about them" a property of the value rather than of an index.
+// Workflow is the request's workflow record, never nil. Every request of one
+// workflow returns the same pointer.
 func (e *Emitted) Workflow() *WorkflowRecord { return e.workflow }
 
-// FirstOfWorkflow reports that this is the first request of the batch naming
-// its workflow record, which is where that record's own assertions belong. The
-// store reports the first failing assertion in registration order, so a
-// consumer that hoisted every record's assertions to the front would change
-// which failure a mixed batch reports — and one that registered them per
-// request would assert the same row several times.
+// FirstOfWorkflow reports that this is the batch's first request naming its
+// workflow record, where the record's assertions are registered. The store
+// reports the first failing assertion in registration order, so hoisting them
+// would change which failure a batch reports.
 func (e *Emitted) FirstOfWorkflow() bool { return e.first }
 
 // WorkflowRecord is the window's net effect on one workflow's current-execution
-// row. A workflow's drain may carry several requests — a tombstone and the run
-// created behind it are two — and these facts are the same for all of them, so
-// they are stated once here and pointed at by [Emitted.Workflow] rather than
-// copied onto each. Apply registers them at the request
-// [Emitted.FirstOfWorkflow] marks; two requests cannot disagree about them,
-// because there is nothing left to disagree.
+// row. It is shared by all of the workflow's requests (a tombstone and the run
+// created behind it are two) through [Emitted.Workflow], and apply registers it
+// at the request [Emitted.FirstOfWorkflow] marks.
 type WorkflowRecord struct {
 	NamespaceID string
 	WorkflowID  string
@@ -232,17 +194,14 @@ type WorkflowRecord struct {
 	// it, nil when the window never wrote the row or when a DeleteCurrent
 	// removed what it wrote ([WorkflowRecord.CurrentRemoved]).
 	CurrentWrite *CurrentWrite
-	// CurrentRemoved reports that the window's net effect on the current row is
-	// removal: a DeleteCurrent removed the row the window itself had written.
-	// Apply must then let the emitted DeleteCurrent remove the row whatever it
-	// names (the store's guard asks about the pre-window row) and swallow the
-	// store's derived write with nothing in its place. A write and a delete of
-	// this row are never emitted together.
+	// CurrentRemoved reports that a DeleteCurrent removed the row the window had
+	// written. Apply must let the emitted DeleteCurrent remove the row whatever
+	// it names (the store's guard asks about the pre-window row) and drop the
+	// store's derived write. A write and a delete of this row never go together.
 	CurrentRemoved bool
 }
 
-// Stats are the accumulator's two counters. Fold reports the values and emits no
-// metric of its own.
+// Stats are the accumulator's counters; fold emits no metric itself.
 type Stats struct {
 	// MutationsIn counts mutations added since the last drain.
 	MutationsIn int
@@ -250,8 +209,7 @@ type Stats struct {
 	DirtyWorkflows int
 }
 
-// CollapseRatio is mutations in over dirty workflows out, or 0 for an empty
-// window.
+// CollapseRatio is MutationsIn / DirtyWorkflows, or 0 for an empty window.
 func (s Stats) CollapseRatio() float64 {
 	if s.DirtyWorkflows == 0 {
 		return 0
@@ -260,22 +218,18 @@ func (s Stats) CollapseRatio() float64 {
 }
 
 // Accumulator folds one shard's window. Not safe for concurrent use: the shard's
-// single-threaded apply loop owns it. Add either folds the mutation in whole or
-// returns an error leaving the accumulator exactly as it was, validation running
-// before the first write. It takes ownership of what it is handed: requests are
-// merged in place, so a caller that needs the mutation afterwards must copy it
-// first.
+// apply loop owns it. Add either folds the mutation in whole or returns an error
+// leaving the accumulator unchanged. Add takes ownership of the mutation and
+// merges it in place; a caller that needs it afterwards must copy it first.
 type Accumulator struct {
 	shard       wal.ShardID
 	lastSeqno   wal.Seqno
 	mutationsIn int
 	workflows   map[wfKey]*workflowAcc
 
-	// The history-task half of the window (histtasks.go). It sits beside the
-	// workflows rather than inside them because the store's task rows are keyed
-	// by (shard, category, key) and name no run: addedTasks are the rows an
-	// AddHistoryTasks put in, in arrival order and unsorted, and ranges holds the
-	// undrained range deletes by category id.
+	// The history-task half of the window (histtasks.go), kept per shard because
+	// task rows name no run. addedTasks are AddHistoryTasks rows in arrival
+	// order, unsorted; ranges are undrained range deletes by category id.
 	addedTasks   map[tasks.Category][]p.InternalHistoryTask
 	ranges       map[int32]*rangeAcc
 	taskTail     wal.Seqno
@@ -300,9 +254,8 @@ type wfKey struct {
 	workflowID  string
 }
 
-// runKey names one run of one workflow inside a drain. The workflow is the
-// record pointer rather than its ids: [Accumulator.Drain] has the record in hand
-// where it uses this, and two workflows cannot share one.
+// runKey names one run of one workflow inside a drain, by record pointer
+// (unique per workflow) rather than by ids.
 type runKey struct {
 	workflow *WorkflowRecord
 	runID    string
@@ -314,36 +267,26 @@ type workflowAcc struct {
 	pending []*pendingReq
 }
 
-// currentAcc is the window's whole state for one workflow's current-execution
-// row. [Accumulator.Drain], [Accumulator.decideCurrent] and
-// [Accumulator.ViewCurrent] share its single derivation in
-// [workflowAcc.currentView].
+// currentAcc is the window's state for one workflow's current-execution row.
+// Readers derive from it only through [workflowAcc.currentView].
 //
-// write and removed are mutually exclusive, and that is a property of the two
-// methods below rather than a sentence: they are the only writers of either
-// field, and each sets both. A window that wrote the row and then removed it
-// emits the removal alone, because handing apply an upsert and a delete of one
-// row leaves which wins to the plugin's statement order.
+// write and removed are mutually exclusive: the two methods below are their
+// only writers and each sets both. An upsert and a delete of one row would
+// leave the winner to the plugin's statement order.
 type currentAcc struct {
 	// assertion is the head-of-window assertion on the row, nil when the window
-	// does not hold it — which is the condition authority's partition
-	// ([workflowAcc.assertsCurrent]) and why nothing else may compare it to nil.
+	// does not hold it. Only [workflowAcc.assertsCurrent] may compare it to nil.
 	assertion *CurrentAssertion
-	// write is the window's last current-row write, overwritten by every
-	// mutation that writes the row: a last-writer effect, not a precondition
-	// like the assertion above.
+	// write is the window's last current-row write (last writer wins).
 	write *CurrentWrite
-	// tainted marks that a DeleteCurrent modified the current row with no
-	// assertion recorded, so a later mutation asserting on the row cannot fold
-	// into this window (currentTaintedRefusal).
+	// tainted marks a DeleteCurrent with no assertion recorded; a later
+	// assertion on the row cannot fold in (currentTaintedRefusal).
 	tainted bool
-	// removed marks that the window's net effect on the current row is removal.
-	// See [WorkflowRecord.CurrentRemoved].
+	// removed: see [WorkflowRecord.CurrentRemoved].
 	removed bool
 }
 
-// recordWrite takes the window's latest current-row write, which outranks any
-// removal before it.
+// recordWrite takes the latest current-row write, cancelling an earlier removal.
 func (c *currentAcc) recordWrite(cw *CurrentWrite) {
 	c.write, c.removed = cw, false
 }
@@ -353,10 +296,8 @@ func (c *currentAcc) remove() {
 	c.write, c.removed = nil, true
 }
 
-// recordCurrent takes what one mutation says about the current-execution row:
-// the head assertion, which only the window's first toucher of the row fixes,
-// and the write, which the last one wins. The commit half of a handler calls it
-// past its last refusal, cw having been rendered before anything merged.
+// recordCurrent records one mutation's current-row assertion (first toucher
+// fixes it) and write (last wins). Handlers call it past their last refusal.
 func (w *workflowAcc) recordCurrent(want asserted, cw *CurrentWrite) {
 	if !w.assertsCurrent() {
 		w.cur.assertion = want.current
@@ -366,26 +307,21 @@ func (w *workflowAcc) recordCurrent(want asserted, cw *CurrentWrite) {
 	}
 }
 
-// recordCurrentWrite records the window's last current-row write and drops any
-// delete-current already in the window, the write replacing the row wholesale.
-// Keeping both would hand apply an upsert and a delete of one row, leaving which
-// of the two wins to the plugin's statement order rather than to the window.
+// recordCurrentWrite records the last current-row write and drops any pending
+// delete-current, since the write replaces the row and an upsert beside a
+// delete would leave the winner to the plugin's statement order.
 func (w *workflowAcc) recordCurrentWrite(cw *CurrentWrite) {
 	w.cur.recordWrite(cw)
 	w.pending = slices.DeleteFunc(w.pending, func(pr *pendingReq) bool { return pr.m.DeleteCurrent != nil })
 }
 
-// currentTaintedRefusal refuses a mutation standing on the current row when a
-// delete-current sits in the window with no assertion above it. The delete is a
-// guarded no-op and not an assertion, so an assertion recorded past it would be
-// a mid-window claim dressed as a head-of-window one.
+// currentTaintedRefusal refuses a mutation asserting on the current row when an
+// unasserted delete-current is in the window: an assertion recorded past it
+// would be a mid-window claim posing as a head-of-window one.
 //
-// Whether the mutation stands on that row at all is this rule's own question and
-// not each handler's. A handler that carried the test itself and then dropped it
-// would record exactly the claim above, and nothing would say so: the authority
-// refuses it before the append, so only a replayed stream — which reaches
-// [Accumulator.Add] with no [Accumulator.Check] in front of it — would ever meet
-// the difference.
+// The "does it assert on the row" test lives here, not in handlers, because
+// only a replayed stream (Add without Check) would expose a handler that
+// dropped it.
 func currentTaintedRefusal(w *workflowAcc, want asserted) error {
 	if want.current == nil {
 		return nil
@@ -397,7 +333,7 @@ func currentTaintedRefusal(w *workflowAcc, want asserted) error {
 }
 
 // runState is one run's place in the window. Its assertion is fixed by the
-// first mutation that touches the run and never rewritten.
+// run's first mutation.
 type runState struct {
 	// assertion is nil when the run's head asserted nothing (Delete-headed).
 	assertion *RunAssertion
@@ -405,14 +341,12 @@ type runState struct {
 	// nil once tombstoned.
 	owner *pendingReq
 	part  partKind
-	// buffered holds the run's buffered-event batches, stripped from the
-	// mutations they arrived in.
+	// buffered holds batches stripped from the run's mutations.
 	buffered   []*commonpb.DataBlob
 	tombstoned bool
 }
 
-// partKind names which slot of the owning request carries a run's row state. It
-// is [mutation.Part] itself so the two numberings cannot drift apart.
+// partKind names which slot of the owning request carries a run's row state.
 type partKind = mutation.Part
 
 const (
@@ -479,16 +413,13 @@ func (a *Accumulator) Stats() Stats {
 	return Stats{MutationsIn: a.mutationsIn, DirtyWorkflows: len(a.workflows)}
 }
 
-// Batch is one drain's whole output: these requests, this task work, these
-// event batches, and the seqno a transaction that applied them may acknowledge.
+// Batch is one drain's output: requests, task work, event batches, and the
+// seqno a transaction applying them may acknowledge.
 //
-// Only [Accumulator.Drain] builds one, and that is what apply's write path
-// stands on rather than re-deriving: the requests are in tail-seqno order, they
-// belong to the one shard [Batch.Shard] names, the watermark is at or above
-// every seqno they carry, every request names a workflow record, and only a
-// tombstone carries orphaned tasks. A batch built beside the fold could hold
-// none of that; the only one that can still be built is the zero batch, which
-// carries nothing and is refused.
+// Only [Accumulator.Drain] builds one, which guarantees: requests in tail-seqno
+// order, all of the shard [Batch.Shard] names, a watermark at or above every
+// seqno carried, a workflow record on every request, and orphaned tasks only
+// on tombstones. The zero batch carries nothing and is refused.
 type Batch struct {
 	shard     wal.ShardID
 	requests  []Emitted
@@ -498,42 +429,32 @@ type Batch struct {
 	watermark wal.Seqno
 }
 
-// Empty reports a batch no transaction need carry: no merged request, no task
-// work and no history. The counters are not consulted.
+// Empty reports no requests, task work or history; counters are ignored.
 func (b Batch) Empty() bool {
 	return len(b.requests) == 0 && b.tasks.Empty() && len(b.history) == 0
 }
 
-// Shard is the shard whose window this is: the accumulator's own. It is what a
-// caller pairs against the shard it was asked to write, which is the one thing
-// above that no batch can know.
+// Shard is the accumulator's shard, for the caller to check.
 func (b Batch) Shard() wal.ShardID { return b.shard }
 
-// Len is how many merged requests the batch carries: usually one per dirty
-// workflow, but a workflow whose window tombstoned a run and created the next
-// one behind it carries two.
+// Len is the number of merged requests: one per dirty workflow, or two where a
+// run was tombstoned and the next created behind it.
 func (b Batch) Len() int { return len(b.requests) }
 
 // Watermark is the seqno the drain's transaction acks: the maximum of the
-// requests' tail, the task work's and the history's, the three being in no
-// shared ordering. A batch carrying seqnos above the position it acks would leave
-// applied rows above where a replay resumes.
+// requests', task work's and history's tails, which share no ordering.
 func (b Batch) Watermark() wal.Seqno { return b.watermark }
 
-// Stats describe the window that was drained, not the batch: an empty batch can
-// still carry a mutation count, from the one window that folds an entry and
-// drains nothing — an AddHistoryTasks that carried no rows.
+// Stats describe the drained window, not the batch: an AddHistoryTasks with no
+// rows folds an entry and drains an empty batch.
 func (b Batch) Stats() Stats { return b.stats }
 
-// Settles is the position this drain's window acked entries up to, and whether
-// it acked any at all. The caller that carries the batch in a transaction
-// already has [Batch.Watermark]; this is for the one that carries none, because
-// a window can fold entries and still drain an empty batch — in exactly one
-// shape, which emptydrain_test.go names and holds every other kind
-// against. Those entries are settled off this answer or never.
+// Settles is the position this window acked entries up to, and whether it
+// acked any. It is for a caller with an empty batch, which can still have
+// folded entries (see emptydrain_test.go); those are settled off this or never.
 //
-// False is a window that folded nothing at all, whose watermark is zero: a
-// position taken from it would report every entry ever acked as unsettled.
+// False means nothing was folded; its zero watermark taken as a position would
+// mark every acked entry unsettled.
 func (b Batch) Settles() (wal.Seqno, bool) {
 	if b.stats.MutationsIn == 0 {
 		return 0, false
@@ -541,12 +462,11 @@ func (b Batch) Settles() (wal.Seqno, bool) {
 	return b.watermark, true
 }
 
-// Tasks is the shard-level history-task work beside the requests, which is in
-// no workflow's ordering because it is no workflow's ([TaskWork]).
+// Tasks is the shard-level history-task work ([TaskWork]).
 func (b Batch) Tasks() TaskWork { return b.tasks }
 
-// Each iterates the batch's merged requests in tail-seqno order, which is
-// apply's own order and the order the assertions must be registered in.
+// Each iterates the merged requests in tail-seqno order, the order assertions
+// must be registered in.
 func (b Batch) Each() iter.Seq[*Emitted] {
 	return func(yield func(*Emitted) bool) {
 		for i := range b.requests {
@@ -557,16 +477,13 @@ func (b Batch) Each() iter.Seq[*Emitted] {
 	}
 }
 
-// Drain emits the window as one [Batch] — well-formed by construction, in every
-// sense [Batch] states — and resets the accumulator. The seqno floor survives
-// the drain; the pending task deletion ranges do not, they ride the batch that
-// applies them ([TaskWork]).
+// Drain emits the window as one [Batch] and resets the accumulator. The seqno
+// floor survives the drain; pending task deletion ranges ride the batch
+// ([TaskWork]).
 func (a *Accumulator) Drain() Batch {
 	stats := a.Stats()
 
-	// The pending requests and not the workflows: one per dirty workflow is the
-	// ordinary case, and the tombstone-and-recreate one appends past it, so the
-	// workflow count is a lower bound that regrows a wide struct mid-drain.
+	// Sized by pending requests, not workflows: a tombstone-and-recreate adds one.
 	pending := 0
 	for _, w := range a.workflows {
 		pending += len(w.pending)
@@ -581,10 +498,7 @@ func (a *Accumulator) Drain() Batch {
 			cur := *w.cur.assertion
 			rec.Current = &cur
 		}
-		// From the shape rather than from the two fields, so that "a write and
-		// a removal are never emitted together" is read off the same derivation
-		// the overlay and the authority read, instead of being a pair of
-		// independent ifs that happen never to both fire.
+		// The shared derivation never yields both a write and a removal.
 		switch view := w.currentView(); view.Shape {
 		case CurrentWritten:
 			cw := *view.write
@@ -621,17 +535,12 @@ func (a *Accumulator) Drain() Batch {
 		}
 	}
 	slices.SortFunc(out, func(a, b Emitted) int { return cmp.Compare(a.TailSeqno, b.TailSeqno) })
-	// After the sort, so that "first request naming this record" is a position
-	// in the order apply drives rather than in the order the map ranged.
+	// After the sort, so "first" means first in apply's order.
 	//
-	// A run's head assertion is the same kind of claim and is dropped from every
-	// request past the first naming that run, for a reason the record's does not
-	// have: the only window that emits two requests for one run is a tombstone
-	// with a create behind it, and the delete between them has already removed
-	// the row the assertion is about. Placed twice, the second placement
-	// contradicts the first — a head at v2 holds at the delete and reports
-	// *must exist* at the create, halting the shard over a window this package
-	// admits by design.
+	// A run's head assertion also goes only on the first request naming the run.
+	// Two requests for one run means a tombstone then a create; the delete
+	// removes the row, so a head at v2 repeated on the create would fail and
+	// halt the shard over a valid window.
 	named := make(map[*WorkflowRecord]struct{}, len(a.workflows))
 	placed := make(map[runKey]struct{}, len(out))
 	for i := range out {
@@ -652,11 +561,8 @@ func (a *Accumulator) Drain() Batch {
 
 	work := a.drainTasks()
 
-	// Above all three: the folded requests, whose last tail seqno is the
-	// maximum because out is sorted, and the task work and the event batches,
-	// whose seqnos are not in that ordering. The task work's tail counts even
-	// when the work is empty, since an AddHistoryTasks that carried no rows still
-	// folded its entry and a watermark below it would replay it.
+	// The maximum of all three tails (out is sorted). The task tail counts even
+	// for empty work: a rowless AddHistoryTasks still folded its entry.
 	var watermark wal.Seqno
 	if len(out) > 0 {
 		watermark = out[len(out)-1].TailSeqno
@@ -689,9 +595,9 @@ func (a *Accumulator) acc(namespaceID, workflowID string) *workflowAcc {
 
 // heldRun is the window's state for run, nil when the window does not hold it.
 //
-// This and [workflowAcc.assertsCurrent] are the condition authority's partition: a
-// row the window does not hold is a head, so its assertion is recorded rather
-// than answered. Both halves ask here, so neither draws a line the other did not.
+// This and [workflowAcc.assertsCurrent] are the condition authority's partition:
+// an assertion on a row the window does not hold is recorded, not answered.
+// Fold and the check both ask here so they cannot drift.
 func (w *workflowAcc) heldRun(run string) *runState {
 	if w == nil {
 		return nil
@@ -702,23 +608,16 @@ func (w *workflowAcc) heldRun(run string) *runState {
 // assertsCurrent reports whether the window holds the current-execution row.
 func (w *workflowAcc) assertsCurrent() bool { return w != nil && w.cur.assertion != nil }
 
-// currentTainted reports the row a delete-current sits over with no assertion
-// above it. Beside [workflowAcc.assertsCurrent] for the same reason: both halves
-// of the authority refuse on this, and a half that spelled the test itself would
-// answer a claim the other one refuses.
+// currentTainted reports an unasserted delete-current on the row. Both halves
+// of the authority refuse on it, so neither may spell the test itself.
 func (w *workflowAcc) currentTainted() bool {
 	return w != nil && !w.assertsCurrent() && w.cur.tainted
 }
 
-// adopt registers a new pending request as the owner of a run. An existing run
-// state keeps its head assertion and the fallback is dropped, which is what makes
-// a Create behind a tombstone stand on what the window's *head* asserted rather
-// than on absence — nothing at all where a Delete was that head. A fresh run gets
-// fallback as its head.
-//
-// Where that head is then placed is [Accumulator.Drain]'s: the assertion rides
-// the first emitted request naming the run and not this one, the Delete between
-// them having removed the row it is about.
+// adopt registers a pending request as the owner of a run. A fresh run gets
+// fallback as its head; an existing one keeps its head, so a Create behind a
+// tombstone stands on the window's head (nothing, if a Delete headed it) rather
+// than on absence. [Accumulator.Drain] places that head on the first request.
 func (w *workflowAcc) adopt(pr *pendingReq, run string, part partKind, fallback *RunAssertion) {
 	rs := w.heldRun(run)
 	if rs == nil {
@@ -740,10 +639,9 @@ func (w *workflowAcc) drop(pr *pendingReq) {
 }
 
 // foldBuffered applies the buffered-events rules for one arriving mutation:
-// ClearBufferedEvents drops the batches accumulated before it and marks the
-// merged slot to clear the store's pre-window rows; the mutation's own batch is
-// stripped into the run's batch list. slot is nil when the run's row state
-// lives in a snapshot part, whose own write replaces the rows wholesale.
+// ClearBufferedEvents drops earlier batches and marks slot to clear the store's
+// pre-window rows; the mutation's own batch moves to the run's list. slot is
+// nil when the run's state is a snapshot, whose write replaces the rows.
 func (rs *runState) foldBuffered(mut *p.InternalWorkflowMutation, slot *p.InternalWorkflowMutation) {
 	if mut.ClearBufferedEvents {
 		rs.buffered = nil
@@ -892,8 +790,7 @@ func (a *Accumulator) addSet(seqno wal.Seqno, req *p.InternalSetWorkflowExecutio
 		w.adopt(pr, snap.RunID, partSnapshot, nil)
 		w.pending = append(w.pending, pr)
 	default:
-		// Already a snapshot: the newer one replaces its content in place,
-		// under the owner's own envelope.
+		// Already a snapshot: replace its content under the owner's envelope.
 		rs.owner.tailSeqno = seqno
 		replaceSnapshot(rs.owner.snapshotPart(rs.part), snap)
 		rs.buffered = nil
@@ -939,8 +836,7 @@ func (a *Accumulator) addConflictResolve(seqno wal.Seqno, req *p.InternalConflic
 		case resetRS.part == partMutation && len(resetRS.owner.runs) > 1:
 			return fmt.Errorf("%w: conflict-resolve of a run whose pending update also continued-as-new", ErrRefused)
 		case resetRS.part != partMutation && parts > 1:
-			// The reset content could replace the snapshot in place, but the
-			// request's other parts would be left with no envelope to ride.
+			// The other parts would have no envelope to ride.
 			return fmt.Errorf("%w: conflict-resolve with %d parts on a run whose window state is a snapshot", ErrRefused, parts)
 		}
 	}
@@ -954,8 +850,8 @@ func (a *Accumulator) addConflictResolve(seqno wal.Seqno, req *p.InternalConflic
 	w = a.acc(reset.NamespaceID, reset.WorkflowID)
 
 	if resetRS != nil && resetRS.part != partMutation {
-		// Only the reset part exists (validated above): it replaces the
-		// snapshot content under the owner's envelope, like Set does.
+		// Only the reset part exists (validated above); it replaces the
+		// snapshot like Set does.
 		resetRS.owner.tailSeqno = seqno
 		replaceSnapshot(resetRS.owner.snapshotPart(resetRS.part), reset)
 		resetRS.buffered = nil
@@ -978,8 +874,8 @@ func (a *Accumulator) addConflictResolve(seqno wal.Seqno, req *p.InternalConflic
 	}
 	if cur := req.CurrentWorkflowMutation; cur != nil {
 		if curRS != nil {
-			// The prior update merges under the conflict-resolve's envelope:
-			// its collections head the merge, the resolve's mutation the tail.
+			// The prior update heads the merge and the resolve's mutation
+			// tails it, under the conflict-resolve's envelope.
 			old := curRS.owner
 			dst := &old.m.Update.UpdateWorkflowMutation
 			curRS.foldBuffered(cur, dst)
@@ -1016,15 +912,12 @@ func (a *Accumulator) addDelete(seqno wal.Seqno, req *p.DeleteWorkflowExecutionR
 	pr := newPending(seqno, mutation.Mutation{Delete: req})
 	if rs != nil {
 		// The tombstone collapses the run's pending state; its tasks must
-		// survive (I8), and the Delete has no slot to carry them in.
+		// survive (I8) and the Delete has no slot for them.
 		old := rs.owner
 		pr.orphanedTasks = old.slotTasks(rs.part)
 		w.drop(old)
-		// The two nils are belt and braces and deleting them fails nothing:
-		// [workflowAcc.adopt] clears both when a create begins the run's next life
-		// behind this tombstone, and until one does, the owner names a request no
-		// longer in w.pending, which the drain therefore never reaches. They stay
-		// because the alternative is a run whose state points at a dropped request.
+		// Defensive: adopt resets both, and the drain never reaches a dropped
+		// owner, but the state should not point at a dropped request.
 		rs.owner = nil
 		rs.buffered = nil
 		rs.tombstoned = true
@@ -1041,38 +934,29 @@ func (a *Accumulator) addDeleteCurrent(seqno wal.Seqno, req *p.DeleteCurrentWork
 	// window state, if any, stays live.
 	w := a.acc(req.NamespaceID, req.WorkflowID)
 
-	// No assertion is recorded: the store's delete-current removes the row only
-	// if the row names this run, so there is nothing the window stands on, and
-	// synthesising current==run would turn the legal no-op into a false
-	// invariant violation. What the delete taints is any later assertion on the
-	// row, which currentTaintedRefusal refuses.
+	// No assertion: the delete is guarded (it removes the row only if it names
+	// this run), so asserting current==run would turn a legal no-op into a false
+	// violation. Instead it taints later assertions (currentTaintedRefusal).
 	w.cur.tainted = true
 
-	// Upsert-versus-delete, resolved here as for every other key: the guard
-	// asks about the row at the delete's position in the stream, which where
-	// the window has already written it is the window's own write. Leaving both
-	// for apply hands the transaction an upsert and a delete of one row, and
-	// which of the two wins is then the store's statement order rather than the
-	// window's.
+	// Resolve upsert-versus-delete here, as for every key: if the window wrote
+	// the row, the guard is asked about that write, not left to the store's
+	// statement order.
 	if w.cur.write != nil {
 		if w.cur.write.RunID != req.RunID {
-			// The row names the window's own write, not this run: sequentially
-			// a no-op, so the net effect is the write and nothing is emitted.
+			// Sequentially a no-op: the write stands, nothing is emitted.
 			return
 		}
-		// The delete removes what this window wrote. The net effect is removal
-		// whatever the row named before the window, so the write is dropped
-		// and the emitted delete carries no guard ([WorkflowRecord.CurrentRemoved]).
+		// Removes the window's own write: the net effect is removal whatever
+		// the pre-window row named ([WorkflowRecord.CurrentRemoved]).
 		w.cur.remove()
 	}
 
 	w.pending = append(w.pending, newPending(seqno, mutation.Mutation{DeleteCurrent: req}))
 }
 
-// mutationPart returns the merged mutation that carries a run held as a delta,
-// the other half of the question [pendingReq.snapshotPart] answers. Compaction,
-// the overlay and the condition authority all ask it, so a request shape added
-// beside Update and ConflictResolve is one edit here.
+// mutationPart returns the merged mutation carrying a run held as a delta (see
+// also [pendingReq.snapshotPart]). A new request shape is one edit here.
 func (pr *pendingReq) mutationPart() *p.InternalWorkflowMutation {
 	if pr.m.Update != nil {
 		return &pr.m.Update.UpdateWorkflowMutation

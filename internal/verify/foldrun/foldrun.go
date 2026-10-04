@@ -1,16 +1,10 @@
-// Package foldrun drives mutations through one accumulator the way a cycle
-// does — window by window, with fold's refusal recovery — and counts what the
-// folding did.
+// Package foldrun drives mutations through one accumulator as a cycle does,
+// window by window with fold's refusal recovery, and counts what happened.
 //
-// It owns the loop and nothing above it. Where the mutations come from is the
-// caller's (a generator, a WAL read back), and so is what a drained batch is
-// for — applying it to a cold store, holding on to it, or only counting it.
-// That is why the drain is a callback and not something this package performs.
-//
-// It counts only the loop's own events. Anything read off a [fold.Batch] stays
-// with the caller, deliberately: what a "tombstone" is, for one, is the caller's
-// definition — the acceptance run counts KindDelete and not KindDeleteCurrent —
-// and a shared counter would have to pick one for every caller.
+// The caller supplies the mutations and decides what a drained batch is for,
+// so the drain is a callback. Only the loop's own events are counted; anything
+// read off a [fold.Batch] (such as what counts as a tombstone) is the caller's
+// to define and count.
 package foldrun
 
 import (
@@ -19,30 +13,25 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// Run is what one drive folded. Every field is a count of the loop's own
-// events, so two runs of the same stream at the same window size report the
-// same numbers whatever their callers did with the batches.
+// Run holds the loop's counts. They depend only on the stream and window size,
+// not on what callers did with the batches.
 type Run struct {
-	// Mutations is what was handed to [Driver.Add] and accepted.
+	// Mutations is how many [Driver.Add] accepted.
 	Mutations int
-	// FoldedIn sums the drained windows' MutationsIn: what fold took in over
-	// the whole run, which is Mutations minus whatever is still in the window
-	// when the run ends.
+	// FoldedIn sums the drained batches' MutationsIn: Mutations minus what is
+	// still in the open window.
 	FoldedIn int
 	// Emitted sums the merged requests the drains produced.
 	Emitted int
-	// Drains counts the loop's drains, empty batches included and whether or
-	// not a callback saw them. A caller that means "windows that emitted
-	// something" counts that itself, off the batch.
+	// Drains counts every drain, empty ones included.
 	Drains int
-	// Refusals counts fold.ErrRefused recoveries: the documented drain-and-retry
-	// loop actually running, rather than a run that never met one.
+	// Refusals counts fold.ErrRefused drain-and-retry recoveries.
 	Refusals int
 }
 
-// CollapseRatio is what the folding delivered — mutations in over merged
-// requests out. Meaningless without the generator knobs that produced the
-// stream, so callers print it with them.
+// CollapseRatio is mutations folded in per merged request out, or 0 if none
+// were emitted. It means little without the generator settings, so print it
+// with them.
 func (r Run) CollapseRatio() float64 {
 	if r.Emitted == 0 {
 		return 0
@@ -61,24 +50,19 @@ type Driver struct {
 }
 
 // New drives shard's accumulator, draining every window mutations. on receives
-// each drained batch, including an empty one — an empty drain is a fact about
-// the window rather than a call to skip. A nil on counts the drains and
-// discards what they carried.
-//
-// A window of 0 or less drains at every mutation, which is sync mode's shape.
+// every drained batch, empty ones included; a nil on discards them. A window of
+// 0 or less drains after every mutation, as sync mode does.
 func New(shard wal.ShardID, window int, on func(fold.Batch) error) *Driver {
 	return &Driver{acc: fold.New(shard), window: window, on: on}
 }
 
-// Run is the counts so far. Safe to read mid-run; the final numbers need
-// [Driver.Flush] first, or the last window goes uncounted.
+// Run returns the counts so far. Call [Driver.Flush] first for final numbers,
+// or the last window goes uncounted.
 func (d *Driver) Run() Run { return d.run }
 
 // Add folds one mutation in, draining first if fold refuses it and again if the
-// window is full afterwards. An error is fold's own — a refusal surviving its
-// recovery, a seqno that did not rise, a mutation of another shard or one
-// holding no single request — or the drain callback's; all of them mean the run
-// cannot continue.
+// window is then full. Any error, from fold or the drain callback, ends the
+// run.
 func (d *Driver) Add(seqno wal.Seqno, m mutation.Mutation) error {
 	refusal, err := d.acc.AddOrDrain(seqno, m, d.drain)
 	if err != nil {
@@ -95,7 +79,7 @@ func (d *Driver) Add(seqno wal.Seqno, m mutation.Mutation) error {
 	return nil
 }
 
-// Flush drains what is left, so the last window counts like every other one.
+// Flush drains the open window.
 func (d *Driver) Flush() error { return d.drain() }
 
 func (d *Driver) drain() error {

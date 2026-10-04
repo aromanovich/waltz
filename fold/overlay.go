@@ -1,15 +1,15 @@
 package fold
 
-// The overlay: what a read must be told while the window still holds writes the
-// cold store has not seen. Two rules the whole file obeys:
+// The overlay answers reads while the window holds writes the cold store has
+// not seen. Two rules:
 //
-//   - the merge is [applyMutationToSnapshot] and no other function, so a read
-//     answers with what the drain will write;
+//   - the merge is [applyMutationToSnapshot] alone, so a read answers with what
+//     the drain will write;
 //   - nothing here writes: the accumulator's state and the caller's base row
-//     are both copied into a private snapshot first.
+//     are copied into a private snapshot first.
 //
-// Only the current row decodes; on the mutable-state path the accumulator
-// already holds the blobs [p.InternalWorkflowMutableState] wants.
+// Only the current row is decoded; for mutable state the accumulator already
+// holds the blobs [p.InternalWorkflowMutableState] wants.
 
 import (
 	"fmt"
@@ -21,20 +21,18 @@ import (
 	"go.temporal.io/server/common/persistence/serialization"
 )
 
-// RunShape names what the window holds for one run, and is the whole of what a
-// reader branches on.
+// RunShape is what the window holds for one run; a reader branches on it alone.
 type RunShape int
 
 const (
 	// RunAbsent: the window holds nothing for this run. The base stands,
 	// including its NotFound.
 	RunAbsent RunShape = iota
-	// RunSnapshot: the window holds whole state for the run (a Create, a Set, a
-	// conflict-resolve's reset, the new run of a continue-as-new, or a Create
-	// behind a tombstone). The base must not be merged in: a snapshot either
-	// clears the run's collection tables first (the plugin's reset path) or
-	// asserts the run absent, so the cold store's leftovers are rows the drain
-	// is about to delete or rows of a run that is not this one.
+	// RunSnapshot: the window holds the run's whole state (a Create, a Set, a
+	// conflict-resolve reset, a continue-as-new's new run, or a Create behind a
+	// tombstone). The base is not merged in: a snapshot either clears the run's
+	// tables first or asserts the run absent, so any base rows are about to be
+	// deleted or belong to another run.
 	RunSnapshot
 	// RunDelta: the window holds a delta for the run (an Update, or a
 	// conflict-resolve's current mutation). The answer is base ⊕ delta.
@@ -58,14 +56,14 @@ func (s RunShape) String() string {
 	return fmt.Sprintf("RunShape(%d)", int(s))
 }
 
-// RunView is one run's place in the window, as a reader sees it. Obtain one
-// from [Accumulator.ViewRun]. It is valid until the next mutation folds in, so
-// the goroutine holding it must be the one that owns the accumulator.
+// RunView is one run as a reader sees the window, from [Accumulator.ViewRun].
+// It is valid until the next mutation folds in, so only the goroutine that
+// owns the accumulator may hold it.
 type RunView struct {
 	Shape RunShape
 
-	// rs is the run's window state, nil unless the shape carries one. Unexported
-	// so no caller reaches the accumulator through a value it was handed.
+	// rs is the run's window state, nil unless the shape carries one.
+	// Unexported so a caller cannot reach the accumulator through it.
 	rs *runState
 }
 
@@ -84,7 +82,7 @@ func (a *Accumulator) ViewRun(namespaceID, workflowID, runID string) RunView {
 		return RunView{Shape: RunTombstone}
 	case rs.owner == nil:
 		// Unreachable: only a tombstone clears an owner, and it sets the flag
-		// above at the same time. Answering from the cold store invents nothing.
+		// above. Answering from the cold store invents nothing.
 		return RunView{Shape: RunAbsent}
 	case rs.part == partMutation:
 		return RunView{Shape: RunDelta, rs: rs}
@@ -97,20 +95,19 @@ func (a *Accumulator) ViewRun(namespaceID, workflowID, runID string) RunView {
 // the window answers alone and the caller saves the round trip.
 func (v RunView) NeedsBase() bool { return v.Shape == RunAbsent || v.Shape == RunDelta }
 
-// Held reports whether the window holds this run at all, the reading behind the
-// cycle's ReadsHeld counter. Here rather than at the counter, so a fifth
-// [RunShape] cannot silently change what it counts.
+// Held reports whether the window holds this run at all; the cycle's ReadsHeld
+// counter uses it. It lives here so a new [RunShape] cannot silently change
+// what the counter counts.
 func (v RunView) Held() bool { return v.Shape != RunAbsent }
 
 // Render answers a mutable-state read. base is the cold store's response and
-// must be non-nil exactly when [RunView.NeedsBase] said so. found is false when
-// the answer is "no such execution"; the caller turns that into the store's own
-// NotFound, since fold has no store error vocabulary.
+// must be non-nil exactly when [RunView.NeedsBase] says so. found is false for
+// "no such execution"; the caller turns that into the store's NotFound.
 //
-// The answer carries the tail's DBRecordVersion, the one the window's merged
-// request will write. Handing out the base's would make the server's next
-// conditional write assert a version nothing writes. What apply asserts is
-// unaffected: that stays the head-of-window [RunAssertion.BaseVersion].
+// The answer carries the tail's DBRecordVersion, the one the merged request
+// will write; the base's would make the server's next conditional write assert
+// a version nothing writes. Apply still asserts the head-of-window
+// [RunAssertion.BaseVersion].
 func (v RunView) Render(base *p.InternalGetWorkflowExecutionResponse) (*p.InternalGetWorkflowExecutionResponse, bool) {
 	switch v.Shape {
 	case RunTombstone:
@@ -123,19 +120,17 @@ func (v RunView) Render(base *p.InternalGetWorkflowExecutionResponse) (*p.Intern
 		return responseOf(mutableStateOf(snap, concatBlobs(nil, v.rs.buffered))), true
 
 	case RunDelta:
-		// Deliberately untested, and a sweep has looked: negating this leaves the
-		// tree green because no caller here reaches it. The layer's own read takes
-		// the base through a store whose absence is an *error*, so the route out
-		// returns before this, and a nil arrives only from a direct caller of this
-		// exported method or from a store answering a row with no state.
+		// Untested: the layer's own read returns earlier, since a missing base
+		// row is an error there. A nil arrives only from a direct caller or from
+		// a store answering a row with no state.
 		if base == nil || base.State == nil {
 			return nil, false
 		}
 		mut := v.rs.owner.mutationPart()
 		snap := snapshotOfBase(base)
 		applyMutationToSnapshot(snap, mut)
-		// Buffered events do not merge: the store's batches come first, then the
-		// window's, and the store's go when the merged mutation carries a clear.
+		// Buffered events do not merge: the store's batches, then the window's;
+		// the store's are dropped when the merged mutation carries a clear.
 		held := base.State.BufferedEvents
 		if mut.ClearBufferedEvents {
 			held = nil
@@ -154,9 +149,9 @@ func responseOf(state *p.InternalWorkflowMutableState) *p.InternalGetWorkflowExe
 	return &p.InternalGetWorkflowExecutionResponse{State: state, DBRecordVersion: state.DBRecordVersion}
 }
 
-// CurrentShape names what the window holds for a workflow's current-execution
-// row, a separate question from what it holds for a run: the row is written by
-// the window's last writer ([CurrentWrite]), not by the merged request.
+// CurrentShape is what the window holds for a workflow's current-execution
+// row. It is separate from [RunShape]: the row is written by the window's last
+// writer ([CurrentWrite]), not by the merged request.
 type CurrentShape int
 
 const (
@@ -168,9 +163,9 @@ const (
 	// CurrentGone: the window wrote the row and then removed it. No current
 	// execution, whatever the base holds.
 	CurrentGone
-	// CurrentGuarded: delete-currents stand over the base with no window write
-	// above them. The store removes the row only if it names that run, so the
-	// answer is that guard evaluated against the base.
+	// CurrentGuarded: delete-currents with no later window write. The store
+	// removes the row only if it names one of their runs, so the answer is that
+	// check against the base.
 	CurrentGuarded
 )
 
@@ -204,14 +199,10 @@ func (a *Accumulator) ViewCurrent(namespaceID, workflowID string) CurrentView {
 	return a.peek(namespaceID, workflowID).currentView()
 }
 
-// currentView is the one derivation of what the window holds for the current
-// row. A removal outranks a write, and a write outranks the surviving guards.
-//
-// Three readers branch on what it answers and none derives it again: the drain
-// ([Accumulator.Drain]) turns it into the record apply asserts, the condition
-// authority ([Accumulator.decideCurrent]) asks whether the window determines an
-// assertion about the row, and the overlay renders it. Nil-safe on the
-// receiver, an absent workflow being a window that holds nothing.
+// currentView is the only derivation of what the window holds for the current
+// row. A removal outranks a write, and a write outranks surviving guards.
+// [Accumulator.Drain], [Accumulator.decideCurrent] and the overlay all use it
+// and must not derive it again. A nil receiver (absent workflow) holds nothing.
 func (w *workflowAcc) currentView() CurrentView {
 	if w == nil {
 		return CurrentView{Shape: CurrentUnheld}
@@ -222,11 +213,9 @@ func (w *workflowAcc) currentView() CurrentView {
 	case w.cur.write != nil:
 		return CurrentView{Shape: CurrentWritten, write: w.cur.write}
 	}
-	// The delete-currents the window still stands on. They live in pending
-	// because each is also a request the drain emits; recordCurrentWrite drops
-	// the ones a later write made invisible, which is what makes this scan the
-	// surviving guards rather than every delete the window took. More than one
-	// may survive, and the row goes if the base names any.
+	// The surviving delete-currents. They live in pending because each is also
+	// a request the drain emits; recordCurrentWrite drops those a later write
+	// superseded. Several may survive; the row goes if the base names any.
 	var runs []string
 	for _, pr := range w.pending {
 		if pr.m.DeleteCurrent != nil {
@@ -244,17 +233,14 @@ func (v CurrentView) NeedsBase() bool {
 	return v.Shape == CurrentUnheld || v.Shape == CurrentGuarded
 }
 
-// Held is [RunView.Held] for the current row, and is here for the same reason.
+// Held is [RunView.Held] for the current row.
 //
-// It is not [workflowAcc.assertsCurrent] and the two deliberately disagree,
-// once each way. On [CurrentGuarded]: a tainted DeleteCurrent is something the
-// window has to say about the row, so a read is answered from it, and it
-// carries no head assertion, so the partition does not count the row as held —
-// though the condition authority, rather than delegating, refuses an assertion
-// behind it ([Accumulator.decideCurrent]). And on a bypass-current write alone:
-// it records a head assertion and writes no row, so the partition holds the row
-// while a read, [CurrentUnheld], asks the base. A read question and a partition
-// question, and those two are where they part.
+// It deliberately differs from [workflowAcc.assertsCurrent] in two cases.
+// [CurrentGuarded]: a tainted DeleteCurrent affects reads but carries no head
+// assertion, so the partition does not hold the row ([Accumulator.decideCurrent]
+// refuses an assertion behind it instead of delegating). A bypass-current write
+// alone: it records a head assertion but writes no row, so the partition holds
+// the row while a read ([CurrentUnheld]) asks the base.
 func (v CurrentView) Held() bool { return v.Shape != CurrentUnheld }
 
 // Render answers a current-execution read; found is false for "no current
@@ -286,11 +272,11 @@ func (v CurrentView) Render(base *p.InternalGetCurrentExecutionResponse) (*p.Int
 	}
 }
 
-// copySnapshot is a private snapshot holding the same blobs: every map is new,
-// so a later fold cannot reach an answer already handed out. Sharing the blobs
-// is safe because fold replaces map entries and never writes through a
-// *commonpb.DataBlob. Tasks are dropped rather than copied: a mutable-state
-// read does not answer them, and [applyMutationToSnapshot] appends to that map.
+// copySnapshot returns a private snapshot sharing the blobs: every map is new,
+// so a later fold cannot reach an answer already handed out. Sharing blobs is
+// safe because fold replaces map entries and never writes through a
+// *commonpb.DataBlob. Tasks are dropped: a mutable-state read does not return
+// them, and [applyMutationToSnapshot] appends to that map.
 func copySnapshot(src *p.InternalWorkflowSnapshot) *p.InternalWorkflowSnapshot {
 	dst := *src
 	dst.ActivityInfos = maps.Clone(src.ActivityInfos)
@@ -304,14 +290,11 @@ func copySnapshot(src *p.InternalWorkflowSnapshot) *p.InternalWorkflowSnapshot {
 	return &dst
 }
 
-// snapshotOfBase converts the cold store's row into the snapshot
-// [applyMutationToSnapshot] folds a delta onto; its maps are copies for the
-// reason copySnapshot's are. Tasks and BufferedEvents are not carried across,
-// the read having its own rule for both, and the version comes off the response
-// rather than off the state, where the plugin leaves a zero.
-//
-// What survives of the base here is the collections: the fold runs next and
-// assigns every scalar from the delta, which always carries the whole of one.
+// snapshotOfBase converts the cold store's row into a snapshot for
+// [applyMutationToSnapshot], with copied maps as in copySnapshot. Tasks and
+// BufferedEvents are left out (the read handles both itself). The version
+// comes from the response, since the plugin leaves the state's at zero.
+// Only the collections survive the fold: the delta sets every scalar.
 func snapshotOfBase(base *p.InternalGetWorkflowExecutionResponse) *p.InternalWorkflowSnapshot {
 	state := base.State
 	return &p.InternalWorkflowSnapshot{
@@ -330,10 +313,9 @@ func snapshotOfBase(base *p.InternalGetWorkflowExecutionResponse) *p.InternalWor
 	}
 }
 
-// mutableStateOf hands a private snapshot out as the read's answer. It moves
-// rather than copies, since every snapshot reaching it came from copySnapshot
-// or snapshotOfBase. The signal-requested ids are sorted on the way out, the
-// manager reading them as a set.
+// mutableStateOf turns a private snapshot (from copySnapshot or
+// snapshotOfBase) into the read's answer without copying. Signal-requested ids
+// are sorted; the manager reads them as a set.
 func mutableStateOf(snap *p.InternalWorkflowSnapshot, buffered []*commonpb.DataBlob) *p.InternalWorkflowMutableState {
 	return &p.InternalWorkflowMutableState{
 		ActivityInfos:       snap.ActivityInfos,
@@ -352,8 +334,7 @@ func mutableStateOf(snap *p.InternalWorkflowSnapshot, buffered []*commonpb.DataB
 	}
 }
 
-// setOf turns the mutable state's signal-requested ids into the set shape a
-// snapshot uses.
+// setOf converts signal-requested ids to a snapshot's set shape.
 func setOf(ids []string) map[string]struct{} {
 	if len(ids) == 0 {
 		return nil
@@ -365,8 +346,8 @@ func setOf(ids []string) map[string]struct{} {
 	return set
 }
 
-// concatBlobs is the buffered-event order: the store's batches, then the
-// window's. A fresh slice, so neither source is appended to through the answer.
+// concatBlobs returns the store's buffered batches then the window's, in a
+// fresh slice so neither source is appended to through the answer.
 func concatBlobs(held, window []*commonpb.DataBlob) []*commonpb.DataBlob {
 	return slices.Concat(held, window)
 }

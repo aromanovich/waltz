@@ -13,9 +13,8 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// The watermark is this database's bookkeeping and not Temporal's, so it gets a
-// table of its own beside the schema the plugin sets up rather than a column
-// borrowed from a table the server also writes.
+// The watermark is this store's bookkeeping, not Temporal's, so it has its own
+// table rather than a column in one the server also writes.
 const (
 	createWatermarksQry = `CREATE TABLE waltz_watermarks (
  shard_id INTEGER NOT NULL,
@@ -30,23 +29,19 @@ const (
 
 var _ cold.Watermarker = (*Store)(nil)
 
-// SetWatermark moves shard's watermark to seqno in tx, and is how an applier
-// keeps the promise the cold package's doc makes: the watermark commits in the
-// transaction that carries the rows it vouches for. It takes the transaction
-// rather than opening one because that is the whole of the guarantee — a
-// watermark with a transaction of its own can outlive a rolled-back batch, or
-// be lost by a batch that landed.
+// SetWatermark moves shard's watermark to seqno inside tx, so it commits with
+// the rows it vouches for. A watermark in its own transaction could outlive a
+// rolled-back batch, or be lost by one that landed.
 //
-// Last write wins. The row is what the last committed drain put there and not
-// the highest any drain ever wrote, so an applier that moves it backwards gets a
-// shard that re-folds what it already applied; ordering is the applier's.
+// Last write wins, not the highest: an applier that moves it backwards makes
+// the shard re-fold what it already applied. Ordering is the applier's job.
 func SetWatermark(ctx context.Context, tx sqlplugin.Tx, shard wal.ShardID, seqno wal.Seqno) error {
 	conn, err := txConn(tx)
 	if err != nil {
 		return err
 	}
-	// Unsigned across the driver boundary: a seqno past what a signed 64-bit
-	// column holds comes back as an error instead of a wrapped number.
+	// Passed unsigned, so a seqno beyond int64 is a driver error, not a
+	// wrapped negative number.
 	if _, err := conn.ExecContext(ctx, setWatermarkQry, int64(shard), uint64(seqno)); err != nil {
 		return fmt.Errorf("memcold: moving watermark of shard %d to %d: %w", shard, seqno, err)
 	}
@@ -54,12 +49,10 @@ func SetWatermark(ctx context.Context, tx sqlplugin.Tx, shard wal.ShardID, seqno
 }
 
 // Watermark is the last seqno a drain committed for shard, false if none has.
-// No row is answered as absence and not as a seqno of zero: no drain carries
-// that seqno, and a shard that has never drained has none to report.
+// A missing row is reported as absence, not as seqno zero.
 //
-// It reads in a transaction of its own, so a caller already holding one on this
-// store must not call it — the database is served by a single connection and the
-// read would wait on the transaction that is waiting for it.
+// It opens its own transaction, so it must not be called while holding one on
+// this store: with a single connection, that deadlocks.
 func (s *Store) Watermark(ctx context.Context, shard wal.ShardID) (wal.Seqno, bool, error) {
 	tx, err := s.db.BeginTx(ctx)
 	if err != nil {
@@ -103,16 +96,14 @@ func setupWatermarks(db sqlplugin.DB) error {
 	return nil
 }
 
-// txConn is the connection a transaction runs on, and the only way to reach a
-// table Temporal has no interface for. sqlplugin.Tx is TableCRUD, which names
-// Temporal's own tables and nothing else; the Exec that the same value carries
-// as an AdminDB runs on the connection pool rather than on the transaction, so
-// it would leave the transaction it was meant to join and then wait for the
-// connection that transaction is holding.
+// txConn returns the connection a transaction runs on, the only way to reach a
+// table Temporal has no interface for. sqlplugin.Tx names only Temporal's
+// tables, and its AdminDB Exec runs on the pool, outside the transaction, and
+// would deadlock waiting for the connection the transaction holds.
 //
-// The field is unexported, so an upstream that renames it breaks this. [New]
-// creates the table through this same path, which is what turns that into a
-// store that refuses to be built rather than a drain that loses its watermark.
+// It reads an unexported field, so an upstream rename breaks it. [New] creates
+// the table through this path, so that breakage fails construction instead of
+// silently losing the watermark.
 func txConn(tx sqlplugin.Tx) (sqlplugin.Conn, error) {
 	v := reflect.ValueOf(tx)
 	if v.Kind() == reflect.Pointer && !v.IsNil() {

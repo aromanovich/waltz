@@ -1,11 +1,9 @@
 package mutgen
 
-// The steps: one call to step() is one thing that happens to one workflow — or,
-// for the two history-task shapes, to the shard — and what may happen to a
-// workflow is decided by the state the stream has already put it in. That is
-// the whole validity model — a request is only ever built for a state the store
-// would accept it in, and the exported validators below are asked to confirm it
-// before it is emitted.
+// Each step() call is one event for one workflow (or, for the history-task
+// shapes, for the shard). What may happen depends on the state the stream has
+// already put the workflow in: a request is only built for a state the store
+// would accept, and Temporal's validators confirm it before it is emitted.
 
 import (
 	"encoding/binary"
@@ -28,13 +26,11 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// step advances the stream by one workflow's worth of work, queueing the one or
-// two mutations it produced.
+// step advances the stream by one event, queueing the one or two mutations it
+// produced.
 func (g *Generator) step() error {
-	// The two history-task steps come first and each returns on its own: they
-	// are shard-level rather than a workflow's, so folding them into the switch
-	// below would make them a *replacement* for a workflow's work only when that
-	// workflow happened to be in the right state.
+	// The shard-level history-task steps come first and return on their own,
+	// independent of the picked workflow's state.
 	if g.chance(g.cfg.RangeCompleteRate) {
 		g.emitRangeComplete()
 		if len(g.queue) > 0 {
@@ -60,8 +56,7 @@ func (g *Generator) step() error {
 		}
 		return g.emitUpdate(w)
 	case w.closed != nil:
-		// A completed run still holding the current-execution row: either the
-		// workflow is deleted, or the id is reused by the run that follows it.
+		// A completed, still-current run: delete the workflow or reuse the id.
 		if g.chance(g.cfg.TombstoneRate) {
 			return g.emitDeletePair(w)
 		}
@@ -71,11 +66,9 @@ func (g *Generator) step() error {
 	}
 }
 
-// newRun is a run as it exists the moment it is created: version 1, the events
-// a create writes already behind it, and a last-write-version of its own —
-// per run rather than fixed, because the current row's last_write_version is
-// what a create over a previous run has to assert, and a constant would let a
-// wrong value pass.
+// newRun is a just-created run at version 1. Its last-write-version is random
+// per run because a create over a previous run asserts it, and a constant
+// would let a wrong value pass.
 func (g *Generator) newRun() *runState {
 	return &runState{
 		runID:            g.newUUID(),
@@ -85,15 +78,13 @@ func (g *Generator) newRun() *runState {
 		lastWriteVersion: g.rng.Int64N(1 << 20),
 		state:            enumsspb.WORKFLOW_EXECUTION_STATE_CREATED,
 		status:           enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
-		// Event ids start at 1 upstream (0 is EmptyEventID, "no event"), so a
-		// scheduled-event key of 0 is a shape no real mutation carries.
+		// Event ids start at 1 upstream (0 is EmptyEventID).
 		nextActivity: 1,
 	}
 }
 
-// pick chooses the workflow this step touches: an existing key with probability
-// WorkflowReuse, a fresh one otherwise. A key space that is full forces reuse,
-// which is what makes Workflows a cap rather than a suggestion.
+// pick chooses the workflow for this step: an existing key with probability
+// WorkflowReuse, else a fresh one. A full key space (Workflows) forces reuse.
 func (g *Generator) pick() *workflowState {
 	room := g.cfg.Workflows == 0 || len(g.pool) < g.cfg.Workflows
 	if len(g.pool) == 0 || (room && !g.chance(g.cfg.WorkflowReuse)) {
@@ -115,9 +106,7 @@ func (g *Generator) emitCreate(w *workflowState, mode p.CreateWorkflowMode) erro
 	}
 	req := &p.InternalCreateWorkflowExecutionRequest{
 		ShardID: g.cfg.ShardID,
-		// RangeID is deliberately left zero: it is the epoch (invariant I11),
-		// stamped by whoever drives the request, and a copy here would be a
-		// second source of truth.
+		// RangeID stays zero: it is the epoch (I11), stamped by the driver.
 		Mode:                mode,
 		NewWorkflowSnapshot: snapshot,
 	}
@@ -147,11 +136,9 @@ func (g *Generator) emitCreate(w *workflowState, mode p.CreateWorkflowMode) erro
 func (g *Generator) emitUpdate(w *workflowState) error {
 	r := w.run
 
-	// The last link closes the run — without it a chain would run forever and
-	// the stream would never exercise a workflow id being reused or deleted —
-	// and a closing run may close by continuing as new instead, which is the
-	// one request that carries two runs. Both are decided before anything is
-	// written, because the state the mutation carries differs.
+	// The last link closes the run, possibly by continuing as new, so ids get
+	// reused or deleted. Decided up front because it changes the state the
+	// mutation carries.
 	closing := r.updates+1 >= g.cfg.MaxChainLength
 	continuing := closing && g.chance(g.cfg.ContinueAsNewRate)
 
@@ -160,10 +147,8 @@ func (g *Generator) emitUpdate(w *workflowState) error {
 	r.updates++
 	switch {
 	case continuing:
-		// The store's own rule for an update carrying a new run: the run being
-		// updated may not be left created or running
-		// (ValidateUpdateWorkflowModeState case 2), which is exactly what
-		// continuing as new means.
+		// An update carrying a new run must leave the old one closed
+		// (ValidateUpdateWorkflowModeState case 2).
 		r.state = enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED
 		r.status = enumspb.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW
 	case closing:
@@ -211,10 +196,8 @@ func (g *Generator) emitUpdate(w *workflowState) error {
 
 	switch {
 	case continuing:
-		// The new run takes the current-execution row; the run just continued
-		// stays in the store and the stream never touches it again. Deleting it
-		// would be a delete of a run the current row does not name, and the pair
-		// below is the only deletion shape this generator emits.
+		// The new run becomes current; the old run stays in the store untouched,
+		// since the delete pair is the only deletion shape generated.
 		w.run, w.closed = next, nil
 		g.rep.Runs++
 	case closing:
@@ -224,10 +207,8 @@ func (g *Generator) emitUpdate(w *workflowState) error {
 	return nil
 }
 
-// emitSnapshotBarrier picks between the two snapshot-bearing shapes a live run
-// can take. They share SnapshotRate because the accumulator treats them the same
-// way — both reset it (invariant I8) — so the interesting knob is how often a
-// barrier happens, not which one it was.
+// emitSnapshotBarrier emits one of the two snapshot-bearing shapes, which fold
+// treats alike (both reset the accumulator, I8).
 func (g *Generator) emitSnapshotBarrier(w *workflowState) error {
 	if g.chance(0.5) {
 		return g.emitSet(w)
@@ -235,15 +216,10 @@ func (g *Generator) emitSnapshotBarrier(w *workflowState) error {
 	return g.emitConflictResolve(w)
 }
 
-// barrierSnapshot is the shared half of the two barrier shapes: the run moves
-// to its next version and its whole state is snapshotted — every live key
-// rather than a delta, since the store deletes the run's state items and
-// writes these, buffered events included, which is why the unflushed count
-// resets here.
-//
-// The state pair is checked with the *update* validator for both shapes:
-// a store checks a reset snapshot with exactly that one (Cassandra's reset
-// path runs it), and a set is admitted under the same pair.
+// barrierSnapshot moves the run to its next version and snapshots its whole
+// state. The store replaces the run's state items, buffered events included,
+// so the unflushed count resets. Both shapes are checked with the update
+// validator, as a store checks reset and set snapshots.
 func (g *Generator) barrierSnapshot(w *workflowState, kind string) (p.InternalWorkflowSnapshot, error) {
 	r := w.run
 	r.version++
@@ -260,11 +236,9 @@ func (g *Generator) barrierSnapshot(w *workflowState, kind string) (p.InternalWo
 	return snapshot, nil
 }
 
-// emitConflictResolve is the other snapshot barrier: a reset of the current run
-// at the next version, with no new run and no current mutation. The multi-part
-// shapes — reset + new, reset + current — are deliberately not generated; what
-// this is for is a reset arriving inside a chain rather than at the head of
-// one.
+// emitConflictResolve resets the current run at the next version, with no new
+// run and no current mutation; multi-part resets are not generated. It puts a
+// reset inside a chain.
 func (g *Generator) emitConflictResolve(w *workflowState) error {
 	snapshot, err := g.barrierSnapshot(w, "conflict-resolve")
 	if err != nil {
@@ -288,9 +262,8 @@ func (g *Generator) emitConflictResolve(w *workflowState) error {
 	return nil
 }
 
-// emitSet is the snapshot barrier inside a chain: SetWorkflowExecution replaces
-// the run's whole state at the next version, asserting the previous one, and
-// asserts nothing about the current-execution row.
+// emitSet replaces the run's whole state at the next version, asserting the
+// previous version and nothing about the current-execution row.
 func (g *Generator) emitSet(w *workflowState) error {
 	snapshot, err := g.barrierSnapshot(w, "set")
 	if err != nil {
@@ -303,12 +276,9 @@ func (g *Generator) emitSet(w *workflowState) error {
 	return nil
 }
 
-// emitDeletePair deletes a workflow the way Temporal's own delete flow does:
-// the current-execution pointer first, the mutable state second
-// (`service/history/shard/context_impl.go`, stages 2 and 3). The order is part
-// of the corpus rather than an accident — fold collapses a run into a tombstone
-// and leans on the pair, so a corpus that emitted them the other way round
-// would be testing a stream the server never produces.
+// emitDeletePair deletes a workflow in Temporal's order: current-execution row
+// first, then mutable state (shard/context_impl.go, stages 2 and 3). fold's
+// tombstone collapse relies on this order.
 func (g *Generator) emitDeletePair(w *workflowState) error {
 	r := w.closed
 	g.queue = append(g.queue,
@@ -333,9 +303,8 @@ func (g *Generator) emitDeletePair(w *workflowState) error {
 
 // ---------------------------------------------------------------- the payloads
 
-// mutation builds the delta of one update: the run's scalars at their new
-// values, the sub-entity upserts and deletes the knobs asked for, and its
-// history tasks.
+// mutation builds one update's delta: new scalars, sub-entity upserts and
+// deletes, and history tasks.
 func (g *Generator) mutation(w *workflowState, r *runState) (p.InternalWorkflowMutation, error) {
 	infoBlob, stateBlob, checksumBlob, err := g.rowBlobs(w, r)
 	if err != nil {
@@ -356,10 +325,8 @@ func (g *Generator) mutation(w *workflowState, r *runState) (p.InternalWorkflowM
 		DBRecordVersion:    r.version,
 	}
 
-	// Keys upserted by this mutation are off limits to its delete set: a key in
-	// both sets at once is a shape Temporal's diff never produces, and the one
-	// the store resolves wrongly — so a corpus containing it would blame fold
-	// for the store's ordering.
+	// A key is never both upserted and deleted in one mutation: Temporal never
+	// produces it and the store resolves it wrongly.
 	var upsertedActivities []int64
 	var upsertedTimers []string
 	for i := range g.cfg.Upserts {
@@ -404,10 +371,8 @@ func (g *Generator) mutation(w *workflowState, r *runState) (p.InternalWorkflowM
 		}
 	}
 
-	// Buffered events: one slot per mutation, which is the whole of why a chain
-	// of them matters — they do not merge, so two mutations must stay two
-	// batches. A clear is what completing a workflow task does, so it is only
-	// generated once there is something to clear.
+	// Buffered events: one batch per mutation; batches do not merge. A clear
+	// (completing a workflow task) needs something buffered.
 	if g.chance(g.cfg.BufferedRate) {
 		if mut.NewBufferedEvents, err = g.bufferedEvents(r); err != nil {
 			return p.InternalWorkflowMutation{}, err
@@ -416,8 +381,8 @@ func (g *Generator) mutation(w *workflowState, r *runState) (p.InternalWorkflowM
 	}
 	if r.buffered > 0 && g.chance(g.cfg.BufferedRate) {
 		mut.ClearBufferedEvents = true
-		// The clear takes the store's rows; a batch in this same mutation is
-		// written after it, and stays.
+		// The clear removes stored rows; a batch in the same mutation is
+		// written after it and stays.
 		r.buffered = 0
 		if mut.NewBufferedEvents != nil {
 			r.buffered = 1
@@ -430,8 +395,8 @@ func (g *Generator) mutation(w *workflowState, r *runState) (p.InternalWorkflowM
 	return mut, nil
 }
 
-// snapshot builds a whole-run image: every key the run holds live, plus extra
-// keys when it is a create (a run has to start with something).
+// snapshot builds a whole-run image of every live key, plus extraKeys new
+// ones (a create must start with something).
 func (g *Generator) snapshot(w *workflowState, r *runState, extraKeys int) (p.InternalWorkflowSnapshot, error) {
 	for i := range extraKeys {
 		if i%2 == 0 {
@@ -487,11 +452,9 @@ func (g *Generator) snapshot(w *workflowState, r *runState, extraKeys int) (p.In
 	return snapshot, nil
 }
 
-// historyTasks draws TaskDensity tasks on average, each in one of four
-// persisted categories: transfer, timer, visibility, replication. It is the
-// only source of them here: upstream's own generator maps every category to an
-// empty slice, so a stream taken from it exercises none of the task path fold
-// has to concatenate.
+// historyTasks draws TaskDensity tasks on average, each in one of transfer,
+// timer, visibility or replication. Upstream's generator emits none, so this
+// is what exercises fold's task path.
 func (g *Generator) historyTasks(w *workflowState, r *runState) (map[tasks.Category][]p.InternalHistoryTask, error) {
 	n := int(g.cfg.TaskDensity)
 	if g.rng.Float64() < g.cfg.TaskDensity-float64(n) {
@@ -554,15 +517,11 @@ func (g *Generator) historyTasks(w *workflowState, r *runState) (map[tasks.Categ
 
 // ---------------------------------------------------------------- key choice
 
-// pickKey returns the key an upsert names: one the run already holds or one it
-// deleted with probability KeyReuse, a fresh one otherwise. Reusing a deleted
-// key is the upsert-after-delete half of fold's per-key rule; reusing a live one
-// is what makes a window's upserts merge instead of pile up.
-//
-// live and gone are taken by pointer because the reuse arm moves a key between
-// them, and fresh mints one for the arm that does not — the two key kinds differ
-// in nothing else, and the rng is touched in the same order either way, which is
-// what keeps the stream a function of the seed whichever kind a step draws.
+// pickKey returns the key an upsert names: with probability KeyReuse a live or
+// deleted one (exercising per-key merge and upsert-after-delete), else
+// fresh(). live and gone are pointers because reuse moves a key between them.
+// The rng is consumed in the same order for both key types, keeping the
+// stream a function of the seed.
 func pickKey[K comparable](g *Generator, live, gone *[]K, fresh func() K) K {
 	if n := len(*live) + len(*gone); n > 0 && g.chance(g.cfg.KeyReuse) {
 		i := g.rng.IntN(n)
@@ -596,9 +555,8 @@ func (g *Generator) pickTimerKey(r *runState) string {
 	})
 }
 
-// pickDeletable chooses a live key the current mutation did not upsert, so that
-// every delete names a key the run actually holds, which is what makes the
-// delete resolve against an upsert rather than against nothing.
+// pickDeletable chooses a live key the current mutation did not upsert, so
+// every delete names a key the run really holds.
 func pickDeletable[K comparable](rng *rand.Rand, live, upserted []K) (K, bool) {
 	eligible := slices.DeleteFunc(slices.Clone(live), func(key K) bool {
 		return slices.Contains(upserted, key)
@@ -619,10 +577,9 @@ func remove[K comparable](keys []K, key K) []K {
 
 // ---------------------------------------------------------------- blobs
 
-// rowBlobs are the three blobs every execution row is written from. All three
-// must be non-nil: a store reads .Data off each of them to build the row and
-// does so without a nil check — Cassandra's create and update dereference the
-// checksum blob outright — so a missing one is a panic rather than a rejection.
+// rowBlobs returns the three blobs every execution row is written from. All
+// must be non-nil: stores read .Data without a nil check, so a missing one
+// panics.
 func (g *Generator) rowBlobs(w *workflowState, r *runState) (info, state, checksum *commonpb.DataBlob, err error) {
 	if info, err = g.serializer.WorkflowExecutionInfoToBlob(g.executionInfo(w, r)); err != nil {
 		return nil, nil, nil, err
@@ -636,9 +593,8 @@ func (g *Generator) rowBlobs(w *workflowState, r *runState) (info, state, checks
 	return info, state, checksum, nil
 }
 
-// executionInfo is deliberately thin, and carries no protobuf map field:
-// SearchAttributes and Memo would make the serialized bytes vary between runs of
-// the same seed, which is the one property this package must not lose.
+// executionInfo is deliberately thin and has no protobuf map fields (such as
+// SearchAttributes or Memo), which would make the bytes vary per seed run.
 func (g *Generator) executionInfo(w *workflowState, r *runState) *persistencespb.WorkflowExecutionInfo {
 	return &persistencespb.WorkflowExecutionInfo{
 		NamespaceId:          g.namespaceID,
@@ -656,10 +612,8 @@ func (g *Generator) executionInfo(w *workflowState, r *runState) *persistencespb
 }
 
 func (g *Generator) executionState(r *runState) *persistencespb.WorkflowExecutionState {
-	// RequestIds is left empty on purpose: it is a map, so it would break the
-	// seed's determinism, and it is also the field serialization back-fills on
-	// the way out of a blob, so a value written empty does not come back empty
-	// and whoever compares the two has to allow for it.
+	// RequestIds stays empty: it is a map. Deserialisation back-fills it, so a
+	// round-trip comparison must allow for that.
 	return &persistencespb.WorkflowExecutionState{
 		RunId:           r.runID,
 		CreateRequestId: r.createRequestID,
@@ -669,9 +623,8 @@ func (g *Generator) executionState(r *runState) *persistencespb.WorkflowExecutio
 	}
 }
 
-// checksum is real rather than empty so the column is exercised: the manager
-// writes an empty Checksum message when a mutation has none, and an empty
-// message is what a store that dropped the field would also produce.
+// checksum is non-empty so a store that drops the field is caught: an empty
+// one is what the manager writes by default.
 func (g *Generator) checksum(r *runState) *persistencespb.Checksum {
 	return &persistencespb.Checksum{
 		Version: 1,
@@ -680,9 +633,7 @@ func (g *Generator) checksum(r *runState) *persistencespb.Checksum {
 	}
 }
 
-// bufferedEvents is a batch as the store takes it: serialized history events.
-// The event carries no map field for the same reason nothing else here does —
-// the bytes have to be a function of the seed.
+// bufferedEvents is a batch of serialized history events, with no map fields.
 func (g *Generator) bufferedEvents(r *runState) (*commonpb.DataBlob, error) {
 	return g.serializer.SerializeEvents([]*historypb.HistoryEvent{{
 		EventId:   r.nextEventID,
@@ -722,19 +673,16 @@ func (g *Generator) timerBlob(key string, r *runState) (*commonpb.DataBlob, erro
 
 // ---------------------------------------------------------------- primitives
 
-// baseTime is where every timestamp this package writes is measured from. A
-// fixed instant rather than time.Now for the same reason the ids come out of the
-// seeded source: the stream is a function of the seed or it is not reproducible.
+// baseTime anchors every timestamp, fixed rather than time.Now for
+// reproducibility.
 var baseTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func (g *Generator) chance(p float64) bool {
 	return g.rng.Float64() < p
 }
 
-// newUUID draws a v4 UUID out of the seeded source. uuid.New would be a second,
-// unseeded source of randomness — and namespace ids and run ids have to be
-// parseable UUIDs, because the store below keys its rows by the parsed form and
-// upstream's own SQL store parses them with primitives.MustParseUUID.
+// newUUID draws a v4 UUID from the seeded source (uuid.New is unseeded). Ids
+// must parse as UUIDs: the SQL store parses them with MustParseUUID.
 func (g *Generator) newUUID() string {
 	var b [16]byte
 	binary.LittleEndian.PutUint64(b[0:8], g.rng.Uint64())
@@ -746,29 +694,19 @@ func (g *Generator) newUUID() string {
 
 // ------------------------------------------------------- the history-task path
 
-// emittedTasks is one category's ledger: the keys the stream has written, in
-// ascending order, and how far its own range deletes have reached.
-//
-// It exists so that a range delete can be drawn from keys that are actually
-// there. A range over an interval nothing was ever written into is a mutation a
-// consumer will happily judge and a rule nothing exercised — the same failure
-// the collapse ratio has at WorkflowReuse 0.
+// emittedTasks is one category's ledger: keys written, ascending, and how far
+// range deletes have reached. Ranges are drawn from it so they cover real
+// tasks.
 type emittedTasks struct {
 	category tasks.Category
 	keys     []tasks.Key
-	// covered is how many of keys the stream's own deletes already cover. It is
-	// also where the next range starts — butt-joined to the last, which is the
-	// shape a queue's checkpoints have.
+	// covered counts keys already deleted; the next range starts there,
+	// adjacent to the last, as queue checkpoints are.
 	covered int
 }
 
-// recordEmitted adds one written task to the ledger.
-//
-// It is called from every place a task reaches a request, which is why it is a
-// method on the generator rather than a line inside historyTasks: a task written
-// by a standalone AddHistoryTasks is exactly as deletable as one carried by a
-// mutation, and a ledger that held only the second would generate ranges that
-// covered half of what they should.
+// recordEmitted adds one written task to the ledger. Every path that writes a
+// task must call it, standalone AddHistoryTasks included.
 func (g *Generator) recordEmitted(category tasks.Category, key tasks.Key) {
 	id := int32(category.ID())
 	e := g.emitted[id]
@@ -781,7 +719,7 @@ func (g *Generator) recordEmitted(category tasks.Category, key tasks.Key) {
 }
 
 // taskFloor is where a category's first range starts: below every key the
-// stream can produce, in the column the store below actually ranges on.
+// stream produces, in the column the store ranges on.
 func taskFloor(category tasks.Category) tasks.Key {
 	if category.Type() == tasks.CategoryTypeImmediate {
 		return tasks.NewImmediateKey(0)
@@ -789,20 +727,16 @@ func taskFloor(category tasks.Category) tasks.Key {
 	return tasks.NewKey(baseTime.Add(-time.Hour), 0)
 }
 
-// emitAddTasks queues a standalone AddHistoryTasks on a run the stream holds.
-//
-// It names a live run because the tasks have to be serialisable against one —
-// the blobs carry a workflow key — and not because the store cares: its task
-// rows are keyed by (shard, category, key) and the request's workflow id never
-// reaches them.
+// emitAddTasks queues a standalone AddHistoryTasks on a live run. The run is
+// needed only to build the task blobs; the store keys task rows by (shard,
+// category, key).
 func (g *Generator) emitAddTasks(w *workflowState, r *runState) error {
 	groups, err := g.historyTasks(w, r)
 	if err != nil {
 		return err
 	}
 	if len(groups) == 0 {
-		// TaskDensity drew zero. An AddHistoryTasks with no tasks is a call the
-		// server never makes, so the step simply produced nothing.
+		// No tasks drawn; the server never sends an empty AddHistoryTasks.
 		return nil
 	}
 	g.queue = append(g.queue, mutation.Mutation{AddTasks: &p.InternalAddHistoryTasksRequest{
@@ -814,14 +748,9 @@ func (g *Generator) emitAddTasks(w *workflowState, r *runState) error {
 	return nil
 }
 
-// emitRangeComplete queues a range delete over keys the stream has already
-// written, butt-joined to the last range of that category.
-//
-// The cut is drawn among the keys not yet covered, so every range this generator
-// produces covers at least one task — which is what [Report.TasksCovered]
-// counts. A category with nothing left to cover produces nothing rather than an
-// empty range: an empty range is a statement the store runs and a rule nothing
-// exercises.
+// emitRangeComplete queues a range delete over written keys, adjacent to the
+// category's previous range. Every range covers at least one task (counted in
+// [Report.TasksCovered]); with nothing left to cover it emits nothing.
 func (g *Generator) emitRangeComplete() {
 	if len(g.cats) == 0 {
 		return
@@ -849,20 +778,13 @@ func (g *Generator) emitRangeComplete() {
 	}})
 }
 
-// nextAbove is the exclusive maximum that covers key and nothing after it, in
-// the column the category is ranged on.
+// nextAbove is the exclusive maximum covering key and nothing after it.
 //
-// For a scheduled category the task id is zeroed, which is what upstream's own
-// checkpoint does (queues/queue_base.go's rangeCompleteTasks) and what makes the
-// fire-time-only delete below it mean what the caller intends.
-//
-// The bump is a microsecond, and a nanosecond is not enough: a stored fire time
-// is microseconds, so a maximum a nanosecond above a task's fire time truncates
-// to that same fire time and the store's DELETE covers nothing. A corpus that
-// generated such a range would judge the deletion rule in name only, which is
-// the same trap [Config.RangeCompleteRate] warns about, arriving through the
-// store's resolution instead of through the key space. The stream's fire times
-// are a second apart, so a microsecond separates any two of them.
+// For a scheduled category the task id is zeroed, as upstream's checkpoint
+// does (queues/queue_base.go rangeCompleteTasks). The fire time is bumped by a
+// microsecond, not a nanosecond: stored fire times have microsecond
+// resolution, so a nanosecond bump truncates back and the DELETE covers
+// nothing. Generated fire times are a second apart, so this is safe.
 func nextAbove(category tasks.Category, key tasks.Key) tasks.Key {
 	if category.Type() == tasks.CategoryTypeImmediate {
 		return tasks.NewImmediateKey(key.TaskID + 1)

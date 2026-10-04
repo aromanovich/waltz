@@ -1,18 +1,13 @@
 package cycle
 
-// The predicates this package's outcomes turn on, each a function of the
-// values it decides over and of nothing else, so decide_test.go can enumerate
-// them without a cycle. Four have a method beside the call site that supplies
-// the values; the rest are called where their values already are —
-// [noCycleRoute], [supersededRoute] and [storeError] from [Manager],
-// [appendOutcomeOf] from [Cycle.appendFailed], [attribute] from
-// [settlementOf], [tickActionOf] from the loop's own tick.
+// The decision rules this package's outcomes turn on. Each is a pure function
+// of the values it is handed, so decide_test.go can enumerate them without a
+// cycle; a call site's only job is to hand over the right values.
 //
-// The first family is one rule in five moments — what becomes of a read the
-// layer cannot answer out of both its sources ([readRoute]); then what a write
-// meets before its append, the store boundary's translation, what an append's
-// error means, the drain's attribution, what a drain's outcome means, and what
-// one age tick does.
+// They cover: routing a read the layer cannot answer from both sources
+// ([readRoute]), what a write meets before its append, the store boundary's
+// error translation, what an append's error means, a drain's attribution and
+// settlement, and what one age tick does.
 
 import (
 	"errors"
@@ -27,59 +22,53 @@ import (
 	"github.com/aromanovich/waltz/walmetrics"
 )
 
-// reader is which of the two questions a routing rule is being asked, and it
-// changes the answer at every moment below: the two are not owed the same one.
+// reader is the kind of read being routed. The two kinds get different
+// answers in several of the rules below.
 type reader int
 
 const (
-	// mutableStateRead has legitimate callers that do not own the shard, so a
-	// stale answer is the cost this reader is the one allowed to pay. The
-	// history-branch page is one of these and not a taskRead: its reader deletes
-	// nothing it read, so a page short the window's newest nodes is that same
-	// staleness rather than a key acked past.
+	// mutableStateRead may come from callers that do not own the shard, so it
+	// may be answered stale. The history-branch page routes as one: its reader
+	// deletes nothing, so a page missing the newest nodes is only stale.
 	mutableStateRead reader = iota
-	// taskRead has exactly one caller — the owning shard's queue processors —
-	// and no such thing as a harmlessly incomplete page: the reader completes
-	// the range it asked for and acks past whatever was missing.
+	// taskRead has one caller, the owning shard's queue processors. A short
+	// page is never harmless: the reader completes the range and acks past
+	// whatever was missing.
 	taskRead
 )
 
-// readRoute is what becomes of a read the layer cannot answer out of both its
-// sources, which is one rule observed at five moments: the registry holds no
-// cycle for the shard, the cycle's goroutine is gone, the cycle is halted, the
-// cycle cannot say what its last drain did, or the cycle that answered is no
-// longer the shard's. Each is a function below returning one of these and the
-// refusal it carries — nil on the routes that answer.
+// readRoute is what becomes of a read, decided at five moments: no cycle for
+// the shard, the cycle's goroutine is gone, the cycle is halted, its last
+// drain's outcome is unreadable, or the answering cycle was superseded. Each
+// rule below returns a route and its refusal error (nil when it answers).
 type readRoute int
 
 const (
-	// merge: the cycle asked is the shard's, so the read is answered from its
-	// window over the cold store's rows, and a page it built is the shard's.
+	// merge: answer from the cycle's window over the cold store's rows.
 	merge readRoute = iota
-	// passThrough: the layer holds nothing of its own for this read, so the
-	// cold store's answer is the whole answer.
+	// passThrough: the layer holds nothing for this read; the cold store's
+	// answer is the whole answer.
 	passThrough
-	// refuseAsLost: ShardOwnershipLost, unwrapped, which is what the shard's
-	// read path matches to re-acquire.
+	// refuseAsLost: ShardOwnershipLost, unwrapped, which the shard's read path
+	// matches to re-acquire.
 	refuseAsLost
-	// refuseAsHalt: the halt's own error, handed back exactly as it came — its
-	// cause is the only record of what diverged.
+	// refuseAsHalt: the halt's own error, unchanged; its cause is the only
+	// record of what diverged.
 	refuseAsHalt
-	// refuseAsUnresolved: the cycle's last drain has no readable outcome, so
-	// what it acked is in neither source with certainty. The write path's own
-	// refusal, because this state heals: the caller is owed "ask again" and not
-	// a failover.
+	// refuseAsUnresolved: the last drain's outcome is unreadable, so what it
+	// acked is in neither source for certain. Uses the write path's refusal
+	// because this state heals: the caller should retry, not fail over.
 	refuseAsUnresolved
-	// retryOnSuccessor: the shard changed hands around this call, so the answer
-	// is discarded and the read re-issued on the cycle that replaced it. Only
-	// [supersededRoute] returns it, and only a task read reaches that rule.
+	// retryOnSuccessor: the shard changed hands during the call; discard the
+	// answer and re-issue on the replacing cycle. Only [supersededRoute]
+	// returns it, for task reads.
 	retryOnSuccessor
 )
 
-// noCycleRoute routes a read for a shard the registry holds no cycle for: one
-// this node never acquired, or has released. The two readers part here, and
-// the difference is deliberate — a mutable-state read that refused would break
-// every role that legitimately reads a shard without owning it.
+// noCycleRoute routes a read for a shard with no registered cycle (never
+// acquired here, or released). A task read is refused; a mutable-state read
+// passes through, since refusing it would break every role that legitimately
+// reads a shard it does not own.
 func noCycleRoute(who reader, shard wal.ShardID) (readRoute, error) {
 	if who == taskRead {
 		return refuseAsLost, lost(shard,
@@ -88,50 +77,34 @@ func noCycleRoute(who reader, shard wal.ShardID) (readRoute, error) {
 	return passThrough, nil
 }
 
-// loopRoute is the rule for a cycle whose loop is still there to ask, which is
-// two questions: whether a running cycle can answer at all, and what a halted
-// one answers with.
+// loopRoute routes a read for a cycle whose loop is still running.
 //
-// A running cycle merges its window over the cold store, unless the tail is
-// stalled at a drain whose outcome could not be read (see the stalled field of
-// [tailstate.Tail]). Then neither source can be trusted to hold what that drain
-// acked — the window emptied when it started, and whether the store took its
-// rows is exactly what could not be read — so a merge would hand back state
-// older than what was acked to its writer. That is [tailRoute]'s own reading,
-// entries nobody can place meaning the store is incomplete and the layer cannot
-// say by what, and both readers are refused on it. The refusal is the write
-// path's rather than a halt's because this state heals: one readable watermark
-// and the shard answers again.
+// Running: merge, unless the tail is stalled at a drain whose outcome could
+// not be read (see [tailstate.Tail]). Then neither source is sure to hold what
+// that drain acked: the window emptied when the drain started, and whether the
+// store took its rows is unknown. A merge could return state older than an
+// acked write, so both readers are refused with the write path's refusal,
+// because one readable watermark heals it.
 //
-// Halted, it turns on which read is asking, and for a mutable-state read on
-// the tail, which a halt leaves alone:
+// Halted:
 //
-//   - task read, either halt: refused whatever the tail says. On halted-lost
-//     that is another owner, whose acks this cycle can neither see nor merge.
-//     On halted-invariant an empty tail does say this cycle applied everything
-//     it acked, and the page would still be refused: what it hands back is the
-//     base store's own page token, and a shard re-acquired mid pagination — a
-//     rangeID renewal is one, with no unload and the caller's reader still
-//     holding that token — answers the next page from a cycle that merges,
-//     which cannot read a token this layer did not write and refuses it
-//     (fold.ErrForeignPageToken). Finishing the pagination on the base alone
-//     instead would drop the window out of it, which is acked task rows the
-//     range the reader completes then deletes. So a task page is answered by a
-//     running cycle or not at all;
-//   - mutable-state read: the tail rule, so the cold store on an empty tail and
-//     ShardOwnershipLost or the halt on a held one.
+//   - task read: refused whatever the tail says. On halted-lost the missing
+//     acks are another owner's. On halted-invariant even an empty tail is
+//     refused: the page would carry the base store's page token, and if the
+//     shard is re-acquired mid-pagination (a rangeID renewal does this without
+//     an unload) the merging cycle refuses that token
+//     (fold.ErrForeignPageToken), while finishing on the base alone would skip
+//     acked window rows the reader then deletes. A task page is answered by a
+//     running cycle or not at all. The refusal is ShardOwnershipLost when lost
+//     and the unconverted halt otherwise, since converting a divergence this
+//     process owns would hand it to the next owner as a normal failover;
+//   - mutable-state read: [tailRoute].
 //
-// Which refusal a task read gets still turns on the halt: ShardOwnershipLost
-// where the shard is lost, and the halt unconverted where the divergence is this
-// process's, since converting that would hand it to the next owner as an
-// ordinary failover.
+// Halt outranks a stall: a halted, stalled cycle is refused as halted, since
+// the halt's cause is the record of where the shard stopped for good.
 //
-// A halted cycle stalled at a drain is refused as halted and not as unresolved,
-// the two being reached in that order: the halt is where this shard stopped for
-// good, and its cause is the record of it.
-//
-// halt is built by the caller ([Cycle.halted]), so [refuseAsHalt] returns the
-// value it was given, identity included.
+// halt is built by the caller ([Cycle.halted]) and returned as is, identity
+// included.
 func loopRoute(
 	st State, tailEmpty bool, stalled wal.Seqno, who reader, shard wal.ShardID, halt error,
 ) (readRoute, error) {
@@ -151,18 +124,16 @@ func loopRoute(
 	return tailRoute(st, tailEmpty, shard, "it is halted holding an unapplied tail", halt)
 }
 
-// stoppedRoute is the rule for a cycle whose goroutine is gone — superseded by
-// a higher epoch, stopped by name (the root package's Layer.RetireShard), or
-// closed with the node. tailEmpty is the mirrored counter's answer, there being
-// no loop left to ask ([Cycle.stoppedRead]).
+// stoppedRoute routes a read for a cycle whose goroutine is gone: superseded
+// by a higher epoch, retired by name (Layer.RetireShard), or closed with the
+// node. tailEmpty comes from the mirror, since there is no loop to ask
+// ([Cycle.stoppedRead]).
 //
-// A task read is refused whatever that tail says, and this is where the two
-// readers part hardest: where the stopped cycle was superseded, the shard's
-// tail is now the fresh cycle's window, invisible from here. For a
-// mutable-state read that is staleness; for a task page it is a page short
-// exactly those rows, handed to the one caller that completes the range it
-// read. [Manager.taskPage] answers that one on the successor instead, and a
-// cycle stopped by name, having none, leaves the refusal standing.
+// A task read is always refused: if a successor exists, its window holds the
+// shard's newest rows, invisible here, and a page short of them would be acked
+// past. [Manager.taskPage] retries it on the successor; a cycle retired by
+// name has none, so the refusal stands. For a mutable-state read that gap is
+// only staleness.
 func stoppedRoute(st State, tailEmpty bool, who reader, shard wal.ShardID, halt error) (readRoute, error) {
 	if who == taskRead {
 		return refuseAsLost, lost(shard,
@@ -171,16 +142,15 @@ func stoppedRoute(st State, tailEmpty bool, who reader, shard wal.ShardID, halt 
 	return tailRoute(st, tailEmpty, shard, "its cycle was retired holding an unapplied tail", halt)
 }
 
-// tailRoute is what the two rules above share once the reader is settled: an
-// empty tail means everything this cycle acked is in the cold store, so that
-// store can answer; entries in it mean the layer knows the store is incomplete
-// and cannot say by what. lostWhy is what the refusal tells an operator, and
-// the two callers differ in it because the cycle is in different shapes.
+// tailRoute is the mutable-state rule shared by the two above. An empty tail
+// means everything this cycle acked is in the cold store, so it can answer.
+// A non-empty tail means the store is missing entries, so the read is refused.
+// lostWhy is the operator-facing message for the refusal.
 //
-// The rule trusts the tail, and one stop breaks that trust: [Cycle.Close] over
-// a cycle halted inside its replay floors the tail and, when its log read
-// fails, retires it empty, so [stoppedRoute] passes a mutable-state read to a
-// store short those entries. That is an open entry in DURABILITY.md.
+// The rule trusts the tail, and one path breaks that: [Cycle.Close] on a cycle
+// halted inside its replay floors the tail and, if its log read fails, retires
+// it empty, so [stoppedRoute] passes a mutable-state read to a store missing
+// those entries. This is an open entry in DURABILITY.md.
 func tailRoute(st State, tailEmpty bool, shard wal.ShardID, lostWhy string, halt error) (readRoute, error) {
 	if tailEmpty {
 		return passThrough, nil
@@ -192,19 +162,15 @@ func tailRoute(st State, tailEmpty bool, shard wal.ShardID, lostWhy string, halt
 }
 
 // supersededRoute routes an answered task page by whether the cycle that built
-// it is still the shard's. stillCurrent is read after the answer, so the window
-// it covers is the whole call; retried says one rebuild has already been spent.
+// it is still the shard's. stillCurrent must be read after the answer, so it
+// covers the whole call; retried means the one retry is already spent.
 //
-// A page from a superseded cycle is discarded and the read re-issued on the
-// cycle that replaced it: a task read is pure, and the fresh cycle replays its
-// predecessor's tail before answering, so what it merges is a superset. One
-// retry, then the shard is declared lost, since two acquires inside one page
-// read is churn faster than a page can be built.
-//
-// Refusing where this retries would be wrong: a supersede means this node
-// re-acquired, so the cycle that can answer is in the map already, and
-// converting that into a re-acquire is a self-inflicted failover over a race
-// one map lookup resolves.
+// A superseded page is discarded and re-issued on the successor: task reads
+// are pure, and the successor replays its predecessor's tail first, so it
+// merges a superset. Refusing instead would be a self-inflicted failover,
+// since this node re-acquired and the successor is already registered. After
+// one retry the shard is declared lost: two acquires within one page read is
+// churn faster than a page can be built.
 func supersededRoute(stillCurrent, retried bool, shard wal.ShardID) (readRoute, error) {
 	switch {
 	case stillCurrent:
@@ -217,34 +183,32 @@ func supersededRoute(stillCurrent, retried bool, shard wal.ShardID) (readRoute, 
 }
 
 // tickAction is what one age tick does. The tick is the loop's only
-// self-driven moment, so everything no caller's request brings with it lands
-// here, and [tickActionOf] is the rule over what the tick can see.
+// self-driven moment, so all work no request brings lands here.
 type tickAction int
 
 const (
 	// tickNothing: not running, or nothing due.
 	tickNothing tickAction = iota
-	// tickDrainAge: an aged window — or a stalled tail, whose watermark the
-	// drain re-asks on the tick's own context. A stalled cycle refuses its
-	// writers and answers no reads, so nothing else brings a drain with it,
-	// and [Config.Age] is that retry cadence as well as the window's bound.
+	// tickDrainAge: drain an aged window, or a stalled tail, re-asking its
+	// watermark on the tick's own context. A stalled cycle refuses writes and
+	// reads, so the tick is its only healer and [Config.Age] is also the
+	// stall's retry cadence.
 	tickDrainAge
-	// tickDrainPressure: the same drain, fired by standing backend pressure
-	// before the age would have, and named for it — the stall's re-ask
-	// included — since the trim its commit forces is pressure's doing.
+	// tickDrainPressure: the same drain (stall re-ask included), fired by
+	// standing backend pressure and counted under pressure's name, since the
+	// trim its commit forces is pressure's doing.
 	tickDrainPressure
-	// tickForceTrim: standing pressure with an empty window. No commit is
-	// coming to force the trim, so the tick asks the trimmer directly —
-	// which is also what retries a forced trim that failed, under a stop
-	// level that refuses the writers who would otherwise bring one.
+	// tickForceTrim: standing pressure with an empty window. No commit will
+	// force a trim, so the tick asks the trimmer directly. This also retries a
+	// failed forced trim while the stop level refuses the writers that would
+	// otherwise bring a drain.
 	tickForceTrim
 )
 
-// tickActionOf is the rule. An unstarted cycle is left alone whatever the
-// backend reports: its watermark has never been read, so there is no position
-// a trim could safely go to. Pressure that finds work drains rather than
-// trims directly, because only a commit moves the watermark a trim reclaims
-// to.
+// tickActionOf decides the tick. An unstarted cycle ignores pressure: its
+// watermark was never read, so no trim position is safe. Pressure with work
+// in the window drains rather than trims, because only a commit moves the
+// watermark a trim goes to.
 func tickActionOf(
 	st State, started, stalled, aged bool, pressure wal.PressureLevel, windowEmpty bool,
 ) tickAction {
@@ -264,36 +228,27 @@ func tickActionOf(
 	return tickNothing
 }
 
-// writeRefused is what a write meets before the append, nil where it may
-// proceed. Three reasons in one rule, because the precedence between them is a
-// decision rather than the order calls happen to sit in: what is named is the
-// thing least in this shard's own power to clear, so the stalled drain
-// outranks everything and the backend's pressure outranks the sizes. The
-// second result names it for the metric, so asking this rule a question counts
-// nothing ([Cycle.writeRefused] emits).
+// writeRefused is the refusal a write meets before its append, or nil if it
+// may proceed. The second result is the metric's limit name; this rule emits
+// nothing ([Cycle.writeRefused] does). Precedence names the cause least in
+// this shard's power to clear: stall, then pressure, then size.
 //
-//   - stalled: the cycle cannot say whether its last drain committed, so
-//     nothing may be applied over it (see the stalled field of
-//     [tailstate.Tail]) and a shard taking more work would grow a tail it has
-//     no way to discharge. I10's rule at the moment the applier is not behind
-//     but blind;
-//   - pressure at [wal.PressureStop]: the backend is running out of the
-//     storage acked entries live in and asked that nothing more be appended
-//     until that clears. The level is the backend's to lower — this shard's
-//     drains and trims are already forced while it stands — so naming a size
-//     here would send an operator to an applier that is not the constraint;
-//   - I10 itself: entries means the applier is behind; bytes means the same,
-//     or entries large enough — a workflow near the server's own blob limits —
-//     that a few of them fill the bound, and a tail over both is named as
-//     bytes. It reads the tail as it stands, never the tail this mutation
-//     would make, so no mutation is refused for its own size and the tail
-//     overshoots by at most one entry.
+//   - stalled: the last drain's outcome is unknown, so nothing may be applied
+//     over it (see [tailstate.Tail]) and more work would grow a tail that
+//     cannot be discharged;
+//   - pressure at [wal.PressureStop]: the backend is short of storage for
+//     acked entries. Only the backend can lower it (this shard's drains and
+//     trims are already forced), so naming a size would mislead the operator;
+//   - I10: entries means the applier is behind; bytes means that, or a few
+//     very large entries. Over both is named as bytes. The check reads the
+//     tail as it stands, not including this mutation, so no mutation is
+//     refused for its own size and the tail overshoots by at most one entry.
 //
-// The refusal must reach the caller unwrapped: ContextImpl.handleWriteErrorLocked
-// switches on the concrete type, where *serviceerror.ResourceExhausted means
-// "definitely not committed", and one %w falls to the default arm — a
-// background re-acquire. Cause and scope are the server's own persistence rate
-// limiter's, so the retry stays inside the history client.
+// Return the refusal unwrapped: ContextImpl.handleWriteErrorLocked switches on
+// the concrete type, where *serviceerror.ResourceExhausted means "definitely
+// not committed", and a %w-wrapped error falls to a background re-acquire.
+// Cause and scope match the server's persistence rate limiter, so the history
+// client retries it.
 func writeRefused(
 	entries, bytes int64, stalled wal.Seqno, pressure wal.PressureLevel, shard wal.ShardID, cfg Config,
 ) (*serviceerror.ResourceExhausted, string) {
@@ -316,10 +271,8 @@ func writeRefused(
 	return nil, ""
 }
 
-// persistenceLimit is the shape every refusal here is — the three above and the
-// read [loopRoute] refuses on the same unreadable drain — spelled once: copies
-// of it agree only while somebody keeps them agreeing, and what the shard reads
-// off them is the type and this pair.
+// persistenceLimit builds every refusal here, write and read alike. The shard
+// matches on the type and this Cause/Scope pair, so it is spelled once.
 func persistenceLimit(format string, args ...any) *serviceerror.ResourceExhausted {
 	return &serviceerror.ResourceExhausted{
 		Cause:   enumspb.RESOURCE_EXHAUSTED_CAUSE_PERSISTENCE_LIMIT,
@@ -328,28 +281,24 @@ func persistenceLimit(format string, args ...any) *serviceerror.ResourceExhauste
 	}
 }
 
-// unresolvedDrain is that same refusal for the one cause both sides raise it on,
-// down to the sentence: waits is what each side is the one waiting for. The
-// shape above is spelled once for the reason the wording is spelled once here.
+// unresolvedDrain is the refusal for an unreadable drain outcome, shared by
+// the write and read paths. waits says what the caller's side withholds.
 func unresolvedDrain(shard wal.ShardID, stalled wal.Seqno, waits string) *serviceerror.ResourceExhausted {
 	return persistenceLimit(
 		"shard %d's apply cycle cannot read the outcome of its drain at seqno %d, and %s until it can",
 		shard, stalled, waits)
 }
 
-// storeError translates a write outcome at the store boundary. A value
-// persistence.OperationPossiblySucceeded already recognises passes through
-// untouched — apply converts at the transaction boundary, so condition
-// failures, fenced epochs and I10's refusal are already in that list.
+// storeError translates a write outcome at the store boundary. Errors that
+// persistence.OperationPossiblySucceeded reads as definitely not committed
+// pass through untouched (condition failures, fenced epochs, I10's refusal).
 //
-// Of the cycle's own states only [StateHaltedLost] maps, since a fence is what
-// ShardOwnershipLost means. [StateHaltedInvariant], an encode failure and an
-// unknown outcome stay unrecognised and fall to the background re-acquire:
-// converting them would hand a divergence this process owns to the next owner
-// as an ordinary failover.
+// Otherwise only [StateHaltedLost] maps, to ShardOwnershipLost. A
+// halted-invariant cycle, an encode failure or an unknown outcome stay
+// unrecognised and fall to the background re-acquire: converting them would
+// hand a divergence this process owns to the next owner as a normal failover.
 //
-// st is the state the write left the cycle in, so [Manager.Write] reads it
-// after the write and not with it.
+// st is the state after the write, so [Manager.Write] reads it then.
 func storeError(st State, shard wal.ShardID, err error) error {
 	if err == nil {
 		return nil
@@ -363,29 +312,21 @@ func storeError(st State, shard wal.ShardID, err error) error {
 	return err
 }
 
-// appendOutcome is what an [wal.Log.Append] that did not return nil left in the
-// log. Three of the four are the contract's own refusals, each of which says
-// the write is whole one way or the other; the fourth is everything else, and
-// it is the zero value because nothing in the contract makes it narrower.
+// appendOutcome is what a failed [wal.Log.Append] left in the log. Three are
+// the contract's named refusals, each definite; the fourth is everything else.
 type appendOutcome int
 
 const (
-	// appendUnknown: an error the contract has no name for, so whether the
-	// entry is in the log is not established. It is what a transport failure
-	// arrives as, and the one thing that may not follow it is another mutation
-	// at the same seqno: with the first attempt possibly still in flight, which
-	// of the two ends up at that position is the backend's race to settle, and
-	// a caller was told each of the two answers. The log itself is the witness
-	// ([Cycle.settleAppend]), as the watermark is for a drain.
-	//
-	// It is the zero value, and that is the whole rule stated once: an outcome
-	// nobody set is one nobody established, where a zero of any of the three
-	// below would be this classifier assuming what it exists to refuse to assume.
+	// appendUnknown: an error the contract does not name (a transport failure,
+	// say), so whether the entry is in the log is unknown. No other mutation
+	// may take the same seqno: the first attempt may still land, and a caller
+	// would have been told both answers. The log is read back to settle it
+	// ([Cycle.settleAppend]). It is the zero value so that an unset outcome
+	// means unknown, never an assumed one.
 	appendUnknown appendOutcome = iota
-	// appendNothing: the contract names this refusal and says it writes nothing,
-	// so the seqno is still the next mutation's to take. It is the one value
-	// with no arm in the switch over these, because what it asks for is that
-	// nothing happen.
+	// appendNothing: a named refusal that writes nothing, so the seqno is free
+	// for the next mutation. Callers' switches have no arm for it: nothing
+	// needs to happen.
 	appendNothing
 	// appendFenced: the shard has a new owner (I4).
 	appendFenced
@@ -394,10 +335,9 @@ const (
 	appendTaken
 )
 
-// appendOutcomeOf reads an append's error as one of the four. Anything the
-// contract does not name is [appendUnknown] and not "a failure": rounding it
-// down is how a seqno whose fate nobody established is handed to the next
-// mutation.
+// appendOutcomeOf classifies an append's error. Anything unnamed is
+// [appendUnknown], never "nothing written", or a seqno of unknown fate would
+// be handed to the next mutation.
 func appendOutcomeOf(err error) appendOutcome {
 	switch {
 	case errors.Is(err, wal.ErrFenced):
@@ -410,27 +350,25 @@ func appendOutcomeOf(err error) appendOutcome {
 	return appendUnknown
 }
 
-// attribution is whose answer a failed assertion at apply is, if anybody's.
-// The three are exhaustive.
+// attribution is whose answer a failed assertion at apply is, if anyone's.
 type attribution int
 
 const (
-	// haltsShard is the default: a window's writers have all been acked, so a
-	// condition that did not hold cannot be pinned on one of them and a retry
-	// fixes nothing.
+	// haltsShard is the default: the window's writers were all acked, so the
+	// failure cannot be pinned on one of them and a retry fixes nothing.
 	haltsShard attribution = iota
-	// answersItsCaller is sync mode's window of one, whose writer is still
+	// answersItsCaller: sync mode's window of one, whose writer is still
 	// inside the [Cycle.write] that appended it ([Cycle.answerWriter]).
 	answersItsCaller
-	// dropsItsEntry is a replayed provisional entry, carried alone, whose
-	// caller has the answer already ([Cycle.dropProvisional]).
+	// dropsItsEntry: a replayed provisional entry, carried alone, whose caller
+	// already has its answer ([Cycle.dropProvisional]).
 	dropsItsEntry
 )
 
-// attribute is the drain's attribution rule. Both conjuncts are needed: a rule
-// reading the cause alone would report a stranger's failure to a caller the
-// moment a second call site spelled that cause, and wrong the other way is a
-// halt where an answer was owed.
+// attribute decides attribution from both the cause and a window of exactly
+// one mutation. With the cause alone, a second call site using that cause
+// would hand another writer's failure to a caller; getting it wrong the other
+// way halts where an answer was owed.
 func attribute(cause drainCause, mutationsIn int) attribution {
 	if mutationsIn != 1 {
 		return haltsShard
@@ -444,42 +382,38 @@ func attribute(cause drainCause, mutationsIn int) attribution {
 	return haltsShard
 }
 
-// settlement is what a drain's outcome does to the shard. [apply.Class] says
-// what the transaction did; this says what it means here, which is a different
-// question and the only one this package answers.
+// settlement is what a drain's outcome means for the shard; [apply.Class] is
+// only what the transaction did.
 //
-// The six are exhaustive and their watermark discipline splits two ways: only
-// the first two put rows in the cold store, so only they may move it. The other
-// four leave it where the cold store put it — a trim goes to the watermark, and
-// one moved over rows that are not there strands a recovering owner.
+// Only the first two can put rows in the cold store, so only they may move the
+// watermark. The rest leave it alone: a trim goes to the watermark, and moving
+// it over rows that are not there strands a recovering owner.
 type settlement int
 
 const (
-	// settlesForward: the rows are in the cold store, so the watermark moves
-	// over them and the drain is counted and emitted.
+	// settlesForward: the rows are in the cold store; move the watermark over
+	// them, count and emit the drain.
 	settlesForward settlement = iota
-	// asksTheWatermark: the outcome is unreadable and the watermark is the only
-	// witness. One exactly at the drain's seqno means it committed after all,
-	// and the drain settles forward; below it means it did not and above it
-	// belongs to another owner, and both halt — on different sides.
+	// asksTheWatermark: the outcome is unreadable, so read the watermark. At
+	// the drain's seqno it committed and settles forward; below, it did not;
+	// above, another owner wrote it. The last two halt, on different sides.
 	asksTheWatermark
 	// answersItsWriter: sync mode's window of one, whose writer is still inside
 	// the call that appended it ([Cycle.answerWriter]).
 	answersItsWriter
-	// dropsTheEntry: a replayed provisional entry whose caller has its answer
-	// already ([Cycle.dropProvisional]).
+	// dropsTheEntry: a replayed provisional entry whose caller already has its
+	// answer ([Cycle.dropProvisional]).
 	dropsTheEntry
-	// haltsInvariant is a divergence this process owns, and it may never be
-	// converted to ShardOwnershipLost.
+	// haltsInvariant: a divergence this process owns; never convert it to
+	// ShardOwnershipLost.
 	haltsInvariant
-	// haltsLost is the fence working.
+	// haltsLost: the fence working.
 	haltsLost
 )
 
-// settlementOf is the rule, named so it cannot be read as performing one. A
-// class it does not recognise halts on the invariant side deliberately: an
-// outcome nobody enumerated is not one to carry on from, and the other arm
-// would hand it to the next owner as an ordinary failover.
+// settlementOf decides the settlement. An unrecognised class halts on the
+// invariant side: halting as lost would hand an unenumerated outcome to the
+// next owner as a normal failover.
 func settlementOf(class apply.Class, cause drainCause, mutationsIn int) settlement {
 	switch class {
 	case apply.ClassCommitted:

@@ -5,20 +5,16 @@ package memcold
 // under the MIT licence. NOTICE at the repository root has that licence and
 // what this file takes.
 
-// One merged request's rows, mirrored from upstream's applyWorkflowMutationTx,
-// applyWorkflowSnapshotTxAsReset and applyWorkflowSnapshotTxAsNew. They are
-// unexported, so this is their statement sequence copied rather than called;
-// the order a table's own statements come in is theirs and is the
-// specification. Where one table's statements sit relative to another's is not:
-// a reset clears all seven maps and then writes all seven, where upstream
-// interleaves the clear with the write per table. Nothing here reads what
-// another statement of the same request wrote, so that regrouping is the same
-// write.
+// One merged request's rows, copied from upstream's unexported
+// applyWorkflowMutationTx, applyWorkflowSnapshotTxAsReset and
+// applyWorkflowSnapshotTxAsNew. Statement order within a table follows
+// upstream exactly. Across tables it may differ (a reset clears all seven
+// tables, then writes all seven); no statement reads another's write, so the
+// result is the same.
 //
-// What is missing from two of them is the lock-and-check they open with. A
-// drain stands on fold's head-of-window assertions, which apply.go registers
-// before the request runs, and the check here would assert the version the
-// merged request writes — the tail's — against a row still holding the head's.
+// The upstream lock-and-check is omitted: apply.go asserts fold's head-of-window
+// versions first, and the check here would compare the tail's version against a
+// row still at the head's.
 
 import (
 	"context"
@@ -84,18 +80,15 @@ func applyMutation(
 			return err
 		}
 	}
-	// The slot is always nil on a folded request — fold strips it into
-	// Emitted.BufferedBatches, which applyRequest writes after this — so neither
-	// this call nor its order against the clear above is observable here, and a
-	// sweep deleting or reordering either gets a green run. The order is the one
-	// a delta carrying its own slot needs: a clear takes the store's rows and
-	// this batch stays.
+	// Always nil on a folded request (fold moves it to Emitted.BufferedBatches),
+	// so no test notices if this is removed or reordered. Keep it after the
+	// clear: the clear removes stored rows, and this batch must survive.
 	return insertBufferedEvents(ctx, tx, shardID, ns, m.WorkflowID, run, m.NewBufferedEvents)
 }
 
-// applySnapshotAsReset replaces one existing run's whole state: every
-// collection is cleared before the snapshot's own rows go in, and the buffered
-// events go with them.
+// applySnapshotAsReset replaces an existing run's whole state: every
+// collection and the buffered events are cleared before the snapshot's rows go
+// in.
 func applySnapshotAsReset(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, s *p.InternalWorkflowSnapshot,
 ) error {
@@ -166,9 +159,8 @@ func deleteRun(
 	return nil
 }
 
-// collections is one write's upserts across the seven keyed tables a run owns,
-// and deletions its removals. Two structs rather than fourteen parameters,
-// because a mutation names both halves and a snapshot only the first.
+// collections is one write's upserts across the seven keyed tables a run owns;
+// deletions is its removals. A snapshot has only upserts.
 type collections struct {
 	activities     map[int64]*commonpb.DataBlob
 	timers         map[string]*commonpb.DataBlob
@@ -204,9 +196,9 @@ func applySnapshotCollections(
 	}, deletions{})
 }
 
-// applyCollections writes the seven keyed tables. Upserts precede deletes, as
-// they do upstream; fold resolves an upsert and a delete of one key to whichever
-// came last, so the two sets are disjoint and the order decides nothing.
+// applyCollections writes the seven keyed tables, upserts before deletes as
+// upstream does. Fold keeps only the last of an upsert and delete on one key,
+// so the sets are disjoint and the order does not matter.
 func applyCollections(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	ns primitives.UUID, workflowID string, run primitives.UUID,
@@ -342,8 +334,8 @@ func applyCollections(
 		})
 }
 
-// clearCollections empties the seven tables for one run, which is what a reset
-// does before writing its whole state and what a tombstone does instead of it.
+// clearCollections empties the seven tables for one run: before a reset writes
+// its whole state, and for a delete.
 func clearCollections(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	ns primitives.UUID, workflowID string, run primitives.UUID,
@@ -389,9 +381,8 @@ func clearCollections(
 	return nil
 }
 
-// writeKeyed is one keyed table's upserts and deletes. All seven differ only in
-// their row type and their two statements, so those are parameters: a
-// transcription per table is seven places for one of them to drift.
+// writeKeyed applies one keyed table's upserts and deletes. The seven tables
+// differ only in row type and statements, so those are parameters.
 func writeKeyed[K comparable, V any, R any](
 	what string,
 	upserts map[K]V,
@@ -417,11 +408,8 @@ func writeKeyed[K comparable, V any, R any](
 	return nil
 }
 
-// createExecution inserts a run's row. A duplicate key is the store's own
-// condition failure and everything else is a failure of the database: the first
-// halts the shard, the second leaves the drain's outcome unknown, and rounding
-// one to the other is either a shard halted for a blip or a blip mistaken for a
-// broken invariant.
+// createExecution inserts a run's row. Any insert error is a database failure
+// with an unknown outcome, never a condition failure (see below).
 func createExecution(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	ns, run primitives.UUID, workflowID string,
@@ -434,20 +422,16 @@ func createExecution(
 	}
 	result, err := tx.InsertIntoExecutions(ctx, row)
 	if err != nil {
-		// Not translated into a condition failure, which is what upstream's own
-		// create does with a duplicate-key error. A drain asserts every run row
-		// it touches under this transaction's lock a statement earlier
-		// (assertRuns), so a run that is already there is answered there, named
-		// — TestACreateOfARunThatExistsFailsAtItsAssertion holds that — and
-		// fencing leaves nobody to have put it in between. So an insert that
-		// fails here is infrastructure, and its transaction may yet commit.
+		// Unlike upstream, a duplicate key is not a condition failure here.
+		// assertRuns already checked this run under the lock
+		// (TestACreateOfARunThatExistsFailsAtItsAssertion), and fencing means
+		// no one else wrote it since, so this failure is infrastructure and the
+		// transaction may still commit.
 		//
-		// The plugin cannot tell the difference anyway: sqlite's
-		// IsDupEntryError masks the error code against the constraint codes
-		// with a bitwise AND rather than comparing it, and 3603 &
-		// SQLITE_FULL, SQLITE_IOERR, SQLITE_CORRUPT, SQLITE_NOMEM,
-		// SQLITE_INTERRUPT and SQLITE_BUSY are all non-zero. Every one of those
-		// has an unknown outcome, and [cold.Applier] says not to round one down.
+		// The plugin cannot tell anyway: sqlite's IsDupEntryError bitwise-ANDs
+		// the code against 3603, which also matches SQLITE_FULL, IOERR,
+		// CORRUPT, NOMEM, INTERRUPT and BUSY. All have unknown outcomes, which
+		// [cold.Applier] forbids rounding down.
 		return serviceerror.NewUnavailablef("inserting the executions row of run %s: %v", state.RunId, err)
 	}
 	return exactlyOneRow(result, "insert", workflowID, state.RunId)
@@ -470,11 +454,9 @@ func updateExecution(
 	return exactlyOneRow(result, "update", workflowID, state.RunId)
 }
 
-// exactlyOneRow is upstream's post-check on both execution-row writes. It is a
-// condition failure here rather than upstream's not-found: the row is keyed by
-// (shard, namespace, workflow, run) and this drain asserted it a statement
-// earlier, so a count other than one is a claim about the row that no retry can
-// make true.
+// exactlyOneRow is upstream's post-check on both execution-row writes, but
+// fails as a condition failure, not not-found: the drain just asserted this
+// row, so a count other than one cannot be fixed by retrying.
 func exactlyOneRow(result sql.Result, what, workflowID, runID string) error {
 	affected, err := result.RowsAffected()
 	if err != nil {
@@ -513,11 +495,9 @@ func executionRow(
 	}, nil
 }
 
-// insertBufferedEvents adds the batch as a row of its own: batches never merge,
-// so a caller holding several calls once per batch. The id column upstream's
-// read sorts on is never written — the v3 SQLite schema declares it BIGINT
-// AUTO_INCREMENT, which SQLite takes for a type name and leaves NULL — so what
-// orders the rows for a reader is the scan.
+// insertBufferedEvents adds one batch as its own row; call once per batch.
+// The id column upstream's read sorts on stays NULL (SQLite treats the v3
+// schema's BIGINT AUTO_INCREMENT as a type name), so readers see scan order.
 func insertBufferedEvents(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	ns primitives.UUID, workflowID string, run primitives.UUID, batch *commonpb.DataBlob,
@@ -547,9 +527,8 @@ func deleteBufferedEvents(
 	return nil
 }
 
-// applyTasks writes history-task rows. The four categories that predate the
-// general tables keep their own, which is upstream's compatibility rule and not
-// a choice available here: a queue reads the table its category is stored in.
+// applyTasks writes history-task rows. The four legacy categories keep their
+// own tables, as upstream requires: a queue reads its category's table.
 func applyTasks(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	byCategory map[tasks.Category][]p.InternalHistoryTask,
@@ -657,8 +636,8 @@ func insertScheduledTasks(
 	})
 }
 
-// insertedAll runs a task insert and checks the count, which is upstream's own
-// guard: a task row silently not inserted is a timer that never fires.
+// insertedAll runs a task insert and checks the count (upstream's guard): a
+// silently missing task row is a timer that never fires.
 func insertedAll(want int, table string, insert func() (sql.Result, error)) error {
 	result, err := insert()
 	if err != nil {
@@ -674,9 +653,9 @@ func insertedAll(want int, table string, insert func() (sql.Result, error)) erro
 	return nil
 }
 
-// rangeDeleteTasks removes one category's range under the store's own predicate
-// for that category: an immediate one on task id, a scheduled one on the
-// visibility timestamp with the task ids not looked at.
+// rangeDeleteTasks removes one category's range with the store's predicate:
+// immediate categories by task id, scheduled ones by visibility timestamp
+// alone.
 func rangeDeleteTasks(ctx context.Context, tx sqlplugin.Tx, shardID int32, r fold.TaskRange) error {
 	categoryID := r.Category.ID()
 	var err error
@@ -728,8 +707,8 @@ func rangeDeleteTasks(ctx context.Context, tx sqlplugin.Tx, shardID int32, r fol
 	return nil
 }
 
-// runKeys parses the two uuids every row of a run is keyed by. A malformed one
-// is the caller's and not the database's.
+// runKeys parses the two uuids a run's rows are keyed by. A malformed one is a
+// caller error, not a database failure.
 func runKeys(namespaceID, runID string) (primitives.UUID, primitives.UUID, error) {
 	ns, err := parseNamespace(namespaceID)
 	if err != nil {
@@ -742,10 +721,8 @@ func runKeys(namespaceID, runID string) (primitives.UUID, primitives.UUID, error
 	return ns, run, nil
 }
 
-// parseNamespace and parseRun are the halves of [runKeys], for the paths that
-// have one id in hand and not the other. Split rather than copied because the
-// sentence a malformed id is reported with is the same sentence wherever it is
-// found.
+// parseNamespace and parseRun are the halves of [runKeys], for paths holding
+// only one id.
 func parseNamespace(namespaceID string) (primitives.UUID, error) {
 	ns, err := primitives.ParseUUID(namespaceID)
 	if err != nil {
@@ -778,16 +755,13 @@ func parseBranch(branchID string) (primitives.UUID, error) {
 	return branch, nil
 }
 
-// lockRun reads a run row's db_record_version under the transaction's lock, and
-// reports absence as a nil row rather than as an error, which is the shape
-// fold's assertion is stated over.
+// lockRun reads a run row's db_record_version under the transaction's lock,
+// returning a nil row for absence, as fold's assertion expects.
 //
-// Upstream's lockAndCheckExecution has a second arm this one does not: where a
-// request carries db_record_version 0 it is judged on next_event_id against the
-// request's condition instead. Fold derives every run assertion as
-// DBRecordVersion−1 and has no second form, so a request that would have taken
-// that arm asserts −1 here. Carrying the fallback would mean a second assertion
-// shape reaching fold, which decides the same condition before the ack.
+// Upstream's lockAndCheckExecution falls back to next_event_id when
+// db_record_version is 0; this does not. Fold asserts DBRecordVersion−1 only,
+// so such a request asserts −1 here; a second shape would have to match fold's
+// pre-ack check too.
 func lockRun(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	ns primitives.UUID, workflowID string, run primitives.UUID,
@@ -805,8 +779,8 @@ func lockRun(
 }
 
 // lockCurrent reads a workflow's current-execution row under the transaction's
-// lock, nil when there is none. Not upstream's join with the executions row:
-// [applyCurrentRow] says why the drain reads the row the versioned read returns.
+// lock, nil when there is none. No join with the executions row: the drain
+// must see what the versioned read sees ([applyCurrentRow]).
 func lockCurrent(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, ns primitives.UUID, workflowID string,
 ) (*sqlplugin.CurrentExecutionsRow, error) {
@@ -822,8 +796,8 @@ func lockCurrent(
 	return row, nil
 }
 
-// startTimeOf is the column upstream derives from the execution state, nil
-// meaning the state carries none.
+// startTimeOf derives the start_time column from the execution state; nil if
+// the state has none.
 func startTimeOf(state *persistencespb.WorkflowExecutionState) *time.Time {
 	if state == nil || state.StartTime == nil {
 		return nil

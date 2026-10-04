@@ -1,25 +1,19 @@
-// Package waltest is the conformance suite for the [wal] contract, and beside
-// it [Faulty]: a backend that keeps the contract, wrapped so that a chosen call
-// fails. Three more decorators break the contract on purpose and are for proving
-// things against, never for running: [Expiring] and [Unfenced] for the two checks
-// below, and [Truncating] for a caller reading a whole log.
+// Package waltest is the conformance suite for the [wal] contract, plus
+// [Faulty], which wraps a correct backend so chosen calls fail. Three more
+// decorators break the contract on purpose, only to prove checks against:
+// [Expiring], [Unfenced] and [Truncating].
 //
-// Two obligations the suite cannot express have instruments beside it, each a
-// function a deployment runs against its own storage rather than a case here, and
-// each proved against a decorator that breaks exactly the guarantee it is about.
-// [CheckRetention] is the one about *time*, which the suite has none of — a run
-// takes milliseconds — and [Expiring] is the log it is proved against.
-// [CheckReopen] is the one about *storage*: every case here drives one value and
-// reads back through it, so an acked append that never left the process and an
-// owning epoch that never left it both pass everything, and reopening the storage
-// is what asks. [Unfenced] is the log its ownership half is proved against.
+// Two obligations the suite cannot test are functions a deployment runs
+// against its own storage. [CheckRetention] covers time, which a
+// millisecond suite cannot ([Expiring] proves it). [CheckReopen] covers
+// storage: every suite case reads back through the value that wrote, so data
+// or an epoch kept only in memory passes ([Unfenced] proves its ownership
+// half).
 //
-// What is left has no instrument and cannot be given one here, because what it is
-// about is two writers sharing no memory: a fence *racing* a displaced owner's
-// append. [RunContractSuite] states it where the green result is claimed.
+// Not covered at all: a fence racing a displaced owner's append, which needs
+// two processes; see [RunContractSuite].
 //
-// It asserts external behaviour of [wal.Log] only, and imports the contract
-// and an assertion library but never a backend.
+// It tests only external behaviour of [wal.Log] and never imports a backend.
 package waltest
 
 import (
@@ -43,17 +37,12 @@ import (
 // start with no shards in it: the suite picks fresh shard names but cannot
 // empty a backend still holding another run's logs.
 //
-// What a green run does not say. Every case drives this one value, so a displaced
-// owner is refused by the same in-process object its successor has just fenced,
-// and a backend that records the owning epoch in a process-local field — never
-// getting it into storage — passes every fencing case here, the contention test
-// included. In a deployment that is two writers acking at one seqno, each told
-// its entries are durable, with no error anywhere. Only a failover between two
-// writers that share no memory can see it, and this suite is one process.
-//
-// So whoever supplies the log owes that test to themselves, against the storage
-// the log runs on: fence at a higher epoch from a second process, append from the
-// first, and read the outcome off the log rather than off either writer.
+// A green run does not prove fencing across processes. Every case uses this
+// one value, so a backend that keeps the owning epoch only in memory passes
+// every fencing case, yet in a deployment lets two writers ack at one seqno.
+// The backend's author must test that against real storage: fence at a
+// higher epoch from a second process, append from the first, and read the
+// outcome from the log.
 func RunContractSuite(t *testing.T, log wal.Log) {
 	t.Helper()
 
@@ -101,8 +90,7 @@ func testAppendsComeBackInOrder(f *fixture) {
 }
 
 // Guarantee 4: an append that would leave a hole fails with [wal.ErrGap] and
-// writes nothing, so a pipelined append that arrived out of order is a retry
-// rather than a corruption.
+// writes nothing, so an out-of-order pipelined append can be retried.
 func testGapIsRefused(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(3)
 	f.fence(shard, epoch)
@@ -132,8 +120,7 @@ func testDuplicateSeqnoIsAlreadyWritten(f *fixture) {
 
 	other := []byte("a different payload for the same seqno")
 	f.expectError(f.appendErr(shard, epoch, wal.FirstSeqno, other), wal.ErrAlreadyWritten)
-	// Every taken seqno, not just the log's first: a backend answering off its
-	// lower end would pass the line above and let this one overwrite.
+	// Every taken seqno, not just the first.
 	f.expectError(f.appendErr(shard, epoch, wal.FirstSeqno+1, other), wal.ErrAlreadyWritten)
 
 	f.expectLog(shard, entriesFrom(epoch, wal.FirstSeqno, 2))
@@ -152,9 +139,7 @@ func testReadFromAnyPosition(f *fixture) {
 	f.expectEntries(shard, wal.FirstSeqno+2, 10, entriesFrom(epoch, wal.FirstSeqno+2, count-2))
 	f.expectEntries(shard, last, 10, entriesFrom(epoch, last, 1))
 	f.expectEntries(shard, last+1, 10, nil)
-	// Well past the end and not merely one past it: a backend indexing its rows
-	// by distance from the log's lower end has a slice bound here, and one past
-	// the end is the value that bound happens to admit.
+	// Well past the end too: an offset-indexed slice allows last+1 but no further.
 	f.expectEntries(shard, last+5, 10, nil)
 
 	// The window after a limit starts where the limit stopped.
@@ -181,12 +166,9 @@ func testTrimRemovesUpToAndNothingElse(f *fixture) {
 	f.trim(shard, last-2)
 	f.expectLog(shard, entriesFrom(epoch, last-1, 2))
 
-	// A trim *below* the lower end a previous trim left removes nothing. It is
-	// the same claim as the one above at a seqno the contract admits rather than
-	// refuses, and it is the one worth driving: a backend computing how many rows
-	// to drop as `upTo - base + 1` underflows on it — unsigned, so the answer is
-	// enormous — and takes the whole log. Acked entries, no error, nothing that
-	// says so.
+	// A trim below the current lower end removes nothing. A backend computing
+	// `upTo - base + 1` in unsigned arithmetic underflows here and silently
+	// deletes the whole log.
 	f.trim(shard, wal.FirstSeqno)
 	f.expectLog(shard, entriesFrom(epoch, last-1, 2))
 
@@ -195,9 +177,8 @@ func testTrimRemovesUpToAndNothingElse(f *fixture) {
 	f.append(shard, epoch, last+1, payloadFor(last+1))
 	f.expectLog(shard, entriesFrom(epoch, last-1, 3))
 
-	// A trim at or past the tail takes everything below the tail and leaves the
-	// log appendable. Whether the tail row survives is the backend's business:
-	// one that checks appends against a stored predecessor has to keep it.
+	// A trim at or past the tail removes everything below it and leaves the
+	// log appendable. Whether the tail row survives is up to the backend.
 	f.trim(shard, last+1)
 	f.expectTrimmedTo(shard, last+1)
 	f.trim(shard, last+100)
@@ -205,16 +186,11 @@ func testTrimRemovesUpToAndNothingElse(f *fixture) {
 	f.append(shard, epoch, last+2, payloadFor(last+2))
 }
 
-// Payload ownership, both directions. A caller may reuse the buffer it appended
-// from as soon as the call returns, and may keep and overwrite what a read
-// handed it; neither reaches the log. A backend keeping its entries in memory
-// is the one that could fail this by handing out its own, but so would one
-// caching a page it read, so the obligation is the contract's rather than any
-// backend's.
-//
-// Non-aliasing between two entries of one read is asserted by writing into one
-// and reading the other, because pointer identity is not what the contract
-// promises.
+// Payload ownership, both directions: a caller may reuse its append buffer
+// once Append returns, and may overwrite what a read returned; neither
+// reaches the log. Non-aliasing within one read is checked by writing one
+// entry and reading another, since the contract does not promise pointer
+// identity.
 func testPayloadsAreNobodyElsesMemory(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(21)
 	f.fence(shard, epoch)
@@ -242,16 +218,14 @@ func testPayloadsAreNobodyElsesMemory(f *fixture) {
 		"writing into a payload the log handed out reached the log")
 }
 
-// A trim of a log holding nothing is the ordinary case rather than a corner: a
-// healthy shard is drained, and the cycle trims to its watermark whether or not
-// anything is below it. The log must still be a log afterwards — appendable at
-// [wal.FirstSeqno], since nothing has occupied it.
+// Trimming an empty log is common: the cycle trims to its watermark whether
+// or not anything is below it. The log must stay appendable at
+// [wal.FirstSeqno].
 func testTrimOfALogWithNothingInIt(f *fixture) {
 	fenced, unfenced := f.newShard(), f.newShard()
 	epoch := wal.Epoch(15)
 
-	// Trim carries no epoch and so cannot ask who owns the shard: on one nobody
-	// has claimed, every entry it names is one of the entries that are not there.
+	// Trim carries no epoch, so it also works on a shard nobody has fenced.
 	f.trim(unfenced, wal.FirstSeqno)
 
 	f.fence(fenced, epoch)
@@ -264,17 +238,10 @@ func testTrimOfALogWithNothingInIt(f *fixture) {
 	}
 }
 
-// The seqnos a trim took are spent rather than free again. Which refusal says
-// so is deliberately not settled — a backend that keeps its log's last entry
-// answers [wal.ErrGap] where one that keeps its next seqno answers
-// [wal.ErrAlreadyWritten] — but a backend that *accepts* the append puts a hole
-// in a log the whole layer above reads as gap-free, and acks a commitSeqno
-// below entries it still holds, which the retry rule then hands to a second
-// writer as its own.
-//
-// [wal.FirstSeqno] is the seqno this is about: a backend deriving the answer
-// from the row below the entry has that row survive every trim, whatever it is
-// keeping down there for itself.
+// Trimmed seqnos stay spent. The contract accepts either [wal.ErrGap] or
+// [wal.ErrAlreadyWritten] as the refusal, but accepting the append would put
+// a hole in a log the layer reads as gap-free. [wal.FirstSeqno] matters most:
+// a backend that checks the row below must still refuse it after a trim.
 func testAppendBelowATrimIsRefused(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(9)
 	f.fence(shard, epoch)
@@ -304,22 +271,18 @@ func testAppendBelowATrimIsRefused(f *fixture) {
 	require.NoErrorf(f.t, err, "re-reading shard %d", shard)
 	require.Equal(f.t, before, after, "a refused append wrote something")
 
-	// And the log goes on where it left off rather than where it starts.
 	f.append(shard, epoch, last+1, payloadFor(last+1))
 	f.expectEntries(shard, last+1, 10, entriesFrom(epoch, last+1, 1))
 
-	// The failover this is really about: a fence changes ownership and nothing
-	// else, so the successor continues the log rather than starting one. A
-	// backend keeping the answer beside the ownership its new owner just
-	// rewrote would hand that owner the log from the beginning.
+	// After failover the successor continues the log; a fence must not reset
+	// it to the beginning.
 	successor := epoch + 1
 	f.fence(shard, successor)
 	refused(successor, wal.FirstSeqno)
 	f.append(shard, successor, last+2, payloadFor(last+2))
 }
 
-// Seqnos, epochs and trims of one shard say nothing about another: shards fail
-// over one at a time.
+// Seqnos, epochs and trims of one shard do not affect another.
 func testShardsAreIndependent(f *fixture) {
 	first, second := f.newShard(), f.newShard()
 	firstEpoch, secondEpoch := wal.Epoch(4), wal.Epoch(9)
@@ -347,18 +310,15 @@ func testShardsAreIndependent(f *fixture) {
 	})
 }
 
-// The arguments the contract does not admit are refused rather than
-// interpreted. A backend that answers any of them with a nil error hands its
-// caller a loop that never ends or an ack for entries it does not hold, and
-// both look like the log working.
+// Invalid arguments are refused, not interpreted. Accepting one would give
+// the caller an endless loop or an ack for entries the log does not hold.
 func testArgumentsTheContractRefuses(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(5)
 	f.fence(shard, epoch)
 	f.append(shard, epoch, wal.FirstSeqno, payloadFor(wal.FirstSeqno))
 	one := entriesFrom(epoch, wal.FirstSeqno, 1)
 
-	// An append of nothing would be an ack — of what, at a seqno it names and
-	// does not occupy. An empty payload is an entry; a nil one is not.
+	// An empty payload is an entry; a nil one is not.
 	require.Error(f.t, f.appendErr(shard, epoch, wal.FirstSeqno+1, nil),
 		"an append with no payload is refused")
 	// Seqnos below FirstSeqno are not entries, whatever a backend keeps there.
@@ -371,26 +331,19 @@ func testArgumentsTheContractRefuses(f *fixture) {
 	got, err = f.readErr(shard, wal.FirstSeqno, -1)
 	require.Errorf(f.t, err, "a negative limit is refused rather than answered with %d entries", len(got))
 
-	// The one argument out of range that is clamped rather than refused: a read
-	// from below the first seqno is where a caller starts when it wants the
-	// whole log.
+	// The one out-of-range argument that is clamped, not refused: reading from
+	// below the first seqno reads the whole log.
 	f.expectEntries(shard, wal.FirstSeqno-1, 10, one)
 
 	f.expectLog(shard, one)
 }
 
-// What every method owes its context, which [wal.Log] states and nothing else
-// here drives. Three claims, and the first is the one whose violation is
-// invisible from above: a call whose context was already dead when it began
-// leaves the log exactly as it was, so a caller that saw the cancellation knows
-// the log did not move. A backend that changed it anyway hands its caller an
-// entry nothing acked and a fence nobody asked for.
-//
-// The other two are what makes the first usable. The error stays matchable, or
-// the layer above reads a cancellation as an outcome it has never seen and
-// halts a healthy shard; and an argument the contract does not admit outranks
-// the context, or a malformed call is reported as a timeout and retried for
-// ever.
+// The context obligations stated on [wal.Log]:
+//   - a call whose context is already cancelled leaves the log unchanged;
+//   - its error matches context.Canceled, or the layer above treats it as an
+//     unknown outcome and halts a healthy shard;
+//   - an invalid argument is reported before the context, or a malformed call
+//     looks like a timeout and is retried forever.
 func testACancelledContextChangesNothing(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(6)
 	f.fence(shard, epoch)
@@ -405,7 +358,7 @@ func testACancelledContextChangesNothing(f *fixture) {
 	f.expectLog(shard, one)
 
 	f.expectError(f.log.Fence(dead, shard, epoch+1), context.Canceled)
-	// The fence did not take, so the epoch below the one it named still writes.
+	// The fence did not take, so the old epoch still writes.
 	f.append(shard, epoch, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1))
 	two := entriesFrom(epoch, wal.FirstSeqno, 2)
 
@@ -420,8 +373,8 @@ func testACancelledContextChangesNothing(f *fixture) {
 	f.expectLog(shard, two)
 }
 
-// The bottom of guarantee 2: an epoch that has not fenced the shard cannot
-// write to it, a writer that renewed its epoch without re-fencing included.
+// Guarantee 2: an epoch that has not fenced the shard cannot write to it,
+// including a writer that bumped its epoch without re-fencing.
 func testAppendNeedsAFenceAtItsEpoch(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(8)
 
@@ -431,15 +384,14 @@ func testAppendNeedsAFenceAtItsEpoch(f *fixture) {
 	f.fence(shard, epoch)
 	f.append(shard, epoch, wal.FirstSeqno, payloadFor(wal.FirstSeqno))
 
-	// An epoch above the fence is refused as firmly as one below it: entries
-	// written without a fence are indistinguishable from a zombie's.
+	// An epoch above the fence is refused too: unfenced writes look like a
+	// zombie's.
 	f.expectError(f.appendErr(shard, epoch+1, wal.FirstSeqno+1, payloadFor(wal.FirstSeqno+1)), wal.ErrFenced)
 	f.expectLog(shard, entriesFrom(epoch, wal.FirstSeqno, 1))
 }
 
-// Epoch 0 means "nobody owns this": an absent fence row and an unfenced log both
-// report it. The refusal must be [wal.ErrZeroEpoch]; [wal.ErrFenced] reads as a
-// lost shard and would send a caller that forgot an epoch into a failover.
+// Epoch 0 means "unowned". The refusal must be [wal.ErrZeroEpoch]:
+// [wal.ErrFenced] would send a caller that forgot its epoch into a failover.
 func testZeroEpochIsRefused(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(4)
 
@@ -451,8 +403,8 @@ func testZeroEpochIsRefused(f *fixture) {
 	f.expectLog(shard, nil)
 }
 
-// Invariant I4 in its simplest form: the shard changed hands, and the ex-owner,
-// which nobody tells, learns that from its next append.
+// Invariant I4: after the shard changes hands, the old owner learns it from
+// its next append.
 func testFenceCutsOffLowerEpochs(f *fixture) {
 	shard := f.newShard()
 	zombie, owner := wal.Epoch(4), wal.Epoch(9)
@@ -466,27 +418,22 @@ func testFenceCutsOffLowerEpochs(f *fixture) {
 	f.expectError(f.appendErr(shard, zombie, second, payloadFor(second)), wal.ErrFenced)
 	f.expectLog(shard, entriesFrom(zombie, wal.FirstSeqno, 1))
 
-	// The new owner inherits the log rather than starting one: the seqno
-	// sequence continues, and each entry keeps the epoch that wrote it.
+	// The new owner continues the log; each entry keeps its writer's epoch.
 	f.append(shard, owner, second, payloadFor(second))
 	f.expectLog(shard, []wal.Entry{
 		{Seqno: wal.FirstSeqno, Epoch: zombie, Payload: payloadFor(wal.FirstSeqno)},
 		{Seqno: second, Epoch: owner, Payload: payloadFor(second)},
 	})
 
-	// A taken seqno gets ErrFenced, not ErrAlreadyWritten: the latter is an ack,
-	// and would have the zombie take the entry that replaced it for its own.
+	// ErrFenced, not ErrAlreadyWritten: the latter is an ack, and the zombie
+	// would take the new owner's entry as its own.
 	f.expectError(f.appendErr(shard, zombie, second, payloadFor(second)), wal.ErrFenced)
 }
 
-// The other half of the ordering [wal.ErrFenced] wins: it outranks [wal.ErrGap]
-// too. [wal.ErrGap] means "retry once the predecessor lands", and for an
-// ex-owner the predecessor never will, so a caller answering the two as they
-// are documented never learns that the shard is gone.
-//
-// The same append under the epoch that owns the shard is refused as a gap,
-// which is what makes this a statement about the order rather than a second
-// fencing case: both refusals are live at that seqno, and only one may be said.
+// [wal.ErrFenced] also outranks [wal.ErrGap]. ErrGap means "retry once the
+// predecessor lands", which for an ex-owner never happens, so it would never
+// learn the shard is gone. The owner's identical append gets ErrGap, so both
+// refusals apply at that seqno and this tests their order.
 func testFencedOutranksAMissingPredecessor(f *fixture) {
 	shard := f.newShard()
 	zombie, owner := wal.Epoch(6), wal.Epoch(14)
@@ -499,7 +446,7 @@ func testFencedOutranksAMissingPredecessor(f *fixture) {
 	f.append(shard, zombie, wal.FirstSeqno, payloadFor(wal.FirstSeqno))
 	f.fence(shard, owner)
 
-	// Two above the tail, so the entry below it is one no writer has reached.
+	// Two above the tail, so its predecessor is missing.
 	overHole := wal.FirstSeqno + 2
 	f.expectError(f.appendErr(shard, owner, overHole, payloadFor(overHole)), wal.ErrGap)
 	f.expectError(f.appendErr(shard, zombie, overHole, payloadFor(overHole)), wal.ErrFenced)
@@ -507,8 +454,7 @@ func testFencedOutranksAMissingPredecessor(f *fixture) {
 	f.expectLog(shard, entriesFrom(zombie, wal.FirstSeqno, 1))
 }
 
-// The restart that is not a failover: fencing at the epoch the log already
-// carries must be a no-op, not an error and not a log that lost anything.
+// A restart without failover: fencing at the current epoch is a no-op.
 func testFenceAtTheSameEpochIsIdempotent(f *fixture) {
 	shard, epoch := f.newShard(), wal.Epoch(6)
 
@@ -522,8 +468,7 @@ func testFenceAtTheSameEpochIsIdempotent(f *fixture) {
 	f.expectLog(shard, entriesFrom(epoch, wal.FirstSeqno, 2))
 }
 
-// A zombie acquiring at its stale epoch is refused with the owner's claim
-// untouched: a half-succeeding fence would hand the log to a failover's loser.
+// A fence at a stale epoch is refused and leaves the owner's claim intact.
 func testFenceAtALowerEpochIsRefused(f *fixture) {
 	shard := f.newShard()
 	zombie, owner := wal.Epoch(4), wal.Epoch(9)
@@ -536,9 +481,9 @@ func testFenceAtALowerEpochIsRefused(f *fixture) {
 	f.expectLog(shard, entriesFrom(owner, wal.FirstSeqno, 1))
 }
 
-// Invariant I11's corner: the epoch is the shard's rangeID, renewed whenever the
-// shard exhausts its ID range, so it grows without a failover. The log accepts
-// the growth and the writer appends where it left off.
+// Invariant I11: the epoch is the shard's rangeID, which also grows without a
+// failover when the shard exhausts its ID range. The writer continues where
+// it left off.
 func testEpochGrowsWithoutChangingOwner(f *fixture) {
 	shard := f.newShard()
 	before, after := wal.Epoch(12), wal.Epoch(13)
@@ -556,43 +501,36 @@ func testEpochGrowsWithoutChangingOwner(f *fixture) {
 		{Seqno: third, Epoch: after, Payload: payloadFor(third)},
 	})
 
-	// The renewal is still a fence, so an append in flight across it fails
-	// rather than landing under the wrong epoch.
+	// The renewal is still a fence: an in-flight append at the old epoch fails.
 	f.expectError(f.appendErr(shard, before, third+1, payloadFor(third+1)), wal.ErrFenced)
 }
 
-// The chaos test of invariant I4: two processes both believe they own one shard.
+// Invariant I4 under contention: two writers both believe they own one shard.
 // Afterwards every acked entry must be present under the epoch that acked it,
 // with no seqno acked twice, no hole, and epochs never going backwards.
 func testTwoWritersContendForOneShard(f *fixture) {
-	// Attempts are a cap, not a plan: the claimants stop once both have won
-	// entries and been cut off, and a fence that lost the race leaves nothing to
-	// be cut off from, so a skewed run needs room to retry. The cap turns a run
-	// that never contends into a failure rather than a hang.
+	// maxAttempts is a cap: claimants stop once both have won entries and been
+	// cut off. It turns a run that never contends into a failure, not a hang.
 	const (
 		maxAttempts     = 32
 		appendsPerRound = 4
 	)
 	shard := f.newShard()
 
-	// One counter, because rangeID is one: the server hands out a strictly
-	// greater epoch per acquire (I11), so two claimants never hold the same one.
+	// One shared counter: each acquire gets a strictly greater epoch (I11).
 	var epochs atomic.Uint64
 
 	var (
 		claimants [2]claimant
 		wg        sync.WaitGroup
 	)
-	// Both claimants are built before either starts, since each reads the
-	// other's progress. Do not fold the two loops together.
+	// Build both before starting either, since each reads the other's
+	// progress. Do not merge the two loops.
 	for i := range claimants {
 		claimants[i] = claimant{f: f, shard: shard, epochs: &epochs}
 	}
-	// Both are released together. Without it the second claimant can be
-	// scheduled only after the first has spent its whole cap, and a run in which
-	// the two never overlapped fails below — correctly, and for a reason that is
-	// the machine's rather than the backend's. Seen once in a loaded run:
-	// "claimant 0 wrote 128 entries and was cut off 0 times in 32 attempts".
+	// Release both together, or on a loaded machine the second may start only
+	// after the first used its whole cap, and the run fails as uncontended.
 	start := make(chan struct{})
 	for i := range claimants {
 		wg.Go(func() {
@@ -600,13 +538,11 @@ func testTwoWritersContendForOneShard(f *fixture) {
 			<-start
 			for range maxAttempts {
 				c.round(appendsPerRound)
-				// Report the first violation, not what a later round
-				// overwrote it with.
+				// Keep the first violation.
 				if c.err != nil {
 					return
 				}
-				// Stopping as soon as this one is satisfied would leave the other
-				// owning an uncontested log with nobody left to fence it.
+				// Stop only when both are done, so neither is left uncontested.
 				if claimants[0].done.Load() && claimants[1].done.Load() {
 					return
 				}
@@ -629,8 +565,8 @@ func testTwoWritersContendForOneShard(f *fixture) {
 
 	for i, entry := range acked {
 		if i > 0 {
-			// A seqno acked to two writers is the failure I4 exists to prevent.
-			// Checked before contiguity, which would report it as a hole.
+			// A seqno acked twice is what I4 prevents. Checked before
+			// contiguity, which would misreport it as a hole.
 			require.NotEqualf(f.t, acked[i-1].Seqno, entry.Seqno,
 				"seqno %d was acked to both epoch %d and epoch %d",
 				entry.Seqno, acked[i-1].Epoch, entry.Epoch)
@@ -647,27 +583,17 @@ func testTwoWritersContendForOneShard(f *fixture) {
 	require.Equal(f.t, acked, got, "the log is not what the claimants were told it is")
 }
 
-// A page ends at the limit it was given and at the end of the log, and at
-// nothing else — [wal.Log.ReadFrom]'s "fewer than limit entries means the log
-// ends there" is what a caller reading the whole log stops on ([wal.Entries]),
-// and the replay that rebuilds a shard's tail is that caller.
-//
-// [testReadFromAnyPosition] holds the same clause over six entries of a sentence
-// each, which no transport budget reaches. That is the gap this closes: a
-// backend that pages by rows and by a response size — a gRPC message, a query
-// response, a driver's row buffer — answers short for the size, and every other
-// case here passes because none of them weighs anything. A replay told the log
-// ends there rebuilds a prefix of the tail, comes up, and serves reads and task
-// pages missing everything above the cut, which its callers then ack past.
-//
-// The layer's own bound admits exactly this: a tail is capped at 8 MB as well
-// as by a count, and a replay page by a count alone, so one workflow near the
-// server's own mutable-state limit fills a replay page on its own.
+// A page ends only at its limit or at the end of the log. Callers such as
+// [wal.Entries] and replay treat a short page as the end, so a backend that
+// also stops at a byte budget (a gRPC message, a driver's row buffer) makes
+// replay silently rebuild only a prefix of the tail. The other cases use tiny
+// payloads and cannot catch this. Replay pages are bounded by count only, and
+// one large workflow can fill one.
 func testAPageEndsAtItsLimitAndNotAtAByteBudget(f *fixture) {
 	const (
 		entries = 24
-		// Over a 4 MB message and well over a 1 MB page, at an entry size a
-		// deployment's own writes reach.
+		// 6 MB in total: over a 4 MB message and a 1 MB page, at a realistic
+		// entry size.
 		size = 256 << 10
 	)
 	shard, epoch := f.newShard(), wal.Epoch(9)
@@ -689,24 +615,15 @@ func testAPageEndsAtItsLimitAndNotAtAByteBudget(f *fixture) {
 	}
 }
 
-// Every method of the contract is safe for concurrent use, and [wal.Log.Trim] is
-// the one a caller always issues from a goroutine of its own: a trim runs on a
-// cadence beside the loop that goes on appending, so that a slow one cannot stop
-// a shard from acking. The other three trim cases here are sequential over a
-// quiescent log, which is the shape no deployment ever trims in — so a backend
-// whose trim is a read-modify-write over the region the appends are landing in
-// passes every one of them and loses the entry that was acked while it ran.
-//
-// What that loses is the worst-shaped thing in this suite: the trim rewrites the
-// tail without the entry appended under it, the appender was told that entry is
-// durable, and a replay after the process dies reads a log that simply ends
-// lower. No error anywhere, and the seqno is handed out a second time.
+// [wal.Log.Trim] always runs concurrently with appends in a deployment. The
+// other trim cases run on a quiet log, so a backend whose trim is a
+// read-modify-write over the appended region passes them, yet silently loses
+// an entry acked during the trim and later hands its seqno out again.
 func testTrimRunsBesideAppends(f *fixture) {
 	const (
 		entries = 200
-		// How far a trim stays behind what is acked. A trim goes to what a drain
-		// applied, which is always below the log's tail, so a trim at the very
-		// tail is not the shape to test.
+		// How far a trim stays behind the last ack, as a drain's watermark is
+		// always below the tail.
 		behind = wal.Seqno(8)
 	)
 	shard, epoch := f.newShard(), wal.Epoch(5)
@@ -720,9 +637,8 @@ func testTrimRunsBesideAppends(f *fixture) {
 		appending = true
 		failed    error
 	)
-	// Recorded rather than asserted: require outside the test's own goroutine
-	// stops that goroutine alone, and the run would go on with one half of the
-	// pair and fail for having never overlapped.
+	// Recorded, not asserted: require in another goroutine stops only that
+	// goroutine.
 	fail := func(err error) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -747,9 +663,8 @@ func testTrimRunsBesideAppends(f *fixture) {
 			mu.Lock()
 			acked = seqno
 			mu.Unlock()
-			// Both halves yield for the reason the contention test's do: a backend
-			// over a network parks on every round trip and one in memory parks on
-			// nothing, so without this the two never overlap on a one-P runtime.
+			// Yield so the two overlap on a one-P runtime with an in-memory
+			// backend, which never parks on I/O.
 			runtime.Gosched()
 		}
 	})
@@ -795,44 +710,39 @@ func testTrimRunsBesideAppends(f *fixture) {
 		require.Equalf(f.t, payloadFor(e.Seqno), e.Payload, "seqno %d came back with another entry's payload", e.Seqno)
 	}
 
-	// And what the trims left is still a log a writer continues rather than one
-	// whose next seqno moved under it.
+	// The next seqno is unchanged by the trims.
 	next := acked + 1
 	f.append(shard, epoch, next, payloadFor(next))
 }
 
-// claimant is one contender of [testTwoWritersContendForOneShard]. It records
-// failures instead of asserting them, because require in a goroutine other than
-// the test's stops that goroutine and nothing else: the run goes on with one
-// claimant, whom nobody is left to fence, and can end up failing for never
-// having contended rather than for the violation.
+// claimant is one writer in [testTwoWritersContendForOneShard]. It records
+// failures instead of asserting, since require in a goroutine stops only that
+// goroutine.
 type claimant struct {
 	f      *fixture
 	shard  wal.ShardID
 	epochs *atomic.Uint64
 
-	// won holds the entries the log acked to this claimant, lost counts the
-	// appends refused because the shard had moved on.
+	// won is the entries acked to this claimant; lost counts appends refused
+	// as fenced.
 	won  []wal.Entry
 	lost int
-	// err is anything the contract does not allow, kept for the test to report.
+	// err is the first contract violation seen.
 	err error
-	// done is the only field the other claimant reads, hence atomic: set once
-	// this one has seen both sides of a failover or stopped on an error.
+	// done is set once this claimant has both won and lost, or failed. The
+	// other claimant reads it, hence atomic.
 	done atomic.Bool
 }
 
 func (c *claimant) contended() bool { return len(c.won) > 0 && c.lost > 0 }
 
-// round is one acquire-and-write: take the shard at a fresh epoch, replay the
-// log to find where to write, then write until the log says the shard is not
-// this claimant's.
+// round fences at a fresh epoch, reads the log to find the next seqno, then
+// appends until fenced off.
 func (c *claimant) round(appends int) {
 	defer func() { c.done.Store(c.err != nil || c.contended()) }()
 
-	// The yields make the interleaving the suite's own: a backend answering from
-	// memory parks on nothing, so on a one-P runtime one claimant would take all
-	// its rounds before the other started and nothing would contend.
+	// Yield so claimants interleave on a one-P runtime with an in-memory
+	// backend, which never parks on I/O.
 	runtime.Gosched()
 
 	epoch := wal.Epoch(c.epochs.Add(1))
@@ -841,11 +751,11 @@ func (c *claimant) round(appends int) {
 		if !errors.Is(err, wal.ErrFenced) {
 			c.err = fmt.Errorf("fencing shard %d at epoch %d: %w", c.shard, epoch, err)
 		}
-		// Nothing written and nothing to be cut off from: not a round that counts.
+		// Lost the fence race: nothing written, the round does not count.
 		return
 	}
 
-	// Where to append is read, not remembered: the tail may be another's.
+	// Read the tail; the other claimant may have written it.
 	entries, err := c.f.readLog(c.shard)
 	if err != nil {
 		c.err = err
@@ -857,7 +767,7 @@ func (c *claimant) round(appends int) {
 	}
 
 	for range appends {
-		// Between appends too: an uninterrupted round raced nobody.
+		// Yield between appends too.
 		runtime.Gosched()
 
 		entry := wal.Entry{Seqno: seqno, Epoch: epoch, Payload: payloadFrom(epoch, seqno)}
@@ -868,17 +778,15 @@ func (c *claimant) round(appends int) {
 			continue
 		}
 		if !errors.Is(err, wal.ErrFenced) {
-			// Holding the fence and appending where the replay said the log
-			// ends, this claimant can only be refused as fenced: a taken seqno
-			// or a gap means somebody else got in, the failure I4 forbids.
+			// Having fenced and read the tail, only ErrFenced is allowed; a
+			// taken seqno or a gap means another writer got in, violating I4.
 			c.err = fmt.Errorf("appending at seqno %d of shard %d under epoch %d: %w",
 				seqno, c.shard, epoch, err)
 			return
 		}
 		c.lost++
 
-		// An ex-owner is never told it lost the shard, so the log must keep
-		// refusing, the seqno it just refused included.
+		// The log must keep refusing the ex-owner, at the same seqno too.
 		err = c.f.appendErr(c.shard, epoch, seqno, entry.Payload)
 		if !errors.Is(err, wal.ErrFenced) {
 			c.err = fmt.Errorf("appending at seqno %d of shard %d under the fenced-off epoch %d: "+
@@ -895,13 +803,12 @@ type fixture struct {
 	ctx context.Context
 }
 
-// shardCounter hands out shard IDs. Process-wide, so two suites sharing a
-// backend get shards of their own.
+// shardCounter hands out shard IDs process-wide, so suites sharing a backend
+// never share a shard.
 var shardCounter atomic.Uint32
 
 func newFixture(t *testing.T, log wal.Log) *fixture {
-	// Long enough that a backend talking to a slow local cluster is not a
-	// failure, short enough that a hung one fails here rather than at the test
+	// Tolerates a slow local cluster; fails a hung backend before the test
 	// binary's timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
@@ -937,8 +844,7 @@ func (f *fixture) appendErr(shard wal.ShardID, epoch wal.Epoch, seqno wal.Seqno,
 	return f.log.Append(f.ctx, shard, epoch, seqno, payload)
 }
 
-// appendRun appends count entries from first, one per call. The log it leaves
-// is entriesFrom(epoch, first, count).
+// appendRun appends entriesFrom(epoch, first, count), one per call.
 func (f *fixture) appendRun(shard wal.ShardID, epoch wal.Epoch, first wal.Seqno, count int) {
 	f.t.Helper()
 	for i := range wal.Seqno(count) {
@@ -946,8 +852,7 @@ func (f *fixture) appendRun(shard wal.ShardID, epoch wal.Epoch, first wal.Seqno,
 	}
 }
 
-// readErr is a read returning what the backend said, for the reads a test
-// expects to be refused.
+// readErr returns the backend's answer, for reads expected to be refused.
 func (f *fixture) readErr(shard wal.ShardID, from wal.Seqno, limit int) ([]wal.Entry, error) {
 	return f.log.ReadFrom(f.ctx, shard, from, limit)
 }
@@ -959,19 +864,15 @@ func (f *fixture) trim(shard wal.ShardID, upTo wal.Seqno) {
 	}
 }
 
-// readLog reads a shard's whole log the way a replay does. It returns the error
-// instead of failing the test, because the chaos test's claimants read from
-// goroutines of their own.
+// readLog reads a shard's whole log in pages, as replay does. It returns the
+// error rather than failing, because claimants call it from goroutines.
 func (f *fixture) readLog(shard wal.ShardID) ([]wal.Entry, error) {
-	// Big enough that most of the suite's logs come back in one read.
+	// Most of the suite's logs fit in one page.
 	const window = 64
 	return readAll(f.ctx, f.log, shard, window)
 }
 
-// readAll drains a shard's whole log into a slice. Its two callers want the
-// entries rather than the iterator and fail in their own ways — [fixture.readLog]
-// for the suite's cases, [requireRun] through an error for [CheckRetention] and
-// [CheckReopen] — so what they share is the drain and nothing past it.
+// readAll reads a shard's whole log into a slice.
 func readAll(ctx context.Context, log wal.Log, shard wal.ShardID, page int) ([]wal.Entry, error) {
 	entries := make([]wal.Entry, 0, page)
 	for e, err := range wal.Entries(ctx, log, shard, wal.FirstSeqno, page) {
@@ -983,15 +884,13 @@ func readAll(ctx context.Context, log wal.Log, shard wal.ShardID, page int) ([]w
 	return entries, nil
 }
 
-// expectError checks that an operation failed the way the contract says it
-// fails. A backend may add context to the error but must keep it matchable.
+// expectError checks the error matches want; a backend may wrap it.
 func (f *fixture) expectError(got, want error) {
 	f.t.Helper()
 	require.ErrorIs(f.t, got, want)
 }
 
-// expectLog reads a shard from the start with a limit above anything the cases
-// calling it write, so what comes back is the whole log.
+// expectLog checks a shard's whole log; its callers write at most 10 entries.
 func (f *fixture) expectLog(shard wal.ShardID, want []wal.Entry) {
 	f.t.Helper()
 	f.expectEntries(shard, wal.FirstSeqno, 10, want)
@@ -1002,7 +901,7 @@ func (f *fixture) expectEntries(shard wal.ShardID, from wal.Seqno, limit int, wa
 
 	got, err := f.log.ReadFrom(f.ctx, shard, from, limit)
 	require.NoErrorf(f.t, err, "reading shard %d from %d", shard, from)
-	// A backend may return a nil slice or an empty one; the contract does not care.
+	// Nil and empty are equivalent.
 	if len(want) == 0 {
 		require.Emptyf(f.t, got, "reading shard %d from %d (limit %d)", shard, from, limit)
 		return
@@ -1010,8 +909,8 @@ func (f *fixture) expectEntries(shard wal.ShardID, from wal.Seqno, limit int, wa
 	require.Equalf(f.t, want, got, "reading shard %d from %d (limit %d)", shard, from, limit)
 }
 
-// expectTrimmedTo checks a log trimmed at or past its tail: every entry below
-// the tail is gone, and the tail row itself may or may not be.
+// expectTrimmedTo checks a log trimmed at or past its tail: everything below
+// the tail is gone; the tail row may remain.
 func (f *fixture) expectTrimmedTo(shard wal.ShardID, tail wal.Seqno) {
 	f.t.Helper()
 
@@ -1028,13 +927,13 @@ func (f *fixture) expectTrimmedTo(shard wal.ShardID, tail wal.Seqno) {
 }
 
 // payloadFor builds a payload naming its seqno, so a misplaced entry is
-// recognisable rather than merely unequal.
+// recognisable.
 func payloadFor(seqno wal.Seqno) []byte {
 	return []byte(fmt.Sprintf("payload of entry %d", seqno))
 }
 
-// bigPayloadFor is payloadFor padded to size, the padding a byte derived from
-// the seqno so that two entries never share a prefix a truncation could hide.
+// bigPayloadFor is payloadFor padded to size with a seqno-derived byte, so
+// truncation cannot make two entries look alike.
 func bigPayloadFor(seqno wal.Seqno, size int) []byte {
 	payload := make([]byte, size)
 	for i := range payload {

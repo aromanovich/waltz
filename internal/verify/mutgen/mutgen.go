@@ -1,7 +1,6 @@
 // Package mutgen generates valid, deterministic mutation streams. A seed must
-// reproduce the same encoded bytes, so that a failure found at one is
-// reproducible from it alone; generation therefore must not depend on time,
-// UUIDs, Go map iteration, or protobuf maps.
+// reproduce the same encoded bytes, so generation must not depend on time,
+// UUIDs, Go map iteration or protobuf maps.
 package mutgen
 
 import (
@@ -17,105 +16,78 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// Config is the shape of the stream. There is no zero-value defaulting: start
-// from [Default] and change the knobs the experiment is about.
+// Config is the shape of the stream. Zero values are not defaulted: start
+// from [Default] and change the knobs you need.
 type Config struct {
-	// Seed fixes the stream. Two generators with the same config and seed
-	// produce the same mutations, byte for byte.
+	// Seed fixes the stream: same config and seed, same bytes.
 	Seed int64
 
-	// ShardID is the shard every mutation belongs to. One stream is one
-	// shard's log, because one shard is one accumulator and one apply
-	// transaction.
+	// ShardID is the shard every mutation belongs to; a stream is one shard's
+	// log.
 	ShardID int32
 
-	// Workflows caps the workflow key space. 0 means unbounded — a fresh key
-	// whenever WorkflowReuse says so, which is what a low-reuse stream needs.
+	// Workflows caps the workflow key space. 0 means unbounded.
 	Workflows int
 
-	// WorkflowReuse is P(a step touches a workflow already in the stream)
-	// rather than starting a new one. This is the dial that sets the collapse
-	// ratio: at 0 every mutation is a workflow of its own and a fold has
-	// nothing to merge. See [Default].
+	// WorkflowReuse is P(a step touches an existing workflow rather than a new
+	// one). It sets the collapse ratio: at 0 fold has nothing to merge.
 	WorkflowReuse float64
 
-	// KeyReuse is P(a sub-entity upsert names a key the run already holds, or
-	// one it deleted, rather than a fresh one). This is the second collapse:
-	// it decides whether a window's upserts merge per key or only pile up, and
-	// whether the accumulator's upsert-vs-delete resolution is exercised at
-	// all. See [Default].
+	// KeyReuse is P(a sub-entity upsert names a key the run holds or deleted,
+	// rather than a fresh one). It decides whether upserts merge per key and
+	// whether upsert-vs-delete resolution is exercised.
 	KeyReuse float64
 
-	// MaxChainLength is how many updates a run takes before the last one
-	// closes it. It bounds the collapse ratio from above.
+	// MaxChainLength is how many updates a run takes before the last closes
+	// it. It caps the collapse ratio.
 	MaxChainLength int
 
-	// Upserts is how many sub-entity upserts a mutation carries — activity
-	// infos under int64 keys and timer infos under string keys, so both key
-	// shapes travel.
+	// Upserts is how many sub-entity upserts a mutation carries: activity
+	// infos (int64 keys) and timer infos (string keys).
 	Upserts int
 
-	// DeleteAfterUpsert is P(a mutation also deletes a key the run upserted in
-	// an earlier mutation). Only a delete that names a key the run really holds
-	// exercises the accumulator's upsert-vs-delete resolution; a delete of an
-	// id that was never there resolves against nothing.
+	// DeleteAfterUpsert is P(a mutation also deletes a key the run upserted
+	// earlier). Only such deletes exercise upsert-vs-delete resolution.
 	DeleteAfterUpsert float64
 
-	// TaskDensity is the mean number of history tasks per mutation, spread over
-	// all four categories.
+	// TaskDensity is the mean history tasks per mutation, over four categories.
 	TaskDensity float64
 
-	// SnapshotRate is P(a step on a live run is a snapshot-bearing request
-	// rather than an update) — the barrier that resets the accumulator
-	// (invariant I8). Half of them are a SetWorkflowExecution and half a
-	// reset-only ConflictResolveWorkflowExecution: the accumulator treats the
-	// two the same way, so a knob each would be a knob nobody has a reason to
-	// turn.
+	// SnapshotRate is P(a step on a live run is a snapshot-bearing request, the
+	// barrier that resets the accumulator, I8). Half are SetWorkflowExecution,
+	// half reset-only ConflictResolve; fold treats them alike.
 	SnapshotRate float64
 
-	// ContinueAsNewRate is P(a run that has reached the end of its chain
-	// continues as new rather than simply completing). A continue-as-new is the
-	// one request that carries two runs, which is what makes it worth
-	// generating: fold merges it into a single request owning both, and refuses
-	// some windows because of it.
+	// ContinueAsNewRate is P(a run at the end of its chain continues as new
+	// rather than completing). It is the one request carrying two runs, which
+	// fold merges and sometimes refuses.
 	ContinueAsNewRate float64
 
-	// BufferedRate is P(an update carries a batch of buffered events), and also
-	// P(an update with something already buffered clears it, as completing a
-	// workflow task does). Batches do not merge — one slot per mutation — so a
-	// chain of them is the only thing that exercises the rule.
+	// BufferedRate is P(an update carries buffered events), and also P(an
+	// update clears existing buffered events, as completing a workflow task
+	// does). Batches do not merge, so only a chain of them tests that.
 	BufferedRate float64
 
-	// TombstoneRate is P(a closed run is deleted rather than superseded by a
-	// new run under the same workflow id). A deleted workflow's key stays in
-	// the space, so a later step re-creates it: that is the re-created-after-
-	// deletion case.
+	// TombstoneRate is P(a closed run is deleted rather than superseded). The
+	// key stays in the space, so a later step re-creates it after deletion.
 	TombstoneRate float64
 
-	// AddTasksRate is P(a step is a standalone AddHistoryTasks on a run the
-	// stream already holds, rather than a workflow step). It is the request
-	// kind that carries tasks with no mutable state beside them, which is what
-	// the four queue processors and the admin paths do.
+	// AddTasksRate is P(a step is a standalone AddHistoryTasks on an existing
+	// run): tasks with no mutable state, as queue processors and admin paths
+	// send.
 	AddTasksRate float64
 
 	// RangeCompleteRate is P(a step is a range delete of one category's tasks).
-	//
-	// The range is derived from keys the stream has already emitted, never
-	// drawn at random, and that is the trap this knob exists to avoid: a random
-	// range covers nothing, the rule under test is exercised in name only, and
-	// the run is green. [Report.TasksCovered] is the number that tells the two
-	// apart, as [Report.Collapses] does for the collapse ratio.
+	// Ranges come from keys already emitted, never at random, since a random
+	// range would cover nothing and pass vacuously. [Report.TasksCovered]
+	// shows whether they covered anything.
 	RangeCompleteRate float64
 }
 
-// Default is a stream with something in it for every rule fold has: chains long
-// enough to merge, keys reused often enough for the per-key resolution to fire,
-// tasks in every category, snapshots inside chains, and deletions.
-//
-// It is a function rather than zero-value defaulting because 0 is a meaningful
-// value for most of the knobs — WorkflowReuse 0 is precisely the corpus an
-// acceptance must be able to recognise as worthless — and a Config that filled
-// zeros in would make that stream unaskable-for.
+// Default exercises every fold rule: mergeable chains, reused keys, tasks in
+// every category, snapshots inside chains, and deletions. Zeros are not
+// defaulted because 0 is meaningful for most knobs (WorkflowReuse 0 is the
+// worthless corpus an acceptance must recognise).
 func Default() Config {
 	return Config{
 		WorkflowReuse:     0.8,
@@ -133,32 +105,26 @@ func Default() Config {
 	}
 }
 
-// WorkflowRunsOnly is [Default] with the two history-task rates off, so every
-// mutation of the stream names a workflow run. A task record names none, so a
-// caller whose claims are stated run by run cannot state one about it — and a
-// caller that drives its own range delete and counts what it covered gets the
-// wrong number from a stream that completed ranges of its own.
-//
-// The tasks a mutation carries are unaffected: that is [Config.TaskDensity].
+// WorkflowRunsOnly is [Default] without standalone AddTasks and RangeComplete,
+// so every mutation names a run. Use it for per-run claims, or when counting
+// your own range deletes. Tasks inside mutations ([Config.TaskDensity]) stay.
 func WorkflowRunsOnly() Config {
 	cfg := Default()
 	cfg.AddTasksRate, cfg.RangeCompleteRate = 0, 0
 	return cfg
 }
 
-// UnbrokenChains is [WorkflowRunsOnly] with the three knobs that end a chain off
-// as well: a run is a create and then updates up to [Config.MaxChainLength], and
-// nothing in the stream makes fold drain of its own accord. That is what a
-// caller asking about a *window* needs — a snapshot barrier, a continue-as-new's
-// refusal or a tombstone empties the window it was about.
+// UnbrokenChains is [WorkflowRunsOnly] without snapshots, continue-as-new or
+// tombstones: each run is a create then up to [Config.MaxChainLength] updates,
+// and nothing forces fold to drain mid-window.
 func UnbrokenChains() Config {
 	cfg := WorkflowRunsOnly()
 	cfg.SnapshotRate, cfg.ContinueAsNewRate, cfg.TombstoneRate = 0, 0, 0
 	return cfg
 }
 
-// validate rejects a config that cannot mean anything, so a typo in a knob is
-// not a stream that looks fine and exercises nothing.
+// validate rejects out-of-range knobs, so a typo fails instead of yielding a
+// stream that exercises nothing.
 func (c Config) validate() error {
 	for _, knob := range []struct {
 		name  string
@@ -193,24 +159,20 @@ func (c Config) validate() error {
 	return nil
 }
 
-// Report is what a stream turned out to be: the two collapse ratios and, beside
-// each, the knob that set it. The pairing is the point — a bare ratio of 1.0
-// reads as a pass and means the corpus never re-touched a workflow.
+// Report describes a generated stream. Each collapse ratio sits beside the
+// knob that set it, since a bare ratio of 1.0 looks like a pass but means no
+// workflow was touched twice.
 type Report struct {
 	Seed      int64
 	Mutations int
 	Workflows int // distinct workflow keys the stream touched
-	// Runs counts runs the stream created, which a continue-as-new raises above
-	// Creates: it starts a run without being a create.
+	// Runs counts runs created, including by continue-as-new, so it can
+	// exceed Creates.
 	Runs          int
 	WorkflowReuse float64
 	// CollapseRatio is workflow mutations over distinct workflows: the upper
-	// bound on what fold can merge, and the number an acceptance gates on.
-	//
-	// The history-task requests are excluded from the numerator on purpose.
-	// They name no workflow, so counting them would raise the ratio on a stream
-	// that gave the accumulator nothing more to collapse — the same failure
-	// mode WorkflowReuse 0 has, arriving from the other direction.
+	// bound on what fold can merge. Standalone task requests are excluded:
+	// they name no workflow and would inflate it with nothing to merge.
 	CollapseRatio float64
 
 	Upserts      int
@@ -222,49 +184,38 @@ type Report struct {
 	TasksByCat   map[int32]int
 	Creates      int
 	Updates      int
-	// ContinueAsNews counts the updates that also carried a new run. They are
-	// inside Updates too: a continue-as-new is one request.
+	// ContinueAsNews counts updates that also carried a new run; they are
+	// included in Updates.
 	ContinueAsNews   int
 	ConflictResolves int
 	Sets             int
-	// Deletes counts DeleteWorkflowExecution requests, which is also the number
-	// of runs the stream tombstoned: a run is deleted at most once, and always
-	// as the second half of a pair. One workflow id can be tombstoned more than
-	// once, the key being free to be created again after each.
+	// Deletes counts DeleteWorkflowExecution requests, which equals the runs
+	// tombstoned: each run is deleted at most once, as the second of a pair.
+	// A workflow id can be tombstoned repeatedly.
 	Deletes       int
 	DeleteCurrent int
 	Recreations   int // runs created under a workflow id that already had one
 
-	// BufferedBatches counts mutations carrying a batch of buffered events, and
-	// BufferedClears the ones that cleared what was buffered. Batches do not
-	// merge, so the count is also how many hand-offs an apply has to make.
+	// BufferedBatches counts mutations carrying buffered events, and
+	// BufferedClears those that cleared them. Batches do not merge.
 	BufferedBatches int
 	BufferedClears  int
 	BufferedRate    float64
 
-	// TaskAdds counts standalone AddHistoryTasks requests and TaskRanges the
-	// range deletes beside them.
+	// TaskAdds counts standalone AddHistoryTasks, TaskRanges range deletes.
 	TaskAdds   int
 	TaskRanges int
-	// TasksCovered is how many tasks the stream's own ranges actually cover —
-	// the number that says the deletion rule was exercised rather than merely
-	// present. A stream with ranges and no coverage is the corpus trap
-	// [Config.RangeCompleteRate] warns about.
+	// TasksCovered is how many tasks the ranges actually cover; zero with
+	// ranges present means the deletion rule was never exercised.
 	TasksCovered int
 
-	// cfg is what the stream was asked for, so [Report.Missing] can tell a
-	// shape the generator failed to produce from one it was never configured
-	// to.
+	// cfg lets [Report.Missing] ignore shapes the config disabled.
 	cfg Config
 }
 
-// Missing names the shapes this stream was configured to produce and did not.
-// A corpus run gates on it being empty, and that is the claim rather than the
-// mutation count: a generator regression that quietly stopped producing
-// tombstones leaves every suite over it judging fold on creates, green.
-//
-// It asks only about what the config could produce, so a stream with
-// TaskDensity 0 is not missing history tasks.
+// Missing names shapes the config enables but the stream did not produce. A
+// corpus run gates on it being empty, so a generator that silently stopped
+// producing, say, tombstones fails instead of leaving suites vacuously green.
 func (r Report) Missing() []string {
 	var missing []string
 	want := func(absent bool, what string) {
@@ -300,10 +251,8 @@ func (r Report) Missing() []string {
 	return missing
 }
 
-// Collapses reports whether the stream gives fold anything to do. An acceptance
-// run should gate on this rather than on the ratio it prints: a stream at
-// ratio 1.0 is not a fold that failed to collapse, it is a corpus that asked
-// nothing of it.
+// Collapses reports whether the stream gives fold anything to merge (ratio
+// above 1). Gate on this, not on the printed ratio.
 func (r Report) Collapses() bool {
 	return r.CollapseRatio > 1
 }
@@ -325,39 +274,33 @@ func (r Report) String() string {
 }
 
 // Generator is an endless stream of valid mutations for one shard. It is not
-// safe for concurrent use, and it is not meant to be: the whole point is that
-// the sequence is a function of the seed.
+// safe for concurrent use.
 type Generator struct {
 	cfg        Config
 	rng        *rand.Rand
 	serializer serialization.Serializer
 
 	namespaceID string
-	// pool holds every workflow key the stream has touched, in creation order.
-	// A slice rather than a map because generation may not iterate a map.
+	// pool holds every workflow key touched, in creation order (a slice: maps
+	// may not be iterated).
 	pool   []*workflowState
 	nextID int64 // next task id, monotone per shard as the real allocator is
-	// queue holds the mutations of a step that produced more than one — a
-	// deletion is always a pair.
+	// queue holds the rest of a multi-mutation step, such as a deletion pair.
 	queue []mutation.Mutation
 
-	// emitted is the per-category ledger the range deletes are drawn from:
-	// which keys the stream has put into the store, and how far its own deletes
-	// have already reached. cats is the same set in a fixed order, because
-	// generation may not iterate a map.
+	// emitted records, per category, the task keys emitted and how far range
+	// deletes have reached; ranges are drawn from it. cats lists the same
+	// categories in fixed order, since maps may not be iterated.
 	emitted map[int32]*emittedTasks
 	cats    []tasks.Category
 
-	// rep accumulates the stream's counters in place; the config echoes,
-	// Workflows and the two derived ratios stay zero until [Generator.Report]
-	// fills them.
+	// rep accumulates counters; [Generator.Report] fills the rest.
 	rep Report
 }
 
-// workflowState is one workflow key's place in the stream. At most one of run
-// and closed is set: run is a live run taking updates, closed is a completed
-// run still holding the current-execution row, and both nil means the key is
-// free — never created, or deleted and awaiting re-creation.
+// workflowState is one workflow key. At most one of run and closed is set:
+// run is live, closed is completed but still current, and both nil means the
+// key is free (never created, or deleted).
 type workflowState struct {
 	workflowID string
 	run        *runState
@@ -365,7 +308,7 @@ type workflowState struct {
 	created    int
 }
 
-// runState is what the store holds for one run, as far as validity needs it.
+// runState is the store's view of one run, as far as validity needs it.
 type runState struct {
 	runID            string
 	createRequestID  string
@@ -376,29 +319,24 @@ type runState struct {
 	status           enumspb.WorkflowExecutionStatus
 	updates          int
 
-	// The run's sub-entity keys. Slices, not sets: generation may not iterate
-	// a map. live are keys the store holds, gone are keys it deleted — an
-	// upsert may name either, and naming a deleted one is the upsert-after-
-	// delete half of fold's per-key rule.
+	// Sub-entity keys (slices: maps may not be iterated). live are held, gone
+	// were deleted; an upsert may name either, exercising upsert-after-delete.
 	liveActivities, goneActivities []int64
 	liveTimers, goneTimers         []string
 	nextActivity                   int64
 	nextTimer                      int
-	// buffered counts the run's unflushed buffered-event batches, so that a
-	// clear is only generated when there is something to clear.
+	// buffered counts unflushed buffered batches; a clear needs one.
 	buffered int
 }
 
-// New returns a generator for cfg. The error is a bad config, never a bad
-// stream.
+// New returns a generator for cfg; it fails only on a bad config.
 func New(cfg Config) (*Generator, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	g := &Generator{
 		cfg: cfg,
-		// Two words of state from one seed: PCG wants both, and deriving the
-		// second keeps the seed the only knob a caller has to record.
+		// PCG needs two words; the second is derived so the seed is enough.
 		rng:        rand.New(rand.NewPCG(uint64(cfg.Seed), uint64(cfg.Seed)^0x9e3779b97f4a7c15)),
 		serializer: serialization.NewSerializer(),
 		nextID:     1,
@@ -419,10 +357,8 @@ func (g *Generator) Next() (mutation.Mutation, error) {
 	m := g.queue[0]
 	g.queue = g.queue[1:]
 
-	// Counted here rather than where the request was built, so that a [Report]
-	// describes the stream the caller has actually seen. It matters for exactly
-	// one shape: a deletion is queued as a pair, so a caller that stops between
-	// the two would otherwise be told about a delete it was never handed.
+	// Counted on hand-out, not when built, so the [Report] matches what the
+	// caller received even if it stops inside a queued deletion pair.
 	g.rep.Mutations++
 	switch m.Kind() {
 	case mutation.KindCreate:
@@ -430,8 +366,7 @@ func (g *Generator) Next() (mutation.Mutation, error) {
 	case mutation.KindUpdate:
 		g.rep.Updates++
 		mut := m.Update.UpdateWorkflowMutation
-		// Read off the request rather than remembered from the step, so the
-		// report cannot drift from what the request actually says.
+		// Read from the request so the report cannot drift from it.
 		if m.Update.NewWorkflowSnapshot != nil {
 			g.rep.ContinueAsNews++
 		}
@@ -457,9 +392,8 @@ func (g *Generator) Next() (mutation.Mutation, error) {
 	return m, nil
 }
 
-// Take returns the next n mutations. It is a convenience for tests and for
-// short corpora; a run of 10^5 mutations and up must use [Generator.Next], for
-// the reason [Corpus] gives.
+// Take returns the next n mutations. For 10^5 or more use [Generator.Next],
+// as [Corpus] explains.
 func (g *Generator) Take(n int) ([]mutation.Mutation, error) {
 	out := make([]mutation.Mutation, 0, n)
 	for range n {
@@ -472,9 +406,8 @@ func (g *Generator) Take(n int) ([]mutation.Mutation, error) {
 	return out, nil
 }
 
-// Report describes the stream produced so far. The counters are already in
-// [Generator.rep]; this fills the config echoes, Workflows and the two derived
-// ratios beside them, over a map of its own so the caller's copy stops moving.
+// Report describes the stream so far. The returned value owns its map, so
+// later generation does not change it.
 func (g *Generator) Report() Report {
 	r := g.rep
 	r.cfg = g.cfg

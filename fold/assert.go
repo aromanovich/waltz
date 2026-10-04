@@ -9,23 +9,20 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// What one mutation says about the rows it stands on: a function of the request
-// and of nothing else. fold.go records it, check.go evaluates or delegates it;
-// the two differ in how they apply it, never in what it is.
+// What one mutation asserts about the rows it stands on, derived from the
+// request alone. fold.go records it; check.go evaluates or delegates it.
 //
-// The current-execution row has two facts here, not one — the assertion its
-// head carries and the write its tail leaves — and neither implies the other: a
-// bypass write asserts the row without writing it, and a create behind a
-// tombstone writes it under an assertion the window already holds.
+// The current row has two independent facts: the assertion and the write. A
+// bypass write asserts without writing; a create behind a tombstone writes
+// under an assertion the window already holds.
 
-// asserted is the assertion set one mutation carries. The zero value is what
-// the four kinds that assert nothing derive: both deletes and both task records.
+// asserted is the assertion set one mutation carries. Both deletes and both
+// task records assert nothing (the zero value).
 type asserted struct {
 	namespaceID string
 	workflowID  string
 	current     *CurrentAssertion
-	// runs are in the store's own registration order, which Delegated.Runs is
-	// promised in.
+	// runs are in the store's registration order, as Delegated.Runs promises.
 	runs []assertedRun
 }
 
@@ -37,8 +34,7 @@ type assertedRun struct {
 	want  RunAssertion
 }
 
-// forRun answers one run's assertion, first match: two slots naming the same run
-// are two assertions, which is what the authority would evaluate.
+// forRun returns the first assertion for runID, nil if none.
 func (a asserted) forRun(runID string) *RunAssertion {
 	for i := range a.runs {
 		if a.runs[i].runID == runID {
@@ -50,9 +46,8 @@ func (a asserted) forRun(runID string) *RunAssertion {
 
 func (a asserted) empty() bool { return a.current == nil && len(a.runs) == 0 }
 
-// assertionsOf derives the set for any mutation. False for a kind it does not
-// recognise, which the caller must refuse rather than read as "nothing asserts":
-// silence is an assertion admitted without reading the request.
+// assertionsOf derives the set for any mutation. False for an unknown kind,
+// which the caller must refuse rather than read as "asserts nothing".
 func assertionsOf(m mutation.Mutation) (asserted, bool) {
 	switch m.Kind() {
 	case mutation.KindCreate:
@@ -102,8 +97,7 @@ func assertUpdate(req *p.InternalUpdateWorkflowExecutionRequest) asserted {
 	}
 	a.runs = append(a.runs, assertedRun{mut.RunID, partMutation, RunAssertion{BaseVersion: mut.DBRecordVersion - 1}})
 	if ns := req.NewWorkflowSnapshot; ns != nil {
-		// The continued-as-new run sits under the mutation's own workflow, both
-		// here and in the store.
+		// The continued-as-new run is under the same workflow.
 		a.runs = append(a.runs, assertedRun{ns.RunID, partNewSnapshot, RunAssertion{MustNotExist: true}})
 	}
 	return a
@@ -115,8 +109,7 @@ func assertConflictResolve(req *p.InternalConflictResolveWorkflowExecutionReques
 
 	switch req.Mode {
 	case p.ConflictResolveWorkflowModeUpdateCurrent:
-		// The store asserts against the run it believes is current: the mutated
-		// current run when there is one, the reset run otherwise.
+		// The store asserts the mutated current run if any, else the reset run.
 		runID := reset.ExecutionState.RunId
 		if req.CurrentWorkflowMutation != nil {
 			runID = req.CurrentWorkflowMutation.ExecutionState.RunId
@@ -130,9 +123,8 @@ func assertConflictResolve(req *p.InternalConflictResolveWorkflowExecutionReques
 		a.runs = append(a.runs, assertedRun{cur.RunID, partMutation, RunAssertion{BaseVersion: cur.DBRecordVersion - 1}})
 	}
 	if ns := req.NewWorkflowSnapshot; ns != nil {
-		// The plugin registers no assertion for this run, but fold records one
-		// and apply asserts it ([Emitted.RunAssertions]): what the drain will
-		// assert is what has to hold.
+		// The plugin asserts nothing here, but apply will assert this
+		// ([Emitted.RunAssertions]), so it must hold.
 		a.runs = append(a.runs, assertedRun{ns.RunID, partNewSnapshot, RunAssertion{MustNotExist: true}})
 	}
 	return a
@@ -149,22 +141,17 @@ func assertSet(req *p.InternalSetWorkflowExecutionRequest) asserted {
 	}
 }
 
-// The current-row write each kind performs, rendered the way the store's own
-// path for that kind renders it ([CurrentWrite]). Set and the four kinds that
-// assert nothing write nothing, so they have none.
+// The current-row write each kind performs, rendered as the store's path for
+// that kind renders it ([CurrentWrite]). Set and the non-asserting kinds write
+// none.
 //
-// The execution state is dereferenced rather than checked: a request without one
-// cannot reach the store, and tolerating a nil would record no current-row write
-// where the sequential path made one.
+// The execution state is dereferenced, not nil-checked: the store requires it,
+// and tolerating nil would silently record no write.
 //
-// The fallible one must be called before [Accumulator.acc], both because an
-// error past it leaves the window changed by a mutation that was refused, and
-// because the fold merges requests in place: what it reads is the arriving
-// request's own state.
+// Call the fallible one before [Accumulator.acc]: an error after it would leave
+// a refused mutation in the window, and merging in place changes what it reads.
 
-// currentWriteOfSnapshot is the row a snapshot writes: the store passes the
-// snapshot's own state blob through, so every path that carries one writes the
-// same four fields off it.
+// currentWriteOfSnapshot is the row a snapshot writes, off its own state blob.
 func currentWriteOfSnapshot(snap *p.InternalWorkflowSnapshot) *CurrentWrite {
 	return &CurrentWrite{
 		RunID:            snap.RunID,
@@ -182,10 +169,8 @@ func currentWriteOfCreate(req *p.InternalCreateWorkflowExecutionRequest) *Curren
 	return nil
 }
 
-// currentWriteOfUpdate: the store's update path renders the row off the
-// mutation's own execution state — Cassandra re-serialises it, the SQL plugin
-// takes the blob already beside it — and a continue-as-new renders it off the
-// new run's snapshot instead.
+// currentWriteOfUpdate renders the row off the mutation's execution state, or
+// off the new run's snapshot for a continue-as-new.
 func currentWriteOfUpdate(req *p.InternalUpdateWorkflowExecutionRequest) (*CurrentWrite, error) {
 	if req.Mode != p.UpdateWorkflowModeUpdateCurrent {
 		return nil, nil
@@ -206,16 +191,10 @@ func currentWriteOfUpdate(req *p.InternalUpdateWorkflowExecutionRequest) (*Curre
 	}, nil
 }
 
-// currentWriteOfConflictResolve: the row the store's conflict-resolve path
-// writes, off the snapshot both plugins pick — the new run when there is one,
-// else the reset.
-//
-// Rendering a reduced state here instead — run, create request id, state and
-// status — would leave the row's `start_time` NULL and drop every non-create
-// request id, both durably: the columns are recovered from this blob, and nothing
-// back-fills a start time. What that costs is a namespace policy that silently
-// stops working, `WorkflowIdReuseMinimalInterval` measuring every interval
-// against the zero time.
+// currentWriteOfConflictResolve renders the row off the new run's snapshot if
+// any, else the reset's. It must use the full blob: a reduced state would
+// durably lose start_time and non-create request ids, breaking
+// WorkflowIdReuseMinimalInterval.
 func currentWriteOfConflictResolve(req *p.InternalConflictResolveWorkflowExecutionRequest) *CurrentWrite {
 	if req.Mode != p.ConflictResolveWorkflowModeUpdateCurrent {
 		return nil

@@ -8,30 +8,21 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// held is the cycles this node holds and the counters of the ones a higher
-// epoch has superseded, with the one mutex over both.
+// held is the cycles this node holds plus the counters of superseded ones,
+// under one mutex.
 //
-// A type rather than four fields on [Manager], for the reason the lock exists
-// and the reason it is dangerous: every read path resolves through
-// [Manager.Shard], which takes this mutex, so any code that calls into a
-// cycle's goroutine while holding it stops every shard on the node — one cycle
-// blocked inside a base read and the whole registry waits behind it.
-//
-// Each method below takes the lock (or, [held.list], runs under a caller that
-// holds it), finishes its map arithmetic and returns.
-// None of them hands out the lock and none of them calls into a `*Cycle`: where
-// one is handed back it is for the caller to question outside the lock, which
-// is what [held.totals] says of its second result. So there is no lock on
-// [Manager] a caller could hold across a call into a cycle — which is a
-// property of these six bodies and not of the type, since `held` is a package
-// neighbour of `Manager` and its mutex is reachable from there. A method added
-// here that asks a cycle anything puts the inversion straight back.
+// Every read path resolves through [Manager.Shard], which takes this mutex,
+// so calling into a cycle while holding it can stall every shard on the node.
+// Each method therefore takes the lock, does only map arithmetic and returns;
+// none calls into a *Cycle. Cycles handed back are for the caller to question
+// outside the lock. Nothing in the compiler enforces this (Manager can reach
+// mu): a method here that asks a cycle anything brings the deadlock back.
 type held struct {
 	mu      sync.Mutex
 	shards  map[wal.ShardID]*Cycle
 	retired Totals
-	// closed is what [held.takeAll] leaves behind, so that a shutdown is a state
-	// and not just an empty map: the map is empty before the first acquire too.
+	// closed is set by [held.takeAll], so shutdown is distinguishable from
+	// the empty map before the first acquire.
 	closed bool
 }
 
@@ -44,10 +35,9 @@ func (h *held) get(shard wal.ShardID) *Cycle {
 	return h.shards[shard]
 }
 
-// install puts fresh in the shard's slot and hands back whatever it displaced,
-// so the caller can count and retire it with no lock held. took is false once
-// [held.takeAll] has run, and the caller retires what it built rather than
-// leaving a cycle nothing will drain.
+// install puts fresh in the shard's slot and returns what it displaced, for
+// the caller to retire with no lock held. took is false after [held.takeAll];
+// the caller must then retire fresh, since nothing would drain it.
 func (h *held) install(shard wal.ShardID, fresh *Cycle) (previous *Cycle, took bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -59,9 +49,8 @@ func (h *held) install(shard wal.ShardID, fresh *Cycle) (previous *Cycle, took b
 	return previous, true
 }
 
-// takeAll empties the map and closes it to further installs: shutdown's one
-// step, so nothing is left for a second Close to drain and nothing arrives
-// behind it.
+// takeAll empties the map and refuses further installs, so a second Close
+// finds nothing and no acquire lands after shutdown.
 func (h *held) takeAll() []*Cycle {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -71,9 +60,8 @@ func (h *held) takeAll() []*Cycle {
 	return all
 }
 
-// retire adds a superseded cycle's counters to the node's running total. Its
-// seqnos stay out: a fresh cycle inherits the log's, so summing them
-// double-counts.
+// retire adds a superseded cycle's counters to the node's total. Seqnos stay
+// out: the next cycle inherits them, so summing double-counts.
 func (h *held) retire(counted Counters) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -81,11 +69,9 @@ func (h *held) retire(counted Counters) {
 	h.retired.Epochs++
 }
 
-// totals hands back the retired block and the live cycles together, since a
-// reading that mixed two moments could count one cycle's counters twice — in
-// the retired block it had just joined and in the snapshot it had not yet left.
-// The cycles are returned unasked: [Manager.Totals] questions them outside the
-// lock.
+// totals returns the retired block and the live cycles from one moment, so no
+// cycle is counted both as retired and as live. [Manager.Totals] questions the
+// cycles outside the lock.
 func (h *held) totals() (Totals, []*Cycle) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

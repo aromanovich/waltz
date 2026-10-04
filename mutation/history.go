@@ -10,28 +10,21 @@ import (
 
 // The event batches a mutable-state request carries, into the mirror and back.
 //
-// The codec carries whatever the mutation still holds and decides nothing: a
-// record written with none is byte-for-byte what the codec wrote before these
-// fields existed.
+// The codec carries whatever batches the mutation holds. A record with none
+// encodes exactly as it would without these fields.
 
-// ErrMalformedHistory is what [Encode] and [Decode] answer a request
-// whose event batches are missing something the fold keys on or the applier
-// writes: a nil batch, one belonging to another shard, one with no branch, one
-// whose node carries no events, or one opening a branch with no tree info.
+// ErrMalformedHistory is returned by [Encode] and [Decode] for event batches
+// missing something the fold or applier needs: a nil batch, another shard's
+// batch, no branch, a node with no events, or a new branch without tree info.
 //
-// Encode is the last point that can refuse one. Past the append the entry is
-// acked and every owner inherits it, so a batch first judged where it is
-// applied leaves the choice between a crash loop and a silent hole — the same
-// reasoning [ErrUncarriedProto] carries, at the other half of the request.
-// Decode judges again so that a payload this build did not write is named
-// rather than dereferenced.
+// Encode is the last chance to refuse: after the ack, a bad entry leaves only
+// a crash loop or a silent hole (as with [ErrUncarriedProto]). Decode checks
+// again so a foreign payload is reported rather than dereferenced.
 var ErrMalformedHistory = errors.New("mutation: history batch is missing a field the fold or the applier needs")
 
-// validateHistory holds the mutation's batches against what reads them. Every
-// clause is a dereference somewhere else: the shard id keys the row the drain
-// of this mutation's shard writes, the branch is the fold's key, the node's blob
-// is what the applier writes, and the tree info is the row a new branch needs
-// beside it.
+// validateHistory checks each batch has what its readers dereference: the
+// shard id (the drain's row key), the branch (fold's key), the node's blob
+// (what the applier writes), and tree info for a new branch.
 func validateHistory(m Mutation) error {
 	shard := m.ShardID()
 	for _, slot := range m.EventSlots() {
@@ -57,10 +50,8 @@ func validateHistory(m Mutation) error {
 	return nil
 }
 
-// encodeHistoryRequests mirrors one slot. An empty slot encodes to an absent
-// field, which is the absent-vs-empty rule the rest of this codec keeps and what
-// makes a batch-less mutation's bytes the ones written before these fields
-// existed.
+// encodeHistoryRequests mirrors one slot. An empty slot encodes as an absent
+// field, like every other collection in this codec.
 func encodeHistoryRequests(rs []*p.InternalAppendHistoryNodesRequest) []*AppendHistoryNodesRequest {
 	if len(rs) == 0 {
 		return nil
@@ -111,8 +102,7 @@ func decodeHistoryRequests(rs []*AppendHistoryNodesRequest) []*p.InternalAppendH
 	out := make([]*p.InternalAppendHistoryNodesRequest, 0, len(rs))
 	for _, r := range rs {
 		if r == nil {
-			// Refused at both ends, so this is a payload no encoder here wrote.
-			// It travels to validateHistory, which names it.
+			// Only a foreign payload gets here; validateHistory reports it.
 			out = append(out, nil)
 			continue
 		}

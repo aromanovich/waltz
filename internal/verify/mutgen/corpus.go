@@ -6,25 +6,20 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// Stream is a materialised corpus: what [Corpus] generated, what the WAL would
-// carry for it, and what came out.
+// Stream is a materialised corpus: the mutations [Corpus] generated, their
+// encoded payloads, and the generator's report.
 type Stream struct {
 	Mutations []mutation.Mutation
-	// Payloads are the mutations encoded before any consumer has touched a
-	// request, so a second path over one stream reads the log's bytes rather
-	// than a rendering of what the first path already stamped.
+	// Payloads are encoded before any consumer touches a request, so a second
+	// path reads untouched bytes.
 	Payloads [][]byte
 	Report   Report
 }
 
-// Corpus generates n mutations from cfg and materialises them: the mutations,
-// the bytes a log would carry for each, and the report a corpus is judged on
-// ([Report.Missing]). Every error names the seed, since the seed is the whole
-// of what reproduces the failure.
-//
-// A run of 10^5 mutations and up drives [Generator.Next] itself: a materialised
-// stream holds every request and every payload at once, and a consumer folding
-// as it goes needs none of it kept.
+// Corpus generates n mutations from cfg and keeps them all in memory with
+// their payloads and report ([Report.Missing]). Errors name the seed, which
+// reproduces them. For 10^5 mutations or more, call [Generator.Next] directly
+// instead of holding everything at once.
 func Corpus(cfg Config, n int) (Stream, error) {
 	g, err := New(cfg)
 	if err != nil {

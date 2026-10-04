@@ -2,10 +2,8 @@
 // write request into the opaque bytes a [wal.Entry] carries, and back.
 //
 // The [Payload] generated from mutation.proto is the record's specification.
-// Encoding fills that mirror field by field rather than reflecting over
-// Temporal's structs, so a field upstream adds is one this package silently
-// omits; the field-set test is what makes that a named failure instead of a
-// lost column.
+// Encoding copies field by field, so a field upstream adds is silently
+// omitted; the field-set test turns that into a named failure.
 package mutation
 
 import (
@@ -22,13 +20,12 @@ import (
 // value.
 const formatVersion = 1
 
-// Kind names the eight shapes a mutation comes in. It is derived from which
-// request a [Mutation] holds, never stored alongside it.
+// Kind names the eight shapes of a mutation, derived from which request a
+// [Mutation] holds, never stored.
 type Kind int
 
-// The kinds. KindInvalid is what a [Mutation] holding no request, or more than
-// one, reports. KindAddTasks and KindRangeCompleteTasks name no run and assert
-// no condition, so neither can fail one.
+// The kinds. KindInvalid means a [Mutation] holds no request or several.
+// KindAddTasks and KindRangeCompleteTasks name no run and assert no condition.
 const (
 	KindInvalid Kind = iota
 	KindCreate
@@ -41,12 +38,12 @@ const (
 	KindRangeCompleteTasks
 )
 
-// KindCount is one past the last kind, so an array indexed by [Kind] covers
-// every one including [KindInvalid].
+// KindCount is one past the last kind; an array of this size covers every
+// [Kind], including [KindInvalid].
 const KindCount = int(KindRangeCompleteTasks) + 1
 
-// String returns the kind's name from the table in kinds.go. Anything outside
-// the enumeration, [KindInvalid] included, is "invalid".
+// String returns the kind's name; anything outside the enumeration, and
+// [KindInvalid], is "invalid".
 func (k Kind) String() string {
 	if k <= KindInvalid || int(k) >= KindCount {
 		return "invalid"
@@ -63,25 +60,21 @@ type Mutation struct {
 	Set             *p.InternalSetWorkflowExecutionRequest
 	Delete          *p.DeleteWorkflowExecutionRequest
 	DeleteCurrent   *p.DeleteCurrentWorkflowExecutionRequest
-	// AddTasks and RangeCompleteTasks travel through the log so that both take
-	// effect in the order issued. A range delete applied at once runs before the
-	// deferred rows it should have covered exist; one deferred beside an add
-	// applied at once covers a scheduled category's timer created after it, by
-	// fire time, and loses it outright.
+	// AddTasks and RangeCompleteTasks both go through the log so they apply in
+	// issue order. Otherwise an immediate range delete misses deferred rows, or
+	// a deferred one deletes (by fire time) a timer added after it.
 	AddTasks           *p.InternalAddHistoryTasksRequest
 	RangeCompleteTasks *p.RangeCompleteHistoryTasksRequest
 }
 
-// ErrNotExactlyOneRequest is what a caller fanning out over [Kind] returns when
-// handed a mutation reporting [KindInvalid]. Every such caller wraps this one
-// error, so a single errors.Is matches them all.
+// ErrNotExactlyOneRequest is wrapped by every caller that switches on [Kind]
+// and is handed a [KindInvalid] mutation.
 var ErrNotExactlyOneRequest = errors.New("a mutation holds exactly one request")
 
 // Kind reports which request the mutation holds, or [KindInvalid] if it holds
 // none or several.
 func (m Mutation) Kind() Kind {
-	// Hand-written rather than a walk of the kinds table because this is the
-	// most-called function in the layer.
+	// Hand-written, not a table walk: this is the layer's hottest function.
 	kind, n := KindInvalid, 0
 	set := func(k Kind, present bool) {
 		if present {
@@ -103,7 +96,7 @@ func (m Mutation) Kind() Kind {
 }
 
 // ShardID reports the shard the mutation belongs to, or 0 for [KindInvalid].
-// One shard is one log and one apply transaction, so this is the routing key.
+// It is the routing key: one shard is one log and one apply transaction.
 func (m Mutation) ShardID() int32 {
 	switch m.Kind() {
 	case KindCreate:
@@ -127,12 +120,10 @@ func (m Mutation) ShardID() int32 {
 	}
 }
 
-// RangeID reports the epoch the caller wrote the request under, or 0 both for
-// [KindInvalid] and for the three kinds whose request carries no rangeID — the
-// two tombstones and the range delete, which the drain's own CAS fences
-// instead. It is read off the request and never carried in the payload: the
-// rangeID is the epoch (I11), it travels with the entry, and a copy inside the
-// record could disagree with it.
+// RangeID reports the epoch the caller wrote the request under, or 0 for
+// [KindInvalid] and for the two tombstones and the range delete (fenced by the
+// drain's CAS instead). It is never in the payload: the epoch travels with the
+// entry (I11), and a copy could disagree.
 func (m Mutation) RangeID() int64 {
 	kind := m.Kind()
 	if kind == KindInvalid {
@@ -141,9 +132,8 @@ func (m Mutation) RangeID() int64 {
 	return kinds[kind].rangeID(m)
 }
 
-// Part names which slot of a request carries one run's row state. A part is a
-// fact about the request's shape: a conflict-resolve has up to three, the two
-// history-task kinds and the two tombstones none.
+// Part names which slot of a request carries one run's row state. A
+// conflict-resolve has up to three; the history-task kinds and tombstones none.
 type Part int
 
 const (
@@ -158,9 +148,8 @@ const (
 // parts is the order [Mutation.TaskSlots] enumerates in.
 var parts = [...]Part{PartSnapshot, PartNewSnapshot, PartMutation}
 
-// TaskSlot returns the history-task map of one part of the request, or nil
-// where the request has no such part. The pointer aliases the map's home in the
-// request, and callers such as a range delete write through it.
+// TaskSlot returns a pointer to one part's history-task map in the request
+// (callers write through it), or nil if the request has no such part.
 func (m Mutation) TaskSlot(part Part) *map[tasks.Category][]p.InternalHistoryTask {
 	switch part {
 	case PartSnapshot:
@@ -190,10 +179,9 @@ func (m Mutation) TaskSlot(part Part) *map[tasks.Category][]p.InternalHistoryTas
 	return nil
 }
 
-// TaskSlots is every history-task map the mutation carries, in [parts] order,
-// skipping the parts the request does not have; callers concatenate the slots,
-// so the order is part of the contract. A KindAddTasks request's own rows
-// belong to no run and are not returned.
+// TaskSlots returns every history-task map the mutation carries, in [parts]
+// order (callers concatenate them, so the order is contract). A KindAddTasks
+// request's rows belong to no run and are not returned.
 func (m Mutation) TaskSlots() []*map[tasks.Category][]p.InternalHistoryTask {
 	out := make([]*map[tasks.Category][]p.InternalHistoryTask, 0, len(parts))
 	for _, part := range parts {
@@ -204,17 +192,13 @@ func (m Mutation) TaskSlots() []*map[tasks.Category][]p.InternalHistoryTask {
 	return out
 }
 
-// EventSlots is every slice of new history events the request carries, in the
-// order they must reach the store, and nil for a kind whose request carries
-// none.
+// EventSlots returns the request's slices of new history events, in store
+// order; nil if the kind has none.
 //
-// Which of the two writers puts them down is the cold store's, and both keep the
-// same rule: a mutation acked over history rows nobody wrote is a mutable state
-// the cold store can never be brought to, and no functional suite sees it. The
-// writer that puts them down through the store strips them off once they are
-// down, so a mutation still holding batches is one whose append is what makes
-// them durable — and a cold store declaring cold.HistoryApplier writes the rows
-// in the drain's transaction, beside the state that names them.
+// A mutation acked over history rows nobody wrote can never be applied, and no
+// functional suite would notice. So either the wrapper writes them through the
+// store first and strips them off, or they stay on the mutation and a
+// cold.HistoryApplier writes them in the drain's transaction.
 func (m Mutation) EventSlots() [][]*p.InternalAppendHistoryNodesRequest {
 	kind := m.Kind()
 	if kind == KindInvalid {
@@ -223,13 +207,10 @@ func (m Mutation) EventSlots() [][]*p.InternalAppendHistoryNodesRequest {
 	return kinds[kind].events(m)
 }
 
-// ClearEvents drops the request's event batches in place, for the writer that
-// has already put them down through the store. It is what makes "a mutation
-// carries exactly the batches nobody has written yet" true, and so what lets
-// [Encode] and the fold carry no mode of their own.
-//
-// It writes through the caller's request, which the layer takes ownership of
-// (wrapper.ShardWriter.Write).
+// ClearEvents drops the request's event batches in place, once they are
+// written through the store, so a mutation carries exactly the unwritten
+// batches and [Encode] and fold need no mode. It modifies the caller's
+// request, which the layer owns (wrapper.ShardWriter.Write).
 func (m Mutation) ClearEvents() {
 	switch m.Kind() {
 	case KindCreate:
@@ -244,62 +225,41 @@ func (m Mutation) ClearEvents() {
 	}
 }
 
-// ErrUnknownCategory is what [Decode] returns when an entry names a task
-// category this process does not have. The caller must fail the replay rather
-// than skip the group, whose tasks would otherwise be dropped silently.
+// ErrUnknownCategory is returned by [Decode] for a task category this process
+// does not have. The caller must fail the replay, not skip the group.
 var ErrUnknownCategory = errors.New("mutation: unknown task category id")
 
-// ErrCassandraBlob is what [Encode] returns for a CHASM node carrying a
-// Cassandra-encoded blob: the mirror has no home for it, so encoding would lose
-// state.
+// ErrCassandraBlob is returned by [Encode] for a CHASM node with a
+// Cassandra-encoded blob, which the mirror cannot carry.
 var ErrCassandraBlob = errors.New("mutation: CHASM node carries a Cassandra blob")
 
-// ErrUncarriedProto is what [Encode] returns for a request whose parsed
-// execution info or state is set while the blob that proto is derived from is
-// absent. Only the blob is carried, so such a request encodes to one [Decode]
-// answers with a nil struct — which is not a record of what the caller handed
-// over, in either of two ways: the fold dereferences the state, and the applier
-// writes the info's blob, so one shape panics every owner that replays the entry
-// and the other commits a row with the field missing.
+// ErrUncarriedProto is returned by [Encode] when parsed execution info or
+// state is set but its blob is absent. Only blobs are carried, so [Decode]
+// would yield nil: a nil state panics every replaying owner, a nil info
+// commits a row missing the field.
 //
-// It is refused here because this is the last place that can refuse. Past the
-// append the entry is acked and every owner inherits it, so the choice after
-// that is a crash loop or a silent hole; before it, refusing writes nothing.
+// Encode is the last chance to refuse; after the append the entry is acked
+// and inherited, leaving a crash loop or a silent hole.
 var ErrUncarriedProto = errors.New("mutation: parsed execution info or state with no blob carrying it")
 
-// ErrBlobEncoding is what [Encode] returns for an execution info or state blob
-// in an encoding [Decode] cannot parse. Those two are the only blobs this codec
-// *reads* — every other one is carried as bytes and handed back untouched — so
-// they are the two whose encoding has to be one the decoder admits.
+// ErrBlobEncoding is returned by [Encode] for an execution info or state blob
+// in an encoding [Decode] cannot parse. These are the only blobs the codec
+// parses; all others are carried as opaque bytes.
 //
-// It is [ErrUncarriedProto]'s failure one field along, and the reason it is
-// refused here is the same and is the whole of why this error exists: past the
-// append the entry is acked, durable and inherited by every owner, and an entry
-// no owner can decode is a shard that never starts again. Each one reads the
-// tail, fails at this blob and halts on it, and the next owner fails the same
-// way — so the write is not lost, it is unavailable for good, which the
-// first rule admits only when nothing was acked. Before the append, refusing
-// writes nothing at all.
+// As with [ErrUncarriedProto], it must be refused before the append: an acked
+// entry no owner can decode halts every owner on replay, and the shard never
+// starts again.
 var ErrBlobEncoding = errors.New("mutation: execution info or state blob in an encoding Decode cannot parse")
 
-// Encode turns a mutation into the bytes of a WAL entry's payload, carrying
-// whatever event batches the mutation still holds. The same mutation always
-// encodes to the same bytes, across processes as well.
-//
-// Whether it holds any is the caller's: the writer that puts the batches down
-// through the store itself strips them off the mutation once they are down
-// (wrapper.ExecutionStore.appendEvents), so a mutation reaching here carries
-// exactly what nobody has written yet. A mutation carrying none encodes to the
-// bytes this codec wrote before those fields existed.
-//
-// It refuses a batch [ErrMalformedHistory] names, which is what makes this the
-// place that judges them: an entry past the append is acked and inherited.
+// Encode turns a mutation into a WAL entry's payload bytes, including any
+// event batches it still holds (wrapper.ExecutionStore.appendEvents strips
+// those already written). The same mutation always encodes to the same bytes,
+// across processes too. It refuses batches with [ErrMalformedHistory].
 func Encode(m Mutation) ([]byte, error) { return encode(m, false) }
 
-// EncodeProvisional is [Encode] for an entry acked before its condition was
-// verified, so that replay can tell an answer somebody already got from a
-// divergence. It is the payload's `provisional` flag, and nothing else about
-// the record differs.
+// EncodeProvisional is [Encode] with the payload's provisional flag set, for an
+// entry acked before its condition was verified. Replay uses the flag to tell
+// an already-answered failure from a divergence.
 func EncodeProvisional(m Mutation) ([]byte, error) { return encode(m, true) }
 
 func encode(m Mutation, provisional bool) ([]byte, error) {
@@ -363,32 +323,27 @@ func encode(m Mutation, provisional bool) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mutation: encode %s: %w", kind, err)
 	}
-	// A kind with no arm, and an arm that runs and fills nothing, are the same
-	// entry: it marshals, it is appended, the caller is acked, and replay finds
-	// no request in it. The switch is left without a default so that both fail
-	// here rather than only the first.
+	// A missing arm and an arm that fills nothing would both be acked as an
+	// entry with no request. The switch has no default so this catches both.
 	if payload.Request == nil {
 		return nil, fmt.Errorf("mutation: encode %s: no arm filled the payload: %w", kind, ErrNotExactlyOneRequest)
 	}
 
-	// The format has no map fields, so Deterministic costs nothing here and
-	// states what any field added later must satisfy.
+	// No map fields yet, so Deterministic is free; it binds future fields.
 	return proto.MarshalOptions{Deterministic: true}.Marshal(payload)
 }
 
-// Decode is [Encode]'s inverse over what the payload carries. The rangeID is
-// never in it, so a decoded mutation reports zero; the event batches are in it
-// for an entry whose writer still held them. The registry must be the
-// server's own task-category registry: it is the one input that is not a
-// function of the bytes, so the same payload decodes on one node and fails on
-// another.
+// Decode is [Encode]'s inverse. A decoded mutation's RangeID is zero (it is
+// not in the payload). The registry must be the server's own task-category
+// registry; it is the one input besides the bytes, so a payload can decode on
+// one node and fail on another.
 func Decode(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation, error) {
 	m, _, err := DecodeEntry(payload, registry)
 	return m, err
 }
 
-// DecodeEntry is [Decode] plus whether the entry's ack was provisional, which
-// tells replay that a condition failure on it is a drop rather than a halt.
+// DecodeEntry is [Decode] plus whether the ack was provisional; on replay, a
+// condition failure on a provisional entry is a drop, not a halt.
 func DecodeEntry(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation, bool, error) {
 	if registry == nil {
 		return Mutation{}, false, errors.New("mutation: decode: no task category registry")
@@ -401,8 +356,8 @@ func DecodeEntry(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation,
 	if pb.Format != formatVersion {
 		return Mutation{}, false, fmt.Errorf("mutation: decode: format %d, this build writes %d", pb.Format, formatVersion)
 	}
-	// Protobuf tolerates unknown fields; a log must not. An entry written by a
-	// newer codec would otherwise replay silently short a piece.
+	// Protobuf tolerates unknown fields; a log must not, or a newer codec's
+	// entry would replay silently missing data.
 	if err := rejectUnknownFields(pb.ProtoReflect()); err != nil {
 		return Mutation{}, false, err
 	}
@@ -412,9 +367,8 @@ func DecodeEntry(payload []byte, registry tasks.TaskCategoryRegistry) (Mutation,
 	if err != nil {
 		return Mutation{}, false, err
 	}
-	// The batches are judged again here rather than trusted from the encoder:
-	// what reads them — the fold's key, the applier's blob — dereferences, and a
-	// payload this build did not write reaches those the same way.
+	// Validated again, not trusted: fold and the applier dereference them, and
+	// the payload may not come from this build.
 	if err := validateHistory(m); err != nil {
 		return Mutation{}, false, err
 	}
@@ -486,7 +440,7 @@ func rejectUnknownFields(m protoreflect.Message) error {
 	}
 	var err error
 	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-		// The format has no map fields; one added later is a hole here.
+		// Map fields are not walked; adding one leaves a hole here.
 		if fd.Kind() != protoreflect.MessageKind || fd.IsMap() {
 			return true
 		}

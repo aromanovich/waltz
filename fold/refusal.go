@@ -1,14 +1,13 @@
 package fold
 
-// [ErrRefused]'s recovery, written once: drain the window, retry the mutation
-// at the head of a fresh one. It terminates because both refusals — the fold's
-// and the condition authority's — turn on what the window already holds and
-// [Accumulator.Drain] empties it, so a drained accumulator refuses nothing.
-// That is a property of the merge rules rather than of anything here, and a
-// second refusal is an invariant violation.
+// Recovery from [ErrRefused]: drain the window, then retry the mutation at the
+// head of a fresh one. One retry suffices because both refusals (the fold's
+// and the condition authority's) depend on what the window holds, and an
+// accumulator emptied by [Accumulator.Drain] refuses nothing. A second refusal
+// is an invariant violation.
 //
-// The drain is a callback because each consumer does something different with a
-// drained window: a transaction, a kept batch, a write to a cold store.
+// The drain is a callback because consumers do different things with a
+// drained window: a transaction, a kept batch, a cold-store write.
 
 import (
 	"errors"
@@ -18,31 +17,28 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// Refusal is what one call had to do to get its mutation in, and where its
-// error came from. The zero value is the ordinary case: the window took the
-// mutation and nothing was drained.
+// Refusal reports what one call had to do to get its mutation in, and where its
+// error came from. The zero value means the window took the mutation and
+// nothing was drained.
 type Refusal struct {
-	// Drained reports that the window refused and was drained to make room. It
-	// is the dominant non-policy drain trigger, so a consumer counting drains
-	// wants it.
+	// Drained means the window refused and was drained to make room; the main
+	// drain trigger outside policy, so drain counters want it.
 	Drained bool
-	// DrainFailed reports that the returned error is the drain callback's own,
-	// unwrapped, with nothing retried after it. Such an error has already
-	// classified itself (a fenced shard, an ambiguous transaction), so a caller
-	// that type-switches must not read it as a fold invariant violation.
+	// DrainFailed means the returned error is the drain callback's, unwrapped,
+	// and nothing was retried. That error is already classified (a fenced
+	// shard, an ambiguous transaction); do not treat it as a fold invariant
+	// violation.
 	DrainFailed bool
 }
 
-// AddOrDrain is [Accumulator.Add] with the refusal's recovery applied, so its
-// error is never [ErrRefused] on the first attempt's account. drain is what
-// this consumer does with a window it was forced to close, and is required.
+// AddOrDrain is [Accumulator.Add] with the recovery applied, so it never
+// returns [ErrRefused] for the first attempt. drain is required.
 func (a *Accumulator) AddOrDrain(seqno wal.Seqno, m mutation.Mutation, drain func() error) (Refusal, error) {
 	return a.recover(func() error { return a.Add(seqno, m) }, drain)
 }
 
-// CheckOrDrain is [Accumulator.Check] with the same recovery, which works for
-// the same reason: an empty window discards nothing, so every assertion heads it
-// and none can be refused.
+// CheckOrDrain is [Accumulator.Check] with the same recovery: in an empty
+// window every assertion heads it, so none can be refused.
 func (a *Accumulator) CheckOrDrain(m mutation.Mutation, drain func() error) (Delegated, Refusal, error) {
 	del, r, _, err := a.checkOrDrain(m, drain)
 	return del, r, err
@@ -58,15 +54,13 @@ func (a *Accumulator) checkOrDrain(m mutation.Mutation, drain func() error) (Del
 		del, cov, cerr = a.check(m)
 		return cerr
 	}, drain)
-	// The retry's coverage and not the refused attempt's: the refused assertion
-	// is one this window could not determine, and after the drain it heads an
-	// empty window and is recorded. Counting both would report the same
-	// assertion set twice and call the second reading a wider one.
+	// Only the retry's coverage: counting the refused attempt too would count
+	// the same assertions twice.
 	return del, r, cov, err
 }
 
-// recover retries exactly once: a second refusal is the property above having
-// stopped holding, not a case to keep draining at.
+// recover retries exactly once: a second refusal means the invariant above
+// broke, and draining again would not help.
 func (a *Accumulator) recover(op func() error, drain func() error) (Refusal, error) {
 	err := op()
 	if !errors.Is(err, ErrRefused) {

@@ -13,10 +13,10 @@ import (
 
 // Decoding: the mirror back into Temporal's structs.
 //
-// The mirror carries only the blob of each blob/proto pair, so the proto is
-// derived with a plain [proto.Unmarshal], never with Temporal's serialization
-// helpers: WorkflowExecutionStateFromBlob back-fills RequestIds for old
-// records, and apply would then write the grown blob.
+// The mirror carries only the blob of each blob/proto pair; the proto is
+// derived with plain [proto.Unmarshal], not Temporal's helpers:
+// WorkflowExecutionStateFromBlob back-fills RequestIds, and apply would then
+// write the altered blob.
 
 func decodeCreate(r *CreateRequest, registry tasks.TaskCategoryRegistry) (*p.InternalCreateWorkflowExecutionRequest, error) {
 	snapshot, err := decodeSnapshot(r.Snapshot, registry)
@@ -273,11 +273,9 @@ func unmarshalBlob(b *commonpb.DataBlob, into proto.Message) error {
 	return proto.Unmarshal(b.Data, into)
 }
 
-// A repeated key is refused rather than overwritten by each of the four
-// decoders below: keeping the last value would drop one run's blob, or a
-// whole category's tasks, on replay and say nothing — the failure
-// [ErrUnknownCategory] exists to prevent. [Encode] emits each collection once
-// out of a Go map, so a duplicate is an entry this codec did not write.
+// The four decoders below refuse a repeated key instead of keeping the last
+// value, which would silently drop a run's blob or a category's tasks on
+// replay. [Encode] never writes duplicates, so one means a foreign entry.
 
 func decodeBlobsInt(entries []*Int64BlobEntry) (map[int64]*commonpb.DataBlob, error) {
 	if len(entries) == 0 {
@@ -351,7 +349,7 @@ func decodeTasks(groups []*TaskGroup, registry tasks.TaskCategoryRegistry) (map[
 }
 
 // decodeTaskKey is [encodeTaskKey]'s inverse. A nil key decodes to the zero
-// key, which is what a range naming no bound means.
+// key (an unbounded range end).
 func decodeTaskKey(k *TaskKey) tasks.Key {
 	if k == nil {
 		return tasks.Key{}
@@ -363,8 +361,8 @@ func decodeTaskKey(k *TaskKey) tasks.Key {
 	return key
 }
 
-// setOf is the decode half of the absent-vs-empty rule, inverse to
-// [sortedKeys]: an absent field decodes to a nil set, not an empty one.
+// setOf is the inverse of [sortedKeys]: an absent field decodes to a nil set,
+// not an empty one.
 func setOf[K comparable](keys []K) map[K]struct{} {
 	if len(keys) == 0 {
 		return nil

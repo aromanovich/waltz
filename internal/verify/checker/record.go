@@ -17,18 +17,13 @@ import (
 
 // The driver's record: what a node asked the store for, and what it learned.
 //
-// Two lines per call, each fsynced, and the gap between them is the third
-// outcome class: a process killed between them leaves a `call` with no
-// `outcome`, which is exactly "the driver does not know". Recording the outcome
-// only would make every killed call look like one that was never issued, while
-// its entry sits in the log with nothing to account for it.
-//
-// It is a file and not memory because what it is a record of is a process
-// dying: an in-memory record goes with the node, and the one call a run turns
-// on is then the one that is missing.
+// Each call is two fsynced lines. A kill between them leaves a call with no
+// outcome, meaning "the driver does not know". Recording only outcomes would
+// make a killed call look never issued while its entry sits in the log. It is
+// a file because it must survive the process it records dying.
 
-// Line is one entry of the record. It is the file format, so a field is added
-// here and read back by [ReadRecord] and nothing else parses it.
+// Line is one entry of the record and defines the file format; only
+// [ReadRecord] parses it.
 type Line struct {
 	Seq         int64  `json:"seq"`
 	Node        string `json:"node"`
@@ -47,17 +42,15 @@ type Line struct {
 	Detail    string `json:"detail,omitempty"`
 }
 
-// The events a record holds. Only the first two carry claims; the third is the
-// run's own narration, which a harness reads to know what happened and no
-// assertion stands on.
+// The events a record holds. Only call and outcome carry claims; fenced is
+// narration for the harness, and no assertion rests on it.
 const (
 	EventCall    = "call"
 	EventOutcome = "outcome"
 	EventFenced  = "fenced"
 )
 
-// Record is one node's memory of what it asked for, appended and fsynced per
-// line.
+// Record is one node's record file, appended and fsynced per line.
 type Record struct {
 	mu          sync.Mutex
 	f           *os.File
@@ -68,12 +61,10 @@ type Record struct {
 
 // NewRecord opens a record for one node incarnation.
 //
-// The incarnation is not decoration: `seq` is per process, so a node restarted
-// onto the same record path numbers a second run from 1 and the two runs' calls
-// collide — one call's outcome read as another's. Whoever starts a node is the
-// only thing that knows it is a restart, so the incarnation comes from there,
-// and an incarnation of 0 appended to a record that already holds a run is
-// refused rather than trusted.
+// Seq restarts at 1 per process, so a restarted node needs a new incarnation
+// or its calls collide with the previous run's. Only the node's starter knows
+// it is a restart, so it supplies the incarnation; incarnation 0 on a
+// non-empty file is refused.
 func NewRecord(path, node string, incarnation int64) (*Record, error) {
 	if node == "" {
 		return nil, errors.New("checker: a record needs the name of the node writing it")
@@ -94,8 +85,8 @@ func NewRecord(path, node string, incarnation int64) (*Record, error) {
 	return &Record{f: f, node: node, incarnation: incarnation}, nil
 }
 
-// write appends one line and fsyncs it. The returned seq is the line's id
-// within this incarnation, which is what an outcome points back at.
+// write appends and fsyncs one line, returning its seq: its id within this
+// incarnation, which an outcome points back at.
 func (r *Record) write(l Line) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -113,7 +104,7 @@ func (r *Record) write(l Line) (int64, error) {
 	return l.Seq, r.f.Sync()
 }
 
-// Call writes down a call the driver is about to make, before it makes it.
+// Call records a call before the driver makes it.
 func (r *Record) Call(shard wal.ShardID, epoch wal.Epoch, m mutation.Mutation) (int64, error) {
 	subject, effect, err := Identify(m)
 	if err != nil {
@@ -131,13 +122,13 @@ func (r *Record) Call(shard wal.ShardID, epoch wal.Epoch, m mutation.Mutation) (
 	})
 }
 
-// Outcome writes down what the call returned.
+// Outcome records what the call returned.
 func (r *Record) Outcome(call int64, outcome Outcome, detail string) error {
 	_, err := r.write(Line{Event: EventOutcome, Call: call, Outcome: outcome.String(), Detail: detail})
 	return err
 }
 
-// Fenced writes down that the node lost the shard.
+// Fenced records that the node lost the shard.
 func (r *Record) Fenced(shard wal.ShardID, epoch wal.Epoch, detail string) error {
 	_, err := r.write(Line{Event: EventFenced, Shard: int32(shard), Epoch: int64(epoch), Detail: detail})
 	return err
@@ -149,13 +140,9 @@ func (r *Record) Close() error {
 	return r.f.Close()
 }
 
-// ReadRecord reads back what a node wrote down.
-//
-// A partial trailing line is dropped rather than being an error: the record is
-// appended and fsynced per line, so a kill can at worst leave the last one
-// short — and a reader that treated a short last line as a broken file could
-// not read the record of a killed node, which is the case the record exists
-// for. Any other line that does not parse is dropped the same way, silently.
+// ReadRecord reads a record back; a missing file is an empty record. Lines
+// that do not parse are silently dropped, so the short last line a kill can
+// leave does not make a killed node's record unreadable.
 func ReadRecord(path string) ([]Line, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -178,16 +165,13 @@ func ReadRecord(path string) ([]Line, error) {
 	return out, nil
 }
 
-// Identify reads the subject of a mutation and what the cold store must show
-// once it has been applied.
+// Identify returns a mutation's subject and what the cold store must show once
+// it is applied. The driver uses it for the call line and a log reader for an
+// entry's payload, so both agree.
 //
-// One implementation for both ends on purpose: the driver stamps it on the call
-// line, and whoever reads a log back reads it off an entry's payload. A request
-// carrying two runs — a continue-as-new, a conflict-resolve with a new run
-// beside the reset one — is identified by the run it is *about*, so a claim
-// made from it is about that run and no other. That is a narrowing and it is
-// stated rather than hidden: saying more would mean deciding what each request
-// leaves behind on every run it touches, which is fold's job.
+// A request touching two runs (continue-as-new, conflict-resolve with a new
+// run) is identified by the run it is about, and claims nothing about the
+// other; deciding what it leaves on every run is fold's job.
 func Identify(m mutation.Mutation) (Workflow, Effect, error) {
 	switch m.Kind() {
 	case mutation.KindCreate:
@@ -206,21 +190,16 @@ func Identify(m mutation.Mutation) (Workflow, Effect, error) {
 		r := m.Delete
 		return Workflow{r.NamespaceID, r.WorkflowID, r.RunID}, Removed, nil
 	case mutation.KindAddTasks:
-		// A shard-level record: it names a namespace and a workflow because the
-		// request has them, and no run at all, because the store's task rows are
-		// keyed by (shard, category, key). There is no execution row to read it
-		// back from, so it makes no claim.
+		// Task rows are keyed by (shard, category, key), not by run, so there
+		// is no execution row to check: no run, no claim.
 		r := m.AddTasks
 		return Workflow{r.NamespaceID, r.WorkflowID, ""}, NoClaim, nil
 	case mutation.KindRangeCompleteTasks:
-		// And this one names not even that.
+		// Names no workflow at all.
 		return Workflow{}, NoClaim, nil
 	case mutation.KindDeleteCurrent:
-		// The current-execution row, not the execution row — so the run's
-		// mutable state is still there afterwards, and a read of it would answer
-		// yes. Saying Exists here is the honest reading of what a record can
-		// see, and the delete that follows in the driver's own pair is what
-		// carries the removal.
+		// Removes only the current-execution row; the run's mutable state
+		// remains, so Exists. The paired Delete carries the removal.
 		r := m.DeleteCurrent
 		return Workflow{r.NamespaceID, r.WorkflowID, r.RunID}, Exists, nil
 	default:
@@ -228,16 +207,13 @@ func Identify(m mutation.Mutation) (Workflow, Effect, error) {
 	}
 }
 
-// Classify is the driver's reading of what happened to its call.
+// Classify maps a call's error to Acked, Refused or Unknown.
 //
-// Three values, and the boundary between the last two is the one that cannot be
-// drawn from the error type: some refusals are provably pre-append —
-// backpressure, the condition authority, a halted cycle — and a drain error
-// returned up through cycle.Manager.Write is not, because that call's own entry
-// is already durable. From outside the two arrive as the same Go type. So
-// [Refused] is a name for "the store gave a definite answer" and nothing more,
-// it may not be read as absence, and anything this list has never seen is
-// [Unknown] rather than assumed.
+// [Refused] means only "the store gave a definite answer"; it must not be read
+// as "not written". Some refusals happen before the append (backpressure, the
+// condition authority, a halted cycle), but a drain error returned through
+// cycle.Manager.Write comes after the call's entry is durable, with the same
+// Go type. Any unrecognised error is [Unknown].
 func Classify(err error) Outcome {
 	switch {
 	case err == nil:
@@ -249,11 +225,9 @@ func Classify(err error) Outcome {
 	}
 }
 
-// isRefusal is the closed set of definite answers: each is a typed error the
-// store or the layer returns instead of doing what was asked. A deadline, a
-// broken connection, or an error this list has never seen is deliberately
-// unknown, because the direction of that mistake is a checker that accuses a
-// correct layer.
+// isRefusal is the closed set of typed errors meaning the store or layer
+// declined the request. Deadlines, broken connections and anything unlisted
+// stay unknown, so the checker never accuses a correct layer.
 func isRefusal(err error) bool {
 	var condition *p.WorkflowConditionFailedError
 	var currentCondition *p.CurrentWorkflowConditionFailedError
@@ -270,11 +244,10 @@ func isRefusal(err error) bool {
 		Fenced(err)
 }
 
-// Fenced reports the one refusal a claimant must stop on: this node no longer
-// holds the shard. The layer answers it as a ShardOwnershipLostError, so that
-// arm matches on the type; a driver going through a history service instead
-// meets the shard's own "shard status unknown", an Unavailable like every other
-// transport failure, so there the text is the only thing that tells it apart.
+// Fenced reports that this node no longer holds the shard, the refusal a
+// claimant must stop on. The layer returns ShardOwnershipLostError; through a
+// history service it arrives as an Unavailable "shard status unknown", which
+// only its text distinguishes from other transport failures.
 func Fenced(err error) bool {
 	if _, ok := errors.AsType[*p.ShardOwnershipLostError](err); ok {
 		return true
@@ -285,8 +258,8 @@ func Fenced(err error) bool {
 	return false
 }
 
-// Detail is how an error is written down: the type beside the text, since the
-// type is what [Classify] turned on and the text is what a human reads.
+// Detail formats an error for the record as type and text: the type is what
+// [Classify] used, the text is for people.
 func Detail(err error) string {
 	if err == nil {
 		return ""

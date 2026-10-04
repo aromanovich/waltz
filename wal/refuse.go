@@ -2,18 +2,13 @@ package wal
 
 import "fmt"
 
-// The checks a backend performs before it does anything, and the diagnosis it
-// gives once it knows what it found. A backend decides *what is true* — the
-// whole of the difference between a chained CAS and a mutex — and the functions
-// here decide what to say about it and in what order, so that two backends
-// cannot answer one contract differently and a third inherits both.
+// Argument checks a backend runs before doing anything, and the refusal it
+// returns for what it found. The backend establishes the facts; these
+// functions choose the error and its precedence, so every backend answers the
+// contract the same way. None of them touches a log.
 //
-// Nothing here touches a log: they take the arguments, and the shard wherever
-// there is an error string for it to appear in.
-//
-// The context obligations are not here and are not derivable from what is: what
-// a cancelled call may leave behind, and that these checks run before it, are
-// stated on [Log] and driven by wal/waltest's ACancelledContextChangesNothing.
+// The context obligations are stated on [Log], not here, and checked by
+// wal/waltest's ACancelledContextChangesNothing.
 
 // CheckFence refuses a fence whose arguments the contract does not admit.
 func CheckFence(shard ShardID, epoch Epoch) error {
@@ -23,10 +18,9 @@ func CheckFence(shard ShardID, epoch Epoch) error {
 	return nil
 }
 
-// FenceRefusal diagnoses a fence against the epoch the log is already fenced
-// at, and returns nil when the fence may proceed. Equal epochs proceed: fencing
-// at the epoch the log already carries is a no-op rather than a failure, so a
-// process restart without a change of ownership can replay its acquire.
+// FenceRefusal checks a fence against the epoch held, returning nil if it may
+// proceed. Equal epochs proceed as a no-op, so a restarted process that still
+// owns the shard can replay its acquire.
 func FenceRefusal(shard ShardID, held, epoch Epoch) error {
 	if held > epoch {
 		return fmt.Errorf("%w: shard %d is fenced at epoch %d, cannot fence at %d",
@@ -49,33 +43,25 @@ func CheckAppend(shard ShardID, epoch Epoch, seqno Seqno, payload []byte) error 
 	return nil
 }
 
-// AppendState is what a backend has found out about an append it has not
-// performed: the three questions the contract's three refusals are answers to.
-//
-// It is exported, with [AppendRefusal], for backends written outside this
-// module; the only caller here is [RefuseAtNext].
+// AppendState is what a backend found out before an append: one field per
+// refusal the contract defines. It and [AppendRefusal] are exported for
+// backends outside this module.
 type AppendState struct {
-	// Owner is the epoch the log is fenced at. Zero means nobody has fenced it.
+	// Owner is the epoch the log is fenced at; zero means never fenced.
 	Owner Epoch
 	// Taken reports whether the seqno is already written.
 	Taken bool
-	// HasPredecessor reports whether the entry below the seqno is there. An
-	// append at [FirstSeqno] has none to miss, so a backend answers it true —
-	// or, if its own bookkeeping sits below the first entry, reads that, which
-	// is always there.
+	// HasPredecessor reports whether the entry below the seqno exists. It is
+	// true for an append at [FirstSeqno] (or the backend reads its own
+	// bookkeeping below the first entry, which always exists).
 	HasPredecessor bool
 }
 
-// RefuseAtNext is [AppendRefusal] for a backend that keeps the seqno its log
-// continues at rather than answering the two questions separately, which is
-// every backend whose state is in this process or in a replicated command.
-// next is exclusive: the seqnos below it are spent, the one at it is this
-// entry's, and everything above it is a hole.
-//
-// It is here rather than derived per backend because the derivation leans on
-// the diagnosis order: it answers HasPredecessor true for the taken seqnos
-// below next as well, which is only right because [AppendRefusal] reports Taken
-// first.
+// RefuseAtNext is [AppendRefusal] for a backend that tracks next, the seqno
+// its log continues at: seqnos below next are spent, next is this entry's,
+// and anything above is a gap. It reports HasPredecessor true for taken
+// seqnos too, which is correct only because [AppendRefusal] checks Taken
+// first; that is why it lives here and not in each backend.
 func RefuseAtNext(shard ShardID, epoch Epoch, seqno Seqno, owner Epoch, next Seqno) error {
 	return AppendRefusal(shard, epoch, seqno, AppendState{
 		Owner:          owner,
@@ -84,13 +70,12 @@ func RefuseAtNext(shard ShardID, epoch Epoch, seqno Seqno, owner Epoch, next Seq
 	})
 }
 
-// AppendRefusal diagnoses what the backend found, and returns nil when the
+// AppendRefusal returns the refusal for what the backend found, or nil if the
 // append may proceed.
 //
-// The order is the contract's: [ErrFenced] outranks the rest because
-// [ErrAlreadyWritten] is an ack, and a zombie handed one would take the word of
-// the writer that took the shard from it as its own commitSeqno. A backend that
-// diagnoses in its own order answers a different contract.
+// The order is part of the contract. [ErrFenced] comes first because
+// [ErrAlreadyWritten] counts as an ack: a displaced writer told
+// ErrAlreadyWritten would treat the new owner's entry as its own commit.
 func AppendRefusal(shard ShardID, epoch Epoch, seqno Seqno, found AppendState) error {
 	switch {
 	case found.Owner == 0:
@@ -109,20 +94,17 @@ func AppendRefusal(shard ShardID, epoch Epoch, seqno Seqno, found AppendState) e
 	return nil
 }
 
-// CheckTrim answers whether a trim has entries to reach. An upTo below
-// [FirstSeqno] reaches none: what lives down there is the backend's own
-// bookkeeping — a fence row at seqno 0, say — and a trim may never take it.
-// Deleting an ownership record hands the shard to whichever epoch asks next,
-// with nothing anywhere to report the loss, which is why the bound is the
-// contract's to state rather than each backend's to re-derive.
+// CheckTrim reports whether a trim reaches any entries. Below [FirstSeqno]
+// lies only backend bookkeeping, such as a fence row at seqno 0, and a trim
+// must never delete it: losing the ownership record silently hands the shard
+// to whichever epoch fences next.
 func CheckTrim(upTo Seqno) (proceed bool) {
 	return upTo >= FirstSeqno
 }
 
-// CheckRead refuses a read whose arguments the contract does not admit and
-// returns the seqno it starts at: a from below [FirstSeqno] reads from
-// [FirstSeqno], which is a clamp rather than a refusal because seqnos below it
-// are not entries.
+// CheckRead refuses invalid read arguments and returns the seqno to start at.
+// A from below [FirstSeqno] is raised to it, since lower seqnos are not
+// entries.
 func CheckRead(shard ShardID, from Seqno, limit int) (Seqno, error) {
 	if limit <= 0 {
 		return 0, fmt.Errorf("reading shard %d from %d: limit %d is not positive", shard, from, limit)

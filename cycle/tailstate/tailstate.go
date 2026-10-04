@@ -1,17 +1,11 @@
-// Package tailstate is the tail's arithmetic, in one place: what I10 bounds —
-// unsettled acked entries and the bytes they hold — and how far behind the
-// cold store's watermark is are counted here and nowhere else.
+// Package tailstate is the only place the tail is counted: unsettled acked
+// entries and their bytes (what I10 bounds), and the cold store's watermark lag.
 //
-// The two halves span two goroutines. [Tail] is loop-owned, like the rest of
-// the cycle's state; [Mirror] is those counts and the stall's seqno for
-// goroutines that are not the loop: the bound a write is refused on before it
-// queues, and the read a cycle whose loop is gone still has to answer. Every
-// mutator lives on [Tail] and ends in publish, so moving the tail is publishing
-// it, metric included. It is a package so that writing a counter outside a
-// mutator does not compile.
-//
-// It counts seqnos and may not name wal.Log or wal.Entry: the log those seqnos
-// index is what a counter grows reach into first.
+// [Tail] is owned by the cycle's loop goroutine; [Mirror] carries the same
+// counts and the stall seqno to other goroutines. Every [Tail] mutator ends by
+// publishing to the mirror and the metric, and being a separate package makes
+// a counter write outside a mutator a compile error. It must not name wal.Log
+// or wal.Entry.
 package tailstate
 
 import (
@@ -22,83 +16,63 @@ import (
 	"github.com/aromanovich/waltz/walmetrics"
 )
 
-// Tail is what a cycle has acked and not yet settled, in the two units I10
-// bounds plus the two positions those units are measured between.
+// Tail is what a cycle has acked and not yet settled, in entries and bytes,
+// plus the positions they are measured between.
 type Tail struct {
-	// commit is the last acked seqno and applied is the last one a committed
-	// drain moved the cold store's watermark to.
+	// commit is the last acked seqno; applied is the cold store's watermark,
+	// moved only by a committed drain.
 	commit  wal.Seqno
 	applied wal.Seqno
 
-	// resolved is the highest seqno whose fate is settled: applied, plus
-	// anything above it a [KeepWatermark] settle released. Those entries are
-	// acked and dead, so counting them would have I10 bound memory nobody
-	// holds, while moving applied with them would strand a recovering owner
-	// (a trim goes to applied).
+	// resolved is applied plus anything above it a [KeepWatermark] settle
+	// released. I10 does not count those entries, but applied must not move over
+	// them: a trim goes to applied, and would strand a recovering owner.
 	resolved wal.Seqno
 
-	// bytes is I10's byte counter: every acked payload whose fate is unsettled,
-	// which is not the window's bytes. A drain empties the window before the
-	// transaction is sent, so an unreadable outcome leaves entries here.
+	// bytes is I10's byte counter: every acked payload not yet settled. It is not
+	// the window's bytes: the window empties when a drain starts, so an
+	// unreadable outcome leaves its entries counted here.
 	bytes int
 
-	// stalled is the seqno of a drain whose outcome could not be read, zero
-	// where there is none; stalledBytes is what that drain acked and stalledBy
-	// what it was told. It is a floor: while it stands no position moves, so
-	// nothing this cycle does afterwards can claim those entries are anywhere.
-	// A commit over them would — the cold store's watermark is written by
-	// whichever drain commits rather than compared, so the store would claim the
-	// unresolved entries too, and a trim goes to applied.
-	//
-	// The bytes are held here rather than by the window token that acked them:
-	// that token is consumed at the stall, since the settle it was waiting for
-	// is the one that will never come. The cause rides with them because all
-	// three end together — at [Tail.Resolve], or at the floor a successor plants
-	// — and a cause outliving its stall is an attribution for the wrong drain.
-	// It is carried, never read: this package does not interpret errors.
+	// stalled is the seqno of a drain whose outcome could not be read (zero for
+	// none), with the bytes it acked and the error it got. While it stands no
+	// position moves: a later commit would write the watermark over the
+	// unresolved entries and a trim would delete them. All three end together,
+	// at [Tail.Resolve] or [Tail.Floor]. The cause is carried, never interpreted.
 	stalled      wal.Seqno
 	stalledBytes int
 	stalledBy    error
 
-	// mirror is the half other goroutines read, and never nil: a tail that
-	// publishes nowhere is the divergence this type prevents, so one built
-	// without it panics on its first move. [New] is the way to one.
+	// mirror must not be nil; a Tail built without [New] panics on its first move.
 	mirror *Mirror
 }
 
-// New plants a tail on the mirror it publishes to.
+// New returns a tail that publishes to m.
 func New(m *Mirror) Tail { return Tail{mirror: m} }
 
 // Commit and Applied are the last acked seqno and the cold store's watermark.
-// Readers only: moving either goes through a mutator that says which move it is.
 func (t *Tail) Commit() wal.Seqno  { return t.commit }
 func (t *Tail) Applied() wal.Seqno { return t.applied }
 
-// Bytes is I10's byte counter as it stands; the bound reads it via [Tail.Size].
+// Bytes is I10's byte counter.
 func (t *Tail) Bytes() int { return t.bytes }
 
-// Entries is the tail's size, and the one spelling of it: an entry between
-// resolved and commit is acked with its fate open. Not commit − applied, which
-// is the same number only until a [KeepWatermark] settle parts the two.
+// Entries is the tail's size: entries between resolved and commit, acked with
+// their fate open. It is not commit − applied; the two differ once a
+// [KeepWatermark] settle has run.
 func (t *Tail) Entries() int { return int(t.commit - t.resolved) }
 
-// Empty asks the loop's own state whether the tail holds anything;
-// [Mirror.Empty] answers it for callers with no loop left to ask.
+// Empty reports whether the tail holds anything, on the loop;
+// [Mirror.Empty] is for callers with no loop left to ask.
 func (t *Tail) Empty() bool { return t.commit == t.resolved }
 
-// Size is the pair I10's bound is stated over, in the units it bounds them in.
+// Size is the pair I10 bounds.
 func (t *Tail) Size() (entries, bytes int64) { return int64(t.Entries()), int64(t.bytes) }
 
-// Floor plants the tail at the watermark the cold store holds: nothing at or
-// below it is this cycle's to account for, and nothing above it has been acked
-// by an attempt this tail still counts.
-//
-// Every number, which is what makes it safe to run again. A start that replays
-// and fails is retried from the watermark it re-reads, so the entries an
-// abandoned attempt acked are entries the successor will ack again — bytes left
-// behind here would be counted twice and released once, and I10 bounds memory
-// nobody holds. The stall goes with them: the watermark this plants is the
-// answer an attempt's unresolved drain was waiting for.
+// Floor resets every number to the cold store's watermark mark, clearing the
+// stall. It is safe to run again: a failed replay is retried from a re-read
+// watermark and re-acks the same entries, so bytes left behind would be counted
+// twice and released once.
 func (t *Tail) Floor(mark wal.Seqno) {
 	t.applied, t.resolved, t.commit = mark, mark, mark
 	t.bytes = 0
@@ -106,48 +80,37 @@ func (t *Tail) Floor(mark wal.Seqno) {
 	t.publish()
 }
 
-// Ack takes an entry already durable at seqno into the tail. Its size is the
-// payload's encoded length, which is what both the window's byte trigger and
-// I10 count.
+// Ack adds an entry already durable at seqno. size is the payload's encoded
+// length, the unit both the window's byte trigger and I10 count.
 func (t *Tail) Ack(seqno wal.Seqno, size int) {
 	t.commit = seqno
 	t.bytes += size
 	t.publish()
 }
 
-// WatermarkMove is the whole of the difference between the four settles: both
-// readings are right and neither is a default, so the caller states which.
+// WatermarkMove says whether a settle moves applied. Neither is a default, so
+// the caller states which.
 type WatermarkMove int
 
 const (
 	// KeepWatermark settles entries no transaction wrote: a drain whose batch
-	// carried none, and an entry whose fate was decided without one. The class
-	// rather than the callers, because a settle added to it and left out here
-	// is a tail counting entries nobody will ever release. They leave the tail,
-	// but applied stays put — a trim past what was written strands a recovering
+	// was empty, or an entry decided without one. They leave the tail but
+	// applied stays, since a trim past what was written strands a recovering
 	// owner.
 	KeepWatermark WatermarkMove = iota
 	// MoveWatermark settles a window whose transaction committed, the only
-	// outcome that puts rows in the cold store and so the only one that may
-	// move what a trim and a replay read.
+	// outcome that puts rows in the cold store.
 	MoveWatermark
 )
 
-// Settle takes a window out of the tail: its entries up to seqno are accounted
-// for and its bytes no longer held. Called once per resolving outcome — a
-// committed drain, a drain whose batch carried nothing, an answered condition
-// failure, a dropped provisional entry.
+// Settle removes a window from the tail: entries up to seqno are settled and
+// its bytes released. It runs once per resolving outcome: a committed drain, an
+// empty batch, an answered condition failure, a dropped provisional entry.
+// held comes from [window.Window.Take] and is consumed, so the tail releases
+// only bytes a window handed over, and never twice.
 //
-// held is what [window.Window.Take] produced and is consumed here, so the bytes
-// the tail releases are always bytes a window handed over, and never the same
-// ones twice. The two counts stay two numbers — the window empties when a drain
-// starts and the tail when its transaction resolves — and this is the one edge
-// between them.
-//
-// A stalled tail settles nothing at all, this window's bytes included: half a
-// settle would part the two counts, and a tail whose entries and bytes disagree
-// is the bound reading a number no window will ever hand back. The caller asks
-// [Tail.Stalled] first; a take nobody settles is already legal.
+// A stalled tail settles nothing, not even these bytes, so entries and bytes
+// never disagree. The caller checks [Tail.Stalled] first.
 func (t *Tail) Settle(seqno wal.Seqno, held *window.Taken, mark WatermarkMove) {
 	if t.stalled != 0 {
 		return
@@ -160,52 +123,39 @@ func (t *Tail) Settle(seqno wal.Seqno, held *window.Taken, mark WatermarkMove) {
 	t.publish()
 }
 
-// Stall records a drain whose transaction outcome could not be read: its window
-// is gone, its entries are acked, and whether the cold store holds them is
-// unknown. held is consumed, but the tail does not shrink by it — those bytes
-// stay counted, because the entries are still this cycle's to account for, and
-// they leave with [Tail.Resolve] or with the floor a successor plants. cause is
-// what that drain was told, carried for whoever eventually attributes the halt.
+// Stall records a drain whose transaction outcome could not be read: its
+// entries are acked and whether the cold store holds them is unknown. held is
+// consumed but its bytes stay counted until [Tail.Resolve] or [Tail.Floor].
+// cause is what the drain was told, kept for whoever attributes the halt.
 //
-// The cold store's own watermark is the only witness, so the way out is to ask
-// it again ([Tail.Stalled] is how a drain knows it must). A tail is never empty
-// while one stands: the stalled drain acked the entries it is stalled at.
-//
-// One at a time: a caller that has not resolved the standing stall may not
-// drain, so it cannot reach a second.
+// Only the cold store's watermark can end it, so drains must re-read it while
+// [Tail.Stalled] reports one. The tail is never empty during a stall. There is
+// at most one: a caller may not drain until the standing stall is resolved.
 func (t *Tail) Stall(seqno wal.Seqno, held *window.Taken, cause error) {
 	t.stalled, t.stalledBytes, t.stalledBy = seqno, held.Release(), cause
 	t.publish()
 }
 
-// Unresolved is a drain whose transaction outcome could not be read: where it
-// stopped, and what it was told. One value, because the two are read together
-// by whoever ends it and a mismatched pair attributes the wrong drain.
+// Unresolved is a drain whose outcome could not be read: its seqno and the
+// error it got, kept as one value so they cannot be mismatched.
 type Unresolved struct {
 	Seqno wal.Seqno
 	Cause error
 }
 
-// Stalled is the drain the tail is stalled at, and whether there is one. The
-// zero value is not one: a stalled tail always names a seqno.
+// Stalled returns the stalled drain, and whether there is one. A stall always
+// has a non-zero seqno.
 func (t *Tail) Stalled() (Unresolved, bool) {
 	return Unresolved{Seqno: t.stalled, Cause: t.stalledBy}, t.stalled != 0
 }
 
-// Resolve ends a stall, and only a watermark at exactly the stalled seqno
-// entitles a caller to it ([cycle.Cycle.resolve] is where that is decided): the
-// drain committed after all, so its entries are settled, its bytes are no longer
-// held, and its seqno is in the cold store and therefore where a trim may go.
-// One above it is another owner's and ends the stall in a halt instead, which is
-// why this may not be reached on it — applied would move to a seqno this shard's
-// own drains never committed, and the trim goes to applied.
-//
-// The zero check is not redundancy against the caller that already makes it
-// ([cycle.Cycle.resolveStalled] returns before this on an unstalled tail). What it
-// costs is the whole shard: resolving nothing would assign zero to both applied
-// and resolved, which is the watermark going backwards and the entire log back
-// under the tail — so I10 refuses every write on the shard over memory nobody
-// holds. A guard whose absence costs that stays whatever its callers do.
+// Resolve ends a stall whose drain committed after all: its entries settle, its
+// bytes are released and applied moves to its seqno. Call it only when the
+// watermark equals the stalled seqno ([cycle.Cycle.resolve] decides); one above
+// is another owner's and must halt instead, or a trim deletes entries this
+// shard never committed. The zero check stays although
+// [cycle.Cycle.resolveStalled] checks first: without it, applied and resolved
+// would drop to zero and I10 would refuse every write.
 func (t *Tail) Resolve() {
 	if t.stalled == 0 {
 		return
@@ -216,33 +166,30 @@ func (t *Tail) Resolve() {
 	t.publish()
 }
 
-// clearStall is the one way out of one, so the three fields cannot part company.
+// clearStall clears the three stall fields together.
 func (t *Tail) clearStall() { t.stalled, t.stalledBytes, t.stalledBy = 0, 0, nil }
 
-// publish ends every mutator above, so neither the mirror nor the metric is a
-// step a call site can leave out.
+// publish ends every mutator, updating the mirror and the metric.
 func (t *Tail) publish() {
 	t.mirror.store(t.Entries(), t.bytes, int(t.commit-t.applied), t.stalled)
 }
 
-// Mirror is the tail as goroutines other than the loop see it: what a write is
-// refused on, read without asking the loop anything. It holds the emitter, so
-// the tail is measured exactly where it moves.
+// Mirror is the tail as seen by goroutines other than the loop, read without
+// asking the loop. It also holds the metrics emitter.
 type Mirror struct {
 	entries atomic.Int64
 	bytes   atomic.Int64
-	// stalled is the seqno of [Tail]'s stall, zero for none. Here for the same
-	// reason the counts are: a shard whose applier cannot say what it did must
-	// refuse a writer before that writer is queued behind it.
+	// stalled is the [Tail]'s stall seqno, zero for none, so a writer is refused
+	// before it queues behind a stuck applier.
 	stalled atomic.Uint64
 	metrics *walmetrics.Emitter
 }
 
-// NewMirror is where the emitter arrives, once. Handed out as a pointer,
-// because a mirror holds atomics and must never be copied.
+// NewMirror returns a mirror that emits to metrics. It holds atomics and must
+// not be copied.
 func NewMirror(metrics *walmetrics.Emitter) *Mirror { return &Mirror{metrics: metrics} }
 
-// store is the mirror's only writer, and a tail's publish is its only caller.
+// store is the mirror's only writer; only [Tail.publish] calls it.
 func (m *Mirror) store(entries, bytes, unapplied int, stalled wal.Seqno) {
 	m.entries.Store(int64(entries))
 	m.bytes.Store(int64(bytes))
@@ -250,17 +197,15 @@ func (m *Mirror) store(entries, bytes, unapplied int, stalled wal.Seqno) {
 	m.metrics.Tail(entries, bytes, unapplied)
 }
 
-// Size is the bound's reading, taken before a write is queued: a shard whose
-// applier is stuck must refuse its writers rather than park them behind it.
+// Size is the I10 reading taken before a write is queued, so a shard with a
+// stuck applier refuses writers rather than parking them.
 func (m *Mirror) Size() (entries, bytes int64) { return m.entries.Load(), m.bytes.Load() }
 
-// StalledAt is [Tail.Stalled]'s seqno for that same reader, and without the cause:
-// a refusal before the queue says the shard cannot take the write, where the
-// attribution belongs to the halt the loop may still reach.
-// Zero is "not stalled", as on [Tail.Stalled]'s own seqno.
+// StalledAt is [Tail.Stalled]'s seqno for the same pre-queue reader, zero for
+// none. It omits the cause, which belongs to the halt the loop may reach.
 func (m *Mirror) StalledAt() wal.Seqno { return wal.Seqno(m.stalled.Load()) }
 
-// Empty is [Tail.Empty] for the reader with no loop left to ask. It can be
-// stale by the writes a successor cycle took, so only the two mutable-state
-// reads and the branch page, which routes as one, may use it.
+// Empty is [Tail.Empty] for a cycle with no loop left. It may be stale by a
+// successor cycle's writes, so only the two mutable-state reads and the
+// history branch page may use it.
 func (m *Mirror) Empty() bool { return m.entries.Load() == 0 }

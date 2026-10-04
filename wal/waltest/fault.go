@@ -8,11 +8,9 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// Fault decides whether a call fails instead of reaching the log. call is how
-// many calls of that method the decorator has seen since the fault was set,
-// this one included, so [Once] is "the next one" wherever it is set.
-//
-// A fault that blocks holds the call it was asked about and nothing else.
+// Fault decides whether a call fails instead of reaching the log. call counts
+// calls of that method since the fault was set, starting at 1. A fault that
+// blocks holds only its own call.
 type Fault func(call int) error
 
 // Once fails the next call with err and admits every one after it.
@@ -30,19 +28,12 @@ func Always(err error) Fault {
 	return func(int) error { return err }
 }
 
-// Faulty is a [wal.Log] that fails on demand: it asks a fault before each call
-// and delegates everything the fault admits, so what a call that goes through
-// does is the backend's answer and not this type's. Anything above the log can
-// therefore be driven against a backend that keeps the contract and still be
-// shown a failure at the seam.
+// Faulty is a [wal.Log] decorator that fails on demand: it asks a fault
+// before each call and passes admitted calls to the wrapped backend. It holds
+// no log state, so a test drives a real backend and sees failures at the seam.
 //
-// It implements none of the contract's semantics and holds no log state.
-// Whatever it wraps is what a test is driving, and a fault refusing a call is
-// the only difference from driving that backend directly.
-//
-// Every method is safe for concurrent use, and so is setting a fault while the
-// log is in use. Importing this package carries [testing] with it, since the
-// conformance suite beside this file needs it, so a fault belongs in a test.
+// All methods, including setting a fault, are safe for concurrent use. This
+// package imports [testing], so use Faulty only in tests.
 type Faulty struct {
 	log wal.Log
 
@@ -68,30 +59,26 @@ type method int
 const (
 	fenceCall method = iota
 	appendCall
-	// landedCall is [Faulty.AfterAppend]'s seam, asked once the append has
-	// reached the log. It is a method of its own here because it is a second
-	// fault on one call, with its own count.
+	// landedCall is [Faulty.AfterAppend]'s seam: a second fault on Append,
+	// with its own count.
 	landedCall
 	readCall
 	trimCall
 )
 
-// OnFence sets the fault the next [Faulty.Fence] calls are asked about,
-// replacing any fault already there and restarting its count. So do OnAppend,
-// OnRead and OnTrim, each for its own method.
+// OnFence sets the fault for [Faulty.Fence], replacing any previous one and
+// restarting its count. OnAppend, OnRead and OnTrim do the same for their
+// methods.
 func (f *Faulty) OnFence(fault Fault) { f.set(fenceCall, fault) }
 
 func (f *Faulty) OnAppend(fault Fault) { f.set(appendCall, fault) }
 
-// AfterAppend sets the fault an append is asked about once it has reached the
-// log, so the call fails having done its work. That is the ambiguous append —
-// durable and reported failed — and it is the one outcome [wal]'s three
-// refusals cannot express, each of them saying the write is whole one way or
-// the other. A caller driving what happens after one has nothing else to reach
-// for: refusing the call ([Faulty.OnAppend]) stages the opposite case.
+// AfterAppend sets a fault asked after an append has reached the log, so the
+// call fails having written its entry: durable but reported failed. None of
+// [wal]'s refusals can express this; [Faulty.OnAppend] stages the opposite.
 //
-// It composes with OnAppend and is asked second, so a call that fault refused
-// never reaches this one.
+// It is asked after OnAppend's fault, so a call OnAppend refused never
+// reaches it.
 func (f *Faulty) AfterAppend(fault Fault) { f.set(landedCall, fault) }
 
 func (f *Faulty) OnRead(fault Fault) { f.set(readCall, fault) }
@@ -104,14 +91,11 @@ func (f *Faulty) set(m method, fault Fault) {
 	f.seams[m] = seam{fault: fault}
 }
 
-// Fences are the epochs [Faulty.Fence] was called at, in order, the refused
-// calls included. Trims is the same for [Faulty.Trim]'s upTo.
+// Fences returns the epochs [Faulty.Fence] was called at, in order, refused
+// calls included. Trims does the same for [Faulty.Trim]'s upTo.
 //
-// Those two calls are recorded because the log cannot be asked about them
-// afterwards: fencing twice at one epoch leaves a log fenced once, and a trim
-// states where the log should start, so a cadence that ran twice leaves what
-// one that ran once leaves. An append's work is the log's own contents and a
-// read leaves nothing, so neither is recorded here.
+// Only these two are recorded because they are idempotent: the log cannot
+// show whether they ran once or twice. Appends are visible in the log itself.
 func (f *Faulty) Fences() []wal.Epoch {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -140,8 +124,7 @@ func (f *Faulty) Append(
 	if err := f.log.Append(ctx, shard, epoch, seqno, payload); err != nil {
 		return err
 	}
-	// Asked only for an append that landed, so its count is ambiguous appends
-	// staged rather than calls made.
+	// Counts only appends that landed.
 	return f.call(landedCall, nil)
 }
 
@@ -161,18 +144,14 @@ func (f *Faulty) Trim(ctx context.Context, shard wal.ShardID, upTo wal.Seqno) er
 	return f.log.Trim(ctx, shard, upTo)
 }
 
-// Close is the wrapped backend's, with no seam of its own: what a decorated log
-// holds to release is a fact about that backend rather than about this
-// decorator.
+// Close closes the wrapped backend; it has no fault.
 func (f *Faulty) Close() { f.log.Close() }
 
-// call asks the method's fault and then records the call, so a fault that
-// blocks holds the record with the call it is holding — a trim waiting at the
-// seam has not been made yet — while a call the fault refused is still a call
-// that was made.
+// call asks the method's fault, then records the call. So a call blocked in
+// its fault is not yet recorded, while a refused call is.
 //
-// The fault runs outside the mutex: it may block, and holding the decorator
-// while it does would stop every other shard's calls with it.
+// The fault runs outside the mutex because it may block, which would stall
+// every other shard's calls.
 func (f *Faulty) call(m method, record func()) error {
 	f.mu.Lock()
 	seam := &f.seams[m]

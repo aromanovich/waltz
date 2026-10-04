@@ -1,30 +1,29 @@
-// Package window is the size and age of what a cycle has folded since its last
-// drain. A package so that emptying it outside [Window.Take] does not compile.
+// Package window tracks the size and age of what a cycle has folded since its
+// last drain. It is a package so that emptying it outside [Window.Take] does
+// not compile.
 //
-// Its bytes are not the tail's: this empties when a drain starts, the tail only
-// when that drain's transaction resolves. Nothing here publishes — the drain's
-// numbers are emitted once the transaction has an outcome.
+// Its bytes are not the tail's: the window empties when a drain starts, the
+// tail when that drain's transaction resolves. Nothing here emits metrics;
+// the drain does, once it has an outcome.
 //
-// It counts what the loop folded and may not name wal.Log or wal.Entry: the
-// window bounds a drain, it does not read the log.
+// It may not name wal.Log or wal.Entry: the window bounds a drain, it does
+// not read the log.
 package window
 
 import "time"
 
-// Window is what a cycle has folded and not yet drained. Loop-owned, and the
-// zero value is an empty window.
+// Window is what a cycle has folded and not yet drained. Owned by the loop;
+// the zero value is empty.
 type Window struct {
 	mutations int
-	// bytes is the entries' encoded payload lengths, which is what the tail
-	// counts too.
+	// bytes sums encoded payload lengths, the same unit the tail counts.
 	bytes int
-	// oldest is when the mutation that opened this window landed, and means
-	// nothing while the window is empty.
+	// oldest is when the first mutation landed; meaningless while empty.
 	oldest time.Time
 }
 
-// Add takes one folded mutation in; size is its encoded payload length. now is
-// read only when this mutation opens the window.
+// Add records one folded mutation of encoded payload length size. now is used
+// only when the window was empty.
 func (w *Window) Add(size int, now time.Time) {
 	if w.Empty() {
 		w.oldest = now
@@ -33,44 +32,38 @@ func (w *Window) Add(size int, now time.Time) {
 	w.bytes += size
 }
 
-// Size is the window as a report reads it.
+// Size returns the window's mutation count and bytes, for reports.
 func (w *Window) Size() (mutations, bytes int) { return w.mutations, w.bytes }
 
-// Empty reports a window nothing has been folded into since the last take.
+// Empty reports whether nothing has been folded since the last take.
 func (w *Window) Empty() bool { return w.mutations == 0 }
 
-// Taken is what one take handed over. It exists so the bytes cannot be stated
-// as a number: the only value the tail will release is one a window produced,
-// and it releases it once ([Taken.Release]), so a branch that settles twice
-// subtracts nothing the second time rather than driving the tail below zero — a tail
-// that never trips I10 again, which is unbounded memory by the road the bound
-// exists to close.
+// Taken is what one take handed over. Its bytes cannot be written as a plain
+// number, so the tail only releases bytes a window produced, and only once
+// ([Taken.Release]). A double settle therefore cannot drive the tail below
+// zero, where it would never trip I10 again.
 //
-// A take nobody settles is legal and deliberate: a halt drops its window, the
-// entries behind it being acked and the cycle finished.
+// Leaving a Taken unsettled is legal: a halt drops its window, since the
+// entries are acked and the cycle is finished.
 type Taken struct {
 	bytes int
 	age   time.Duration
 }
 
-// Age is how long the window's oldest mutation had been waiting when it was
-// taken. Zero for a window that was empty. Reportable any number of times: it
-// is the drain's metric, not the tail's arithmetic.
+// Age is how long the oldest mutation had waited when the window was taken;
+// zero for an empty window. It may be read any number of times.
 func (t Taken) Age() time.Duration { return t.age }
 
-// Release hands the bytes to the tail, once. Every call after the first reports
-// none, which is what makes a double settle arithmetically inert.
+// Release returns the bytes once; later calls return 0.
 func (t *Taken) Release() int {
 	bytes := t.bytes
 	t.bytes = 0
 	return bytes
 }
 
-// Take empties the window and reports the bytes the tail goes on holding until
-// the drain resolves, and the age of its oldest mutation.
-//
-// Not the mutation count: what a drain applied is its batch's own, and a window
-// that folded entries can still fold to nothing.
+// Take empties the window and returns its bytes, which the tail holds until
+// the drain resolves, and the age of its oldest mutation. It omits the
+// mutation count: a drain reports its batch's count, which can be zero.
 func (w *Window) Take(now time.Time) Taken {
 	if w.Empty() {
 		return Taken{} // an empty window has no age
@@ -80,14 +73,13 @@ func (w *Window) Take(now time.Time) Taken {
 	return t
 }
 
-// Aged reports a window whose first mutation landed at least age ago. False
-// while empty: there is nothing for a tick to drain.
+// Aged reports whether the first mutation landed at least age ago. False
+// while empty.
 func (w *Window) Aged(now time.Time, age time.Duration) bool {
 	return !w.Empty() && now.Sub(w.oldest) >= age
 }
 
-// Watermarks is the size triggers a window drains at, in the two units it
-// counts.
+// Watermarks are the size triggers a window drains at.
 type Watermarks struct {
 	Mutations int
 	Bytes     int
@@ -102,11 +94,9 @@ const (
 	TripBytes
 )
 
-// Trips is the size rule only; the age rule is [Window.Aged], because replay
-// consults one and not the other.
-//
-// The count is answered first, so a window over both reports it. An empty
-// window trips nothing: a zero trigger means "drain every write".
+// Trips applies the size triggers only; replay uses these but not
+// [Window.Aged]. A window over both reports TripMutations. An empty window
+// trips nothing, so a zero trigger means "drain every write".
 func (w *Window) Trips(at Watermarks) Trip {
 	switch {
 	case w.Empty():

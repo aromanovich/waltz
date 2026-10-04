@@ -1,42 +1,21 @@
-// Package mutbuild builds one mutation of a given shape, well-formed, with no
-// cluster: the request Temporal's ExecutionManager hands the store, as a unit
-// test needs it — one at a time, with the ids named rather than drawn.
+// Package mutbuild builds single well-formed mutations for unit tests: the
+// request Temporal's ExecutionManager hands the store, with the ids named by
+// the caller. [mutgen] cannot do this, since its shapes come from a random walk.
 //
-// # Why this is not internal/verify/mutgen
+// Every mutation carries ExecutionStateBlob, because the read path
+// deserialises it; the layer never receives a request without one.
 //
-// [mutgen] holds the same knowledge and cannot lend it. Every shape there is a
-// method on its `*Generator`, driven by a rand walk over a key space it also
-// owns, so a test that wants *one* create has nothing to ask. A mutation built
-// here carries `ExecutionStateBlob`, because the read path deserialises it and
-// a nil one will not do — a fixture that omits it is one no read path above the
-// fold could have served, which is not a shape this layer ever receives.
+// Each shape runs through Temporal's own validators before it is returned, as
+// mutgen does. An invalid fixture is a test bug, so it panics with the
+// validator's message.
 //
-// # Validity is Temporal's own answer, checked at build time
+// The check covers only what a constructor builds. A few tests mutate the
+// result afterwards on purpose, to drive paths Temporal would never send but
+// the layer must still handle.
 //
-// Every shape that has a validator runs through it before it is returned, the
-// way `mutgen` runs the same five over its stream: an invalid fixture is a bug
-// in the test rather than a case a caller handles, so it panics with what
-// the validator said. That is the whole depth of this package — a caller learns
-// ten constructors and gets the store's own admission rules for free.
-//
-// The check covers what a constructor builds, and cannot cover what a caller
-// does to the value afterwards. Three fixtures in this tree deliberately step
-// outside — `apply`'s create at `CreateWorkflowModeBypassCurrent` over a
-// running state, and the continue-as-new out of a running run that `cycle` and
-// `memcold` each assemble — and all three stay where they are, built here and
-// then mutated at the call site. None is a request Temporal would send; each
-// drives a path the layer must still have an answer for, which is why they are
-// not "fixed".
-//
-// # What is deliberately absent
-//
-//   - `fold`'s fixtures. They are a different kind of object: their
-//     scalars are chosen to be *legible* in an assertion (`info-v3`, a bare
-//     `ExecutionState{RunId: run}`), so a fold's output can be attributed to the
-//     mutation that produced it. They would fail every validator above, and
-//     rightly — fold merges, it does not admit. A builder with a
-//     "do not check" mode is a builder whose check nobody trusts, so there is
-//     none.
+// fold's fixtures do not use this package: they favour legible values over
+// valid ones and would fail every validator. There is deliberately no
+// "do not check" mode.
 package mutbuild
 
 import (
@@ -56,30 +35,26 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// Builder is one shard's mutations. The shard is an int32 and not a
-// `wal.ShardID` for the reason `mutgen` takes one too: what this package states
-// is what Temporal's write path produces, and the log's own types are the layer
-// answering that question for itself.
+// Builder builds one shard's mutations. The shard is an int32, not a
+// wal.ShardID, to keep the log's types out of a package that states what
+// Temporal produces.
 type Builder struct{ shard int32 }
 
-// For is the builder for a shard.
+// For returns the builder for a shard.
 func For(shard int32) Builder { return Builder{shard: shard} }
 
-// SnapshotOpt shapes a snapshot before its request is validated — a create's
-// new run, and every other shape carrying a whole run's state.
+// SnapshotOpt adjusts a snapshot (a whole run's state) before validation.
 type SnapshotOpt func(*p.InternalWorkflowSnapshot)
 
-// MutationOpt is the same for a mutation: the delta an update carries.
+// MutationOpt adjusts an update's mutation before validation.
 type MutationOpt func(*p.InternalWorkflowMutation)
 
-// Create is a start: `CreateWorkflowModeBrandNew`, one run at
-// `DBRecordVersion` 1, asserting that nothing holds the workflow id.
+// Create is a start: CreateWorkflowModeBrandNew, one run at DBRecordVersion 1,
+// asserting nothing holds the workflow id.
 func (b Builder) Create(ns, wf, run string, opts ...SnapshotOpt) mutation.Mutation {
 	req := &p.InternalCreateWorkflowExecutionRequest{
 		ShardID: b.shard,
-		// RangeID is left zero deliberately: it is the epoch (I11), stamped by
-		// whoever drives the request, and a value here would be a second source
-		// of truth for it.
+		// RangeID stays zero: it is the epoch (I11), stamped by the driver.
 		Mode:                p.CreateWorkflowModeBrandNew,
 		NewWorkflowSnapshot: b.snapshot(ns, wf, run, 1, opts),
 	}
@@ -88,9 +63,8 @@ func (b Builder) Create(ns, wf, run string, opts ...SnapshotOpt) mutation.Mutati
 }
 
 // CreateOver is a start over a workflow id whose previous run has finished:
-// `CreateWorkflowModeUpdateCurrent`, carrying the assertion the current row is
-// judged by — the previous run and the last-write-version column a versioned
-// current-row read returns beside it.
+// CreateWorkflowModeUpdateCurrent, asserting the current row names previousRun
+// at previousLastWriteVersion.
 func (b Builder) CreateOver(
 	ns, wf, run, previousRun string, previousLastWriteVersion int64, opts ...SnapshotOpt,
 ) mutation.Mutation {
@@ -98,23 +72,20 @@ func (b Builder) CreateOver(
 	m.Create.Mode = p.CreateWorkflowModeUpdateCurrent
 	m.Create.PreviousRunID = previousRun
 	m.Create.PreviousLastWriteVersion = previousLastWriteVersion
-	// Re-checked: the mode moved, and the mode is half of what the validator
-	// reads.
+	// Re-validated, because the validator reads the mode.
 	b.validateCreate(m.Create)
 	return m
 }
 
-// Update is an ordinary link in a run's chain: `UpdateWorkflowModeUpdateCurrent`
-// at the given `DBRecordVersion`, which asserts the row one below it.
+// Update is an ordinary update: UpdateWorkflowModeUpdateCurrent at version,
+// asserting the run row is at version − 1.
 func (b Builder) Update(ns, wf, run string, version int64, opts ...MutationOpt) mutation.Mutation {
 	state := runningState(run)
 	m := p.InternalWorkflowMutation{
 		NamespaceID: ns,
 		WorkflowID:  wf,
 		RunID:       run,
-		// Both, and not the struct alone: only the blob is recorded, so a
-		// fixture carrying the state by itself survives a fold and vanishes on
-		// replay.
+		// Only the blob is recorded; the struct alone would vanish on replay.
 		ExecutionState:     state,
 		ExecutionStateBlob: stateBlob(state),
 		DBRecordVersion:    version,
@@ -134,19 +105,11 @@ func (b Builder) Update(ns, wf, run string, version int64, opts ...MutationOpt) 
 	return mutation.Mutation{Update: req}
 }
 
-// UpdateBypassingCurrent writes a run that is not the workflow's current one:
-// `UpdateWorkflowModeBypassCurrent`, which asserts the current row names some
-// other run and writes that row not at all. The state is zombie because the
-// mode's validator refuses a created or running one — a run still current
-// cannot be written around the row that names it.
-//
-// It is the one shape that asserts the current row without writing it, which is
-// what makes it worth a constructor: every other kind either does both or
-// neither, so a guard proved on one of those says nothing about this one.
-// It is built here rather than through [Builder.Update] because that one
-// validates at `UpdateWorkflowModeUpdateCurrent`, which refuses the zombie
-// state this mode requires: the two modes disagree about the same field, so
-// neither can be reached by moving the other's.
+// UpdateBypassingCurrent updates a run that is not the workflow's current one:
+// UpdateWorkflowModeBypassCurrent asserts the current row names another run
+// and does not write it. It is the only shape that asserts the current row
+// without writing it. The state is zombie because this mode's validator
+// refuses created or running, while [Builder.Update]'s mode refuses zombie.
 func (b Builder) UpdateBypassingCurrent(
 	ns, wf, run string, version int64, opts ...MutationOpt,
 ) mutation.Mutation {
@@ -175,14 +138,11 @@ func (b Builder) UpdateBypassingCurrent(
 	return mutation.Mutation{Update: req}
 }
 
-// Set is the snapshot-bearing write that asserts nothing about the current row —
-// a set repairs one run's state and claims nothing about which run is current.
-// The run itself it does assert, at the given version − 1, which is the row a
-// fixture has to have staged.
+// Set replaces one run's state, asserting nothing about the current row. It
+// does assert the run row is at version − 1, which the fixture must stage.
 func (b Builder) Set(ns, wf, run string, version int64, opts ...SnapshotOpt) mutation.Mutation {
 	snap := b.snapshot(ns, wf, run, version, opts)
-	// The store's own rule for a set is the update pair, which is what mutgen
-	// checks its own sets against.
+	// A set is validated by the update rule, as in mutgen.
 	check("set", p.ValidateUpdateWorkflowStateStatus(
 		snap.ExecutionState.State, snap.ExecutionState.Status))
 	return mutation.Mutation{Set: &p.InternalSetWorkflowExecutionRequest{
@@ -191,21 +151,14 @@ func (b Builder) Set(ns, wf, run string, version int64, opts ...SnapshotOpt) mut
 	}}
 }
 
-// ConflictResolve is a reset, and the only shape here that carries more than one
-// run: the run being reset, the run that was current until now, and the new run
-// the reset starts. An empty currentRun or newRun leaves that part out, which is
-// how the four combinations Temporal's mode validator distinguishes are reached.
+// ConflictResolve is a reset, carrying up to three runs: the reset run, the
+// previously current run and a new run. An empty currentRun or newRun omits
+// that part, giving the four combinations the mode validator distinguishes.
 //
-// The states are this method's rather than a caller's, because that validator has
-// a rule per combination — with all three parts the current run may be neither
-// created nor running, the reset run must be closed, and the new run may not be a
-// zombie — so a caller choosing them
-// would be choosing whether the request is one the store admits.
-//
-// It fills the execution-info blob on all three parts, which no other shape here
-// does. A reset is only worth building against a real store, the applier
-// dereferences that blob once per part, and leaving it to the caller would mean
-// three option lists for one request.
+// This method picks the states, since the validator has a rule per
+// combination (the reset run closed, the current run not created or running,
+// the new run not zombie). It also fills the execution-info blob on every
+// part, because a real store's applier dereferences it.
 func (b Builder) ConflictResolve(ns, wf, resetRun, currentRun, newRun string, version int64) mutation.Mutation {
 	closed := func(s *p.InternalWorkflowSnapshot) {
 		s.ExecutionState.State = enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED
@@ -255,8 +208,7 @@ func (b Builder) ConflictResolve(ns, wf, resetRun, currentRun, newRun string, ve
 	return mutation.Mutation{ConflictResolve: req}
 }
 
-// Delete removes one run's rows. It names a run and asserts nothing, so there
-// is no validator to run.
+// Delete removes one run's rows. It asserts nothing, so nothing is validated.
 func (b Builder) Delete(ns, wf, run string) mutation.Mutation {
 	return mutation.Mutation{Delete: &p.DeleteWorkflowExecutionRequest{
 		ShardID: b.shard, NamespaceID: ns, WorkflowID: wf, RunID: run,
@@ -271,9 +223,8 @@ func (b Builder) DeleteCurrent(ns, wf, run string) mutation.Mutation {
 	}}
 }
 
-// AddTasks is one queue's write: a task record, which names no run and travels
-// in the batch's task half. An empty list is a request carrying no rows, which
-// is the one mutation that folds to nothing.
+// AddTasks writes tasks to one category. It names no run. An empty list gives
+// a request with no rows, the one mutation that folds to nothing.
 func (b Builder) AddTasks(category tasks.Category, list ...p.InternalHistoryTask) mutation.Mutation {
 	req := &p.InternalAddHistoryTasksRequest{ShardID: b.shard}
 	if len(list) > 0 {
@@ -282,8 +233,7 @@ func (b Builder) AddTasks(category tasks.Category, list ...p.InternalHistoryTask
 	return mutation.Mutation{AddTasks: req}
 }
 
-// RangeComplete is the other half of that queue's traffic: the deletion range
-// it declares garbage, in its own checkpoint's terms.
+// RangeComplete deletes a category's tasks in [inclusiveMin, exclusiveMax).
 func (b Builder) RangeComplete(category tasks.Category, inclusiveMin, exclusiveMax tasks.Key) mutation.Mutation {
 	return mutation.Mutation{RangeCompleteTasks: &p.RangeCompleteHistoryTasksRequest{
 		ShardID:             b.shard,
@@ -293,19 +243,13 @@ func (b Builder) RangeComplete(category tasks.Category, inclusiveMin, exclusiveM
 	}}
 }
 
-// WithTaskMap sets an update's history tasks, several categories at once, in
-// the shape the request carries them.
+// WithTaskMap sets an update's history tasks for several categories.
 func WithTaskMap(byCategory map[tasks.Category][]p.InternalHistoryTask) MutationOpt {
 	return func(m *p.InternalWorkflowMutation) { m.Tasks = byCategory }
 }
 
-// WithState replaces the run's state and status pair — what a chain's last link
-// moves when the run closes, and the pair every validator above is stated over.
-// It is therefore also what makes this package's own check provable: an
-// invalid pair handed in here is refused, which is what
-// TestAnInvalidStateIsRefusedRatherThanBuilt drives, and
-// TestAModeIsCheckedAgainstTheStateItCarries tells the two validators apart by
-// a pair that satisfies one and not the other.
+// WithState sets the run's state and status, for example to close it. The
+// validators check this pair, so an invalid one panics.
 func WithState(
 	state enumsspb.WorkflowExecutionState, status enumspb.WorkflowExecutionStatus,
 ) SnapshotOpt {
@@ -315,18 +259,18 @@ func WithState(
 	}
 }
 
-// WithInfoBlob replaces the execution-info blob, which is where a fixture puts
-// bytes it wants to find again — or a payload it wants to be large.
+// WithInfoBlob sets the execution-info blob, for bytes a test wants to find
+// again or a large payload.
 func WithInfoBlob(blob *commonpb.DataBlob) SnapshotOpt {
 	return func(s *p.InternalWorkflowSnapshot) { s.ExecutionInfoBlob = blob }
 }
 
-// Task is one history-task row, named by its blob.
+// Task is one history-task row whose blob is name.
 func Task(name string) p.InternalHistoryTask {
 	return p.InternalHistoryTask{Blob: named(name)}
 }
 
-// snapshot is the whole-run state every snapshot-bearing shape carries.
+// snapshot builds a running run's whole state at version, then applies opts.
 func (b Builder) snapshot(ns, wf, run string, version int64, opts []SnapshotOpt) p.InternalWorkflowSnapshot {
 	state := runningState(run)
 	s := p.InternalWorkflowSnapshot{
@@ -343,9 +287,8 @@ func (b Builder) snapshot(ns, wf, run string, version int64, opts []SnapshotOpt)
 	return s
 }
 
-// validateCreate runs both of a create's validators. Split out because
-// [Builder.CreateOver] moves the mode after the fact and the mode is half of
-// what the second one reads.
+// validateCreate runs a create's two validators; [Builder.CreateOver] reruns
+// it after changing the mode.
 func (b Builder) validateCreate(req *p.InternalCreateWorkflowExecutionRequest) {
 	state := req.NewWorkflowSnapshot.ExecutionState
 	check("create", p.ValidateCreateWorkflowStateStatus(state.State, state.Status))
@@ -353,17 +296,13 @@ func (b Builder) validateCreate(req *p.InternalCreateWorkflowExecutionRequest) {
 		p.WorkflowSnapshot{ExecutionState: state}))
 }
 
-// runningState is a live run: the state and status pair every shape here is
-// built at. Temporal admits a status of RUNNING for every state but COMPLETED,
-// so a fixture closing a run moves both through [WithState] or the validators
-// refuse it.
+// runningState is the RUNNING state and status every shape starts from. To
+// close a run, change both with [WithState]; the validators refuse a
+// COMPLETED state with RUNNING status.
 //
-// The start time is here because upstream's mutable state fills it at the moment
-// a run is created and never leaves it unset, and it is the field a current-row
-// rendering can drop with every other column still right — the reuse check above
-// this layer measures against it, and reads an absent one as the zero time. A
-// fixture without one cannot tell a rendering that carries it from one that does
-// not.
+// StartTime is set because upstream always sets it and the workflow-id reuse
+// check reads it from the current row; without it a test cannot catch a
+// current-row rendering that drops it.
 func runningState(run string) *persistencespb.WorkflowExecutionState {
 	return &persistencespb.WorkflowExecutionState{
 		CreateRequestId: uuid.NewString(),
@@ -374,12 +313,11 @@ func runningState(run string) *persistencespb.WorkflowExecutionState {
 	}
 }
 
-// startedAt is every fixture's start time: fixed, because a builder whose output
-// depends on the clock makes two builds of one shape differ.
+// startedAt is every fixture's start time, fixed rather than read from the
+// clock.
 var startedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// stateBlob serialises an execution state the way the ExecutionManager does
-// before the store sees the request.
+// stateBlob serialises an execution state as the ExecutionManager does.
 func stateBlob(state *persistencespb.WorkflowExecutionState) *commonpb.DataBlob {
 	blob, err := serialization.WorkflowExecutionStateToBlob(state)
 	if err != nil {
@@ -392,9 +330,7 @@ func named(s string) *commonpb.DataBlob {
 	return &commonpb.DataBlob{Data: []byte(s), EncodingType: enumspb.ENCODING_TYPE_PROTO3}
 }
 
-// check panics rather than returning: a fixture the store would refuse
-// is a bug in whoever asked for it, and there is no caller that could do
-// anything with the error but fail.
+// check panics on a validator error: an invalid fixture is a test bug.
 func check(shape string, err error) {
 	if err != nil {
 		panic(fmt.Sprintf("mutbuild: built an invalid %s: %v", shape, err))
