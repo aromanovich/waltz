@@ -3,30 +3,29 @@
 ## One write, three moments of certainty
 
 Start with one `UpdateWorkflowExecution`. The history service has produced new events and a
-mutable-state update. The wrapper turns the persistence request into one mutation — writing the
-history rows through to the cold store first, unless that store takes them in the drain — and hands
-that mutation to the shard's cycle. So far the layer has promised the caller nothing.
+mutable-state update. The wrapper turns the persistence request into one mutation and hands it to
+the shard's cycle. If the cold store does not take history events inside the drain, the wrapper
+first writes them through to it. So far the layer has promised the caller nothing.
 
-Three questions come before anything is logged. Is the write still stamped with the epoch this node
-holds? Is the shard free to take more — its tail below its bound, no drain's outcome left unread,
-its backend not asking appends to stop? Does the request's condition hold against the state at the
-head of this window? Every refusal here happens **before the append**, so a refused caller can
-conclude that its mutation consumed no seqno and is absent from the log. That is the first moment of
-certainty.
+Three checks come before anything is logged. Is the write stamped with the epoch this node holds?
+Is the shard free to take more: its tail (the acknowledged entries not yet settled) below its
+bound, no drain's outcome left unread, its backend not asking appends to stop? Does the request's
+condition hold against the state at the head of this window (the mutations folded since the last
+drain)? Every refusal happens before the append. A refused caller knows its mutation consumed no
+seqno and is absent from the log. That is the first moment of certainty.
 
-If those three pass, the cycle appends one entry and waits for the log to acknowledge it durably.
-That is the second moment. Once the append has returned and the entry has been folded into the
-window, a write that trips no drain trigger returns success. The mutable-state rows still hold what
-they held, but the write is durable: replay can recover it and the overlay makes it visible. This is
-the layer's central bargain — most foreground calls end at the append and the fold, and only the
-call that trips a trigger, most often by filling a window (or the age tick behind it), pays for the
-cold-store drain.
+If the checks pass, the cycle appends one entry and waits for the log to acknowledge it. That is
+the second moment. The entry is folded (merged) into the window, and a write that trips no drain
+trigger returns success. The mutable-state rows in the cold store are unchanged, but the write is
+durable: replay can recover it, and the overlay, which answers reads from the window
+([chapter 07](07-read-path.md)), makes it visible. This is the layer's central bargain. Most calls
+end at the append and the fold. Only the call that trips a trigger pays for the cold-store drain,
+usually by filling the window; otherwise the age tick drains it and no caller pays.
 
-The third moment comes later. A drain writes a folded batch, together with a watermark saying how
-far it applied, in one transaction. Once that commits, the cold store itself holds the effect and
-the matching stretch of tail can be released. If the process never learns whether that transaction
-committed, it does not guess: it reads the watermark, which is the only witness. So the path makes
-three different claims, each resting on its own evidence:
+The third moment comes later. A drain writes a folded batch and a watermark, the highest seqno it
+applied, in one transaction. Once that commits, the cold store holds the effect and the matching
+stretch of tail is released. If the process never learns whether the transaction committed, it
+does not guess. It reads the watermark, the only witness. Each moment rests on its own evidence:
 
 | Moment | What is certain | Evidence |
 |---|---|---|
@@ -34,17 +33,16 @@ three different claims, each resting on its own evidence:
 | after append acknowledgement | the mutation is durable and caller-visible | `commitSeqno` covers it |
 | after a resolved drain | its folded effect is applied, or its empty work is settled | the transactional watermark, or the known empty batch |
 
-The sections below replay that same write under each failure in turn, and the decision table at the
-end maps what the caller saw to what the operator can infer. Vocabulary and invariants are
-[chapter 02](02-concepts-and-invariants.md), the components are [chapter 03](03-components.md), and
-reads over the acked-but-unapplied stretch are [chapter 07](07-read-path.md).
+This chapter follows the successful write first, then replays it under each failure in turn. A
+decision table at the end maps what the caller saw to what the operator can infer. Vocabulary and
+invariants are [chapter 02](02-concepts-and-invariants.md), the components are
+[chapter 03](03-components.md).
 
 ## The cast
 
-Every name in this table is a real type in this tree, except the first and the last: `history
-service` is the caller, and what it is a type of is Temporal's; `the cold store` is whatever the
-deployment brought. The diagrams below carry two more participants that are not types either and
-need no row — *the next owner's cycle* and *the operator*.
+Every name below is a type in this tree except the first and the last: the history service is
+Temporal's caller, and the cold store is whatever the deployment brought. The diagrams also show
+*the next owner's cycle* and *the operator*.
 
 | Participant | What it is |
 |---|---|
@@ -57,17 +55,16 @@ need no row — *the next owner's cycle* and *the operator*.
 | `cold.Applier` | one drain, one publication — the drain's write door, and the only one over a store that declares `cold.HistoryApplier`; `memcold` is the implementation this tree ships |
 | `the cold store` | a persistence implementation, on the other side of that door: `memcold` here, a deployment's own otherwise |
 
-Two positions run through the whole chapter. **commitSeqno** is the last seqno acked into the log.
-**appliedSeqno** is the last seqno a drain committed: a watermark held in the cold store, keyed by
-shard, written inside the drain's own transaction, and as far as a trim may ever go. The metric
-`wal_unapplied_entries` reports the difference between them. It is not what I10 bounds — that bound
-counts from a third position, `resolved`, which [chapter
-02](02-concepts-and-invariants.md#three-positions-not-two) explains.
+Two positions run through the chapter. *commitSeqno* is the last seqno acknowledged by the log.
+*appliedSeqno*, the watermark, is the last seqno a committed drain contains. It is stored in the
+cold store per shard, written inside the drain's own transaction, and no trim goes past it.
+`wal_unapplied_entries` reports their difference. I10 bounds something else: the tail above a third
+position, `resolved` ([chapter 02](02-concepts-and-invariants.md#three-positions-not-two)).
 
 ## 1. The successful write
 
-Two diagrams: the append every caller waits for, and the drain that comes later, paid for by
-whichever call or tick triggers it.
+The successful write has two halves: the append every caller waits for, and the drain that comes
+later. The first diagram follows one call from the history service to the log acknowledgement.
 
 ```mermaid
 sequenceDiagram
@@ -102,83 +99,72 @@ sequenceDiagram
   Note over HS,CS: the caller is done — the mutable-state rows are not in the cold store yet
 ```
 
-How to read this. One arrow goes from the cycle to the cold store, and [chapter
-03](03-components.md#the-component-diagram--run-time-calls) says the cycle names no store. Both are
-true. This is the run-time call graph; the cycle makes that call through a `*baserow.Rows` value the
-wrapper handed it, and imports nothing that reaches a store.
+The one arrow from the cycle to the cold store is a run-time call through a `*baserow.Rows` value
+the wrapper handed it. The cycle imports nothing that reaches a store
+([chapter 03](03-components.md#the-component-diagram--run-time-calls)).
 
-The caller's answer is the **append**, not the drain. When `UpdateWorkflowExecution` returns nil,
-three things are true and no more: the request's new history events are in the cold store or
-carried in the entry itself, the mutation is one durable entry of the shard's log, and the
-accumulator holds it. The workflow's mutable-state rows still hold what they held before, and any
-read those rows would now answer wrongly is answered by the layer instead
-([chapter 07](07-read-path.md)).
+The caller's answer is the append, not the drain. When `UpdateWorkflowExecution` returns nil the
+mutation is a durable log entry and the accumulator holds it, while the mutable-state rows still
+hold their old values. Exactly what is and is not durable at that point is stated once, at the end
+of the chapter ([What is durable when the caller returns](#what-is-durable-when-the-caller-returns)).
+Some later drain, tripped by a later write or the age tick, commits the write (section 2).
 
-**What the delegated read costs.** It is per delegated assertion, not per mutation. The
-current-execution row is one read (`baserow.Rows.Current`, which returns the row's
-`last_write_version` beside it) and every run whose assertion the window does not hold is another
-(`baserow.Rows.Run`), so a conflict-resolve naming several runs pays several before its append.
-They run in `Delegated.Settle`'s order and stop at the first refusal, so a failing mutation often
-pays less than a succeeding one. In sync mode none is taken at all: the drain that asserts
-everything runs inside the same call, so the round trip would buy nothing.
+### What the delegated read costs
 
-**When the append itself has no answer.** The three append refusals the cycle reads by name —
-`wal.ErrGap`, `wal.ErrFenced`, `wal.ErrAlreadyWritten` — each say the write is whole one way or the
-other, and everything else — every transport failure — says nothing at all. The cycle
-does not read that as "wrote nothing": it reads the seqno back, which is the log answering for an
-append the way the cold store's watermark answers for a drain
-([chapter 06](06-shard-lifecycle.md)). Three outcomes, and the third is where this parts from the
-drain's version in section 7. Nothing at the seqno and the append wrote nothing, so the seqno is the
-next mutation's and the caller gets the error. **This cycle's own payload at it and the append
-succeeded**, so the caller is told nil — the entry is durable and every later write of that workflow
-will stand on it, which is exactly the state a "failed" would have the caller act against. Anything
-else — a stranger's entry, or a read that failed too — halts the shard holding the log as evidence:
-where a drain whose outcome cannot be read stalls and asks again later, an append has nothing to
-wait for, the next thing any writer needs being that same seqno.
-The read is detached from the caller's cancellation, because a client deadline expiring inside the
-append is the commonest way the outcome became unreadable in the first place.
+When the window cannot settle an assertion itself, it delegates it, and the cycle reads the
+pre-window row from the cold store before the append. The cost is per delegated assertion, not per
+mutation. The current-execution row is one read (`baserow.Rows.Current`, which also returns the
+row's `last_write_version`). Every run whose assertion the window does not hold is another
+(`baserow.Rows.Run`), so a conflict-resolve naming several runs pays several reads. They run in
+`Delegated.Settle`'s order and stop at the first refusal, so a failing mutation often pays less
+than a succeeding one. Sync mode takes none: the drain that asserts everything runs inside the same
+call, so the round trip would buy nothing.
 
-**How far that read can be trusted.** The reads run on the cycle's own goroutine, so no drain of
-this process can wedge between one of them and the append. That is a claim about this process, not
-about the world: another process can move one of those rows only by taking the shard, and once it
-has, either the append is fenced or the drain's epoch CAS fails. Fencing turns "the row changed
-under us" into "the shard is no longer ours", which is section 5 below and already has an operator
-response.
+### When the append has no answer
 
-Some later drain — the one a successor write trips, or the age tick — commits it:
+The cycle reads three append refusals by name: `wal.ErrGap`, `wal.ErrFenced` and
+`wal.ErrAlreadyWritten`. Each says definitely whether the write happened. Any other error, such as a
+transport failure, says nothing. The cycle does not assume "wrote nothing". It reads the seqno back,
+so the log answers for an append the way the watermark answers for a drain
+([section 7](#7-failed-drain--the-outcome-could-not-be-read)). There are three outcomes:
 
-```mermaid
-sequenceDiagram
-  participant CY as cycle.Cycle
-  participant ACC as fold.Accumulator
-  participant AP as cold.Applier
-  participant CS as the cold store
+* Nothing is at the seqno. The append wrote nothing, the seqno goes to the next mutation, and the
+  caller gets the error.
+* This cycle's own payload is at the seqno. The append succeeded, and the caller is told nil. The
+  entry is durable and later writes of the workflow will stand on it, so reporting failure would be
+  a lie the caller acts on.
+* Anything else, a stranger's entry or a failed read, halts the shard and keeps the log as
+  evidence. A drain whose outcome cannot be read stalls and asks again later (section 7), but an
+  append cannot wait: the next thing any writer needs is that same seqno.
 
-  Note over CY: a drain trigger fires — 256 mutations, or 256 KiB, or 5 seconds, or storage pressure
-  CY->>ACC: Drain()
-  ACC-->>CY: batch — one merged request per dirty workflow, plus its assertions
-  CY->>AP: Apply(shard, epoch, batch)
-  AP->>CS: one transaction — epoch CAS, the batch's event history, the folded task ranges deleted, the requests, the task rows, the watermark
-  CS-->>AP: committed
-  AP-->>CY: nil
-  Note over CY: appliedSeqno = batch.Watermark(), tail releases the window's bytes
-  CY->>CY: trimmer.Drained(appliedSeqno) — trims at the 16th drain or the first past 60 seconds, or trimmer.Force at once under storage pressure
-```
+The read-back is detached from the caller's cancellation, because a client deadline expiring
+inside the append is the commonest way the outcome became unreadable.
 
-**Who blocks.** The write that trips a trigger pays for the drain inside its own call: the drain
-runs in `Cycle.add`, on the cycle's goroutine, before that call returns, and every other write on
-the shard queues behind that goroutine meanwhile. Nothing crosses shards. The queue processors sit
-on the same goroutine, because `AddHistoryTasks` and `RangeCompleteHistoryTasks` travel the log like
-every other write — so a queue processor's checkpoint waits behind whatever the loop is doing, a
-drain included. That cost was accepted knowingly and has never been measured
+### How far the pre-append reads can be trusted
+
+The delegated reads run on the cycle's goroutine, so no drain of this process can come between one
+of them and the append. Another process can move those rows only by taking the shard. Once it has,
+either the append is fenced or the drain's epoch CAS fails. Fencing turns "the row changed under
+us" into "the shard is no longer ours", which is section 5 and has an operator response.
+
+### Who blocks
+
+The write that trips a trigger pays for the drain inside its own call. The drain runs in
+`Cycle.add`, on the cycle's goroutine, before that call returns, and every other write on the shard
+queues behind it. Nobody waits on the trim, which is detached, and nothing crosses shards. Queue
+processors wait too: `AddHistoryTasks` and
+`RangeCompleteHistoryTasks` travel the log like every other write, so a queue processor's
+checkpoint waits behind whatever the loop is doing, a drain included. This cost was accepted and
+has never been measured
 ([chapter 15](15-the-limits-of-the-evidence.md#the-price-of-moving-deferred-work-into-the-log-is-not-measured)).
 
 ## 2. The drain itself
 
-One drain is one publication: the merged requests, the task work and the watermark in one
-transaction, with the window's event history, where the batch carries it, durable no later than that
-transaction — inside it, or before it opens. This is what it does, in order, against `memcold`,
-which puts the history inside.
+A drain publishes the window in one transaction: the merged requests, the task work and the
+watermark. If the batch carries event history, that history is durable no later than the
+transaction, either inside it or before it opens. The diagram shows a drain against `memcold`,
+which writes the history inside. Its first step, `resolveStalled`, matters only when a previous
+drain's outcome is still unknown (section 7): it asks the watermark again before taking the window.
 
 ```mermaid
 sequenceDiagram
@@ -208,80 +194,81 @@ sequenceDiagram
   CY->>CY: trimmer.Drained — a detached goroutine trims the log at the cadence (Force under storage pressure)
 ```
 
-How to read this. Statement order is the mechanism, because the transaction reports the **first
-failing assertion** and stops there. The epoch CAS goes first: a fenced writer finds every version
-it stands on stale, and "the shard is no longer yours" is the only answer worth giving it, so
-ownership loss must shadow the version failures underneath. The range deletes go ahead of the task
-inserts for a different reason — a task that arrived after its range was completed is one fold
-deliberately keeps, and a delete running after that insert would take it away, which for a scheduled
-category is a timer that never fires. The watermark rides the same transaction behind the same gate
-as everything else, which is what makes "did this drain commit" one readable fact; section 7 is
-where that matters. Why a fold's output is a request **plus** a separately carried set of
-assertions, rather than the window's own requests replayed inside one transaction, is
+### Why the statement order matters
+
+The transaction reports the first failing assertion and stops there, so the order of statements
+decides what a failure says.
+
+* The epoch CAS goes first, so ownership loss shadows the version failures a fenced writer would
+  otherwise see.
+* The range deletes go ahead of the task inserts, because fold keeps a task that arrived after its
+  range was completed. A later delete would remove it, and for a scheduled category that is a timer
+  that never fires.
+* The watermark rides the same transaction behind the same gate, so "did this drain commit" is one
+  readable fact (section 7).
+
+Why a fold's output is a request plus a separately carried set of assertions, rather than the
+window's own requests replayed inside one transaction, is
 [chapter 13](13-designs-that-were-rejected.md#a-folded-window-as-a-concatenation-of-the-stores-own-queries).
 
-One omission is as deliberate as the order. A store writes a request through three routines — the
-mutation, the reset and the create — and two of them open with a lock-and-check on the run's
-`db_record_version`. The drain leaves that check out: the merged request carries the *tail's*
-version while the row still holds the *head's*, so the check would fail on every window that folded
-more than one mutation into a run. Fold's head-of-window assertion, registered a statement earlier,
-is what stands in its place. The create has no such check to leave out, because it asserts the run's
-absence rather than its version.
+### The check the drain leaves out
 
-Order is not the whole obligation on the store underneath. Because one transaction now carries many
-workflows, the store walks assertions that **hold** on its way to the one that fails. That is
-routine here and rare in a store written for one workflow per transaction — rare enough that three
-code paths in the research prototype's store treated it as impossible and panicked, `MustNotExist`
-with no row found among them. A batch carrying a create of a run that exists beside a create of one
-that does not would panic or report a condition failure depending only on which was appended first.
-So an applier owes this too: **an assertion that held must return, not crash**, and only a genuine
-impossibility may report one. It is the kind of defect a store with one workflow per transaction can
-carry for years without anybody meeting it.
+A store writes a request through three routines: the mutation, the reset and the create. The first
+two open with a lock-and-check on the run's `db_record_version`. The drain omits that check on
+purpose. The merged request carries the version of the window's last mutation, while the row still
+holds the version from before the window, so the check would fail on every window that folded more
+than one mutation into a run. Fold's head-of-window assertion, registered one statement earlier,
+stands in its place. The create has no such check, because it asserts the run's absence rather than
+its version.
 
-The quieter rules of the drain:
+### An assertion that held must return
 
-* **the trim is neither in the transaction nor on the loop.** `trim.Trimmer` starts a detached
-  goroutine at its cadence — `TrimEvery` drains (16) or `TrimAfter` (60 s), whichever trips first,
-  both judged when a drain commits, so an idle shard does not trim on a timer.
-  A cadence that comes due while a trim is already in flight is skipped rather than queued, and the
-  goroutine runs under a one-minute budget. Under storage pressure every committed drain calls
-  `Trimmer.Force` instead, which ignores the cadence and, behind a trim in flight, queues one
-  follow-up coalesced to the highest watermark asked for. A failed trim is logged, retried at the
-  next cadence — or, under pressure, at the next forced one — and halts nothing;
-* **a halted cycle never trims.** After halted-lost the log belongs to the next owner; after
-  halted-invariant the log is the evidence;
-* **a drain that folds to nothing still settles what it acked**, and moves no watermark. No
-  transaction ran, so a watermark moved with it would let the trim delete entries the cold store
-  never received, stranding a recovering owner;
-* **an upsert and a delete of one key never both reach the transaction.** A store's query orders a
-  collection's upserts ahead of its deletes, so a key the stream deleted and *then* upserted would be
-  written first and deleted after: the write disappears, silently, in a transaction that reports
-  success. The pair is resolved in the accumulator instead, where the stream order is still known:
-  the later operation wins and the key leaves the other set (`fold.mergeItems`, over the seven
-  collections a run holds). One level up, a window that wrote the workflow's current row and then removed it emits
-  **only** the removal (`fold.WorkflowRecord.CurrentRemoved`), and the drain then deletes whatever
-  current row it finds rather than the run the request named — that request's guard asks about the
-  pre-window row, which is not the row the window left;
-* **a drain is the whole window, always.** `window.Take` empties it and `Accumulator.Drain` emits
-  every dirty workflow it holds, in one transaction. There is no partial drain, no ordering between
-  the writers whose mutations are mixed into one batch, and nothing meters or queues: the only
-  levers are where the drain triggers sit, applied before the drain, and the I10 refusal.
-  `InvariantViolationError.CutSeqno` names what *a* partial re-drain could acknowledge; no code
-  re-drains partially;
-* **a folded range delete cannot page.** A store's standalone `RangeCompleteHistoryTasks` is free to
-  split a very large range across several statements or transactions; inside the drain the same reach
-  is one statement of somebody else's transaction, and pages would be separate transactions. The
-  exposure is the same size as the standalone call's, but a single very large completed range fails
-  the whole drain that carried it rather than degrading — and it arrives as an ordinary apply error,
-  which no metric distinguishes.
+An applier must return, not crash, on an assertion that held. A multi-workflow transaction walks
+many held assertions before the failing one, which a store written for one workflow per transaction
+rarely does. For example, a batch with a create of a run that exists beside a create of one that
+does not must report a condition failure whichever was appended first. Only a genuine impossibility
+may crash.
+
+### Other rules of the drain
+
+* *The trim runs outside the transaction and off the loop.* `trim.Trimmer` starts a detached
+  goroutine every `TrimEvery` drains (16) or after `TrimAfter` (60 s), judged when a drain commits,
+  so an idle shard does not trim. The goroutine runs under a one-minute budget. Under storage
+  pressure every committed drain calls `Trimmer.Force`. A failed trim halts nothing. Skipping,
+  queueing and retries are [chapter 06](06-shard-lifecycle.md#7-trim-as-part-of-the-lifecycle).
+* *A halted cycle never trims.* After `halted-lost` the log belongs to the next owner. After
+  `halted-invariant` the log is the evidence.
+* *A drain that folds to nothing still settles what it acked*, and moves no watermark. No
+  transaction ran, so moving the watermark would let the trim delete entries the cold store never
+  received, stranding a recovering owner.
+* *An upsert and a delete of one key never both reach the transaction.* A store's query orders a
+  collection's upserts ahead of its deletes, so a key deleted and then upserted would silently
+  disappear in a transaction that reports success. The accumulator resolves the pair while the
+  stream order is still known: the later operation wins and the key leaves the other set
+  (`fold.mergeItems`, over the seven
+  collections a run holds). Likewise, a window that wrote the current row and then removed it emits
+  only the removal (`fold.WorkflowRecord.CurrentRemoved`), and the drain deletes whatever current
+  row it finds, because the request's guard asks about the pre-window row
+  ([chapter 02](02-concepts-and-invariants.md#i8-at-more-length) has the rest of I8).
+* *A drain is always the whole window.* `window.Take` empties it and `Accumulator.Drain` emits every
+  dirty workflow in one transaction. There is no partial drain, no ordering between the writers
+  mixed into one batch, and no metering or queueing. The only levers are where the triggers sit and
+  the I10 refusal. `InvariantViolationError.CutSeqno` names what a partial re-drain could
+  acknowledge, but no code re-drains partially.
+* *A folded range delete cannot page.* A standalone `RangeCompleteHistoryTasks` may split a very
+  large range across several statements or transactions. Inside the drain it is one statement of a
+  shared transaction, and pages would be separate transactions. The exposure is no larger than the
+  standalone call's, but a single very large completed range fails the whole drain instead of
+  degrading, and it arrives as an ordinary apply error that no
+  metric distinguishes.
 
 ### The drain triggers
 
-Nine things start a drain, and each carries one tag value on `wal_drains`. There are ten
-`drainCause` values behind those nine tags, because `replay` covers two of them: a replayed
-provisional entry whose condition fails is dropped, where every other replayed entry that fails one
-halts the shard. [Chapter 04](04-contracts.md#applyclass--sorting-the-outcome) has what that split
-is for.
+Nine things start a drain, and each sets one value of the `trigger` tag on `wal_drains`. Behind
+those nine tags are ten `drainCause` values, because `replay` covers two: a replayed provisional
+entry whose condition fails is dropped, while any other replayed entry that fails one halts the
+shard ([chapter 04](04-contracts.md#applyclass--sorting-the-outcome) has why). The flowchart maps
+each source to its tag.
 
 ```mermaid
 flowchart TD
@@ -289,7 +276,7 @@ flowchart TD
   W --> B["256 KiB reached: trigger=bytes"]
   W --> RF["fold.ErrRefused at the check or the fold, the window cannot express it: trigger=refusal"]
   W --> P["the backend reports storage pressure: trigger=storage_pressure"]
-  T["the age timer ticks"] --> A["window older than Age, or a stall to re-ask: trigger=age"]
+  T["the age timer ticks"] --> A["window older than Age (5 s), or a stall to re-ask: trigger=age"]
   T --> P
   RP["a new owner replays a tail"] --> R["a size trigger trips, a provisional entry is met, or the tail runs out: trigger=replay"]
   X["Close or drainNow"] --> E["shutdown, or a test: trigger=explicit"]
@@ -297,57 +284,63 @@ flowchart TD
   S["every write, with sync on"] --> Y["one write, one drain: trigger=sync"]
 ```
 
-How to read this. What the diagram does not show is who is waiting while the drain runs, and that is
-what the triggers really differ in. `mutations`, `bytes` and `refusal` run inside some caller's
-write — or, for a `refusal`, inside a replay, which folds through the same `Cycle.accept` — and the
-window they drain is full of other people's work. Under `mutations`, `bytes` and a
-`refusal` raised at the fold, that caller has already been acked for its own mutation; a `refusal`
-raised at the condition check runs before the append, so that caller has consumed no seqno. `age` has
-nobody waiting at all; `replay` and `explicit` do — the request that started the cycle waits through
-the whole replay, and a shutdown waits for the drain it asked for — but neither waiter wrote anything
-the window carries. `read` happens only when `drain_on_read` is on, which nothing that ships turns
-on ([chapter 08](08-configuration.md)). `storage_pressure` fires from both sides: inside a write
-whose append the backend answered under pressure — that caller is acked, like the size triggers' —
-and from the age tick, for a window the level rose under between writes. Its consequence past the
-drain belongs to the level rather than to the trigger: while the level stands, the trim behind
-*every* committed drain bypasses the cadence, whichever trigger fired it
-([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)).
+The triggers differ most in who waits while the drain runs, which the diagram does not show.
 
-**`sync` is the ninth, and it is the same cycle rather than a path around it.** With `sync: true`
-the window holds one mutation and its drain runs inside the write, so every drain a caller triggers
-on such a node carries `trigger="sync"`. The size triggers are never consulted there, the age
-tick always finds an empty window, and pressure adds no drain sync mode did not already run — it
-forces the trim behind the sync drain instead — so a dashboard panelled by `trigger` shows nothing
-on the `mutations`, `bytes`, `age` and `storage_pressure` series; the one other value it can see is
-`replay`, over the at-most-one in-flight entry a killed node leaves behind. Everything else is the
-same code — the halts, replay, the trim, backpressure and every counter.
+* `mutations`, `bytes` and `refusal` run inside some caller's write, and drain a window full of
+  other callers' work. A `refusal` can also run inside a replay, which folds through the same
+  `Cycle.accept`. Under `mutations`, `bytes` and a `refusal` raised at the fold, the caller has
+  already been acknowledged. A `refusal` raised at the condition check runs before the append, so
+  that caller has consumed no seqno.
+* `age` has nobody waiting.
+* `replay` and `explicit` have a waiter who wrote nothing in the window: the request that started
+  the cycle waits through the whole replay, and a shutdown waits for the drain it asked for.
+* `read` happens only when `drain_on_read` is on, and nothing that ships turns it on
+  ([chapter 08](08-configuration.md)).
+* `storage_pressure` fires from two places: inside a write whose append the backend answered under
+  pressure (that caller is acknowledged, as with the size triggers), and from the age tick, when
+  the level rose between writes. While the level stands, the trim behind every committed drain
+  ignores the cadence, whichever trigger fired the drain
+  ([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)).
 
-What sync mode changes is whose answer a failed drain is. Beside its trigger, each drain carries a
-`callerRule`: the legal `drainCause` values — trigger, rule, and whether the drain is detached from
-its caller's clock — are a fixed list of ten in `cycle/cycle.go` with no constructor, because an
-attribution that is too permissive reports a failure to a caller who did not write the mutation.
+#### Sync mode's drain
+
+`sync` is the ninth trigger, on the same cycle. With `sync: true` the window holds one mutation and
+its drain runs inside the write, so every drain a caller triggers carries `trigger="sync"`. The
+size triggers are never consulted, the age tick always finds an empty window, and pressure forces
+the trim behind the sync drain instead of adding a drain. So a dashboard split by `trigger` shows
+only `sync` and `replay`, the latter over the at most one in-flight entry a killed node leaves
+behind. Halts, replay, the trim, backpressure and every counter are the same code. What `sync` is
+for is [chapter 08](08-configuration.md#2-table-1--the-wal-sections-keys).
+
+What sync mode changes is who receives a failed drain's error. Each drain carries a `callerRule`
+beside its trigger. The legal `drainCause` values (trigger, rule, and whether the drain is detached
+from its caller's clock) are a fixed list of ten in `cycle/cycle.go` with no constructor, because
+an attribution that is too permissive reports a failure to a caller who did not write the mutation.
 Eight of the ten answer nobody, so a condition failure inside one halts the shard. `drainSync`
-answers its caller. A lone replayed provisional entry drops instead. That is also why sync mode's
-ack is *provisional*: the entry is encoded with `mutation.EncodeProvisional` rather than
-`mutation.Encode`, and replay reads that bit back to know it may drop such an entry rather than halt
-on it. Because the window is empty at every call boundary, a node killed in sync mode leaves at most
-the one entry whose call was in flight.
+answers its caller. A lone replayed provisional entry whose condition fails is dropped rather than
+halting the shard.
+
+That is why sync mode's acknowledgement is *provisional*. The entry is encoded with
+`mutation.EncodeProvisional` rather than `mutation.Encode`, and replay reads that bit to know it may
+drop the entry rather than halt on it.
 
 ## 3. Failed write — the condition did not hold
 
-A conditional write whose condition is false is *expected traffic*: a start racing a start, a stale
-mutable-state version. The layer must never fold such a write in silently, because only the head of
-a window is asserted against the database. So the condition is decided before the append.
+A conditional write whose condition is false is expected traffic: a start racing a start, or a
+stale mutable-state version. The layer must never fold such a write in silently, because only the
+head of a window is asserted against the database. So the condition is decided before the append.
 
-Both other placements cost more. Checking at the drain arrives after the answer has been given, on a
-batch mixing many callers' work, so it has neither an addressee nor an undo: what should be one
-caller's condition error becomes a halted shard. Checking every assertion against the cold store
-before the append puts a database round trip in front of every write — the layer would spend what it
-saves — and Temporal's plain current-row read cannot even express the current-row assertion, which
-is three conditions (which run is current, what state it is in, and its last write version) where
-`InternalGetCurrentExecutionResponse` carries only the first two. The layer stands on the
+The two other placements cost more. A check at the drain comes after the caller has its answer, so
+one caller's condition error would become a halted shard. A check of every assertion against the
+cold store puts a database round trip in front of every write, spending what the layer saves.
+Temporal's plain current-row read cannot even express the current-row assertion. That
+assertion has three conditions (which run is current, its state, its last write version), and
+`InternalGetCurrentExecutionResponse` carries only the first two. The layer uses the
 version-carrying read instead, and refuses to start in intercept mode over a store that cannot
 answer it (`baserow.ErrNoVersionedRead`).
+
+The diagram shows the case the window answers by itself; the delegated case adds the pre-window
+read from section 1.
 
 ```mermaid
 sequenceDiagram
@@ -369,49 +362,49 @@ sequenceDiagram
   Note over ACC: no transaction ran, no drain will ever answer for this call
 ```
 
-The check runs **after** [I10](02-concepts-and-invariants.md#the-invariants)'s bound and **before**
-`Log.Append`, so a refused write provably acked nothing and consumed no seqno: the next accepted
-mutation lands at the seqno this one would have taken. Two sources can answer it. The window itself
-answers when an earlier mutation of the same window already heads that run — its state, not the
-database's, is what the mutation stands on. Everything else the window merely delegates, and the
-cycle settles that against a pre-window row read from the cold store (`Delegated.Settle`, walking
-the current row before the run rows, which is the order a drain registers them in). Either way the
-caller sees the store's own error type — `*p.WorkflowConditionFailedError`,
-`*p.CurrentWorkflowConditionFailedError` or `*p.ConditionFailedError` — returned **unwrapped**,
-because the shard's write path type-switches on the concrete value.
+The check runs after the [I10](02-concepts-and-invariants.md#the-invariants) bound and before
+`Log.Append`. A refused write acknowledged nothing and consumed no seqno, so the next accepted
+mutation lands at the seqno this one would have taken.
 
-The error's **contents** are a second requirement, independent of its type, because the history
-service parses the fields of a current-execution conflict. The start path reads `RequestIDs` to
-recognise a retried request and answer it as already-started, `RunID` to decide which run to reuse
-or attach to, `Status` to fill the client's response, and `LastWriteVersion` both to decide whether
-the namespace is active here and to carry as the previous run's version when creating the new run as
-current. The layer therefore does not synthesise those fields: `fold.currentConflict` deserialises
-the window's own current-execution state blob and fills the conflict error from it — the blob the
-store would have read, so every field the store's own error carries comes out of it, the start time
-included. A refusal of the right type with empty fields would create a second run where a start
-should have deduplicated.
+Two sources can answer the check. The window answers when an earlier mutation of the same window
+already heads that run: the mutation stands on the window's state, not the database's. Everything
+else the window delegates, and the cycle settles it against a pre-window row read from the cold
+store (`Delegated.Settle`, current row before run rows, the order a drain registers them in).
+Either way the caller gets the store's own error type, `*p.WorkflowConditionFailedError`,
+`*p.CurrentWorkflowConditionFailedError` or `*p.ConditionFailedError`, returned unwrapped, because
+the shard's write path type-switches on the concrete value.
 
-A delegated assertion is refused the same way, out of the row the cold store returned rather than
-out of a blob the window wrote — and the run id there comes from the response's own `RunID` field,
-not from the execution state beside it, because upstream's read fills the field and leaves the
-state's copy empty. That is also what the store below owes: the state it answers with has to carry
-the request ids, or a retried start deduplicates against nothing. It carries the start time as well,
-as both conflicts do: a start time the store's error would have carried and this one leaves nil
-reads as a run that began at the zero time, so the reuse interval the start path measures against it
-is enormous and its minimal-interval refusal never fires.
+### What the conflict error must carry
 
-In the windowed modes, then, `wal_answered_condition_failures` stays at **zero**: no failed
-condition ever reaches a drain there. A non-zero value means one of two things — the check let a
-condition through, or a drain answered for a batch whose caller it did not have. In sync mode the
-same counter is expected traffic: the delegated reads are skipped, the condition is decided by the
-drain inside the same write, and `Cycle.answerWriter` counts every failure it hands back.
+The type is not enough: the history service reads the fields of a current-execution conflict. The
+start path reads `RequestIDs` to recognise a retried request and answer it as already started,
+`RunID` to decide which run to reuse or attach to, `Status` to fill the client's response, and
+`LastWriteVersion` to decide whether the namespace is active here and to carry as the previous
+run's version when it creates the new run as current. A refusal of the right type with empty fields
+would create a second run where a start should have deduplicated.
+
+So the layer does not synthesise those fields. `fold.currentConflict` fills the error, start time
+included, from the window's own current-execution state blob, the blob the store would have read.
+
+A delegated assertion is refused the same way, from the row the cold store returned. The run id
+comes from the response's `RunID` field, because upstream's read leaves the execution state's copy
+empty. The store below owes two things. The state it returns must carry the request ids, or a
+retried start deduplicates against nothing. It must carry the start time, or the run reads as begun
+at the zero time and the start path's minimal-interval refusal never fires.
+
+### The counter that should stay at zero
+
+In the windowed modes `wal_answered_condition_failures` stays at zero, because no failed condition
+reaches a drain. A non-zero value means the check let a condition through, or a drain answered for
+a batch whose caller it did not have. In sync mode the same counter is expected traffic: the
+delegated reads are skipped, the drain inside the same write decides the condition, and
+`Cycle.answerWriter` counts every failure it hands back.
 
 ## 4. Failed write — backpressure (I10)
 
-I10 bounds one shard's **tail**: the entries it has acked and not yet settled. The bound is checked
-twice, both times before the append. It bounds the tail rather than the window, and the two are
-different numbers: the window empties when a drain *starts*, the tail only when that drain's
-transaction *commits*.
+I10 bounds one shard's tail: the entries it has acknowledged and not yet settled. This is not the
+window. The window empties when a drain starts, the tail only when that drain's transaction
+commits. The bound is checked twice, both times before the append, as the diagram shows.
 
 ```mermaid
 sequenceDiagram
@@ -429,14 +422,16 @@ sequenceDiagram
   Note over LOG: nothing appended, no seqno consumed
 ```
 
-The refusal is `*serviceerror.ResourceExhausted` with `Cause = RESOURCE_EXHAUSTED_CAUSE_PERSISTENCE_LIMIT`
-and `Scope = RESOURCE_EXHAUSTED_SCOPE_SYSTEM` — the server's own persistence rate limiter's pair, so
-the retry stays inside the history client. It must reach the caller **unwrapped**: the shard's write
-path reads `*serviceerror.ResourceExhausted` as "definitely not committed", and one `%w` drops it to
-the default arm, which is a background re-acquire — a self-inflicted failover.
+The refusal is `*serviceerror.ResourceExhausted` with
+`Cause = RESOURCE_EXHAUSTED_CAUSE_PERSISTENCE_LIMIT` and `Scope = RESOURCE_EXHAUSTED_SCOPE_SYSTEM`.
+That is the pair the server's own persistence rate limiter uses, so the retry stays inside the
+history client. It must reach the caller unwrapped. The shard's write path reads
+`*serviceerror.ResourceExhausted` as "definitely not committed". One `%w` sends it to the default
+arm instead, a background re-acquire, which is a self-inflicted failover.
 
-Four things refuse a write here, and the metric says which through the `limit` tag on
-`wal_backpressure_refusals`:
+### The four limits
+
+Four things refuse a write here. The `limit` tag on `wal_backpressure_refusals` says which:
 
 | `limit` | What ran out | What it means |
 |---|---|---|
@@ -445,35 +440,38 @@ Four things refuse a write here, and the metric says which through the `limit` t
 | `unresolved` | not a size at all | the cycle cannot read what its last drain did, so nothing may be applied over it |
 | `storage_pressure` | the backend's storage, not any bound of the layer's | the backend reports pressure at `wal.PressureStop` and takes no new appends until it lowers the level ([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)) |
 
-The precedence is `unresolved`, then `storage_pressure`, then the two sizes: what is named is the
-thing least in this shard's own power to clear. A blind applier is refused as blind even where the
-tail is also full, and the backend's veto is named ahead of a size an operator would answer by
-looking at an applier that is not the constraint.
+The precedence is `unresolved`, then `storage_pressure`, then the two sizes, so the tag names the
+cause least in this shard's power to clear. A size named ahead of the backend's veto would send the
+operator to an applier that is not the constraint.
 
-Two more rules of the bound. **No mutation is refused for its own size.** The check reads the tail
-as it stands, never the tail this mutation would make, so the tail overshoots by at most one entry.
-And the two checks sit where they do for different reasons: the first reads a mirrored copy of the
-tail *off* the cycle's goroutine, so a shard whose applier is stuck on the cold store refuses its
-writers instead of parking them in the queue behind it; the second runs on that goroutine, ahead of
-the condition check and the append, where concurrent callers cannot all slip past a tail one short
-of the bound.
+### How the bound is checked
 
-A refused write leaves three separate traces of not having happened. The log is where it was and
-`commitSeqno` has not moved. The accumulator never saw the mutation, so the next drain's
-`MutationsIn` counts exactly the accepted writes — which matters beyond tidiness, since a refused
-mutation that reached `fold` would move the collapse ratio a run is judged by. And the seqno the
-refused write would have taken is still free: the retry's append lands at exactly that seqno, with
-no hole and no skip, which is what makes gap-freedom compatible with having a refusal path at all.
-The shard itself is untouched: it stays running, answers what it holds, and its `ShardStore` path is
-never refused, because refusing a rangeID renewal would cause the failover I10 exists to avoid.
+No mutation is refused for its own size. The check reads the tail as it stands, not the tail this
+mutation would make, so the tail overshoots the bound by at most one entry.
 
-The bound is also a node-wide constraint: `HardMaxBytes × MaxShards` must fit `TailBudgetBytes`,
-asserted once at start-up ([chapter 08](08-configuration.md#5-the-budget-refusal)).
+The first check reads a mirrored copy of the tail off the cycle's goroutine, so a shard whose
+applier is stuck on the cold store refuses its writers instead of parking them in the queue. The
+second runs on the goroutine, ahead of the condition check and the append, so concurrent callers
+cannot all slip past a tail one short of the bound.
+
+### What a refusal leaves behind
+
+A refused write leaves the layer's state unchanged: `commitSeqno` does not move, the accumulator
+never sees the mutation, and the retry lands at the seqno the refused write would have taken, with
+no gap. (History events the wrapper wrote first may remain; see
+[What is durable when the caller returns](#what-is-durable-when-the-caller-returns).) Because
+the accumulator never saw it, the next drain's `MutationsIn` counts only accepted writes, and the
+collapse ratio a run is judged by stays honest. The shard stays running and answers what it holds.
+Its `ShardStore` path is never refused, because refusing a rangeID renewal would cause the failover
+I10 exists to avoid.
+
+The bound is also node-wide: `HardMaxBytes × MaxShards` must fit `TailBudgetBytes`, asserted once at
+start-up ([chapter 08](08-configuration.md#5-the-budget-refusal)).
 
 ## 5. Failed drain — the shard was lost
 
-The epoch CAS is the first assertion the drain's transaction registers, so ownership loss shadows
-every other failure it could have reported.
+Another node has taken the shard and bumped its rangeID. The drain's transaction opens on the epoch
+CAS, so this is the failure it reports, whatever else would have failed.
 
 ```mermaid
 sequenceDiagram
@@ -493,28 +491,26 @@ sequenceDiagram
   NX->>NX: replay every entry above appliedSeqno, then drain
 ```
 
-This is fencing working, not an incident. The halted cycle **keeps its log entries** and trims
-nothing: those entries are exactly what the next owner replays. They are also why the mutable-state
-reads, and the branch page that routes as one, refuse here — a non-empty tail means the layer knows
-the cold store is incomplete and cannot say by what. A halted-lost cycle whose tail *is* empty
-passes a mutable-state read through to that store instead
-([chapter 07](07-read-path.md#2-routing-a-read-and-drainonread)). A caller still on the line — the
-write whose drain this was — gets `*p.ShardOwnershipLostError`. `storeError` is the function that
-turns a cycle's answer into the store's own error type, and halted-lost is the one cycle state it
-translates, so the shard re-acquires. What the next owner does with the inherited tail is
-[chapter 06](06-shard-lifecycle.md).
+This is fencing working, not an incident. The halted cycle trims nothing, because its entries are
+what the next owner replays. While its tail is non-empty the cold store is incomplete by an unknown
+amount, so the mutable-state reads and the branch page that routes like one are refused. With an
+empty tail a mutable-state read passes through to the store
+([chapter 07](07-read-path.md#2-routing-a-read-and-drainonread)).
+
+The write whose drain this was gets `*p.ShardOwnershipLostError`. `storeError`, which turns a
+cycle's answer into the store's error type, translates `halted-lost` and no other state, so the
+shard re-acquires. The two halt classes are
+[chapter 06](06-shard-lifecycle.md#5-halts-the-two-classes), and what the next owner does with the
+inherited tail is [chapter 06 §4](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail).
 
 ## 6. Failed drain — an invariant was violated
 
-A version or current-row assertion failed inside a drain's transaction, and every writer that batch
-carries has already been acked. **This path is the layer's self-audit, not an operating mode.**
-Under fencing the layer is the shard's only writer, so nothing legitimate can move a row the
-accumulator vouched for. Reaching this path means one of three things: the layer contradicted
-itself, fencing failed, or something wrote those rows around the layer.
-
-The path exists because the alternative is worse. A drain that asserted nothing and wrote a merged
-request over a base version that had moved would corrupt the shard silently; this converts that into
-a stopped shard with the log intact.
+A version or current-row assertion failed inside a drain's transaction, and every writer in the
+batch has already been acknowledged. This path is the layer's self-audit, not an operating mode.
+Under fencing the layer is the shard's only writer, so reaching it means the layer contradicted
+itself, fencing failed, or something wrote those rows around the layer. Without the assertion the
+drain would write a merged request over a moved base version and corrupt the shard silently. With
+it, the shard stops with the log intact.
 
 ```mermaid
 sequenceDiagram
@@ -534,27 +530,27 @@ sequenceDiagram
   CY-->>OP: log line "apply cycle halted" with the diverged workflows
 ```
 
-**Why it is not retried.** A broken invariant is not contention: re-running builds the same
-transaction against the same rows. The window is already drained anyway, so there is nothing to
-rebuild it from that is not mutated state.
+It is not retried. A broken invariant is not contention: a retry builds the same transaction
+against the same rows. The window is already drained, and a batch rebuilt now would stand on state
+the drain may already have mutated.
 
-**Why it is not converted to `ShardOwnershipLost`.** That would hand a divergence this process owns
-to the next owner as an ordinary failover, and the next owner would replay into the same wall.
-`storeError` deliberately leaves this class unrecognised.
+It is not converted to `ShardOwnershipLost`. That would hand a divergence this process owns to the
+next owner as an ordinary failover, and the next owner would replay into the same failure.
+`storeError` leaves this class unrecognised on purpose.
 
-**What the operator sees.** `wal_halts{state="halted-invariant"}` and a warn-level *"apply cycle
-halted"* carrying the cause. Inside the cause is the attribution `apply.Attribute` read back after
-the failure: every row that is not where fold asserted it, with the asserted and the actual version
-and the window slice (`HeadSeqno..TailSeqno`) answering for it. `CutSeqno` is the highest seqno
-a partial re-drain may acknowledge, one below the lowest diverged entry. Zero means acknowledge
-nothing, and covers three cases at once — no divergence was found, the shard's first entry (`wal.FirstSeqno`)
-diverged, or the readback itself failed. The runbook is [chapter
-09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
+The operator sees `wal_halts{state="halted-invariant"}` and a warn-level *"apply cycle halted"*
+whose cause holds what `apply.Attribute` read back: every row not where fold asserted it, with the
+asserted and actual versions and the window slice (`HeadSeqno..TailSeqno`) responsible. `CutSeqno` is the highest seqno a partial re-drain may
+acknowledge, one below the lowest diverged entry. Zero means acknowledge nothing. It covers three
+cases: no divergence was found, the shard's first entry (`wal.FirstSeqno`) diverged, or the readback
+failed. The runbook is [chapter 09](09-operations.md#b-a-shard-halted--and-which-of-the-two-classes).
 
 ## 7. Failed drain — the outcome could not be read
 
 The cold store returned a code the applier cannot interpret, so the transaction may or may not have
-committed. This is the case the whole watermark-as-witness rule exists for.
+committed. The cycle reads the watermark and nothing else, and compares it to the batch's seqno.
+An exact match means it committed. A higher watermark means another owner drained over it. A lower
+one means it did not commit. A failed read stalls the tail. The diagram shows the four answers.
 
 ```mermaid
 sequenceDiagram
@@ -582,47 +578,49 @@ sequenceDiagram
   end
 ```
 
-**Why nothing else is readable.** Stores answer a failed assertion in two different ways, and the
-recovery rule has to be right for both. The store this tree ships rolls the transaction back, so a
-drain whose assertion failed wrote nothing and committed nothing. A store that expresses the whole
-drain as one query cannot roll back that way: there the assertions are named expressions inside the
-query rather than preconditions the database aborts on, counting the asserted rows that did not hold
-and gating every write statement on that count being zero. A failed assertion then selects nothing
-anywhere, the transaction **commits** having written nothing, and the error the client returns is
-built from a readback in the same query. Either way, a drain the store rejected and a drain that
-never ran leave byte-identical state — so the ambiguity of an ambiguous code comes down to one bit:
-whether this drain's own writes landed.
+### Why only the watermark can answer
 
-**The rule, and the wrong rule beside it.** The watermark is the only witness, because it rides the
-drain's own transaction behind the same gate: it moved if and only if the batch committed, and the
-cold store looks identical after either failure class. The obvious alternative — re-read the base
-versions and re-fold — **applies a committed batch twice**, precisely because the commit is what
-moved those base versions. The same reasoning forbids an applier from letting its client library
-retry an ambiguous code by itself: a batch that had in fact committed comes back from the retry as a
-condition failure, which is an invariant halt for a drain that succeeded.
+The watermark rides the drain's own transaction behind the same gate, so it moved if and only if
+the batch committed. Nothing else in the cold store tells the two cases apart: whether the store
+rolls a failed transaction back (the shipped one does) or gates every write of one query on "no
+assertion failed" and builds its error from a readback in that query, a rejected drain and a drain that never ran leave identical state. Why an exact
+match is required and not "at or above" is
+[chapter 04](04-contracts.md#the-recovery-rule-the-watermark-exists-for).
 
-**The third arm is not a halt.** Halting on a failed *read* would lose a shard that a blip would
-have healed. The tail *stalls* at that seqno instead. While the stall stands, every write is refused
-with `limit="unresolved"`, all four layer-served reads are refused, every later drain re-asks the
-watermark before it takes the window, and nothing may commit over it — a later drain that committed
-would set the watermark above the unresolved entries, telling the cold store those were applied too,
-and the trim behind it would then delete them from the log. The **age tick is the only thing that
-can heal a stall** on a running node, because a shard that refuses its writers gets no caller-driven
-drain; the shutdown drain re-asks too, on the node's way out.
+The obvious alternative, re-reading the base versions and re-folding, applies a committed batch
+twice, because the commit is what moved those base versions. For the same reason an applier must
+not let its client library retry an ambiguous code: a batch that had committed comes back from the
+retry as a condition failure, which is an invariant halt for a drain that succeeded.
+
+### The stall
+
+When the watermark itself cannot be read, the shard does not halt. Halting on a failed read would
+lose a shard that a brief outage would have healed. Instead the tail *stalls* at that seqno. While
+the stall stands:
+
+* every write is refused with `limit="unresolved"`;
+* all four reads the layer serves ([chapter 07](07-read-path.md)) are refused;
+* every later drain re-asks the watermark before it takes the window;
+* nothing may commit over it. A later committed drain would set the watermark above the unresolved
+  entries, claiming they were applied, and the trim behind it would delete them from the log.
+
+On a running node only the age tick can heal a stall, because a shard that refuses its writers gets
+no caller-driven drain. The shutdown drain re-asks too, on the node's way out.
 
 ## 8. Fold refusal — a window the accumulator cannot express
 
-A few valid streams cannot be expressed as merged requests — a continue-as-new folding into another
-request's envelope, a delete of one half of such a pair. Those are not errors; they are a window
-that has run out of room.
+A few valid streams cannot be expressed as merged requests: a continue-as-new folding into another
+request's envelope, or a delete of one half of such a pair. These are not errors. The window has
+run out of room.
 
-A third shape comes from the delete-current. `DeleteCurrentWorkflowExecution` carries its
-`RunID` as a guard, and the window records **no assertion** from it: the store removes the row
-only if the row names that run, so a mismatch is an ordinary no-op, and synthesising `current == run`
-would turn a legal no-op into a false invariant violation. Instead the delete *taints* the current
-row: any later mutation of the same window that stands on that row is refused, because an assertion
-recorded past an unasserted delete would be a mid-window claim dressed up as a head-of-window one.
-The recovery is the same single drain.
+A third shape comes from `DeleteCurrentWorkflowExecution`. It carries a `RunID` as a guard, and the
+window records no assertion from it. The store removes the row only if the row names that run, so a
+mismatch is an ordinary no-op, and asserting `current == run` would turn a legal no-op into a false
+invariant violation. Instead the delete *taints* the current row. Any later mutation in the same
+window that stands on that row is refused, because its assertion would be a mid-window claim posing
+as a head-of-window one.
+
+All three recover the same way, with one drain, as the diagram shows.
 
 ```mermaid
 sequenceDiagram
@@ -641,26 +639,26 @@ sequenceDiagram
   Note over LOG: the entry was already durable — the refusal is about the window, never the caller
 ```
 
-How to read this. The retry happens **once**, and it is guaranteed to succeed: both refusals turn on
-what the window already holds, and an empty window refuses nothing. A second refusal would mean that
-property has stopped holding, and the two paths part there. At the **fold** (`AddOrDrain`, in
-`Cycle.accept`, which the write path and replay share) a second refusal halts the shard on the
-invariant side, because the entry is already acked and no retry can help. At the **condition check**
-(`CheckOrDrain`, in `Cycle.check`) nothing has been acked yet, so the refusal is simply returned to
-the caller; `storeError` does not recognise it, so it reaches the history service as the
-unrecognised error it is. The same recovery wraps both, and what makes both safe to retry is that
-neither leaves the accumulator changed.
+The retry happens once and always succeeds, because the refusals depend on what the window holds
+and an empty window refuses nothing. A refusal leaves the accumulator unchanged, which makes the
+retry safe. A second refusal would mean that no longer holds, and the two call sites differ:
 
-There is one edge where an acked entry ends up in no window at all. The *recovery drain* can itself
-fail: the mutation is then durable, not yet folded, and that drain's error is what the caller is
-told. If the failed drain left the cycle running, the cycle folds the entry into the now-empty
-window straight afterwards (`Cycle.refold`); if the drain halted the cycle, the entry stays only in
-the log, for the next owner to replay. An acked entry this cycle cannot apply always becomes a halt,
-never a mutation it quietly forgets.
+* At the fold (`AddOrDrain`, in `Cycle.accept`, shared by the write path and replay) the entry is
+  already acknowledged and no retry can help, so a second refusal halts the shard as
+  `halted-invariant`.
+* At the condition check (`CheckOrDrain`, in `Cycle.check`) nothing is acknowledged yet, so the
+  refusal goes back to the caller. `storeError` does not recognise it, and it reaches the history
+  service as an unrecognised error.
+
+If the recovery drain itself fails, the mutation is durable but not folded, and the caller gets
+that drain's error. A still-running cycle folds the entry into the now-empty window straight
+afterwards (`Cycle.refold`). A halted one leaves it in the log for the next owner to replay. An
+acknowledged entry this cycle cannot apply always becomes a halt, never a forgotten mutation.
 
 ## The decision table
 
-One row per thing the caller can be told, and what it means everywhere else.
+The table has one row per answer the caller can get, with what it means for the cycle and what the
+operator sees.
 
 | Symptom at the caller | `apply.Class` | What the cycle does | What the operator sees |
 |---|---|---|---|
@@ -672,35 +670,54 @@ One row per thing the caller can be told, and what it means everywhere else.
 | an unrecognised error (unknown outcome) | `ClassUnknownOutcome` | read the watermark; commit-after-all, halt, or stall | warn *"a drain's outcome could not be read"*, or info *"an ambiguous drain had committed"*; then `wal_backpressure_refusals{limit="unresolved"}` while a stall stands |
 | `Unimplemented` from `CompleteHistoryTask` | — | never reaches the layer's write path | nothing; the method is refused by design in intercept mode |
 
-`ClassRefused` never appears as a caller symptom. It is the applier turning a malformed call away
-before anything reaches the cold store — epoch 0, an empty batch, a batch folded for a different
-shard, a request kind or an assertion kind it has no write path for — which is a programming error
-rather than an operational state.
+`ClassRefused` has no row because the class itself never reaches a caller. It is the applier
+turning a malformed call away before anything reaches the cold store: epoch 0, an empty batch, a
+batch folded for a different shard, or a request or assertion kind it has no write path for. That
+is a programming error, so a refused drain halts the shard `halted-invariant`, and the caller whose
+write tripped the drain gets the halt's error, as in the invariant-halt row above.
 
 ## What is durable when the caller returns
 
-State this exactly, because it is the whole trade:
+This is the whole trade, so it is worth stating exactly.
 
-* the mutation is one durable log entry, at a seqno no other entry has, under a fenced epoch, and
-  the request's new history events are durable with it. Where the cold store declares
-  `cold.HistoryApplier` — `memcold` does — the entry carries them and the drain writes them, no later
-  than the mutable state that points at them; otherwise the wrapper writes them through the base store
-  *before* the append;
-* the mutable-state rows, the task rows and the watermark are not. They arrive at a later drain;
-  until then the layer answers reads over them itself. `commitSeqno − appliedSeqno` is the
-  log-to-watermark distance; the outstanding tail is `commitSeqno − resolved`, because an empty
-  batch can settle entries without moving the persisted watermark.
+* Durable: the mutation, as one log entry at a seqno no other entry has, under a fenced epoch, and
+  the request's new history events with it. Where the cold store declares `cold.HistoryApplier`
+  (`memcold` does), the entry carries the events and the drain writes them, no later than the
+  mutable state that points at them. Otherwise the wrapper writes them through the base store before
+  the append.
+* Not yet durable in the cold store: the mutable-state rows, the task rows and the watermark. They
+  arrive at a later drain, and until then the layer answers reads over them. The outstanding tail is
+  measured from `resolved`, not from the watermark
+  ([chapter 02](02-concepts-and-invariants.md#three-positions-not-two)).
 
-Where the wrapper writes the events first, a **refused** write leaves them behind: batches of
-history events that nothing references, since the mutable state that would have pointed at them was
-never written. Every pre-append refusal in this chapter has that residue — a condition failure,
-backpressure, a lost shard — even though the layer's own accounting is exact, with nothing in the log and no seqno
-consumed. It is the safe direction of the two: an event tree ahead of confirmed state is inert,
-while confirmed state pointing at events that do not exist is a broken workflow.
+Where the wrapper writes the events first, a refused write leaves them behind: history events that
+nothing references, because the mutable state that would point at them was never written. Every
+pre-append refusal in this chapter has that residue (a condition failure, backpressure, a lost
+shard), even though the layer's own accounting is exact. It is the safe direction. Events ahead of
+confirmed state are inert, while confirmed state pointing at missing events is a broken workflow.
 
-Who waits on whom: a caller waits for one append, plus the drain if its write tripped a trigger,
-and every other caller on that shard waits behind the loop for as long as that drain takes. Nobody
-waits on the trim, which is detached, and nobody waits on another shard.
+## Summary
+
+A write passes through three moments of certainty. Before the append, every refusal (a stale epoch,
+backpressure, a failed condition) consumes no seqno and folds nothing; only the history events the
+wrapper may have written first remain, which is the safe direction. After
+the append the mutation is durable in the log and visible through the overlay, and most callers
+return here. After a drain commits, the cold store holds the folded effect and the watermark says
+so in the same transaction.
+
+The drain publishes the whole window in one transaction whose statement order decides what a
+failure reports: the epoch CAS first, range deletes before task inserts, the watermark last. Nine
+triggers start a drain, and they differ mainly in who waits for it. Sync mode is the same cycle with
+a window of one, which is why its acknowledgement is provisional.
+
+Each failure has one response. A failed condition returns the store's own error with the fields the
+history service reads. Backpressure returns an unwrapped `ResourceExhausted` and names one of four
+limits. A lost shard halts as `halted-lost` and leaves the tail for the next owner. A violated
+invariant halts as `halted-invariant` and keeps the log as evidence. An unreadable outcome is
+settled by the watermark alone, and if even that cannot be read, the tail stalls until a later
+re-ask, usually the age tick, reads it. In every path an acknowledged entry stays in the log until a
+committed drain covers it. [Chapter 06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail)
+picks up what the next owner does with that log.
 
 ## Where this lives in the code
 

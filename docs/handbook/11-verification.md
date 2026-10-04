@@ -1,31 +1,22 @@
 # How the layer is judged
 
-A green test can be true for the wrong reason. A persistence suite passes when the layer works, but
-it also passes when a broken composition silently routes every call around the layer. A stream test
-reports a collapse ratio when its generator never produces the shape a defect needs. A recovery test
-proves little when the fault was staged before the supposedly durable write was ever acknowledged.
+A green test can be true for the wrong reason. A persistence suite passes when the layer works, and
+also when a broken composition silently routes every call around the layer. A stream test reports a
+collapse ratio even when its generator never produces the shape a defect needs. A recovery test proves
+little when the fault was staged before the write it protects was acknowledged.
 
-Verification must therefore establish more than behaviour at the end. It must show that the
-mechanism participated, that the experiment was capable of exposing a difference, and that the
-failure occurred in the interval the claim is about. This chapter develops those three obligations
-through the log's contract suite, the fold acceptance, the server that boots over both seams, the
-witness and the guards, then states the limits of each. Its last sections are reference: what the
-words *checker* and *witness* mean here, the map of `internal/verify/`, the two house rules, and
-what is not claimed.
+So a test here must show three things beyond the end state: the mechanism participated, the
+experiment could have exposed a difference, and the failure fell in the interval the claim is about.
+This chapter walks through the instruments that meet those obligations, then the vocabulary, a map of
+`internal/verify/`, two house rules and the limits of each suite.
 
-**Every suite here runs with nothing installed** — no cluster, no container, no port to configure,
-no cgo, no build tag. That is not because the suites steer around storage. Both seams have a real
-implementation that lives in this process: `wal/memwal` is a log, and `cold/memcold` is Temporal's
-own SQL persistence over a SQLite database opened in memory. A suite therefore has somewhere real to
-append and somewhere real to commit, and one of them boots four Temporal services over the pair.
-
-What no suite here judges is storage that outlives the process. Nothing fsyncs, crosses a network,
-waits on a quorum, or hands a shard from one machine to another — which is where a deployment's own
-risk lives. [Chapter 15](15-the-limits-of-the-evidence.md) collects that boundary.
-
-Nothing under `internal/verify/` runs in production: no package outside it may import it in a
-non-test file. What lives on the other side of that line is [chapter
-03](03-components.md#the-tree-has-two-halves).
+Every suite runs with nothing installed: no cluster, container, port, cgo or build tag. Both seams
+have a real in-process implementation (`wal/memwal`, and `cold/memcold`, Temporal's SQL persistence
+over an in-memory SQLite), so every suite has somewhere real to append and commit. The cost is that
+no suite judges storage that outlives the process ([chapter 15](15-the-limits-of-the-evidence.md)).
+Nothing under `internal/verify/` runs in
+production: no package outside it may import it in a non-test file
+([chapter 03](03-components.md#the-tree-has-two-halves)).
 
 ## The levels of evidence
 
@@ -39,23 +30,21 @@ The suites differ less by size than by the question they can answer:
 | failure history | was an acknowledged call preserved across a staged fault, with nothing invented? | a journal of calls and outcomes, read back against the log and the watermark | failures nobody stages |
 
 No level makes the others redundant. End-state equality without participation can certify
-passthrough; counters without behavioural equality can certify a mechanism that produced the wrong
-answer; a server that comes up says nothing about what it wrote; and a final snapshot without a
-recorded history cannot say what was acknowledged before a kill.
+passthrough. Counters without behavioural equality can certify a mechanism that produced the wrong
+answer. A server that comes up says nothing about what it wrote. A final snapshot without a recorded
+history cannot say what was acknowledged before a kill.
 
-The third level is `internal/verify/e2e`, described below. The fourth is not in this repository at
-all; only one of its two inputs is. `internal/verify/checker` is the record a driver writes of the
-calls it made, and it judges nothing. The judge that reads such a record back, and the harness that
-would kill processes to produce one, belong to a deployment: killing a process is only a test if
-what the process owned is still there afterwards, and both backends here die with the process.
-
----
+The third level is `internal/verify/e2e`. The fourth is not in this repository; only one of its two
+inputs is. `internal/verify/checker` records the calls a driver made and judges nothing. The judge
+that reads such a record back, and the harness that kills processes to produce one, belong to a
+deployment: a kill is only a test if what the process owned survives it, and both backends here die
+with the process.
 
 ## The log contract suite
 
-`waltest.RunContractSuite(t, log)` is where the five guarantees of
-[`wal.Log`](04-contracts.md#the-five-guarantees) stop being prose. Twenty-one cases, one `wal.Log`
-value, no cluster:
+`waltest.RunContractSuite(t, log)` turns the five guarantees of
+[`wal.Log`](04-contracts.md#the-five-guarantees) into checks. It runs twenty-one cases against one
+`wal.Log` value:
 
 | what it holds | the cases |
 |---|---|
@@ -66,209 +55,179 @@ value, no cluster:
 | what every method owes its context | `ACancelledContextChangesNothing` |
 | the obligations that belong to no one backend | `PayloadsAreNobodyElsesMemory`, `ArgumentsTheContractRefuses` |
 
-The last row is what makes this a contract rather than a test of `memwal`. Its two cases state
-obligations no single implementation can see from the inside, so each has to be written down once,
-in the one place every implementation runs.
+### Obligations no single backend can see
 
-`PayloadsAreNobodyElsesMemory` checks ownership in both directions. It appends a slice, overwrites
-that slice, and requires the entry read back to still hold the original bytes; then it writes into a
-payload the log handed out, and requires that neither the log nor the other entries of the same read
-change. `ArgumentsTheContractRefuses` pins what the log must refuse rather than interpret: a nil
-payload, a seqno below `wal.FirstSeqno`, a read of zero entries, a read with a negative limit — and
-the one out-of-range argument that is clamped instead, a read starting below `wal.FirstSeqno`, which
-is where a caller that wants the whole log begins.
+The last row makes this a contract rather than a test of `memwal`. Its cases state obligations an
+implementation cannot see from the inside, so they are written once, where every implementation
+runs them.
 
-Concurrency is an obligation of that kind too, and two cases drive it — `TwoWritersContendForOneShard`
-for fencing, and `TrimRunsBesideAppends` for the trim. Every method of the contract is safe for
-concurrent use, and `Trim` is the one a caller always issues from a goroutine of its own — the
-trimmer runs beside the loop so a slow trim cannot stop a shard from acking — so a trim in flight
-while the log is being appended to is the only shape a deployment ever trims in, while the other
-three trim cases are sequential over a quiescent log. A backend whose trim is a read-modify-write
-over the region the appends are landing in passes all three. That is measured rather than argued:
-given `memwal` a trim built from a snapshot taken before a yield, every other case stays green and
-this one alone goes red, saying the entry acked last is gone from the log.
+`PayloadsAreNobodyElsesMemory` checks ownership both ways. It appends a slice, overwrites the slice,
+and requires the entry read back to hold the original bytes. Then it writes into a payload the log
+handed out and requires that neither the log nor the other entries of that read change.
 
-`APageEndsAtItsLimitAndNotAtAByteBudget` is the same argument about weight. `ReadFrom`'s "fewer than
-limit entries means the log ends there" is what a caller reading a whole log stops on, and
-`ReadFromAnyPosition` holds it over six entries of a sentence each — which no transport budget
-reaches. A backend that pages by rows *and* by a response size answers short for the size, and every
-other case passes because none of them weighs anything. So this one appends 24 entries of 256 KiB and
-requires all 24 back in one page: over a 4 MB message, and at an entry size a deployment's own writes
-reach, since the tail is bounded in bytes (8 MB) as well as in entries. Measured the same way —
-given `memwal` a 4 MB response budget, every other case stays green and this one alone goes red.
+`ArgumentsTheContractRefuses` pins what the log must refuse rather than interpret: a nil payload, a
+seqno below `wal.FirstSeqno`, a read of zero entries, a read with a negative limit. One out-of-range
+argument is clamped instead: a read starting below `wal.FirstSeqno`, which is where a caller that
+wants the whole log begins.
 
-The layer does not leave that to the suite, because a suite case can only probe one budget and a
-backend with a larger one would pass it and still truncate a production tail. A replay therefore
-**confirms** the end of the log with a one-entry read rather than inferring it from a short page,
-and what that read finds halts the shard before it serves: [chapter
-06](06-shard-lifecycle.md#4-then-recover-the-acknowledged-tail) has it.
+### Concurrent trims and large pages
 
-Refusal *order* is a rule of the same kind, and it sits in the fencing row.
+Every method of the contract is safe for concurrent use. `TwoWritersContendForOneShard` drives that
+for fencing and `TrimRunsBesideAppends` for trim. The trimmer runs on its own goroutine beside the
+loop, so a slow trim cannot stop a shard from acking. A trim racing appends is thus the only shape a
+deployment ever trims in, while the other three trim cases run over a quiescent log. Given `memwal` a
+trim built from a snapshot taken before a yield, every other case stays green and this one alone goes
+red: the entry acked last is gone.
+
+`APageEndsAtItsLimitAndNotAtAByteBudget` does the same for weight. A caller reading a whole log stops
+when `ReadFrom` returns fewer than `limit` entries. A backend that also pages by response size would
+answer short, and no case with small entries would notice. So this case appends 24 entries of
+256 KiB and requires all 24 in one page: over a 4 MB message, at an entry size a deployment reaches,
+since the tail is bounded at 8 MiB as well as in entries. Given `memwal` a 4 MB response budget, every
+other case stays green and this one alone goes red.
+
+A backend whose budget is larger than 4 MB passes this case and can still cut a real tail short. So
+replay does not trust a short page: it confirms the end of the log with a one-entry read, and what
+that read finds halts the shard before it serves
+([chapter 06](06-shard-lifecycle.md#the-end-of-the-tail-is-confirmed-not-inferred)).
+
+### Refusal order
+
 `FencedOutranksAMissingPredecessor` puts an ex-owner's append two seqnos above the tail, where both
-`wal.ErrGap` and `wal.ErrFenced` are true, and requires `wal.ErrFenced`. `wal.ErrGap` means "retry
-once the predecessor lands", and for a writer that has lost the shard the predecessor never will.
+`wal.ErrGap` and `wal.ErrFenced` apply, and requires `wal.ErrFenced`. `wal.ErrGap` means "retry once
+the predecessor lands", and for a writer that has lost the shard the predecessor never will.
 
-**A deployment runs this against its own log, and that is what the package is for.** It is exported,
-it takes a `wal.Log` and a `*testing.T`, and it names no implementation — including `memwal`, which
-it may not name for the same reason it may not name any other: a suite that could special-case one
-backend has stopped being about the contract.
+### Running it against your own log
 
-`waltest.Faulty` is beside it: a log wrapped so that a chosen call fails, `Once` or `Always`. It
-exists so a caller above the log can stage an append that fails without needing a backend with a
-back door — which is why `memwal` deliberately has no knobs and no injection points at all.
+A deployment runs this suite against its own log; that is what the package is for. It is exported,
+takes a `wal.Log` and a `*testing.T`, and names no implementation, `memwal` included. A suite that
+could special-case one backend would stop being about the contract.
 
-### The blind spot, stated where the instrument is
+`waltest.Faulty` sits beside it: a log wrapped so that a chosen call fails, `Once` or `Always`. A
+caller above the log can stage a failing append without a backend that has a back door. That is why
+`memwal` has no knobs and no injection points.
 
-`RunContractSuite` drives **one** `wal.Log` value, in one process. A displaced owner is therefore
-refused by the same in-process object its successor has just fenced — so **a backend whose `Fence`
-records the epoch in memory and never gets it into storage passes every fencing case here.** The same
-value is also what every case reads back through, so **a backend whose `Append` acks into memory it
-never gets out of the process passes all 21 of them** — and that is guarantee 3, the one the whole
-library rests on.
+### What the contract suite cannot see
 
-That is the single most important thing for a deployment to know about the suite it is about to run
-against its own log: a green contract suite says the log's *logic* is right and says nothing about
-whether either the entries or the fence ever reached storage.
+`RunContractSuite` drives one `wal.Log` value in one process. A displaced owner is refused by the same
+object its successor just fenced, and every case reads back through that same value. So a backend
+whose `Fence` keeps the epoch only in memory passes every fencing case, and one whose `Append` acks
+into memory that never leaves the process passes all 21. That is guarantee 3, the one the library
+rests on. A green contract suite says the log's logic is right, and nothing about whether entries or
+fence reached storage. A deployment should know this before trusting a green run.
 
-**Half of that has an instrument, and the half it is needs no second process.** `waltest.CheckReopen`
-takes a way of *opening* a log rather than a log: it fences, appends a short run, closes, opens the
-storage again, and asks the fresh value three things — are all the entries there, is a fence *below*
-the owning epoch refused, and does the log continue at the next seqno. A backend whose appends never
-left the process fails the first; one whose epoch never left it fails the second; one that starts over
-at the first seqno fails the third. None of it needs a kill, a second process, or a judge outside
-both.
+`waltest.CheckReopen` covers half of that gap without a second process. It takes a way of opening a
+log rather than a log: it fences, appends a short run, closes, reopens the storage, and asks three
+things. Are all the entries there? Is a fence below the owning epoch refused? Does the log continue at
+the next seqno? A backend whose appends never left the process fails the first, one whose epoch never
+left it fails the second, and one that starts over at the first seqno fails the third.
 
-It is a function rather than a suite case for a reason of its own: `memwal` cannot
-be reopened at all, being a map in this process, so the suite has no log to run it against. And it is
-proved rather than assumed, in `memwal`'s own tests, against three backend shapes — a `Backend` handed
-back twice (storage that outlived the value, which must pass), a fresh `Backend` per open (appends that
-never left the process), and a `Backend` behind `waltest.Unfenced`, whose entries persist while its
-epoch lives in this process only. That last one stages the defect the paragraph above names — an
-epoch held in this process — though not as a backend the suite would pass: it fences the log below at
-whatever epoch an append carries, so the fencing cases refuse it too, and it is an instrument for the
-reopen check rather than a log.
+It is a function rather than a suite case because `memwal`, a map in this process, cannot be
+reopened. `memwal`'s own tests prove it against three backend shapes:
 
-**What is still the author's own test** is a fence *racing* a displaced owner's append: two writers
-sharing no memory, each reading the outcome off the log rather than off itself. Whoever supplies the
-log owes that one to themselves.
+* a `Backend` handed back twice, storage that outlived the value, which must pass;
+* a fresh `Backend` per open, appends that never left the process, which must fail;
+* a `Backend` behind `waltest.Unfenced`, whose entries persist while its epoch lives only in this
+  process, which must fail. `Unfenced` fences the log below at whatever epoch an append carries, so
+  the fencing cases refuse it too; it is an instrument for the reopen check, not a log.
 
-**The second blind spot is time, and it is the one a managed backend walks into.** Guarantee 5 says
-`ReadFrom` returns every entry a completed append acked *and no trim has removed*, so a trim is the
-only removal the contract excuses: a retention policy, a TTL on the table, a compaction that drops
-old records are each a violation of it. The suite cannot see any of them. Every case runs to
-completion in milliseconds, so a log that deletes entries after an hour passes every case and
-loses an acked entry the first time a shard's tail outlives the policy — acked data with no second
-copy, since the cold store not holding it is the whole reason it is in the log.
+What stays the author's own test is a fence racing a displaced owner's append: two writers sharing no
+memory, each reading the outcome off the log.
 
-**That one has an instrument now, and it is not a suite case.** `waltest.CheckRetention` appends a
-short run, waits out a window the caller names, and requires every entry to still be there — same
-seqnos, same payloads, same order, and the log still appendable above them. It is a function
-returning an error rather than a suite case for two reasons: it costs its window in wall-clock
-time, and a deployment runs it from whatever harness it has rather than only from `go test`.
+The second blind spot is time. Guarantee 5 says `ReadFrom` returns every entry a completed append
+acked and no trim has removed, so a retention policy, a table TTL or a compaction that drops old
+records each violates it. Every case finishes in milliseconds, so a log that deletes entries after an
+hour passes and then loses an acked entry the first time a tail outlives the policy. That entry has no
+second copy: it is in the log because the cold store does not hold it.
 
-Two things about how to run it. **Point it at a deliberately shortened policy** — set the log's
-table to expire in two minutes on a staging cluster and pass two minutes — because a pass says the
-entries outlived *that* window and not that the backend has no retention, and what is worth
-establishing is whether expiry exists as a mechanism at all. And know that the check itself is
-proved rather than assumed: `TestTheRetentionCheckIsNotVacuous` runs it both ways at a
-twenty-millisecond window, green against `memwal` and red against `waltest.Expiring`, a decorator
-whose entries age out — which is the shape a retention window, a TTL and a compaction all have from
-above. Without that second arm a deployment reading a green check has no way to tell it from a check
-that would have passed anything.
-
----
+`waltest.CheckRetention` appends a short run, waits out a window the caller names, and requires every
+entry to still be there with the same seqnos, payloads and order, and the log still appendable above
+them. It returns an error rather than being a suite case because it costs its window in wall-clock
+time and a deployment runs it from its own harness. A pass only says the entries outlived that
+window. To learn whether the backend expires entries at all, shorten its policy to fit the window:
+say, a table set to expire in two minutes on a staging cluster, checked with a two-minute window.
+`TestTheRetentionCheckIsNotVacuous`
+proves the check at a twenty-millisecond window, green against `memwal` and red against
+`waltest.Expiring`, a decorator whose entries age out the way a retention window, a TTL and a
+compaction all look from above.
 
 ## The cold store's suites are Temporal's
 
-The other seam is judged the other way round, and the asymmetry is worth stating rather than
-smoothing over. `wal.Log` is this library's own invention, so this library owes it a suite. A cold
-store's obligations to a *server* are Temporal's to state, and Temporal states them: four suites
-exported from `go.temporal.io/server/common/persistence/tests`. `cold/memcold` runs all four
-unmodified in `conformance_test.go` — `NewShardSuite`, `NewExecutionMutableStateSuite`,
-`NewExecutionMutableStateTaskSuite` and `NewHistoryEventsSuite`, 75 subtests in total, one fresh
-store per suite. They judge `memcold` exactly as they judge a plugin, and they pass without
-`memcold` answering a single one of their calls itself: its execution store is upstream's SQL
-persistence, embedded whole. That is what says the embedding ([chapter
-04](04-contracts.md#the-implementation-shipped-at-this-seam)) is the right shape and not merely a
-saving.
+The other seam is judged the other way round. `wal.Log` is this library's own invention, so the
+library owes it a suite. A cold store's obligations to a server are Temporal's to state, and
+Temporal states them in four suites exported from `go.temporal.io/server/common/persistence/tests`.
+`cold/memcold` runs all four unmodified in `conformance_test.go`: `NewShardSuite`,
+`NewExecutionMutableStateSuite`, `NewExecutionMutableStateTaskSuite` and `NewHistoryEventsSuite`,
+75 subtests in total, one fresh store per suite. They judge `memcold` as they judge a plugin, and it
+passes without answering a single call itself, because its execution store is upstream's SQL
+persistence embedded whole
+([chapter 04](04-contracts.md#the-implementation-shipped-at-this-seam)).
 
-**Those suites do not judge `Apply`**, and cannot: the folded window's transaction is a method
-upstream has no name for. Two things judge it instead. `cold/memcold/apply_test.go` is 23 tests —
-the ordering of the transaction, the refusals that must happen before it opens, the attribution a
-condition failure carries, and the rollback that undoes the requests that had already run — each
-proved by staging the defect that makes it red. `internal/verify/acceptance` is the volume half, below.
+Those suites cannot judge `Apply`: upstream has no name for the folded window's transaction. Two
+things judge it instead. `cold/memcold/apply_test.go` holds 23 tests covering the transaction's
+ordering, the refusals that must happen before it opens, the attribution a condition failure
+carries, and the rollback of requests that had already run. Each is proved by staging the defect
+that makes it red. `internal/verify/acceptance`, below, is the volume half.
 
-**Nothing here judges somebody else's `cold.Applier`.** A deployment writing one gets the four
+Nothing here judges somebody else's `cold.Applier`. A deployment writing one gets the four
 obligations in [`cold`'s package doc](../../cold/cold.go), `memcold` as the worked example, and its
-own store's suites — and that gap is real, where the log seam's is covered by an exported suite.
+own store's suites. Unlike the log seam, this seam has no exported suite.
 
-Two smaller judgements live in the same package and are worth knowing because they hold up
-everything above: `isolation_test.go` says two stores share no rows and that the store reached
-through the abstract factory is the same database as the one reached directly. Staging the defect —
-a fixed database name — makes both red **while the four conformance suites stay green**, which is
-what says those suites are not a guard against cross-store bleed and these two are.
-
----
+`isolation_test.go`, in the same package, checks that two stores share no rows and that the store
+reached through the abstract factory is the same database as the one reached directly. Staging a
+fixed database name makes both red while the four conformance suites stay green. So those suites do
+not guard against cross-store bleed, and these two do.
 
 ## The acceptance: one stream through the fold
 
 Example-based tests ask whether named scenarios behave as expected. Folding has a different risk:
-two individually ordinary mutations can interact in an unusual order and leave a merged request that
-looks plausible and differs in one field. `internal/verify/acceptance` is the volume answer to that.
-`TestAcceptanceFoldNoCluster` drives a generated stream of 100,000 mutations through the codec and
-through a real `fold.Accumulator`, draining every 1,024 mutations, with fold's refusal recovery
-around it — the way a cycle drives it. Set `WAL_ACCEPTANCE_MUTATIONS` to run a longer or shorter
-stream.
+two ordinary mutations can interact in an unusual order and leave a merged request that looks
+plausible and differs in one field. `internal/verify/acceptance` answers that with volume.
+`TestAcceptanceFoldNoCluster` drives a generated stream of 100,000 mutations through the codec and a
+real `fold.Accumulator` with a configured window of 1,024 mutations, with fold's refusal recovery
+around it, the way a cycle drives it. Refusal drains cut most windows far shorter, about 90
+mutations on average (chapter 14). `WAL_ACCEPTANCE_MUTATIONS` sets a longer or shorter stream.
 
-What it asserts, in the order the assertions matter:
+It asserts, in order of importance:
 
-* **every mutation landed in exactly one window.** `FoldedIn` equals the stream length. That is the
-  line the volume exists for: nothing was dropped, double-counted, or lost to a refusal that did not
-  recover.
-* **the stream contained what it was configured to contain** — chains, both snapshot barriers,
-  continue-as-new, buffered batches and their clears, tombstones, workflow-id reuse, sub-key
-  deletes, and tasks in all four categories. Asserted rather than assumed from the length, because a
-  generator regression that quietly stopped producing a shape would turn the whole thing into a
-  volume test of creates.
-* **the windows actually collapsed** — a fold ratio above 1.5 — and **the refusal path actually
-  ran**. A stream that never refuses never exercises the drain-and-retry contract every consumer of
-  `fold` has to implement.
+* Every mutation landed in exactly one window: `FoldedIn` equals the stream length. This is what the
+  volume is for. Nothing was dropped, double-counted or lost to a refusal that did not recover.
+* The stream contained what it was configured to contain: chains, both snapshot barriers,
+  continue-as-new, buffered batches and their clears, tombstones, workflow-id reuse, sub-key deletes,
+  and tasks in all four categories. This is asserted rather than assumed from the length, because a
+  generator that quietly stopped producing a shape would turn the run into a volume test of creates.
+* The windows collapsed (a fold ratio above 1.5) and the refusal path ran. A stream that never
+  refuses never exercises the drain-and-retry contract every consumer of `fold` implements.
 
-And then the control, which is the part worth copying rather than the headline. Two different ratios
-are in play, and telling them apart is the whole of the argument:
+### The control
+
+Two ratios are in play, and the run depends on telling them apart:
 
 | ratio | what it is | where it comes from |
 |---|---|---|
-| stream ratio | workflow mutations over distinct workflows — the upper bound on what fold *could* merge | `mutgen.Report.CollapseRatio` |
-| fold ratio | mutations folded in over merged requests out — what fold *did* merge | `foldrun.Run.CollapseRatio` |
+| stream ratio | workflow mutations over distinct workflows, the upper bound on what fold *could* merge | `mutgen.Report.CollapseRatio` |
+| fold ratio | mutations folded in over merged requests out, what fold *did* merge | `foldrun.Run.CollapseRatio` |
 
-The 1.5 above is the fold ratio. The control is a second run at `WorkflowReuse = 0` over an
-unbounded workflow key space, a tenth the volume, whose **stream ratio must be exactly 1.00**: every
-mutation touches a workflow of its own, so the corpus asks fold nothing. Without that control the
-headline number measures nothing — a fold ratio of 3 could be a property of the generator's defaults
-rather than of the fold. The run then requires the headline stream ratio to be strictly greater than
-the control's, which is what makes the ratio visibly a function of the knob.
+The 1.5 above is the fold ratio. On its own it could be a property of the generator's defaults
+rather than of the fold. So a control run at `WorkflowReuse = 0`, over an unbounded workflow key
+space and a tenth of the volume, must have a stream ratio of exactly 1.00: every mutation touches its
+own workflow, so the corpus asks fold nothing. The headline stream ratio must then be strictly
+greater than the control's, which shows the ratio moves with the knob.
 
-`internal/verify/mutgen` is the generator, deterministic from its seed: the same config and seed produce the
-same mutations byte for byte, so a failure reproduces from the seed alone. That determinism is a
-constraint on how it is written — no clock, no unseeded UUIDs, no map iteration, no protobuf maps —
-and it is the reason a red run here is a bug report rather than a mystery.
+`internal/verify/mutgen`, the generator, is deterministic from its seed: the same config and seed
+produce the same mutations byte for byte, so a failure reproduces from the seed alone. That rules out
+clocks, unseeded UUIDs, map iteration and protobuf maps in its code, and it makes a red run a bug
+report rather than a mystery.
 
-### The witness, and why a green intercept run proves nothing without it
+### The witness
 
-**A green run in a layer mode is not evidence that anything went through the log.** If the layer
-came out empty, the composition was passthrough — and a persistence suite stays green over
-passthrough, because passthrough is what it was written to judge. The run would have exercised
-passthrough under another name and reported success.
+An intercept run is one where the wrapper routes store calls through the layer, in sync or windowed
+mode ([chapter 01](01-overview.md#what-mode-names-here)). A green intercept run is not evidence that
+anything went through the log. If the composition came out passthrough, a persistence suite stays
+green, because passthrough is what it was written to judge.
 
-So a run ends in a **witness** over the layer's own counters. It states what the run was supposed to
-be (`witness.Expect`) and hands over what its instruments saw (`witness.Observed`). `Observed.Totals`
-— a `cycle.Totals` — is required. `Observed.Store` (the wrapper's own traffic counters) and
-`Observed.Emitted` (the run's captured metric emissions) are optional, because a live server's are
-not reachable from the test process; a nil instrument skips exactly the claims that read it, and the
-claims that remain are the ones the run can honestly make. `Expect.Check` then returns one named
-error per violated claim, so a red run reports which half of the layer went missing rather than that
-something did.
+So a run ends in a *witness* over the layer's own counters, as the figure shows. The run states what
+it was supposed to be (`witness.Expect`) and hands over what its instruments saw (`witness.Observed`).
 
 ```mermaid
 graph LR
@@ -279,15 +238,17 @@ graph LR
   CK --> V["one named error per violated claim"]
 ```
 
-`Expect.Check` never looks at a cluster. It is a pure function of two values, which is what lets a
-table test judge it — and it is judged, which matters more here than anywhere else in the tree. The
-module whose job is to catch a silent pass is the module a silent pass would hide in.
+`Observed.Totals`, a `cycle.Totals`, is required. `Observed.Store` (the wrapper's traffic counters)
+and `Observed.Emitted` (captured metric emissions) are optional, because a live server's are not
+reachable from the test process; a nil instrument skips the claims that read it. `Expect.Check`
+returns one named error per violated claim, so a red run says which half of the layer went missing.
+It is a pure function of two values, so a table test judges it. That matters because a bug in the
+witness would hide exactly the silent passes it exists to catch.
 
-**The central claims invert between the modes, and that is the point of having both.** Sync mode
-drains inside every write, so its accumulator is empty at every call boundary; a window holds
-between calls. Each claim below is therefore made in both directions, because *a windowed run
-reporting sync mode's numbers is sync mode*. Every claim carries a name, and that name prefixes the
-error a red run reports:
+The central claims invert between the modes. Sync mode drains inside every write, so its accumulator
+is empty at every call boundary; a window holds between calls. Each claim is made in both directions,
+because a windowed run reporting sync mode's numbers is sync mode. The claim's name prefixes its
+error:
 
 | what the witness reads | under `Sync` | under `Windowed` |
 |---|---|---|
@@ -297,465 +258,384 @@ error a red run reports:
 | `DroppedTasks` — tasks a folded range took out of a window | not claimed | must be non-zero (W26) |
 | `wal_drained_mutations` — mutations per committed drain | not claimed | at least one drain carried more than one (W32) |
 
-The windowed claims are gated on the run having driven the traffic they are about: W24 runs only
-when `Expect.TailHeld` says the run meant to end holding a tail, W26 only when the run completes
-task ranges *and* a drain committed — an uncommitted drain's entries stay in the log and replay
-folds them again — and W32 only when metric emissions were captured.
+A windowed claim runs only when the run drove its traffic: W24 when `Expect.TailHeld` says the run
+meant to end holding a tail, W26 when the run completes task ranges and a drain committed (an
+uncommitted drain's entries are folded again at replay), W32 when emissions were captured.
 
-Two more things are worth knowing about what those counters mean.
+The denominators `Reads` and `TaskReads` count reads routed through the layer, not hits; `ReadsHeld`
+and `TaskReadsMerged` are the subsets the window had something for. A hit-only counter would read zero
+on an idle cluster and on a miswired layer alike.
 
-**The denominators count routing, not hits.** `Reads` and `TaskReads` count reads *routed* through
-the layer, where the `ReadsHeld` and `TaskReadsMerged` above them are the subsets the window had
-something for. A counter that only fired on a hit would read zero on an idle cluster and zero on a
-layer wired up wrong, and the witness could not tell those apart.
+Under a window, `wal_answered_condition_failures` must be zero (W33). Every condition a windowed run
+meets is decided before the append by the authority in [`../../fold/check.go`](../../fold/check.go),
+so a non-zero value means the check let one through, or a drain answered a batch whose caller had
+already been told it succeeded. Sync mode acks before the condition is verified, so its refusals are
+found at the drain and attributed to the one caller a window of one holds; W22 and W30 assert that,
+gated on `Expect.ConditionFailures`. A sync run that writes no failing condition therefore makes
+neither claim, so check this before believing a green sync witness.
 
-**`wal_answered_condition_failures` must be zero under a window, and that zero is an assertion**
-(W33). Every condition a windowed run meets is decided before the append, by the authority in
-[`../../fold/check.go`](../../fold/check.go), so nothing reaches a drain to be answered. A non-zero
-value means either that the check let a condition through, or that a drain answered a batch whose
-caller had already been told the write succeeded. The zero belongs to the windowed claims and not to
-the layer: sync mode acks before the condition is verified, so there a refusal *is* discovered at the
-drain and attributed to the one caller a window of one can hold, which is what W22 and W30 assert.
-Both of those are gated on `Expect.ConditionFailures`, so a sync run that writes no failing
-conditions makes neither claim — worth checking before believing a green witness.
+The witness is tested by breaking it. `TestEachClaimHasADefectOnlyItCatches` is a leave-one-out over
+the claim table: a claim no defect reaches exclusively is redundant or unreachable, and both look like
+a working witness. `TestTheExpectMustStateAWindow` and `TestTheEmptyLayerIsAssertedNotAssumed` state
+the failure the module exists for.
 
-The witness was verified the way everything here is verified — by breaking it on purpose.
-`TestEachClaimHasADefectOnlyItCatches` is the leave-one-out over the claim table: a claim no defect
-reaches exclusively is redundant or unreachable, and both look exactly like a witness working.
-`TestTheExpectMustStateAWindow` and `TestTheEmptyLayerIsAssertedNotAssumed` are the two that state
-the failure this module exists for.
+### Both seams real
 
-### Both seams real: the same shape, into a database
+The fold acceptance never executes a batch; its drain callback counts what came out and discards it.
+`TestBothSeamsRealNoServer` executes the batches against the schema, row layouts and condition
+failures upstream wrote. It puts one `cycle.Manager` at `cycle.Defaults()` between `wal/memwal` and
+`cold/memcold`, takes the shard by moving the database's own `rangeID` so the drain's epoch CAS is
+real, and drives 6,000 generated mutations over 32 hot workflows through `Manager.Write`, the call the
+wrapper makes. The window is the shipped 256 mutations. At a window of one nothing folds, and the run
+would stay green with the fold path deleted.
 
-The fold acceptance never executes a batch — its drain callback counts what came out and throws it
-away — so the strongest thing it can say is that the layer produced the right merged requests.
-`TestBothSeamsRealNoServer` is the second acceptance run, and what it adds is that those requests
-are *executed*, against the schema, the row layouts and the condition failures upstream wrote. It
-puts one `cycle.Manager` at `cycle.Defaults()` between `wal/memwal` on one side and `cold/memcold`
-on the other, takes the shard by moving the database's own `rangeID` so the drain's epoch CAS is a
-real one, and drives a generated stream of 6,000 mutations over 32 hot workflows through
-`Manager.Write` — the same call the wrapper makes.
+The cycle drains into a *ledger*: an applier that passes each batch to `memcold.Apply` and works out,
+from the batch alone, what the database must then hold. That is the `db_record_version` each request
+leaves on each run row, which run rows a tombstone removed, and which run each current row names. It
+never reads these from the store, because an expectation read from the store agrees with it by
+construction. The test asserts every such row through the store's reads, and also that:
 
-The window is the shipped one, 256 mutations, and that is the whole reason the run means anything.
-At a window of one every drain would carry a single request: nothing folds, no assertion is ever
-settled against a row an earlier request of the same transaction wrote, and such a run stays green
-with the fold path deleted.
+* the store's watermark is the last drain's and equals the last seqno acked;
+* the log's lower end moved during the run, so a trim reached it;
+* the log's upper end is still the last entry acked, so trims took entries off the bottom only.
 
-The applier the cycle drains into is a **ledger**. It passes each batch to `memcold.Apply` and then
-works out, from the batch alone, what the database must hold once that transaction has committed:
-the `db_record_version` each request leaves on each run row, which run rows a tombstone removed, and
-which run each workflow's current row must name. It never reads any of that back out of the store,
-because an expectation read out of the store agrees with the store by construction and judges
-nothing.
+One invariant cannot be checked at the end: the log's lower end never passes the watermark, so every
+entry the cold store has not applied is still in the log. An end-of-run check stayed green with a
+trim staged a thousand seqnos ahead of the watermark, because by the end everything had drained and
+the damage was invisible. So the run samples the invariant every 64 mutations, reading the log's lower
+end first and the watermark second. The watermark only rises, so a drain committing between the two
+reads only makes the comparison stricter. Every trim also goes through a guard on the log that reads
+the committed watermark before the delete and fails the run on a trim past it.
 
-The test then asserts every one of those rows through the store's own reads, and three things
-besides: the store's watermark is the last drain's own and is also the last seqno acked; the log's
-lower end moved while the run was still going, so a trim did reach it; and the log's upper end is
-still the last entry acked, so what the trims took came off the bottom rather than out of the
-middle.
+A sample can find the log empty: once the drain catches up, the legal trim reaches one past the last
+entry. An empty log is therefore allowed when the cold store holds every seqno acked, and is a loss
+when it does not.
 
-One invariant here cannot be checked at the end of a run at all: that the log's lower end never
-passes the watermark, so every entry the cold store has not applied is still in the log. Written as
-an end-of-run check it stayed green with a trim staged to run a thousand seqnos **ahead** of the
-watermark. The trim is detached, so it empties the log while appends continue, and by the end of a
-run that drained everything those entries have been applied and the damage is invisible; only a
-crash in the middle would have found it. So the run samples the invariant every 64 mutations inside
-the drive loop instead, reading the log's lower end first and the watermark second — the watermark
-only rises, so a drain committing between the two reads can only make the comparison stricter than
-the moment it is about. Beside the sampling, every trim the run makes goes through a guard on the log
-that reads the committed watermark before the delete and fails the run on a trim past it.
-
-A sample can find the log holding nothing at all, and that is the same claim at its boundary rather
-than an exception to it: the legal trim reaches one past the last entry once the drain has caught up,
-which at a window of one mutation it does between writes. So an empty log is judged against the
-watermark instead — allowed exactly when the cold store holds every seqno acked, and a loss when it
-does not. Read as loss unconditionally, it was a sample that failed on the machine where the drain
-won the race and passed on the one where the writer did.
-
-`TestAShardThatLosesItsEpochMidRun` is invariant [I4](02-concepts-and-invariants.md#the-invariants)'s
-cold-store half with both seams real. After 2,000 mutations another owner takes the shard in the database: the
-rangeID moves, which is all an acquire is from underneath. The log is left unfenced on purpose — fencing
-it would stop the appends and halt the cycle before any drain reached the database, which is the
-other half of fencing and not this run's subject. Here the loss is discovered inside the drain's own
-transaction, with a window of acknowledged mutations riding on it.
-
-What must hold afterwards is that half, and I2 beside it. The write path answers a
-`*persistence.ShardOwnershipLostError` and the cycle is in `StateHaltedLost`. The database matches
-the ledger's snapshot from *before* the loss, and every run that only a refused drain would have
-written is absent from it. The applied position is still the last committed drain's, and the log
-holds every seqno up to the last one acked. Nothing acknowledged was lost, and nothing unapplied was
-invented.
+`TestAShardThatLosesItsEpochMidRun` checks the cold-store half of invariant
+[I4](02-concepts-and-invariants.md#the-invariants) (a drain commits only under the epoch that owns
+the shard) with both seams real. After 2,000 mutations another owner moves the rangeID in the
+database, which is all an acquire is from underneath. The log is left unfenced on purpose: a fenced
+log would halt the cycle at the append, before any drain reached the database, and that fence is
+tested [below](#two-live-owners-and-the-two-fences). So the loss is discovered inside the drain's own
+transaction, with a window of acknowledged mutations riding on it. Afterwards, that half of I4 must
+hold, and I2 (a caller is answered only once its entry is durable in the log) beside it. The write
+path answers a `*persistence.ShardOwnershipLostError` and the cycle is in `StateHaltedLost`. The
+database matches the ledger's snapshot from before the loss, with no run only the refused drain
+would have written. The watermark is the last committed drain's, and the log holds every seqno up to
+the last one acked. Nothing acknowledged was lost, and nothing unapplied was invented.
 
 ### The fold against not folding
 
-Everything above holds the folded path against a record of what its own drains carried, which agrees
-with the fold by construction, or against another folded path. Neither states the claim the layer
-actually makes, which is that **folding is transparent**: the database a window of 256 leaves is the
-database Temporal's own write path would have left, one mutation at a time.
+The runs above check the folded path against a record of what its own drains carried, which agrees
+with the fold by construction, or against another folded path. Neither states the layer's real
+claim: folding is transparent. The database a window of 256 leaves must be the one Temporal's own
+write path would leave, one mutation at a time.
 
-`TestFoldingChangesNothingButTheNumberOfTransactions` states it. One seed is driven twice into two
-real databases, once at the shipped window and once at `Mutations: 1` — a window that holds one
-request when the drain takes it, so no two mutations of a run ever meet and nothing is ever merged.
-Then every run row is read back and diffed whole, blobs included, over the union of both ledgers'
-keys; so is every workflow's current row, and so is the list of task IDs each of the four
-categories' queues holds, paged back out of each store in key order. The two arms must differ in
-transactions and in nothing else: 6,000 mutations commit 77 transactions folded and 6,000
-sequential, and leave 519 identical run rows and 32 identical current rows.
+`TestFoldingChangesNothingButTheNumberOfTransactions` checks that claim; we call it the oracle. One
+seed is driven twice into two real databases, once at the shipped window and once at
+`Mutations: 1`, a window that holds one request when the drain takes it, so nothing is ever merged.
+Then the run compares, whole and blobs included, every run row over the union of both ledgers' keys,
+every workflow's current row, and the list of task IDs in each of the four categories' queues, paged
+out of each store in key order. The two arms must differ in transactions and nothing else: 6,000
+mutations commit 77 transactions folded and 6,000 sequential, and leave 519 identical run rows and 32
+identical current rows.
 
-Staging the merge's upsert-after-delete resolution — dropping the line that takes a re-upserted key
-back out of the delete set, so the store writes the row and then deletes it again — reddens this run
-on a named row. It reddens the recovery run too, since two different window cuttings also disagree
-about it; what it does *not* redden is `TestBothSeamsRealNoServer`, whose ledger recorded what the
-drain carried and therefore agrees with the database about the wrong answer. That is the difference
-this run is for. Its blind spot is the mirror image: a defect both arms share — the codec, the
-encoding of a request, an assertion neither arm makes — cancels, and belongs to the codec guards and
-the condition authority instead.
+Staging a defect in the merge's upsert-after-delete resolution (dropping the line that takes a
+re-upserted key back out of the delete set, so the store writes the row and deletes it again) reddens
+this run on a named row. It reddens the recovery run too, since two window cuttings disagree about
+it. It does not redden `TestBothSeamsRealNoServer`, whose ledger agrees with the database about the
+wrong answer. That difference is what the oracle is for. Its blind spot is the mirror image: a defect
+both arms share (the codec, a request's encoding, an assertion neither arm makes) cancels out, and
+belongs to the codec guards and the condition authority.
 
 ### Recovery: the same stream, a different set of windows
 
-Every run above ends in a shutdown drain, which applies the last window out of memory. So none of
-them ever takes an entry back out of the log, and `TestAShardThatLosesItsEpochMidRun` stops one step
-short of the claim the first rule is about: it proves the entries a refused drain carried are still in the log,
-not that anybody can turn them back into rows.
+Every run above ends in a shutdown drain that applies the last window from memory, so none takes an
+entry back out of the log. The lost-epoch run shows a refused drain's entries are still in the log,
+but not that a successor turns them back into rows.
+`TestARecoveredShardHoldsWhatAnUninterruptedOneDoes` checks that step. One seed is
+driven twice. The control puts all 6,000 mutations through one cycle. The second puts them through
+six: five times, after a thousand mutations, the rangeID moves and the cycle is superseded without
+draining. That is all the layer can observe of a process that died. The window is gone, the log keeps
+everything acked, and the successor finds those entries at replay or nowhere.
 
-`TestARecoveredShardHoldsWhatAnUninterruptedOneDoes` is that step. One seed is driven twice. The
-control run puts all 6,000 mutations through a single cycle. The second puts the same stream through
-six of them: five times, after a thousand mutations, the shard's rangeID moves and the cycle is
-superseded without draining — which is the whole of what this layer can observe of a process that
-died, the window going with it and the log keeping everything it acked. The successor finds those
-entries at replay or nowhere.
+The two databases are compared with each other, not with a model. The ledger knows only what drains
+carried, so the uninterrupted run is the only expectation that has an entry for a mutation the second
+run dropped. Every run row and current row is diffed whole, blobs included. The watermark must stand
+at the stream's length. `Replayed` must be non-zero, or the crashes cost nothing. `Dropped` must be
+zero, since no entry of a windowed stream is provisional (marked at the append as droppable at replay,
+[chapter 02](02-concepts-and-invariants.md#conditions)); a drop would be a mutation silently forgotten.
 
-The two databases are then compared to each other rather than to a model, and that is what makes the
-comparison total. The ledger knows what the drains carried, so a mutation no drain ever carried is
-invisible to it; the uninterrupted run's own rows are the only expectation that has an entry for
-something the second run dropped. Every run row is read back through the store and diffed whole,
-blobs included, over the union of both ledgers' keys, and so is every workflow's current row. The
-watermark must stand at the stream's length, `Replayed` must be non-zero — without it the crashes
-cost the run nothing and it judges nothing — and `Dropped` must be zero, since no entry of a windowed
-stream is provisional and a drop would be a mutation silently forgotten.
+This also shows the fold is boundary-independent: the runs cut one stream into different windows, so
+a merge rule that depended on where a window ended would leave two different databases. Staging one
+(the mutation merge keeping the head's `NextEventID` rather than the delta's) turns the run red on one
+named row. Staging a replay that starts one entry above the watermark turns it red at the crash
+boundary, on the assertion the next drain fails.
 
-What it establishes beyond "recovery works" is that **the fold is boundary-independent**: the two
-runs cut the same stream into different windows, so a merge rule that depended on where a window
-ended would leave two different databases. Staging one — the mutation merge keeping the head's
-`NextEventID` rather than the delta's — makes the run red on one named run row with the two values
-beside each other. Staging a successor whose replay starts one entry above the watermark makes it red
-at the crash boundary instead, on the assertion the next drain fails.
+`TestACrashOnTopOfADrainNobodyCouldReadRecoversEitherWay` adds the crash the previous run leaves out.
+There every crash falls between two writes, so the predecessor knew the fate of every entry in the
+log. Here the last drain has no readable outcome, the one state in which entries above the watermark
+may already be rows. One drain's applier reports an error nothing can classify, and the watermark read
+that would resolve it fails once: a read that answers settles the question on the spot and leaves
+nothing for a crash to land on. Then the owner is superseded with the stall standing.
 
-`TestACrashOnTopOfADrainNobodyCouldReadRecoversEitherWay` is the crash that run leaves out. There it
-falls between two writes, so every entry in the log is one whose fate the predecessor knew; here the
-last drain has no readable outcome, which is the one state in which the entries above the watermark
-may already be rows. One drain's applier reports an error nothing can classify, the watermark read
-that would have resolved it fails once — a read that answers resolves the ambiguity on the spot and
-leaves nothing for a crash to land on — and then the owner is superseded with the stall standing.
+The successor is told none of this. It reads the watermark, treats it as the tail's settled start, and
+replays what is above. It cannot tell the two cases apart, so the same replay code must skip entries
+an unseen transaction already applied and apply the ones it did not. Both cases run, out of the same
+window: the entries replayed must be exactly the acked seqnos above that watermark, 204 where the
+transaction never ran and 1 where it committed, and both databases must match the uninterrupted run.
+Staging a `resolve` that treats a failed watermark read as a commit turns the uncommitted case red on
+a `db_record_version` mismatch. The stall's unit tests in `cycle` state the tail's arithmetic; this
+run checks its consequence in the database.
 
-The successor is told none of it. It reads the watermark, floors there and replays what is above, so
-the same code has to skip entries a transaction it cannot see already applied and apply the ones it
-did not. Both halves are run, and one number separates them: the entries replayed must be exactly the
-acked seqnos above the watermark the successor found — 204 where the transaction never ran, 1 where it
-had committed, out of the same window — and both databases must match the uninterrupted run. Staging
-a `resolve` that reads a failed watermark read as a commit makes the uncommitted half red on a
-`db_record_version` mismatch inside the database, which is what this run adds to the stall's own unit
-tests: those state the tail's arithmetic, and this states the consequence.
+Neither run kills anything or crashes inside an append. They are claims about the layer's arithmetic
+across an owner change, not durability claims about either store; an entry that may or may not be
+durable is `wal/waltest`'s subject.
 
-**What neither proves.** Nothing is killed: both backends live in the test's own process, so both are
-claims about the layer's arithmetic across an owner change rather than durability claims about either
-store. And neither crash falls inside an append — an entry that may or may not be durable is
-`wal/waltest`'s subject, above.
+### Two live owners and the two fences
 
-### Two owners at once, and each fence on its own
+In every run above, ownership changes through one `cycle.Manager`: `ShardAcquired` installs the new
+cycle and retires the old one, stopping its goroutine. So neither fence that exists to stop a
+predecessor is ever tested. A real node that lost its lease is not told. Its cycle stays alive with a
+window, its timers keep running, and it finds out by acting. Two nodes are two `cycle.Manager`s over
+one log and one store. `acceptance_twonode_test.go` builds that pair to ask whether the watermark a
+drain reads back is owner-scoped. `acceptance_handover_test.go` sends a fenced owner's batch to the
+database, in the three cases that shape has.
 
-Every run above changes hands through one `cycle.Manager`, where `ShardAcquired` installs the fresh
-cycle and retires the previous one — which stops its goroutine. So the predecessor never acts again,
-and neither of the two fences that exist to stop it is asked anything. A node that lost its lease is
-not told: its cycle stays alive with a window in it, its timers keep running, and it finds out by
-acting. Two nodes are two `cycle.Manager`s over one log and one store, and
-`acceptance_twonode_test.go` already builds that pair — for one question, whether the watermark a
-drain reads back is owner-scoped, with an applier that parks the drain and answers without passing
-the batch down.
-`acceptance_handover_test.go` is where a fenced owner's batch reaches the database, in the three cases
-that shape has.
+Each fence stops one thing such a node can still do. The log's fence stops appends, and it is in
+place before the `rangeID` moves
+([the order `UpdateShard` imposes](06-shard-lifecycle.md#what-managershardacquired-does-with-the-epoch-it-is-handed)),
+so the old owner's write is refused while the database still names it owner. The cold store's epoch
+CAS stops drains, which need no append and no caller: a shutdown drain and the age timer both fire
+on their own.
 
-The two fences each stop one of the two things such a node can still do, which is why either looks
-redundant from where the other stands. The log's stops the appends, and it is in place before the
-`rangeID` moves ([the order `UpdateShard`
-imposes](06-shard-lifecycle.md#what-managershardacquired-does-with-the-epoch-it-is-handed)), so a write
-by the old owner is refused while the database still names him owner. The cold store's epoch CAS stops
-the drains, which need neither an append nor a caller: a shutdown drain and the age timer both fire out
-of a window that holds something, on their own.
+`TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` tests the log's fence. The successor
+fences the log and takes the `rangeID`; the predecessor, holding a tail, writes. The write is refused,
+the cycle is in `StateHaltedLost`, the watermark has not moved and the log has not grown. The
+successor then replays exactly the entries between the watermark and the last ack. The run pins the
+translation of the log's `wal.ErrFenced` into a `ShardOwnershipLostError`: a fenced append that raised
+no halt would leave the caller holding the log's own error,
+which the history service does not recognise and answers with a background re-acquire instead of the
+shutdown a `ShardOwnershipLostError` asks for. The refused write comes from a separate stream, so the
+generator's model of the run does not end a version ahead of the database.
 
-`TestTheLogFenceStopsAnOwnerBeforeTheDatabaseChangesHands` is the first of them. The successor
-fences the log and takes the `rangeID`; the predecessor, holding a tail, writes. The write is
-refused, the cycle is in `StateHaltedLost`, the watermark has not moved and the log has not grown by
-the entry it refused — the append is where this stopped, so the drain's own fence was never reached.
-Then the successor replays exactly the entries between the watermark and the last ack. What the run
-pins is the *translation*: staging a fenced append that raises no halt leaves the caller holding the
-log's own error, which the history service's write path does not recognise and answers with a
-background re-acquire rather than the shutdown a `ShardOwnershipLostError` asks for. The doomed
-write is drawn from a stream of its own, because a mutation this run's generator handed out and the
-log refused would leave that generator's model of the run a version ahead of the database for every
-later mutation of it.
+`TestTheShutdownDrainOfALostShardCommitsNothing` combines them: 2,000 mutations, a handover in the
+real order, 500 more through the successor (which replays the predecessor's window), and only then
+the predecessor shuts down and drains the window it held all along. The watermark must not move, no
+row may go back to that window's versions, and the database must match an uninterrupted owner's. It
+cannot tell which check refused the drain, since a stale window of run rows is refused by the epoch
+and by every `db_record_version` in it. Deleting the epoch check leaves it green.
 
-`TestTheShutdownDrainOfALostShardCommitsNothing` is the composition: 2,000 mutations, a handover in the
-real order, 500 more through the successor — which replays the predecessor's window and writes past it
-— and only then does the predecessor shut down and drain the window it has been holding all along. The
-watermark must not move, no row may go back to the version that window names, and the stream must
-finish into a database identical to the one an uninterrupted owner leaves. It does not say which fence
-spoke, and cannot: a stale window carrying run rows is refused twice over, once by the epoch and once
-by every `db_record_version` in it, the successor having applied those same entries already. Deleting
-the epoch check leaves this run green, which is why it is not the evidence about that check.
+`TestAStaleRangeCompletionCannotTakeTheSuccessorsTasks` isolates the epoch check, and it judges the
+store, not the layer. The predecessor acks one range completion and nobody drains it. The successor
+replays that completion, then writes and commits three tasks inside its range. Then the predecessor
+shuts down. With the epoch check deleted from `cold/memcold`, its drain commits and those three rows
+are gone by name: `[120, 150, 180]` against nothing.
 
-`TestAStaleRangeCompletionCannotTakeTheSuccessorsTasks` isolates it, and what it judges is the store
-rather than the layer — which is worth being exact about, because the isolation is easy to mistake for
-evidence of a kind this chapter does not have. The predecessor acks one range completion and nobody
-drains it, the shard changes hands, and the successor replays that completion and then writes three
-tasks inside the range it covered and commits them. Then the predecessor shuts down. Delete the epoch
-check in `cold/memcold` and its drain commits, and those three rows are gone by name — `[120, 150,
-180]` against nothing.
+This works because a window's task work asserts nothing. A range completion is a category and two
+keys, with no version a second owner could have moved, so for task work the epoch is the only refusal
+in the transaction. That is the third obligation in [`cold`](../../cold/cold.go)'s doc. The run guards
+only the store in this repository, not a deployment's, which
+[nothing here judges](#the-cold-stores-suites-are-temporals). `cold/memcold` sits under every other
+run in this package, so a defect in its fence would weaken all of them without reddening one.
 
-The reason such a window exists at all is a fact about the record format and belongs here: **a window's
-task work asserts nothing.** A range completion is a category and two keys, with no version in it that
-a second owner could have moved, so for a batch of task work the epoch is the only refusal in the
-transaction. That is the third obligation in [`cold`](../../cold/cold.go)'s doc, and this run is a
-guard on the one store in this repository that carries it — not a claim about a deployment's, which
-[nothing here judges](#the-cold-stores-suites-are-temporals). Its worth is that `cold/memcold` is
-underneath every other run in this package, so a defect in its fence would weaken all of them without
-reddening one.
-
-The same drain also carries a watermark below the successor's, and that half is quieter. It loses no
-row: an owner reading a watermark that points under rows the database holds either re-applies entries
-whose assertions have moved on, or meets the gap a trim left below it. Both end in a halt. What it
-costs is a shard nobody can recover without a person, which is the failure mode the strict equality in
-`Watermarker`'s contract is written against.
-
----
+The same stale drain also carries a watermark below the successor's. That loses no row: an owner
+reading it either re-applies entries whose assertions have moved on or meets the gap a trim left, and
+both end in a halt. The cost is a shard nobody can recover without a person, which is what the strict
+equality in `Watermarker`'s contract prevents.
 
 ## A server, in this process
 
-`internal/verify/e2e` is the composition level, and it is the one claim no suite below it can make. It builds
-a Temporal server the production way — a custom datastore named in `Persistence.DataStores`, the
-layer's factory handed to `temporal.WithCustomDataStoreFactory` — starts frontend, history, matching
-and worker in the test process, registers a namespace through the frontend, and runs a workflow with
-an activity through the SDK. Ports come from the OS, the databases are `memcold`'s and one more for
-visibility, and nothing is installed.
+`internal/verify/e2e` is the composition level. It builds a Temporal server the production way, with
+a custom datastore named in `Persistence.DataStores` and the layer's factory handed to
+`temporal.WithCustomDataStoreFactory`. It starts frontend, history, matching and worker in the test
+process, registers a namespace, and runs a workflow with an activity through the SDK. Ports come from
+the OS, the databases are `memcold`'s plus one for visibility, and nothing is installed.
 
-**The green workflow is the weaker half.** A server whose layer fell out of the path completes the
-same workflow just as fast, which is exactly the failure [the
-witness](#the-witness-and-why-a-green-intercept-run-proves-nothing-without-it) exists for. So the
-run has two arms, both of which *compose* a layer and differ only in the one value the server is
-handed:
+A completed workflow is the weaker half of the evidence: a server whose layer fell out of the path
+completes it just as fast. So the suite has two arms that both compose a layer and differ only in the
+value the server is handed:
 
 * `TestAWorkflowRunsThroughTheLayer` states `witness.Windowed`, shards acquired, mutable state,
-  history tasks and merged task reads, plus the mutation kinds a workflow of that shape must
-  produce — a create and updates. Beside the witness it requires directly that mutations were
-  acked, that a drain committed, that the applied position moved, that history tasks were written,
-  and that **the shards' watermarks are readable out of the database**, so a run claiming a drain
-  committed and a store holding nothing cannot both be believed;
-* `TestAWorkflowRunsWithTheLayerOutOfThePath` is the control: the same store behind the wrapper
-  with nothing in its options, and `witness.NoLayer` over the layer it composed and did not
-  install. That claim is only available because the control composes a layer at all — a run with
-  none could not make it — and it goes red if the "passthrough" arm quietly still had a layer in
-  it. Beside it, no shard's watermark may be in the database, because nothing drained.
+  history tasks, merged task reads, and the mutation kinds such a workflow must produce (a create and
+  updates). It also requires that mutations were acked, a drain committed, the watermark moved,
+  history tasks were written, and the shards' watermarks are readable from the database, so a
+  claimed drain over an empty store cannot pass.
+* `TestAWorkflowRunsWithTheLayerOutOfThePath` is the control: the same store behind the wrapper with
+  nothing in its options, and `witness.NoLayer` over the layer it composed but did not install. It
+  can make that claim only because it composes a layer at all, and it goes red if the passthrough arm
+  still had a layer in it. No shard's watermark may be in the database, because nothing drained.
 
-Two things about the run itself are worth knowing. The drains it counts are the **age** trigger's:
-one workflow is nowhere near 256 mutations or 256 KiB, so the five-second age is the only trigger
-that can fire, and staging `Age = time.Hour` makes the run red with a non-zero acked count and a
-zero applied count — which is what says the drains were the policy's and not an artefact of
-shutdown. And the intercept arm deliberately leaves one claim out: it does not state `Ranges`, the
-witness's claim that a queue completed a task range. A queue checkpoints on a 30-second timer, per
-queue per shard, so a workflow this short honestly completes none, and a witness that demanded one
-would fail honest runs.
+The drains it counts come from the age trigger: one workflow is nowhere near 256 mutations or
+256 KiB, so only the five-second age can fire. Staging `Age = time.Hour` turns the run red with a
+non-zero acked count and zero applied, which shows the drains came from the policy, not from shutdown.
+The intercept arm does not claim `Ranges` (a queue completed a task range): a queue checkpoints on a
+30-second timer per queue per shard, so a workflow this short completes none, and claiming it would
+fail honest runs.
 
-**What it does not prove.** The databases are in memory and die with the process, so nothing here is
-a durability claim. Nothing is killed, so nothing is a crash-recovery claim. One workflow on four
-shards is not load, and no timing this suite produces is a performance claim.
-[Chapter 15](15-the-limits-of-the-evidence.md) is where each of those sits as an entry.
+The databases are in memory, nothing is killed, and one workflow on four shards is not load, so this
+suite makes no durability, crash-recovery or performance claim
+([chapter 15](15-the-limits-of-the-evidence.md)).
 
----
+## The call record
 
-## The record, and the judge that is not here
+The last level of evidence, that nothing acked was lost and nothing applied was invented while nodes
+were killed, has no instrument in this repository. The arithmetic such a run would exercise is judged
+without killing, by the recovery acceptance above. What is here is half of a killing run's input:
+`internal/verify/checker` is the record a driver writes of the calls it made. It judges nothing.
 
-The last level of evidence — *nothing acked was lost and nothing applied was invented, while nodes
-were being killed* — has no instrument in this repository. Killing a process is only a test if what
-the process owned is still there afterwards, and both backends here die with it. The arithmetic such
-a run would exercise is judged without the killing — a superseded owner's tail replayed, and the
-result held against an uninterrupted run of the same stream, in the recovery acceptance above. What
-is here besides is one half of a killing run's input: `internal/verify/checker` is the record a driver writes of the calls it
-made, and it judges nothing. Nothing here reads a record back and says whether the run it describes
-was correct.
+### Two lines per call
 
-**Two lines per call, each fsynced.** The first is written before the store is touched, the second
-once it has answered. So a call ends in the record as one of three classes: `Acked`, `Refused` — the
-store gave a definite answer, which never means the mutation is absent — or `Unknown`, which is what
-a process killed between the two lines leaves behind, and which is the truth about such a call.
-Recording the outcome only would make every killed call look like one that was never issued, while
-its entry sits in the log with nothing to account for it. The record is a file rather than memory
-because what it records is a process dying: an in-memory record goes with the node, and the one call
-a run turns on is then the one that is missing. `TestTheCallIsDurableBeforeTheStoreIsTouched`, in
-`internal/verify/drive`, is that ordering made permanent; `TestACallWithNoOutcomeIsTheThirdClass`,
-in `checker` itself, is the class it creates.
+The record writes two lines per call, each fsynced. The first is written before the store is
+touched, the second once it has answered. So a call ends in one of three classes:
 
-`NewRecord` takes a node name and an incarnation, and neither is decoration: the line ids are per
-process, so a node restarted onto the same path numbers its second run from 1 and the two runs'
-calls collide — one call's outcome read as another's. An incarnation of 0 appended to a record that
-already holds a run is refused rather than trusted.
+* `Acked`;
+* `Refused`: the store gave a definite answer, which never means the mutation is absent;
+* `Unknown`: a process killed between the two lines. That is the truth about such a call.
 
-Two things constrain whoever builds the judge, and both are worth stating here because a judge that
-gets either wrong is green for the wrong reason.
+Recording only the outcome would make every killed call look like one never issued, while its entry
+sits in the log unaccounted for. The record is a file rather than memory because it records a process
+dying, and an in-memory record would lose the one call the run turns on.
+`TestTheCallIsDurableBeforeTheStoreIsTouched`, in `internal/verify/drive`, pins that ordering;
+`TestACallWithNoOutcomeIsTheThirdClass`, in `checker`, pins the class it creates.
 
-**It may not import the layer.** An assertion compiled into the layer sees what the layer
-*believes*, and it dies with the layer under `kill -9` — which is the case such a run exists for. So
-a judge stands outside it: it reads the log through `wal.Log`'s own contract, the watermark through
-the same seam the cycle uses, and the cold store through the deployment's own reader.
+`NewRecord` takes a node name and an incarnation. Line ids are per process, so a node restarted onto
+the same path numbers its second run from 1, and the two runs' calls would collide. An incarnation of
+0 appended to a record that already holds a run is refused.
 
-**It observes repeatedly and remembers, rather than looking once at the end.** A cycle trims to the
-applied watermark with no safety lag, so however long the run was, the surviving log is bounded by
-roughly `TrimEvery` drains' worth of windows — about 4,000 entries at the shipped `TrimEvery` of 16
-and window of 256. A post-mortem look at a long run therefore sees a vanishing fraction of it. The
-consequence for any claim of the form *applied ⊆ logged* is sharper still: such a claim is only
-sound over a run whose log was never trimmed away underneath it, so the run has to push both trim
-triggers — `TrimEvery` and `TrimAfter` — out of reach first, run over a log that reports no storage
-pressure (one that does forces a trim outside both), and then check that the promise was kept.
+### What a judge must do
 
----
+Two constraints bind whoever builds the judge. A judge that gets either wrong is green for the wrong
+reason.
+
+It may not import the layer. An assertion compiled into the layer sees what the layer believes, and
+dies with it under `kill -9`, the case such a run exists for. So the judge reads the log through
+`wal.Log`'s contract, the watermark through the seam the cycle uses, and the cold store through the
+deployment's own reader.
+
+It observes repeatedly and remembers, rather than looking once at the end. A cycle trims to the
+watermark with no safety lag, so however long the run, the surviving log holds about 4096 entries at
+the shipped defaults: `TrimEvery × Mutations`, plus the unsettled tail
+([chapter 14](14-where-the-defaults-came-from.md#the-trim-cadence-16-drains-or-60-seconds) has the
+conditions). A post-mortem look at a long run sees a vanishing fraction of it. A claim of
+the form *applied ⊆ logged* is sound only over a log that was never trimmed underneath it. So the run
+must first push both trim triggers, `TrimEvery` and `TrimAfter`, out of reach, run over a log that
+reports no storage pressure (pressure forces a trim outside both), and then check the promise.
 
 ## The guards
 
 Some properties are too narrow for the large suites and too important to infer from code shape. A
-guard observes the external consequence of such a property. It earns its place only when
-deliberately breaking that property makes the guard red while the ordinary suite could otherwise
-stay green. **A guard is red on a reverted decision where a unit test is red on broken code**, which
-is the reason they are collected apart. The wiring guard below is only that; the three backpressure
-cases drive a real cycle, so they go red on either, and a failure there is the layer's until the
-composition is ruled out.
+guard observes the external consequence of such a property, and earns its place only when breaking
+the property turns it red while the ordinary suites could stay green. A guard is red on a reverted
+decision, where a unit test is red on broken code. The wiring guard is purely the former. The three
+backpressure tests drive a real cycle, so a failure there is the layer's until the composition is
+ruled out.
 
-* **the three backpressure-boundary tests**, which hold the refusal's concrete type across a
-  boundary neither the cycle nor the wrapper can see from its own side.
-  `TestTheBackpressureRefusalIsDefinitelyNotCommitted` asserts the value is a
-  `*serviceerror.ResourceExhausted` by type assertion rather than by `errors.As` — that is the shape
-  the history shard's `handleWriteErrorLocked` switches on — and then wraps it in one
+Invariant [I10](02-concepts-and-invariants.md#the-invariants) says exceeding the tail bound is
+degradation, not loss: what was refused is not in the log, and what was acked is. Its first half is
+that the refusal reaches the history service as the right error. The backpressure-boundary tests hold
+the refusal's concrete type across a boundary neither the cycle nor the wrapper sees from its own
+side:
+
+* `TestTheBackpressureRefusalIsDefinitelyNotCommitted` asserts the value is a
+  `*serviceerror.ResourceExhausted` by type assertion, not `errors.As`, because that is what the
+  history shard's `handleWriteErrorLocked` switches on. It then wraps the value in one
   `fmt.Errorf("…: %w", err)` and shows `persistence.OperationPossiblySucceeded` flip from false to
-  true. A single `%w` anywhere on the way out therefore converts a bounded degradation into a
-  background shard re-acquire, which is the failover backpressure exists to prevent.
-  `TestTheWrapperCarriesTheRefusalOut` requires the wrapper to hand the identical value back — not a
-  copy, not a wrapping of it. `TestTheRefusalSurvivesTheWholeInterceptPath` makes the same claim
-  through `waltz.Compose` with a real log and a real wrapper, so it covers the two joins the other
-  two stop short of: the cycle's answer becoming the registry's, and the registry's becoming the
-  store's.
+  true: a single `%w` turns a bounded degradation into the background shard re-acquire backpressure
+  exists to prevent.
+* `TestTheWrapperCarriesTheRefusalOut` requires the wrapper to return the identical value, not a copy
+  or a wrapping.
+* `TestTheRefusalSurvivesTheWholeInterceptPath` makes the same claim through `waltz.Compose` with a
+  real log and wrapper, covering the two joins the others miss: the cycle's answer becoming the
+  registry's, and the registry's becoming the store's.
 
-  The other half of invariant [I10](02-concepts-and-invariants.md#the-invariants) — that a tripped
-  bound degrades and does not lose — is `TestATrippedTailLosesNothing`, which lives in `cycle` rather
-  than here. It holds the applier, accepts until the tail bound trips, collects the refusals, then
-  releases: the window commits, `CommitSeqno − AppliedSeqno` returns to zero, `TailBytes` goes to
-  zero, the refused writes are retried at the versions they were refused at and succeed, and reading
-  the log the way an acquiring owner would returns **exactly the set that was acknowledged, in order,
-  gap-free, and none of the refused ones**. A caller told "no" still holds the row it read, which is
-  what distinguishes a bound from a conflict and why `ResourceExhausted` is the right answer.
-* **`cycle_wiring_test.go`**, which is nothing but compile-time assertions that `cycle.Manager` still
-  satisfies each of the wrapper's faces: `ShardObserver`, `ShardWriter`, `ShardReader`, `ShardLayer`
-  and `MetricsSink`. Each is asserted separately, so a `Manager` that loses one fails by the name of
-  the face it lost rather than at the composed interface where several claims read as one. It is the
-  cheapest guard here and watches the failure with the widest blast radius: a layer that does not
-  satisfy `ShardLayer` is a layer nobody can install.
+The other half of I10, that a tripped bound degrades and does not lose, is `TestATrippedTailLosesNothing` in `cycle`. It holds the applier,
+accepts writes until the tail bound trips, collects the refusals, then releases. The window commits,
+`CommitSeqno − AppliedSeqno` and `TailBytes` return to zero, and the refused writes, retried at the
+versions they were refused at, succeed. Reading the log as an acquiring owner would returns exactly
+the acknowledged set, in order, gap-free, with none of the refused ones. A caller told "no" still holds
+the row it read, which separates a bound from a conflict and makes `ResourceExhausted` the right
+answer.
 
-Two more guards belong in this list and cannot be written here, for the same reason in both cases:
-each is a statement about a *deployment's* own storage — its engine's transaction counters, its
-applier's statement text — and neither the in-memory map that `memwal` is nor the upstream SQL
-`memcold` issues can stand in for one. They are described here so that a deployment builds them
-rather than assuming it inherited them.
+`cycle_wiring_test.go` holds compile-time assertions that `cycle.Manager` satisfies each of the
+wrapper's faces: `ShardObserver`, `ShardWriter`, `ShardReader`, `ShardLayer` and `MetricsSink`. Each
+is asserted separately, so a `Manager` that loses one fails by that face's name. It is the cheapest
+guard and watches the widest blast radius: a layer that does not satisfy `ShardLayer` cannot be
+installed.
 
-* **an append-immediacy guard** for [I9](02-concepts-and-invariants.md#the-invariants) — drive
-  ordinary appends through the front door and read the storage engine's own transaction counters out
-  of band, asserting that the appends were immediate transactions, that nothing else was touched,
-  and that no secondary structure exists on the log's tables. It exists because a "harmless" change — an index, a
-  changefeed, one read of one other table — quietly makes every append pay for a coordinator tick,
-  and *nothing above the layer would notice*: the append still returns success, just later.
-* **a drain query-shape guard** — that the drain's statement is a function of assertion kinds and
-  delete families, never of how many mutations the window folded. A statement whose size grows with
-  the batch is green everywhere until a real store takes long enough to compile one to hit its
-  timeout, and that failure presents as a halted shard rather than as a slow write. The form it
-  replaced, and what that cost, is
+### Guards a deployment must build
+
+Two more guards cannot be written here, because each is about a deployment's own storage (its
+engine's transaction counters, its applier's statement text), and neither `memwal`'s map nor the SQL
+`memcold` issues can stand in. A deployment builds them rather than assuming it inherited them.
+
+* An append-immediacy guard for [I9](02-concepts-and-invariants.md#the-invariants) (an append is one
+  immediate write over adjacent keys of the log's own storage). Drive ordinary
+  appends through the front door, read the engine's transaction counters out of band, and assert that
+  the appends were immediate transactions (ones the store settles without a distributed coordinator),
+  that nothing else was touched, and that the log's tables have no secondary structure. An index, a
+  changefeed or one read of another table makes every append pay for a coordinator tick, and nothing
+  above the layer notices: the append still succeeds, later.
+* A drain query-shape guard: the drain's statement is a function of assertion kinds and delete
+  families, never of how many mutations the window folded. A statement that grows with the batch
+  passes until a real store takes long enough compiling one to hit its timeout, which shows up as a
+  halted shard rather than a slow write. The form it replaced is in
   [chapter 13](13-designs-that-were-rejected.md#a-folded-window-as-a-concatenation-of-the-stores-own-queries).
-
----
 
 ## The doubles, and why each is a package
 
-Six packages under `internal/verify/` exist so that a suite above them does not write its own. Each was
-extracted after several packages had written the same thing slightly differently, which is the
-failure mode a double has: two copies that disagree leave a rule green and unjudged.
+Six packages under `internal/verify/` exist so that suites above them do not each write their own.
+Each was extracted after several packages had written the same thing slightly differently, and two
+copies that disagree leave a rule green and unjudged.
 
-* **`internal/verify/coldtest`** — the cold store a drain lands in, in memory. One value satisfies both
-  `cold.Applier` and `cold.Watermarker`, and that is the point rather than a convenience: a
-  composition whose drains land somewhere the watermark does not read back is a shard that replays
-  what it already applied, and no test built that way could ever notice. It is a double and not a
-  cold store — it records what a drain carried and what watermark it moved, and interprets nothing.
-  `cold/memcold` does not make it redundant, and the division is worth keeping
-  straight: a suite that needs a drain to **land** uses the store, and a suite that needs a drain to
-  fail in a chosen way uses `coldtest.Refusing(err)`, because a correct store cannot be asked to
-  return the error a test is about.
-* **`internal/verify/basetest`** — the pre-window rows in memory, the second adapter at the seam
-  `baserow.Store` names. Absence is what makes it worth a package: a row that is not there comes
-  back from the store as a `NotFound` error, which `baserow.Rows` turns into a nil row, and that nil
-  is what every delegated assertion is stated over. A double that answered absence its own way would
-  leave all of them green and unjudged.
-* **`internal/verify/coldtasks`** — a model of the store below for the merged task read, and explicitly *not*
-  a stub. The merge's whole difficulty is the base's pagination, so a fake that answered everything
-  in one page would leave every rule in `fold/taskpage.go` untested. It models two paginations — an
-  immediate page by task id, a scheduled page refined by `(fireTime, taskID)` and bounded above by
-  fire time alone — and `coldtasks_test.go` states both plainly, because that is what a reader
-  compares their own store's queries against.
-* **`internal/verify/mutbuild`** — one well-formed mutation of a given shape, ids named rather than drawn.
-  Every shape that has a validator runs through Temporal's own before it is returned, and an invalid
-  fixture **panics**: an invalid fixture is a bug in the test rather than a case a caller handles.
-* **`internal/verify/drive` and `internal/verify/foldrun`** — the writing half of a run (one mutation into one store
-  call, plus `Stream` for driving a generated stream through the codec) and the loop that folds it
-  window by window. `foldrun` owns the loop and nothing above it: where the mutations come from is
-  the caller's, and so is what a drained batch is for, which is why the drain is a callback.
-
-`foldrun` counts only what every caller counts the same way, deliberately. What a "tombstone" is,
-for one, is the caller's — the acceptance run counts `KindDelete` alone — and a shared counter would
-have to pick a meaning for every caller to come.
-
----
+* `internal/verify/coldtest`: an in-memory cold store for a drain to land in. One value satisfies both
+  `cold.Applier` and `cold.Watermarker`, because drains that land somewhere the watermark does not
+  read back make a shard replay what it applied, and no test built that way would notice. It records
+  what a drain carried and which watermark it moved, and interprets nothing. A suite that needs a
+  drain to land uses `cold/memcold`; one that needs a drain to fail in a chosen way uses
+  `coldtest.Refusing(err)`, since a correct store cannot be asked for that error.
+* `internal/verify/basetest`: the pre-window rows in memory, the second adapter at the
+  `baserow.Store` seam. A missing row comes back as a `NotFound` error, which `baserow.Rows` turns
+  into a nil row, and every delegated assertion is stated over that nil. A double that answered
+  absence its own way would leave them all unjudged.
+* `internal/verify/coldtasks`: a model, not a stub, of the store below the merged task read. The
+  merge's difficulty is the base's pagination, so a one-page fake would leave every rule in
+  `fold/taskpage.go` untested. It models an immediate page by task id and a scheduled page refined by
+  `(fireTime, taskID)` and bounded above by fire time alone. `coldtasks_test.go` states both, for a
+  reader to compare their own store's queries against.
+* `internal/verify/mutbuild`: one well-formed mutation of a given shape, ids named rather than drawn.
+  Every shape with a validator runs through Temporal's before it is returned, and an invalid fixture
+  panics, since it is a bug in the test.
+* `internal/verify/drive` and `internal/verify/foldrun`: the writing half of a run (one mutation into
+  one store call, plus `Stream` for a generated stream through the codec) and the loop that folds it
+  window by window. Where mutations come from and what a drained batch is for are the caller's, so the
+  drain is a callback. `foldrun` counts only what every caller counts the same way; what a
+  "tombstone" is, for instance, is the caller's (the acceptance run counts `KindDelete` alone).
 
 ## The words for what judges the layer
 
-The layer's own vocabulary is [chapter
-02](02-concepts-and-invariants.md#the-glossary-in-reading-order). These two terms are deliberately
-absent from it: they name instruments that stand outside the layer and pass judgement on it.
+The layer's own vocabulary is in
+[chapter 02](02-concepts-and-invariants.md#the-glossary-in-reading-order). These three terms are
+absent from it because they name instruments that stand outside the layer and judge it.
 
-**Checker.** The judge of a run under faults, stated over a record of what each driver asked for
-and what it was told. It may not import the layer, and that is the point: a judge that dies with the
-thing it judges is no judge. It is not in this repository; `internal/verify/checker` is the record, not the
-judgement over it.
-
+**Checker.** The judge of a run under faults, over the record a driver writes; not in this repository
+([above](#the-call-record)).
 *Not to be confused with:* an assertion inside the layer, which sees what the layer believes.
 
-**Witness.** The assertion a run makes over the layer's **own** counters, beside the assertions of
-whatever suite it ran. It exists because a layer that came out empty is passthrough wearing another
-name, and somebody else's suite is green over it — so a witness can fail a run that every suite
-passed. `internal/verify/witness` is itself a judged module: a run states what it was supposed to be
-(`Expect`) and hands over what its instruments saw (`Observed`).
+**Witness.** The claims a run makes over the layer's own counters, so it can fail a run every suite
+passed ([above](#the-witness)).
+*Not to be confused with:* a smoke check or sanity assert, both weaker than the suite.
 
-*Not to be confused with:* smoke check, sanity assert — both name something weaker than the suite,
-and this is the stronger claim.
-
-A third word belongs here, and here it reaches exactly one store. An **oracle** — one stream applied
-twice, once mutation by mutation through a real store and once folded, with the two stores required
-to end identical — is the only instrument that can say a fold rule is *mechanically* right, because
-fold's rules have no specification of their own beyond the behaviour of the code they compact for.
-The one here runs both halves against `cold/memcold` ([above](#the-fold-against-not-folding)), which
-leaves it blind to whatever both arms share and silent about the store a deployment actually runs. A
-deployment that wants the strongest possible statement about the fold builds the same comparison
-over its own store, and [chapter 13](13-designs-that-were-rejected.md#judging-it) has the two
-cheaper instruments it should not build instead.
-
----
+**Oracle.** One stream applied folded and unfolded, the two stores required to end identical
+([above](#the-fold-against-not-folding)). It is the only instrument that can say a fold rule is
+mechanically right, since fold's rules have no specification beyond the code they compact for; a
+deployment wanting that about its own store builds the same comparison
+([chapter 13](13-designs-that-were-rejected.md#judging-it) has the cheaper instruments not to build).
 
 ## The map of `internal/verify/`
 
-Two kinds of package live here, and confusing them is the first mistake. **Instruments** measure or
-drive; they assert nothing. **Judgements** say yes or no.
+Two kinds of package live here. *Instruments* measure or drive and assert nothing. *Judgements* say
+yes or no.
 
 ### Instruments
 
@@ -772,13 +652,13 @@ drive; they assert nothing. **Judgements** say yes or no.
 
 | package | what it says |
 |---|---|
-| `internal/verify/acceptance` | a hundred thousand generated mutations fold, with the control that makes the ratio a measurement; and, over both real seams, that the folded batches leave the database holding what they said, hold nothing a drain that lost the shard carried, end up the same whether the stream crossed one owner or six, lose no row to an owner that kept draining after it had been fenced, and are the rows one mutation per transaction would have left |
-| `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow — with a passthrough control arm beside it |
+| `internal/verify/acceptance` | the fold over a generated stream, then over both real seams: see [the acceptance](#the-acceptance-one-stream-through-the-fold) |
+| `internal/verify/e2e` | a Temporal server, composed the production way over both seams, acquires its shards through the layer and completes a workflow, with a passthrough control arm beside it |
 | `internal/verify/guard` | tests whose job is to fail when a decision is reverted: the backpressure boundary and its error type, the wrapper's wiring |
-| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus its own tests over the three methods those suites do not know about — `Apply` (23 of them), `Watermark` and the versioned current-row read |
-| `wal/waltest` | an implementation of `wal.Log` satisfies the five guarantees — the one judgement here written to be run against somebody else's code |
+| `cold/memcold` | *(not under `internal/verify/`)* the shipped cold store answering Temporal's own four persistence suites, plus its own tests over the three methods those suites do not know about: `Apply` (23 of them), `Watermark` and the versioned current-row read |
+| `wal/waltest` | an implementation of `wal.Log` satisfies the five guarantees; the one judgement here written to be run against somebody else's code |
 
-Who judges what. Circles are judgements, boxes are what they are stated over.
+The figure shows who judges what. Circles are judgements, boxes are what they are stated over.
 
 ```mermaid
 graph LR
@@ -791,86 +671,83 @@ graph LR
   CH["internal/verify/checker"] --> R["a record of the calls one driver made"]
 ```
 
-`witness` is drawn beside the circles rather than among them, because it states claims rather than
-running them: a judgement's claims pulled into a module of its own, so that the thing whose job is to
-catch a silent pass is itself judged by a table test. `checker` is beside them for a different
-reason — it is the input a judge of a run under faults would need, and that judge is not in this
-repository.
-
----
+`witness` is drawn beside the circles because it states claims rather than running them: a
+judgement's claims in a module of their own, so the thing that catches a silent pass is itself judged
+by a table test. `checker` is beside them because it is the input a judge of a run under faults would
+need, and that judge is not here.
 
 ## The two house rules
 
-Both are absolute, both were arrived at after the tree grew violations of them, and both are stated
-here because a rule nobody can read is a rule someone deletes.
+Both rules are absolute, and both came after the tree grew violations of them.
 
 ### 1. A test asserts behaviour, never shape
 
 No `_test.go` here parses Go source (`go/ast`, `go/parser`, `go/token`), asserts over the import
-graph (no "package X may not import Y", by `go list`, `go/build` or by reading directories), or
-parses documentation and build files.
+graph ("package X may not import Y", by `go list`, `go/build` or reading directories), or parses
+documentation and build files.
 
-The ban reads as a loss until you see how such a test fails: **a green check claims something it has
-not checked.** A scan over source can only match the shapes whoever wrote it thought of, and a
-one-line alias walks past it — green, while the invariant it exists for is violable. A scan also
-matches identifiers by *name*, so a rename the compiler follows for free leaves it matching nothing,
-and passing. And running a lint rule under `go test` costs three more things: `go test ./cycle/`
-stops meaning "the cycle works", the diagnostic points at the scan rather than at the offending
-line, and the rule ends up maintained by whoever next touches the package, who did not sign up to
-maintain a linter.
+Such a test fails by being green while claiming something it has not checked. A scan over source
+matches only the shapes its author thought of, so a one-line alias walks past it while the invariant
+is violable. It matches identifiers by name, so a rename the compiler follows leaves it matching
+nothing, and passing. Running a lint rule under `go test` also costs three things: `go test ./cycle/`
+stops meaning "the cycle works", the diagnostic points at the scan instead of the offending line, and
+the rule is maintained by whoever next touches the package.
 
-What to do instead, in the order to try it:
+Instead, in this order:
 
-* **(1) make it a compile error** — unexported fields of an exported type in a package of its own is
-  the only option that cannot be walked past, and it is why `tailstate` and `window` are packages;
-* **(2) write a linter as a linter**, on `golang.org/x/tools/go/analysis`, tested with
-  `analysistest`. A check this repository decided against is switched off in `.golangci.yml` *with
-  the reason*, not silenced one `//nolint` at a time;
-* **(3) state it in prose and stop**, beside the code it is about.
-
-The third is a legitimate ending: a rule nobody can violate without reading the file they are
-editing is carried by a sentence in that file.
+1. Make it a compile error. Unexported fields of an exported type in a package of its own is the only
+   option that cannot be walked past; it is why `tailstate` and `window` are packages.
+2. Write a linter as a linter, on `golang.org/x/tools/go/analysis`, tested with `analysistest`. A
+   check this repository decided against is switched off in `.golangci.yml` with the reason, not
+   silenced one `//nolint` at a time.
+3. State it in prose beside the code it is about, and stop. A rule nobody can violate without reading
+   the file they are editing is carried by a sentence in that file.
 
 ### 2. A new guard is proved by breaking it
 
-A newly written test that passes proves nothing — not that the mechanism works, and not that the
-test would notice if it stopped. So stage the defect on purpose and show the guard go red, then put
-the number or the failure in the ticket.
+A new test that passes proves nothing: not that the mechanism works, and not that the test would
+notice if it stopped. So stage the defect, show the guard go red, and record the number or the
+failure with the change.
 
-`TestEachClaimHasADefectOnlyItCatches`, over the witness's claims, is that rule made permanent
-rather than remembered: it builds a defect per claim and requires that exactly one claim catches it.
-The same rule is what makes a *removal* honest: a claim leaves the table when no defect reaches it
-exclusively — evidence, not a judgement that it looked redundant.
-
----
+`TestEachClaimHasADefectOnlyItCatches` makes this rule permanent for the witness: it builds a defect
+per claim and requires that exactly one claim catches it. The same rule governs removal: a claim
+leaves the table only when no defect reaches it exclusively, not because it looks redundant.
 
 ## What is not claimed
 
-The collected boundaries are [chapter 15](15-the-limits-of-the-evidence.md). Four belong to the
-suites above and are stated where they are:
+The collected boundaries are in [chapter 15](15-the-limits-of-the-evidence.md). Four belong to the
+suites above:
 
-* **the contract suite cannot see a fence that does not reach another process**
-  ([above](#the-blind-spot-stated-where-the-instrument-is));
-* **no suite here hands a shard to a new owner in a second *process*** — but two owners are staged,
-  and the distinction is narrower than it sounds. Nothing in this layer speaks to another node: every
-  interaction between two owners of a shard goes through the log and the epoch, so two
-  `cycle.Manager`s over one log and one store are two nodes, and a second address space would add an
-  address space and no schedule. `internal/verify/acceptance`'s `TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark`
-  is that harness: it parks one node inside its applier, lets the other take the shard, replay the
-  parked node's entry and drain over it, and then asks what the first node's caller is told. What a
-  second process would add is the part that is genuinely absent — a real transport hanging, a real
-  kill, and storage that outlives either — and the judge that would read such a run's record back is
-  still not here;
-* **nothing here judges the fold against a store a deployment would run.** The fold *is* judged
-  against the sequential path: `TestFoldingChangesNothingButTheNumberOfTransactions` drives one
-  stream twice into two real databases, folded and one mutation per transaction, and requires the
-  rows to come out identical. Both arms are `memcold`, so a defect the two share cancels, and
-  nothing here says how the same window lands on another store's schema, row layouts and condition
-  failures; that comparison is worth building over the store a deployment cares about;
-* **nothing here survives its own process.** Both backends are in memory. No suite has ever fsynced,
-  crossed a network, waited on a quorum, or been killed.
+* The contract suite cannot see a fence or an append that never reaches storage
+  ([above](#what-the-contract-suite-cannot-see)).
+* No suite hands a shard to an owner in a second process. Two owners are staged: owners interact only
+  through the log and the epoch, so two `cycle.Manager`s over one log and one store are two nodes.
+  `TestASyncWriterIsNotToldItSucceededByAnotherNodesWatermark`, in `internal/verify/acceptance`, parks
+  one node inside its applier, lets the other take the shard, replay the parked entry and drain over
+  it, then asks what the first node's caller is told. A second process would add a real transport
+  hanging, a real kill and storage that outlives either, and the judge for such a run is not here.
+* Nothing judges the fold against a store a deployment would run. Both arms of the oracle are
+  `memcold`, so a shared defect cancels, and nothing says how a window lands on another store's
+  schema, row layouts and condition failures.
+* Nothing survives its own process. No suite has fsynced, crossed a network, waited on a quorum, or
+  been killed.
 
----
+## Summary
+
+The instruments here are arranged at four levels of evidence, of which the first three (behavioural
+result, mechanism witness, composition) are in this repository.
+
+The log seam has an exported contract suite of 21 cases that a deployment runs against its own log,
+with `CheckReopen` and `CheckRetention` for what one in-process value cannot see. The cold seam is
+judged by Temporal's own four suites over `memcold`, plus 23 `Apply` tests; nothing judges a
+deployment's applier. The acceptance drives generated streams through the fold, then into a real
+database, against the unfolded path, across six owners and across two live owners. The witness keeps
+every intercept run honest about whether the layer took part, and `e2e` shows a real server composes
+over the layer.
+
+The guards pin decisions a refactor could silently revert, the doubles keep shared rules judged in one
+place, and two house rules keep tests about behaviour and prove every new guard by breaking it. What
+none of it covers is storage that outlives the process; chapter 15 collects those limits.
 
 ## Where this lives in the code
 
