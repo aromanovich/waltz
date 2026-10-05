@@ -87,11 +87,34 @@ Whether the cycle a read reaches may answer it is decided in `Cycle.prelude`, in
    accumulator, so a view taken before it is of the wrong window.
 2. *The count*, before routing so a read sent to the cold store still counts as routed, and before
    the drain so a hit is the window as the read found it. Only the two mutable-state reads count
-   here; a task read counts its page on the way in, before the gate. A branch page is not counted,
-   so a read that never touched the overlay cannot satisfy the overlay's hit counter.
+   here; a task read counts its page on the way in, before the gate. A branch page is not counted
+   in `Reads`/`ReadsHeld` (the wrapper counts it in `wal_overlaid_reads`), so a read that never
+   touched the overlay cannot satisfy the overlay's hit counter.
 3. *The routing rule*, below.
 4. *The drain*, only when `DrainOnRead` is on, and after routing, because a halted cycle may not
    drain and a stalled one is refused first.
+
+Figure: the routing decision for all four reads, from the wrapper to the merge. The retired cycle,
+whose goroutine is gone, is the table's last row.
+
+```mermaid
+flowchart TD
+    A["a read arrives at wrapper.ExecutionStore"] --> B{"layer nil?"}
+    B -->|"yes: passthrough"| Z["the base store answers"]
+    B -->|"no"| C{"registry holds a cycle for the shard?"}
+    C -->|"no, mutable-state or branch read"| Z
+    C -->|"no, task read"| L["refuse: ShardOwnershipLost"]
+    C -->|"yes"| D["prelude: replay gate, then count"]
+    D --> E{"cycle.State and tail"}
+    E -->|"running, last drain's outcome unreadable"| R["refuse: ResourceExhausted"]
+    E -->|"halted-lost: a task read, or a non-empty tail"| L
+    E -->|"halted-invariant: a task read, or a non-empty tail"| H["refuse: the halt's own error"]
+    E -->|"halted-lost or halted-invariant, empty tail, mutable-state or branch read"| Z
+    E -->|"running"| F{"DrainOnRead?"}
+    F -->|"on"| G["drain the window, trigger=read"]
+    G --> M
+    F -->|"off"| M["merge over the window"]
+```
 
 A mutable-state read has callers that legitimately do not own the shard, so it may fall through to
 the cold store. A task read has one caller, the owning shard's queue processors, and a page short of

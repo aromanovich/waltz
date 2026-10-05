@@ -355,12 +355,29 @@ exception, a cycle that halted inside its replay, is the open defect in
 
 ### `Layer.Shutdown(ctx, budget)`: the node's stop
 
-`Shutdown` puts `budget` on a context detached from the caller's cancellation and calls
-`Manager.Close`, which empties the registry in one step and closes every cycle it took, in sequence:
-one transaction per shard, plus a replay drain first for a shard that has not replayed. A drain that
-does not commit is logged (`WARN apply cycle: the shutdown drain did not commit`) and does not stop
-the rest. The layer then closes the log and returns nil, or an `UndrainedError` naming every shard
-still holding a tail (a `cycle.Residue` each). A second `Close` finds nothing to drain. waltz applies
+Figure: inside `Shutdown`, one cycle at a time.
+
+```mermaid
+sequenceDiagram
+    participant Main as the custom main
+    participant L as waltz.Layer
+    participant MG as cycle.Manager
+    participant CY as each Cycle
+    participant CS as the cold store
+    Main->>L: Shutdown(ctx, budget)
+    L->>L: detach ctx from its cancellation, apply the budget
+    L->>MG: Close(drainCtx)
+    MG->>MG: takeAll: empty and close the registry, once
+    MG->>CY: Close: replay if unstarted, drain, then Retire
+    CY->>CS: one transaction for this shard's window
+    CY->>CY: wait for the trim in flight
+    MG-->>L: a cycle.Residue for every shard still holding a tail
+    L->>L: Log.Close
+    L-->>Main: nil, or an UndrainedError naming those shards
+```
+
+A drain that does not commit is logged (`WARN apply cycle: the shutdown drain did not commit`) and
+does not stop the next cycle's. A second `Close` finds nothing to drain. waltz applies
 no default budget; the call sites here pass 30 seconds or a minute. The cold store must still be
 open when `Shutdown` runs; why the context is detached, and the order a custom main must follow, are
 in [chapter 09](09-operations.md#2-start-and-stop-order).

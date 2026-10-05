@@ -321,6 +321,24 @@ counts every failure it hands back.
 I10 bounds the tail, not the window: the window empties when a drain starts, the tail only when its
 transaction commits.
 
+Figure: a write refused by the bound, before anything reaches the log.
+
+```mermaid
+sequenceDiagram
+  participant HS as history service
+  participant ES as wrapper.ExecutionStore
+  participant CY as cycle.Cycle
+  participant LOG as wal.Log
+
+  HS->>ES: UpdateWorkflowExecution(request)
+  ES->>CY: Write(mutation, epoch, baseRows), through cycle.Manager
+  CY->>CY: read the mirrored tail, before queueing anything
+  Note over CY: 8192 entries, or 8 MiB, or an unresolved drain, or the backend's pressure stop
+  CY-->>ES: serviceerror.ResourceExhausted, unwrapped
+  ES-->>HS: ResourceExhausted
+  Note over LOG: nothing appended, no seqno consumed
+```
+
 The refusal is `*serviceerror.ResourceExhausted` with
 `Cause = RESOURCE_EXHAUSTED_CAUSE_PERSISTENCE_LIMIT` and `Scope = RESOURCE_EXHAUSTED_SCOPE_SYSTEM`,
 the pair the server's own persistence rate limiter uses, so the retry stays inside the history
