@@ -1,19 +1,17 @@
 package cycle
 
-// The two mutable-state reads: answered from the window where it holds the run,
-// from the cold store where it does not.
+// The two mutable-state reads: answered from the window where it holds the
+// run, otherwise from the cold store.
 //
-// Nothing here wraps. What comes out is what ContextImpl.handleReadError
-// type-switches on, and it matches one concrete type with no errors.As.
+// Nothing here wraps errors: ContextImpl.handleReadError type-switches on one
+// concrete type.
 //
-// A read is a job on the cycle's own goroutine because the drain runs
-// there: a read served anywhere else could land in the interval where the window
-// has been emptied and the transaction has not yet committed, the one interval
-// in which a mutation is in neither source. The cost is that a shard's reads and
-// writes serialise.
+// Reads run on the cycle's goroutine, where the drain runs, so none lands
+// between a drain emptying the window and its commit, when a mutation is in
+// neither source. The cost: a shard's reads and writes serialise.
 //
-// The base row arrives as a thunk because the cycle may not name a store and the
-// wrapper may not import anything that reaches one.
+// The base row arrives as a thunk because neither the cycle nor the wrapper
+// may name a store.
 
 import (
 	"context"
@@ -57,10 +55,9 @@ func (m *Manager) GetCurrentExecution(
 	return c.getCurrentExecution(ctx, req, base)
 }
 
-// offLoop answers a read no loop served — the registry held no cycle, or the
-// one it held has stopped. Only [passThrough] is answered here; every other
-// route this side of the loop refuses, and the rules build a non-nil refusal
-// for each of them.
+// offLoop answers a read no loop served (no cycle, or a stopped one). Only
+// [passThrough] reaches base; every other route returns the rule's non-nil
+// refusal.
 func offLoop[T any](
 	ctx context.Context,
 	route readRoute,
@@ -108,34 +105,29 @@ func (c *Cycle) getCurrentExecution(
 	return resp, err
 }
 
-// stoppedRead hands what a cycle whose goroutine is gone has left to
-// [stoppedRoute]: the state its loop stopped in, and the mirrored tail rather
-// than [tailstate.Tail.Empty] — nothing is left to ask, so the answer is the
-// last one the loop published. halt is the standing refusal [ask] returned in
-// place of an answer.
+// stoppedRead routes a read on a cycle whose goroutine is gone
+// ([stoppedRoute]), using the mirrored tail since no loop is left to ask. halt
+// is the refusal [ask] returned.
 func (c *Cycle) stoppedRead(who reader, halt error) (readRoute, error) {
 	return stoppedRoute(c.State(), c.mirror.Empty(), who, c.shard, halt)
 }
 
-// prelude is the order the four reads share: the readiness gate, the count, the
-// routing rule, and the drain DrainOnRead may ask for. pass is that rule's answer —
-// the read is to be served from the cold store.
+// prelude is the order all four reads share: readiness gate, count, routing
+// rule, then the DrainOnRead drain. pass means serve from the cold store.
 //
-// takeView builds the read's view of the window and reports whether the window held
-// what the read is for. It runs after the gate, because a replay resets the
-// accumulator it reads; before the routing rule, because a read that rule passes
-// through is still a read this shard routed; and a second time after a drain,
-// which empties the window the first view was taken of. That second call does
-// not count again. A read holding no view passes nil.
+// takeView builds the read's view of the window and reports whether it held
+// what the read wants; nil means the read takes no view. It runs after the
+// gate (replay resets the accumulator), before the routing rule (a passed-
+// through read still counts), and again, uncounted, after a drain empties the
+// window.
 //
-// The order is not an arrangement. The rule consulted before the gate sees a
-// running cycle — the fence only the replay can find is not on the state yet —
-// says nothing, and lets the read merge a window that replay has since reset; a
-// count after it loses the reads it passes through; a drain before the count
-// shows the counters a window the read never saw.
+// Each position matters. Routing before the gate would miss a fence only the
+// replay finds and merge a window the replay then resets; counting after
+// routing loses passed-through reads; draining before the count shows counters
+// for a window the read never saw.
 func (c *Cycle) prelude(ctx context.Context, s *state, who reader, takeView func(*state) bool) (bool, error) {
-	// A read needs the window, so it triggers replay: a read on an inherited
-	// tail would otherwise be answered from a cold store the log is ahead of.
+	// A read triggers replay; otherwise an inherited tail would be answered
+	// from a cold store the log is ahead of.
 	if err := c.startForRead(ctx, s); err != nil {
 		return false, err
 	}
@@ -160,10 +152,10 @@ func (c *Cycle) prelude(ctx context.Context, s *state, who reader, takeView func
 	return false, nil
 }
 
-// windowView is a read's half of the window, taken before the base row is read:
-// whether the window holds what the read is for, whether the answer still needs
-// the cold store's row, and the merge of the two. [fold.CurrentView] satisfies
-// it as it stands; [fold.RunView] does through [runView].
+// windowView is a read's view of the window, taken before the base row: whether
+// the window holds the target, whether the cold store's row is still needed,
+// and the merge of the two. [fold.CurrentView] satisfies it; [fold.RunView]
+// does through [runView].
 type windowView[Resp any] interface {
 	Held() bool
 	NeedsBase() bool
@@ -181,14 +173,9 @@ func (v runView) Render(
 	return resp, found, nil
 }
 
-// readOverlay is the loop's half of both mutable-state reads: the shared order
-// through [Cycle.prelude], the base row where the view needs one, and the
-// render. takeView is called on the loop and must build the view from s; notFound
-// names what was looked for.
-//
-// The two reads differ in what they take and in what they call an absence, and
-// in nothing else — so the order here has one body, and a third read of this
-// shape is a view and a message.
+// readOverlay is the loop's half of both mutable-state reads: [Cycle.prelude],
+// the base row if the view needs it, then the render. takeView runs on the loop
+// and builds the view from s; notFound builds the absence error.
 func readOverlay[Resp any](
 	ctx context.Context,
 	c *Cycle,
@@ -263,26 +250,21 @@ func (c *Cycle) readCurrent(
 		})
 }
 
-// routeRead hands the loop's own values to [loopRoute] and reads the route back
-// as [Cycle.prelude]'s pass: only [passThrough] is served from the cold store.
-// The halt's own error is built here, so what the rule hands back unconverted is
-// a value this cycle had.
+// routeRead asks [loopRoute] with the loop's values; pass is true only for
+// [passThrough]. The halt error is built here, so an unconverted refusal is
+// this cycle's own.
 func (c *Cycle) routeRead(s *state, who reader) (bool, error) {
 	unresolved, _ := s.tail.Stalled()
 	route, refusal := loopRoute(s.st, s.tail.Empty(), unresolved.Seqno, who, c.shard, c.halted(s))
 	return route == passThrough, refusal
 }
 
-// startForRead is the read path's readiness gate: a running cycle that has not
-// read its floor and replayed its tail does so now, on this caller's context.
-//
-// A halt raised by the replay is swallowed and left to [Cycle.routeRead].
-// Otherwise the read that discovers the fence answers with the replay's own
-// words, which nothing at the store boundary recognises, and for a task read
-// that answer lets a caller complete a range it should have been refused. A
-// failure that leaves the cycle running is returned instead.
-//
-// Its place in the read path is [Cycle.prelude]'s.
+// startForRead is the readiness gate: a running cycle that has not yet
+// replayed its tail does so now, on the caller's context.
+// A halt raised by the replay is left to [Cycle.routeRead]; returned here, its
+// error is unrecognised at the store boundary and could let a task reader
+// complete a range it should have been refused. A failure that leaves the
+// cycle running is returned.
 func (c *Cycle) startForRead(ctx context.Context, s *state) error {
 	if s.st != StateRunning {
 		return nil
@@ -294,15 +276,10 @@ func (c *Cycle) startForRead(ctx context.Context, s *state) error {
 	return err
 }
 
-// drainForRead is [Config.DrainOnRead]: the window applied before the read it
-// would have merged into. It reports whether the mode is on, because a view
-// taken before it is a view of a window it has emptied.
-//
-// A halted cycle may not drain, which is why [Cycle.prelude] runs it after the
-// routing rule — and a stalled one is refused there, so the resolve every drain
-// begins with is not this instrument's to reach. What goes to zero here is
-// task-reads-merged, the honest witness that the merge did not run. A drain that
-// fails fails the read.
+// drainForRead implements [Config.DrainOnRead]: apply the window before the
+// read. It reports whether it drained, since an earlier view is now stale.
+// It runs after the routing rule because a halted cycle may not drain, and a
+// stalled one is refused there first. A failed drain fails the read.
 func (c *Cycle) drainForRead(ctx context.Context, s *state) (bool, error) {
 	if !c.policy().DrainOnRead {
 		return false, nil
@@ -310,9 +287,8 @@ func (c *Cycle) drainForRead(ctx context.Context, s *state) (bool, error) {
 	return true, c.drain(ctx, s, drainRead)
 }
 
-// countRead counts the read, and separately whether the window held anything for
-// it. A mode-level witness needs the second: reads that never crossed a held
-// workflow is what a layer that came out empty looks like.
+// countRead counts the read and, separately, whether the window held anything
+// for it (see [Counters.ReadsHeld]).
 func (c *Cycle) countRead(s *state, held bool) {
 	s.Reads++
 	if held {

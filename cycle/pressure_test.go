@@ -31,7 +31,7 @@ func (pl *pressured) Pressure(wal.ShardID) wal.PressureLevel {
 
 func (pl *pressured) report(l wal.PressureLevel) { pl.level.Store(int32(l)) }
 
-// pressureEnv is newEnv over a log that reports pressure, with every watermark
+// pressureEnv is newEnv over a log that reports pressure, with every trigger
 // and the trim cadence out of reach: the only drain and the only trim that can
 // happen in these tests are the ones pressure asks for, unless the shape says
 // otherwise.
@@ -49,14 +49,14 @@ func pressureEnv(t *testing.T, shape func(*Config)) (*env, *pressured) {
 }
 
 // TestPressureDrainsTheWindowAndForcesTheTrim: the drain level empties a
-// window no watermark would have, the drain says what asked for it, and the
+// window no trigger would have, the drain says what asked for it, and the
 // committed drain's trim consults no cadence.
 func TestPressureDrainsTheWindowAndForcesTheTrim(t *testing.T) {
 	e, pl := pressureEnv(t, nil)
 	ns, wf, run := ids()
 
 	require.NoError(t, e.add(t, mkCreate(ns, wf, run)))
-	require.Empty(t, e.apply.drains, "without pressure this window drains on no watermark")
+	require.Empty(t, e.apply.drains, "without pressure this window drains on no trigger")
 
 	pl.report(wal.PressureDrain)
 	require.NoError(t, e.add(t, mkUpdate(ns, wf, run, 2)),
@@ -143,7 +143,7 @@ func TestAnAcquireUnderPressureReclaimsThePreviousOwnersEntries(t *testing.T) {
 
 // TestStandingPressureRetriesAFailedForcedTrimAtTheAgeTick: under the stop
 // level the writers are refused, so no write brings a drain or a trim with it
-// — the tick is the retry, on the same arm that re-asks a stalled watermark.
+// — the tick is the retry, on the same arm that re-asks a stalled drain.
 func TestStandingPressureRetriesAFailedForcedTrimAtTheAgeTick(t *testing.T) {
 	e, pl := pressureEnv(t, nil)
 	ns, wf, run := ids()

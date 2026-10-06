@@ -4,25 +4,22 @@ package fold
 // assertions before it is acked, and what it hands on.
 //
 // Only the head of a window is asserted against the database, so without this
-// file a stale conditional write folds in silently. Every assertion is in one of
-// two states, which partition them:
+// file a stale conditional write would fold in silently. Each assertion is
+// either:
 //
-//   - recorded: the mutation heads its run (or its workflow's current row), so
-//     apply's transaction asserts it against the cold store atomically with the
-//     write. It stands on the pre-window row, which this package may not read,
-//     so it is handed back as [Delegated] for the caller;
-//   - discarded: an earlier mutation of this window already heads that run, so
-//     the state it stands on is the window's own. Evaluated here.
+//   - recorded: the mutation heads its run (or the current row), so apply's
+//     transaction asserts it against the cold store. It stands on the
+//     pre-window row, which this package may not read, so it is handed back as
+//     [Delegated];
+//   - discarded: an earlier mutation already heads that run, so it stands on
+//     the window's own state and is evaluated here.
 //
-// A discarded assertion the window does not determine is refused rather than
-// left unchecked; [ErrRefused] hands it to the next window, where it is a head
-// again, which terminates after one drain because an empty window discards
-// nothing.
+// A discarded assertion the window does not determine is refused
+// ([ErrRefused]); after a drain it is a head again, so one retry suffices.
 //
-// Checking happens before the append: once the entry is durable the caller has
-// been told the write succeeded, and a condition evaluated after that has no
-// addressee and no undo. The value returned is the store's own error built from
-// the window's state, unwrapped for the caller's type switch.
+// Checking happens before the append, because after it the caller has been
+// told the write succeeded. Failures are the store's own error types,
+// unwrapped for the caller's type switch.
 
 import (
 	"fmt"
@@ -36,33 +33,26 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// Delegated is what one [Accumulator.Check] could not answer: the assertions
-// the fold will record, which stand on the pre-window row rather than on the
-// window. This package may not read that row, so the value names it and hands
-// the obligations to a caller that can ([Delegated.Settle]).
+// Delegated is what one [Accumulator.Check] could not answer: the recorded
+// assertions, which stand on pre-window rows this package may not read. The
+// caller reads them via [Delegated.Settle].
 type Delegated struct {
-	// Current is the workflow's current-execution-row assertion, when the
-	// mutation carries one this window says nothing about. Nil otherwise.
+	// Current is the current-row assertion, if the window does not hold the row.
 	Current *DelegatedCurrent
 	// Runs are the run-row assertions the window does not hold state for.
 	Runs []DelegatedRun
 }
 
-// Any reports whether anything was delegated, which is the test for "this
-// mutation costs a cold-store read".
+// Any reports whether anything was delegated, i.e. a cold-store read is needed.
 func (d Delegated) Any() bool { return d.Current != nil || len(d.Runs) > 0 }
 
-// Settle hands each delegated assertion to the caller, which reads the row it
-// names and judges it with the predicate that comes with it
-// ([DelegatedCurrent.Verify], [DelegatedRun.Verify]). The first non-nil answer
-// is the answer, so nothing past a failing assertion is reached; a delegation
-// of nothing calls neither function.
+// Settle hands each delegated assertion to the caller, which reads the named
+// row and judges it with [DelegatedCurrent.Verify] or [DelegatedRun.Verify].
+// It stops at the first non-nil error.
 //
-// The obligations come in the plugin's registration order, the current row
-// before the run rows, because the store reports the first failing assertion in
-// that order and upstream's compatibility suites assert on the error's type.
-// Whichever function this calls first therefore names the row the store would
-// have judged first.
+// The order is the plugin's registration order, current row before run rows,
+// because the store reports the first failing assertion in that order and
+// upstream's suites assert on the error's type.
 func (d Delegated) Settle(current func(DelegatedCurrent) error, run func(DelegatedRun) error) error {
 	if cur := d.Current; cur != nil {
 		if err := current(*cur); err != nil {
@@ -77,8 +67,7 @@ func (d Delegated) Settle(current func(DelegatedCurrent) error, run func(Delegat
 	return nil
 }
 
-// DelegatedCurrent is a current-execution-row assertion the transaction will
-// carry, and the row it is about.
+// DelegatedCurrent is a delegated current-row assertion and the row it names.
 type DelegatedCurrent struct {
 	NamespaceID string
 	WorkflowID  string
@@ -86,8 +75,7 @@ type DelegatedCurrent struct {
 	want CurrentAssertion
 }
 
-// DelegatedRun is a run-row assertion the transaction will carry, and the row
-// it is about.
+// DelegatedRun is a delegated run-row assertion and the row it names.
 type DelegatedRun struct {
 	NamespaceID string
 	WorkflowID  string
@@ -96,14 +84,14 @@ type DelegatedRun struct {
 	want RunAssertion
 }
 
-// Verify evaluates the delegated current-row assertion against the cold store's
-// row. See [CurrentAssertion.VerifyRow] for the arguments and the answer.
+// Verify evaluates the assertion against the cold store's row; see
+// [CurrentAssertion.VerifyRow].
 func (d DelegatedCurrent) Verify(base *p.InternalGetCurrentExecutionResponse, lastWriteVersion int64) error {
 	return d.want.VerifyRow(base, lastWriteVersion)
 }
 
-// Verify evaluates the delegated run-row assertion against the cold store's
-// row. See [RunAssertion.VerifyRow] for the arguments and the answer.
+// Verify evaluates the assertion against the cold store's row; see
+// [RunAssertion.VerifyRow].
 func (d DelegatedRun) Verify(base *p.InternalGetWorkflowExecutionResponse) error {
 	return d.want.VerifyRow(d.WorkflowID, base)
 }
@@ -111,44 +99,32 @@ func (d DelegatedRun) Verify(base *p.InternalGetWorkflowExecutionResponse) error
 // Check reports what the store would have answered for m, as far as this window
 // determines it, and hands back what it does not ([Delegated]).
 //
-// A nil error means nothing this window determines refuses the mutation. It does
-// not mean every assertion held: the delegated ones stand on the pre-window row,
-// and closing them is the caller's business.
+// A nil error means nothing the window determines refuses the mutation; the
+// delegated assertions are still the caller's to settle.
 //
-// The answer can differ from the store's for a mutation whose current-row
-// assertion is delegated and whose run assertion this window refuses: the store
-// walks the current row first, so a doubly-stale caller gets the other error
-// type here. Both are legitimate answers; only the order is ours.
+// When the current-row assertion is delegated and a run assertion fails here,
+// a doubly-stale caller gets the run error where the store would report the
+// current-row one. Both are legitimate answers.
 //
-// Read-only on the accumulator, which is what makes a refusal safe to retry.
+// Read-only on the accumulator, so a refusal is safe to retry.
 func (a *Accumulator) Check(m mutation.Mutation) (Delegated, error) {
 	del, _, err := a.check(m)
 	return del, err
 }
 
-// check is [Accumulator.Check] with the counters beside its answer: the
-// condition corpus measures them, and the derivation test requires that an empty
-// window record every assertion and evaluate none.
+// check is [Accumulator.Check] plus its counters, for tests.
 func (a *Accumulator) check(m mutation.Mutation) (Delegated, coverage, error) {
 	v := a.decide(m)
 	return v.delegated, v.coverage, v.err
 }
 
-// coverage is how much of one mutation's assertion set this authority accounted
-// for, and in which of the two ways. The partition it reports — every assertion
-// either evaluated here or recorded for the drain's transaction, and none
-// twice — is the claim the authority exists to make, and a share that moves is
-// a request shape whose assertions started travelling by a road nobody chose.
-//
-// A refused assertion is counted in asserted and in neither of the others;
-// errors.Is(err, ErrRefused) is the same fact and gets no counter.
+// coverage counts how one mutation's assertions were handled: each is either
+// evaluated here or recorded for the transaction, never both. A refused one is
+// counted only in asserted.
 type coverage struct {
-	// asserted counts the assertions the mutation carries.
 	asserted int
-	// recorded counts those that head the window: apply's transaction asserts
-	// them against the cold store, and they are the ones in [Delegated].
-	recorded int
-	// evaluated counts those the window determines and this file answered.
+	// recorded counts the head assertions, the ones in [Delegated].
+	recorded  int
 	evaluated int
 }
 
@@ -170,9 +146,8 @@ func (v *verdict) undecided(what string) {
 	}
 }
 
-// fail records the first condition failure. Later assertions are still walked so
-// the counters stay honest, but only the first is reported, as the plugin
-// reports only the first failing assertion in registration order.
+// fail records a condition failure. Only the first is reported, as the plugin
+// does; later assertions are still counted.
 func (v *verdict) fail(err error) {
 	v.coverage.asserted++
 	v.coverage.evaluated++
@@ -201,23 +176,17 @@ func (a *Accumulator) decide(m mutation.Mutation) verdict {
 	var v verdict
 	want, known := assertionsOf(m)
 	if !known {
-		// Silence is the zero verdict, which the caller reads as "nothing
-		// refuses this" — an assertion admitted by a derivation that did not
-		// recognise the request. Refusing here puts a ninth kind's failure
-		// before the append rather than at fold.Add, after it was acked. Not
-		// ErrRefused: a drain does not make an unknown kind knowable, and
-		// recover retries exactly once.
+		// Fail an unknown kind before the append rather than at Add after the
+		// ack. Not ErrRefused: a drain does not make it knowable.
 		v.err = fmt.Errorf("fold: check: %w", mutation.ErrNotExactlyOneRequest)
 		return v
 	}
-	// A fast path and not a guard: empty means no current assertion and no runs,
-	// so the two walks below would visit nothing. Deleting it fails no test,
-	// which is the answer a sweep should get.
+	// Fast path only; the walks below would visit nothing.
 	if want.empty() {
 		return v
 	}
 
-	// The current row before the run rows; the reason is at [Delegated.Settle].
+	// Current row first; see [Delegated.Settle].
 	w := a.peek(want.namespaceID, want.workflowID)
 	if want.current != nil {
 		a.decideCurrent(&v, w, want.namespaceID, want.workflowID, *want.current)
@@ -228,8 +197,8 @@ func (a *Accumulator) decide(m mutation.Mutation) verdict {
 	return v
 }
 
-// decideRun evaluates one run-row assertion, or delegates it to the transaction.
-// A run the window does not hold is a head, which is [workflowAcc.heldRun].
+// decideRun evaluates one run-row assertion, or delegates it if the window does
+// not hold the run ([workflowAcc.heldRun]).
 func (a *Accumulator) decideRun(v *verdict, w *workflowAcc, namespaceID, workflowID, runID string, want RunAssertion) {
 	rs := w.heldRun(runID)
 	if rs == nil {
@@ -242,8 +211,7 @@ func (a *Accumulator) decideRun(v *verdict, w *workflowAcc, namespaceID, workflo
 	case rs.tombstoned:
 		exists = false
 	case rs.owner == nil:
-		// Not a shape the accumulator produces; refusing is the conservative
-		// reading.
+		// The accumulator never produces this; refuse to be safe.
 		v.undecided(fmt.Sprintf("the row of run %s", runID))
 		return
 	default:
@@ -257,15 +225,13 @@ func (a *Accumulator) decideRun(v *verdict, w *workflowAcc, namespaceID, workflo
 	v.evaluate()
 }
 
-// decideCurrent evaluates one current-execution-row assertion, or delegates it.
-// A row the window does not hold is a head, which is [workflowAcc.assertsCurrent].
+// decideCurrent evaluates one current-row assertion, or delegates it if the
+// window does not hold the row ([workflowAcc.assertsCurrent]).
 //
-// Unlike a run, a current-row assertion is not always determined, and three
-// paths refuse rather than answer: a delete-current with no assertion above it
-// tainted the row, so an assertion behind it is refused ahead of the delegation
-// rather than recorded as a head the window never stood on; a bypass-current
-// write records the head assertion and writes no row; and behind a surviving
-// guard the row is neither the window's write nor the pre-window one.
+// Three cases are refused: the row is tainted by an unasserted delete-current
+// (so the assertion would be a head the window never stood on); a
+// bypass-current write held the row but wrote none; or a surviving guard left
+// the row neither the window's write nor the pre-window one.
 func (a *Accumulator) decideCurrent(v *verdict, w *workflowAcc, namespaceID, workflowID string, want CurrentAssertion) {
 	if !w.assertsCurrent() {
 		if w.currentTainted() {
@@ -281,12 +247,9 @@ func (a *Accumulator) decideCurrent(v *verdict, w *workflowAcc, namespaceID, wor
 	case CurrentWritten:
 		cw = view.write
 	case CurrentGone:
-		// The window's net effect is removal, so the row is absent whatever it
-		// held before.
+		// Net effect is removal: the row is absent.
 	default:
-		// Held, yet the window determines no row: a bypass-current write
-		// records the head assertion and writes nothing, and behind a surviving
-		// guard the row is neither the window's write nor the pre-window one.
+		// Held, but the window determines no row (see above).
 		v.undecided("the current-execution row")
 		return
 	}
@@ -300,12 +263,10 @@ func (a *Accumulator) decideCurrent(v *verdict, w *workflowAcc, namespaceID, wor
 
 // --- the predicates -------------------------------------------------------
 //
-// One assertion against one row, wherever the row came from: the window's own
-// write, the pre-window row read before the append, the rows the drain's own
-// transaction locks, or the row apply reads back after a failure. The four
-// callers differ in how they find the row and in nothing else, and each answers
-// with the value below — the store's own error, message included, since that is
-// what an operator reading a halted shard's logs compares against the store's.
+// One assertion against one row, wherever the row came from (the window's
+// write, a pre-append read, the drain's transaction, or apply's read-back).
+// Each answers with the store's own error, message included, since operators
+// compare it with the store's logs.
 
 // against evaluates the run-row assertion. exists is whether the row is there
 // and version is its db_record_version, meaningless when it is not.
@@ -324,12 +285,8 @@ func (want RunAssertion) against(workflowID string, exists bool, version int64) 
 }
 
 // VerifyRow evaluates the run-row assertion against a row as the store returns
-// it, and answers with the store's own error, or nil. base is nil when there is
-// no such execution; workflowID names the row in the answer, the store's errors
-// naming the workflow rather than the run.
-//
-// This needs no column beyond the response: every condition the plugin asserts
-// about a run row is db_record_version or the row's existence.
+// it (nil when absent), answering with the store's own error or nil.
+// workflowID is used in the message, as the store's errors name the workflow.
 func (want RunAssertion) VerifyRow(workflowID string, base *p.InternalGetWorkflowExecutionResponse) error {
 	if base == nil {
 		return want.against(workflowID, false, 0)
@@ -337,23 +294,19 @@ func (want RunAssertion) VerifyRow(workflowID string, base *p.InternalGetWorkflo
 	return want.against(workflowID, true, base.DBRecordVersion)
 }
 
-// currentRow is a current-execution row as an assertion is judged against it:
-// the three columns the store asserts on, and how to build the payload its
-// conflict error carries. When exists is false there is no row and no other
-// field is read.
+// currentRow is the three columns the store asserts on, plus a builder for its
+// conflict error. When exists is false no other field is read.
 type currentRow struct {
 	exists           bool
 	runID            string
 	state            enumsspb.WorkflowExecutionState
 	lastWriteVersion int64
 
-	// conflict builds the store's own conflict error for msg, carrying this
-	// row's payload. Required when exists.
+	// conflict builds the store's conflict error for msg. Required when exists.
 	conflict func(msg string) error
 }
 
-// writtenRow is the current-execution row the window will leave, nil meaning the
-// window's net effect is that there is none.
+// writtenRow is the current row the window will leave; nil cw means none.
 func writtenRow(cw *CurrentWrite) currentRow {
 	if cw == nil {
 		return currentRow{}
@@ -367,9 +320,8 @@ func writtenRow(cw *CurrentWrite) currentRow {
 	}
 }
 
-// readRow is a current-execution row as the store returns it. State is read from
-// the response's execution state rather than from the column beside it: one
-// upsert writes both from one struct.
+// readRow is a current row as the store returns it. State comes from the
+// execution state, which one upsert writes together with the column.
 func readRow(base *p.InternalGetCurrentExecutionResponse, lastWriteVersion int64) currentRow {
 	if base == nil {
 		return currentRow{}
@@ -390,10 +342,7 @@ func (want CurrentAssertion) against(row currentRow) error {
 		}
 		return nil
 	}
-	// Every other kind is a claim about a row, so an absent one fails them all,
-	// with a bare message because there is no row to build a payload from.
-	// Hoisted rather than repeated per arm, so a fifth CurrentKind inherits the
-	// check instead of admitting a condition.
+	// Every other kind needs a row. Hoisted so a new CurrentKind inherits it.
 	if !row.exists {
 		return &p.CurrentWorkflowConditionFailedError{Msg: "must exist"}
 	}
@@ -407,9 +356,8 @@ func (want CurrentAssertion) against(row currentRow) error {
 			return row.conflict(fmt.Sprintf("current run id %s must not be equal to %s", row.runID, want.RunID))
 		}
 	case CurrentEqualsWithVersion:
-		// The row must also be COMPLETED, this assertion being a create over a
-		// finished run. Left out, a start over a running run is admitted here
-		// and rejected by the store.
+		// The row must also be COMPLETED (a create over a finished run), as the
+		// store requires.
 		if row.state != enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED ||
 			row.runID != want.RunID || row.lastWriteVersion != want.LastWriteVersion {
 			return row.conflict(fmt.Sprintf(
@@ -423,25 +371,19 @@ func (want CurrentAssertion) against(row currentRow) error {
 }
 
 // VerifyRow evaluates the current-row assertion against a row as the store
-// returns it, and answers with the store's own error, or nil. base is nil when
-// the workflow has no current row, and lastWriteVersion is that row's
-// last_write_version column, zero when there is no row.
+// returns it (nil when absent), answering with the store's own error or nil.
+// lastWriteVersion is the row's last_write_version column (zero if absent).
 //
-// The column must be passed separately because the plugin asserts run id, state
-// and last_write_version while [p.InternalGetCurrentExecutionResponse] carries
-// only the first two; a caller that cannot read it could confirm
-// CurrentEqualsWithVersion and never refuse it, which is why the versioned read
-// is a construction-time requirement of the store below rather than a
-// capability the layer degrades without.
+// The column is passed separately because the response lacks it; without it
+// CurrentEqualsWithVersion could never be refused, so the store below must
+// provide the versioned read.
 func (want CurrentAssertion) VerifyRow(base *p.InternalGetCurrentExecutionResponse, lastWriteVersion int64) error {
 	return want.against(readRow(base, lastWriteVersion))
 }
 
-// The three run-row failures, in the words a Cassandra-shaped store raises them
-// with. The message is part of the answer: an operator reading a halted shard's
-// logs compares it against the store's own, so the two must not diverge. A
-// store whose wording differs is one this text does not match — only the version
-// mismatch is upstream's verbatim (see NOTICE).
+// The three run-row failures, worded as a Cassandra-shaped store words them so
+// operators can match them to store logs. Only the version mismatch is
+// upstream's verbatim (see NOTICE).
 
 func runMustNotExist(workflowID string) error {
 	return &p.WorkflowConditionFailedError{Msg: fmt.Sprintf("Workflow %s must not exist", workflowID)}
@@ -459,14 +401,8 @@ func runVersionMismatch(workflowID string, want, actual int64) error {
 	}
 }
 
-// currentConflict is the plugin's own extractCurrentWorkflowConflictError, built
-// from the window instead of from a row read back — so every field comes out of
-// the blob the window will write, which is the blob the store would have read.
-// The start time included: it is what the reuse check above measures against, and
-// an absent one there is read as a run that began at the zero time, so the
-// minimal-interval refusal never fires again for that workflow. This is the
-// commoner of the two sites in a layer that answers a retried start out of its own
-// window rather than out of a row.
+// currentConflict is the plugin's extractCurrentWorkflowConflictError built
+// from the blob the window will write, start time included ([startTimeOf]).
 func currentConflict(msg string, cw *CurrentWrite) error {
 	st, err := serialization.WorkflowExecutionStateFromBlob(cw.StateBlob)
 	if err != nil {
@@ -483,15 +419,11 @@ func currentConflict(msg string, cw *CurrentWrite) error {
 	}
 }
 
-// currentRowConflict is currentConflict for a row that was read rather than
-// written by the window: the same error, built from the response's
-// already-deserialised execution state instead of from a blob.
+// currentRowConflict is currentConflict for a row read from the store.
 //
-// The run id comes off the response rather than out of that state, which is
-// where the store below puts it and where [readRow] compares it: upstream's own
-// read fills the field and leaves the state's copy empty, so a conflict built
-// from the state alone names nobody — and the history service skips the whole of
-// its conflict resolution, request-id dedup included, when the run id is empty.
+// The run id comes from the response, not the state: upstream's read leaves
+// the state's copy empty, and with an empty run id the history service skips
+// conflict resolution, request-id dedup included.
 func currentRowConflict(msg string, base *p.InternalGetCurrentExecutionResponse, lastWriteVersion int64) error {
 	st := base.ExecutionState
 	return &p.CurrentWorkflowConditionFailedError{
@@ -505,10 +437,9 @@ func currentRowConflict(msg string, base *p.InternalGetCurrentExecutionResponse,
 	}
 }
 
-// startTimeOf is the state's start time as the store's error carries it, nil
-// where the state has none. The reuse check the start path runs against it reads
-// an absent one as a run that began at the zero time, so every interval it
-// measures is enormous and the minimal-interval refusal never fires.
+// startTimeOf is the state's start time, nil if none. Without it the start
+// path's reuse check sees a zero start time and its minimal-interval refusal
+// never fires.
 func startTimeOf(st *persistencespb.WorkflowExecutionState) *time.Time {
 	if st.GetStartTime() == nil {
 		return nil
@@ -517,9 +448,8 @@ func startTimeOf(st *persistencespb.WorkflowExecutionState) *time.Time {
 	return &t
 }
 
-// writtenVersion is the db_record_version the window's state for a run will
-// write: the merged request's, which is the newest folded in, not the
-// assertion's.
+// writtenVersion is the db_record_version the merged request will write for
+// the run (the newest folded in, not the asserted one).
 func (pr *pendingReq) writtenVersion(part partKind) int64 {
 	if part == partMutation {
 		return pr.mutationPart().DBRecordVersion

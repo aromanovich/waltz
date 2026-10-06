@@ -16,10 +16,8 @@ import (
 
 // Encoding: Temporal's structs into the mirror, one struct at a time.
 //
-// Every collection is written in sorted key order. That alone is what makes
-// [Encode] a function of its argument: callers compare the bytes of two
-// encodings of the same mutation, and Go's map iteration order would give one
-// mutation several byte strings.
+// Every collection is written in sorted key order, so [Encode] is
+// deterministic: callers compare the bytes of two encodings of one mutation.
 
 func encodeCreate(r *p.InternalCreateWorkflowExecutionRequest) (*CreateRequest, error) {
 	snapshot, err := encodeSnapshot(&r.NewWorkflowSnapshot)
@@ -103,10 +101,8 @@ func encodeMutation(m *p.InternalWorkflowMutation) (*WorkflowMutation, error) {
 		WorkflowId:  m.WorkflowID,
 		RunId:       m.RunID,
 
-		// Only the blob is carried; [Decode] derives the parsed proto back from
-		// it, and derives nil from a blob that is not there — which is why a
-		// request holding the struct without the blob is refused above rather
-		// than encoded to something that decodes back as neither.
+		// Only the blob is carried; [Decode] derives the proto from it (nil
+		// from no blob), hence the refusal above of a proto without its blob.
 		ExecutionInfo:  encodeBlob(m.ExecutionInfoBlob),
 		ExecutionState: encodeBlob(m.ExecutionStateBlob),
 
@@ -176,16 +172,11 @@ func encodeSnapshot(s *p.InternalWorkflowSnapshot) (*WorkflowSnapshot, error) {
 
 // ---------------------------------------------------------------- pieces
 
-// refuseUncarried holds the blob-is-authoritative rule to what the record can
-// actually carry: a parsed proto whose blob is absent has no home here, and
-// encoding it anyway hands the log an entry that decodes back to neither the
-// struct nor the bytes. Both pairs are checked, because the two failures differ
-// and neither is visible from above — a missing state panics the fold on replay,
-// a missing info commits a row without one.
+// refuseUncarried refuses a parsed proto whose blob is absent: the record
+// carries only blobs, so it would decode to neither. Without the state blob
+// the fold panics on replay; without the info blob a row commits without it.
 //
-// The other direction is the ordinary case and not an error: a blob with no
-// parsed proto beside it is exactly what [Decode] produces before the derive,
-// and what a caller holding only bytes legitimately has.
+// A blob without its parsed proto is fine: that is what [Decode] produces.
 func refuseUncarried(
 	info *persistencespb.WorkflowExecutionInfo, infoBlob *commonpb.DataBlob,
 	state *persistencespb.WorkflowExecutionState, stateBlob *commonpb.DataBlob,
@@ -196,20 +187,15 @@ func refuseUncarried(
 	case state != nil && stateBlob == nil:
 		return fmt.Errorf("%w: execution state", ErrUncarriedProto)
 	}
-	// And the encoding of the two blobs [Decode] parses, for the same reason one
-	// step along: the decoder admits proto3 alone, so any other encoding is an
-	// entry that appends, acks, and then refuses to decode for every owner that
-	// inherits it. The refusal belonged on this side all along — on the other it
-	// arrives after the ack, where the only choices left are a crash loop and a
-	// silent hole.
+	// [Decode] accepts only proto3. Refuse other encodings now: after the ack,
+	// an undecodable entry leaves only a crash loop or a silent hole.
 	if err := refuseEncoding("execution info", infoBlob); err != nil {
 		return err
 	}
 	return refuseEncoding("execution state", stateBlob)
 }
 
-// refuseEncoding refuses a blob [Decode] would not parse. A nil blob is not one:
-// absent is the ordinary case, and the pair rule above is what covers it.
+// refuseEncoding refuses a blob [Decode] would not parse. A nil blob passes.
 func refuseEncoding(what string, b *commonpb.DataBlob) error {
 	if b == nil || b.EncodingType == enumspb.ENCODING_TYPE_PROTO3 {
 		return nil
@@ -265,11 +251,9 @@ func encodeChasmNodes(m map[string]p.InternalChasmNode) ([]*ChasmNodeEntry, erro
 	return out, nil
 }
 
-// encodeTasks writes the groups in category-id order and keeps the caller's
-// slice order inside a group, which is generation order and not necessarily key
-// order — a scheduled category's fire times need not ascend with it. Only the
-// categories are sorted, because only their order came out of a map, and
-// pinning that is all determinism needs.
+// encodeTasks writes groups in category-id order (they come from a map) and
+// keeps the caller's order within a group: generation order, not key order,
+// since scheduled fire times need not ascend.
 func encodeTasks(groups map[tasks.Category][]p.InternalHistoryTask) []*TaskGroup {
 	if len(groups) == 0 {
 		return nil
@@ -286,8 +270,8 @@ func encodeTasks(groups map[tasks.Category][]p.InternalHistoryTask) []*TaskGroup
 		}
 		for _, t := range rows {
 			task := &Task{TaskId: t.Key.TaskID, Blob: encodeBlob(t.Blob)}
-			// A zero fire time travels as an absent field, so that the
-			// immediate/scheduled distinction survives the round trip.
+			// A zero fire time is an absent field, preserving
+			// immediate vs scheduled across the round trip.
 			if !t.Key.FireTime.IsZero() {
 				task.FireTime = timestamppb.New(t.Key.FireTime)
 			}
@@ -298,8 +282,7 @@ func encodeTasks(groups map[tasks.Category][]p.InternalHistoryTask) []*TaskGroup
 	return out
 }
 
-// encodeTaskKey carries one tasks.Key, under the same zero-fire-time rule the
-// tasks inside a group follow.
+// encodeTaskKey encodes one tasks.Key, with the same zero-fire-time rule.
 func encodeTaskKey(k tasks.Key) *TaskKey {
 	out := &TaskKey{TaskId: k.TaskID}
 	if !k.FireTime.IsZero() {
@@ -308,17 +291,15 @@ func encodeTaskKey(k tasks.Key) *TaskKey {
 	return out
 }
 
-// orderedKeys is [slices.Sorted] over a map's keys, presized. Not spelled
-// `slices.Sorted(maps.Keys(m))`: an [iter.Seq] carries no length, so that form
-// grows the slice up from nil while the map has known len(m) all along.
+// orderedKeys is slices.Sorted(maps.Keys(m)), but presized to len(m).
 func orderedKeys[K cmp.Ordered, V any](m map[K]V) []K {
 	keys := slices.AppendSeq(make([]K, 0, len(m)), maps.Keys(m))
 	slices.Sort(keys)
 	return keys
 }
 
-// sortedKeys is the encode half of the absent-vs-empty rule, inverse to
-// [setOf]: an empty set encodes as an absent field, not a present empty one.
+// sortedKeys is the inverse of [setOf]: an empty set encodes as an absent
+// field.
 func sortedKeys[K cmp.Ordered](set map[K]struct{}) []K {
 	if len(set) == 0 {
 		return nil

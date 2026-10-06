@@ -1,30 +1,28 @@
 package fold
 
-// Merge-on-read for history tasks: one page of GetHistoryTasks answered from
-// the cold store's rows and the window's tasks at once, ascending,
-// deduplicated, inside the requested range, no longer than BatchSize.
+// Merge-on-read for history tasks: one page of GetHistoryTasks built from the
+// cold store's rows and the window's tasks together, ascending, deduplicated,
+// inside the requested range, at most BatchSize long.
 //
-// Read-only on the accumulator, and no slice of it is handed out: the page may
-// not alias a task slice, because mergeTasks appends into a superseded
-// request's own map and a shared backing array would rewrite an answer already
-// given. The base page arrives as a callback because the merge picks its own
-// batch size and token while the round trip stays the caller's.
+// Read-only on the accumulator. The page must not alias a window task slice:
+// mergeTasks appends into a superseded request's map, and a shared backing
+// array would rewrite an answer already given. The base page is a callback so
+// the merge picks the batch size and token while the caller does the round trip.
 //
 // # The pagination rule
 //
-// A page may not exceed BatchSize, the base's token is the plugin's own format
-// that this layer may not parse or synthesise, and a scheduled range can name
-// only a fire time as a resume point. So the cut is at the end of a base page
-// or below its first row, never inside one: either the whole base page is
-// emitted and its token advances, or none of it is and the incoming token is
-// handed back untouched. A partially emitted base page means lost rows on one
-// side and duplicates on the other. The base is asked for BatchSize minus what
-// the window contributes, so window tasks displace cold-store rows.
+// The base's token is the plugin's format, which this layer may not parse or
+// build, and a scheduled range can resume only at a fire time. So a page is
+// cut at the end of a base page or below its first row, never inside it:
+// either the whole base page is emitted and its token advances, or none of it
+// is and the incoming token is returned untouched. A partial base page would
+// lose rows on one side and duplicate them on the other. The base is asked for
+// BatchSize minus the window's share, so window tasks displace cold-store rows.
 //
-// No state is held between calls: the token is the base's own bytes, whether
-// the base is exhausted, and the last key emitted. The window's undrained range
-// deletes come off the cold store's page and nothing else, the window's own
-// half having been swept when each range folded in.
+// No state is held between calls; the token carries the base's bytes, whether
+// the base is exhausted, and the last key emitted. Undrained range deletes are
+// applied to the cold store's page only: the window's own tasks were swept
+// when each range folded in.
 
 import (
 	"encoding/json"
@@ -36,42 +34,31 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 )
 
-// BasePage is one page of the cold store's own answer for the range the request
-// names, as the caller reaches it. A batch size and a token rather than a
-// request, since those are the only two things the merge decides; the range,
-// the category and the shard stay the caller's. The token is the base's own
-// bytes, passed through unparsed, which keeps the merge backend-independent. A
-// zero-length returned token means the base is exhausted.
+// BasePage fetches one page of the cold store's answer for the requested range.
+// It takes only a batch size and a token because those are all the merge
+// decides; range, category and shard stay the caller's. The token is the
+// base's own bytes, passed through unparsed. An empty returned token means the
+// base is exhausted.
 //
-// Four things are required of it, the first three because this merge builds a
-// page's reach out of what the base last returned rather than out of a cursor of
-// its own. Temporal's SQL and Cassandra plugins satisfy every one, so no run here
-// has had to. All four are checked, each against bounds the merge already
-// holds, and a breach is refused rather than carried: what these cost is spent in
-// somebody else's reader — a queue that panics, an iterator that skips in
-// silence, a range completed over rows nobody was shown — and none of those can
-// name the store that caused it.
+// The merge requires four things of it and refuses a page that breaks one,
+// because the damage otherwise lands in a reader that cannot name the store
+// (a panicking queue, an iterator that skips silently, a range completed over
+// unseen rows). Temporal's SQL and Cassandra plugins satisfy all four.
 //
-//  1. Every row is inside the range the request names. What comes back is
-//     filtered against the window's undrained deletes and by nothing else, so a
-//     row outside the range reaches the reader — where queues/slice.go panics on
-//     one, with no recover in the loop. [ErrBaseRowOutsideRange].
-//  2. Rows ascend within a page, and no later page holds a key at or below the
-//     last key of an earlier one. That last key is what bounds the window's half
-//     of the page and what goes into the token, so a base row arriving under it
-//     breaks the ascent across the page boundary — and queues/iterator.go skips
-//     what does not ascend without saying so, which is a task nobody asks for
-//     again. [ErrBasePageNotAscending], for both halves.
-//  3. No rows means the range is exhausted. A token beside an empty page would be
-//     read here as the end of one: the merge would stop calling the base and hand
-//     back a pagination that is over, so rows the store still held are never read
-//     and the range its reader completes deletes them.
-//     [ErrBasePageEmptyBesideAToken].
-//  4. A page holds at most the batch it was asked for. Where the window alone
-//     overflows a page the ask is one row, and the cut emits that row to move the
-//     base's cursor off it; a row sent unasked is one the cursor passes
-//     unemitted, and the range the reader completes at the end of the pagination
-//     deletes it. [ErrBasePageTooLarge].
+//  1. Every row is inside the requested range. Rows are filtered only by the
+//     undrained deletes, so an outside row reaches queues/slice.go, which
+//     panics on it. [ErrBaseRowOutsideRange].
+//  2. Rows ascend within a page, and no later page has a key at or below the
+//     last key of an earlier one. That last key bounds the window's share and
+//     goes into the token; queues/iterator.go silently skips a key that does
+//     not ascend, and the task is never read again. [ErrBasePageNotAscending].
+//  3. An empty page means the range is exhausted. A token beside an empty page
+//     would end the pagination here, and the reader's range completion would
+//     delete rows never read. [ErrBasePageEmptyBesideAToken].
+//  4. A page holds at most the batch asked for. When the window alone fills a
+//     page the ask is one row, emitted to move the base's cursor past it; an
+//     extra row would be passed unemitted and later deleted by range
+//     completion. [ErrBasePageTooLarge].
 type BasePage func(batch int, token []byte) ([]p.InternalHistoryTask, []byte, error)
 
 // TaskPageStats is an instrument rather than a contract.
@@ -96,11 +83,10 @@ func (s *TaskPageStats) Add(o TaskPageStats) {
 	s.FromWindow += o.FromWindow
 }
 
-// TaskPage answers one page of a task read from the window and the base at
-// once, under the rule this file opens with. The base is called at most once
-// per page, and not at all once its token says it is exhausted. Its error is
-// returned unwrapped and never swallowed: a page that quietly omitted the
-// store's rows would lose them.
+// TaskPage answers one page of a task read from the window and the base, under
+// the pagination rule above. The base is called at most once per page, and not
+// at all once exhausted. Its error is returned unwrapped, never swallowed: a
+// page silently missing the store's rows would lose them.
 func (a *Accumulator) TaskPage(
 	req *p.GetHistoryTasksRequest, base BasePage,
 ) (*p.InternalGetHistoryTasksResponse, TaskPageStats, error) {
@@ -118,22 +104,19 @@ func (a *Accumulator) TaskPage(
 	return &p.InternalGetHistoryTasksResponse{Tasks: page, NextPageToken: encodeTaskToken(next)}, stats, nil
 }
 
-// taskPageToken is what a merged read hands back: the base store's own token
-// verbatim, plus this layer's exact cursor over the window.
+// taskPageToken is a merged read's token: the base's token verbatim plus an
+// exact cursor over the window.
 type taskPageToken struct {
-	// Base is the cold store's token for this range, as the cold store wrote it.
 	Base []byte `json:"base,omitempty"`
-	// BaseDone reports that the base is exhausted for this range: do not call it
-	// again. A flag rather than an empty Base, since an empty Base is also what
-	// the first page carries.
+	// BaseDone means the base is exhausted for this range. A flag, because an
+	// empty Base is also what the first page carries.
 	BaseDone bool `json:"baseDone,omitempty"`
-	// AfterFireTime and AfterTaskID are the last key this pagination emitted,
-	// exclusive. Stored as the key's two components rather than as a tasks.Key,
-	// so the encoding is exact and carries no time zone.
+	// AfterFireTime and AfterTaskID are the last key emitted, exclusive. Stored
+	// as components rather than a tasks.Key so the encoding is exact and has no
+	// time zone.
 	AfterFireTime int64 `json:"afterFireTime"`
 	AfterTaskID   int64 `json:"afterTaskId"`
-	// After reports that the two fields above are set, since (0, 0) is a key a
-	// pagination can legitimately have stopped at.
+	// After means the two fields above are set; (0, 0) is a valid stop key.
 	After bool `json:"after,omitempty"`
 }
 
@@ -148,11 +131,9 @@ func (t *taskPageToken) setAfter(k tasks.Key) {
 	t.After, t.AfterFireTime, t.AfterTaskID = true, k.FireTime.UnixNano(), k.TaskID
 }
 
-// taskTokenMagic frames this layer's token so a store's own can be told apart
-// from it. Nothing hands a caller a store's own any more, so what the frame
-// answers is not which of two paginations this is but whether the token is one
-// of ours at all — and one that is not is refused ([ErrForeignPageToken]) rather
-// than resumed against a window cursor nobody handed out.
+// taskTokenMagic prefixes this layer's token so a token we did not issue is
+// refused ([ErrForeignPageToken]) rather than resumed against a window cursor
+// nobody handed out.
 var taskTokenMagic = [4]byte{'w', 'a', 'l', '1'}
 
 func encodeTaskToken(t *taskPageToken) []byte {
@@ -181,24 +162,23 @@ func decodeTaskToken(raw []byte) (*taskPageToken, bool) {
 	return &t, true
 }
 
-// hideDeleted is the window's undrained range deletes for the category being
-// read: rows the cold store still holds and the caller has already declared
-// garbage. Applied to the base's page only, since the window's own tasks were
-// swept when each range folded in. The zero value hides nothing. The ranges and
-// not their maximum: a row in a gap between two of them is one no pending
-// delete covers, and hiding it would make it invisible and present.
+// hideDeleted is the window's undrained range deletes for the category read:
+// rows the cold store still holds that the caller has already deleted. Applied
+// to the base's page only. The zero value hides nothing. It keeps the ranges,
+// not their maximum: a row in a gap between two ranges is not deleted and must
+// stay visible.
 type hideDeleted struct {
 	ranges []TaskRange
 }
 
-// hides reports that a row of the base's page is inside an undrained range,
-// under [TaskRange.Covers] and no other predicate.
+// hides reports whether a base row is inside an undrained range, by
+// [TaskRange.Covers] and nothing else.
 func (d hideDeleted) hides(key tasks.Key) bool {
 	return slices.ContainsFunc(d.ranges, func(r TaskRange) bool { return r.Covers(key) })
 }
 
-// keep is the base page with the hidden rows removed, and how many went. The
-// store's own slice comes back where nothing hides, under [keepUncovered]'s rule.
+// keep returns the base page without hidden rows, and how many were removed.
+// Where nothing is hidden the store's slice comes back, as in [keepUncovered].
 func (d hideDeleted) keep(page []p.InternalHistoryTask) ([]p.InternalHistoryTask, int) {
 	if len(d.ranges) == 0 {
 		return page, 0
@@ -216,8 +196,7 @@ func mergePage(
 	hidden hideDeleted,
 ) ([]p.InternalHistoryTask, *taskPageToken, TaskPageStats, error) {
 	var c TaskPageStats
-	// A batch of zero is floored at one: a page of zero rows would make the
-	// pagination endless.
+	// Floored at one: zero-row pages would never end the pagination.
 	batch := max(req.BatchSize, 1)
 	minKey, maxKey := taskBounds(req.TaskCategory, req.InclusiveMinTaskKey, req.ExclusiveMaxTaskKey)
 
@@ -238,9 +217,8 @@ func mergePage(
 	var nextBase []byte
 	baseDone := token != nil && token.BaseDone
 	if !baseDone {
-		// The base is asked for what the window does not already fill, floored at
-		// one: asking for nothing would end the pagination with rows left in the
-		// store.
+		// Ask for what the window does not fill, at least one: asking for nothing
+		// would end the pagination with rows left in the store.
 		ask := max(batch-len(tail), 1)
 		var carried []byte
 		if token != nil {
@@ -264,10 +242,9 @@ func mergePage(
 		c.BaseDiscarded += hiddenRows
 	}
 
-	// How far up the key space this page may reach. A base page with a token
-	// says nothing above its last key; without one the base is exhausted. Read
-	// off the raw page and not the kept one, since the base's token resumes
-	// after what the base returned, hidden rows included.
+	// How far this page may reach. A base page with a token says nothing above
+	// its last key; without a token the base is exhausted. Use the raw page, not
+	// the kept one: the token resumes after hidden rows too.
 	bounded := len(nextBase) > 0 && len(rawPage) > 0
 	var upTo tasks.Key
 	inReach := tail
@@ -288,8 +265,7 @@ func mergePage(
 	if len(merged) <= batch {
 		c.FromWindow = len(inReach) - collisions
 		if !bounded {
-			// The base is exhausted and every remaining window task is in this
-			// page: the pagination is over.
+			// Base exhausted and every remaining window task is here: done.
 			return merged, nil, c, nil
 		}
 		next := &taskPageToken{Base: nextBase}
@@ -298,9 +274,9 @@ func mergePage(
 	}
 
 	// The window alone overflows the page. Emit window tasks strictly below the
-	// base page's first key and leave that page unread: its token is untouched,
-	// so the same rows come back next time. This branch implies len(tail) >=
-	// batch, hence an ask of one, so at most a single base row is discarded.
+	// base page's first key and leave the base page unread, token untouched, so
+	// it comes back next time. Here len(tail) >= batch, so the ask was one and
+	// at most one base row is discarded.
 	c.BaseDiscarded += len(basePage)
 	cut := len(inReach)
 	if len(basePage) > 0 {
@@ -315,11 +291,10 @@ func mergePage(
 	}
 	next := &taskPageToken{BaseDone: baseDone || len(rawPage) == 0}
 	if cut == 0 {
-		// The base's first row is at or below the window's first, so nothing is
-		// strictly below it and cutting there would emit an empty page for ever.
-		// That row is merged[0] — a tie deduplicates to it — and this branch
-		// holds at most one base row, so emitting that one entry emits the base
-		// page whole, which the cut rule allows.
+		// The base's first row is at or below the window's first, so cutting
+		// below it would emit empty pages forever. That row is merged[0] (a tie
+		// deduplicates to it) and is the whole base page here, so emitting it
+		// alone obeys the cut rule.
 		c.BaseDiscarded = 0
 		c.FromWindow = 0
 		next.Base, next.BaseDone = nextBase, !bounded
@@ -329,7 +304,7 @@ func mergePage(
 	cut = min(cut, batch)
 	only := inReach[:cut]
 	c.FromWindow = cut
-	// Nothing was emitted from the base, so its cursor stays where it was.
+	// Nothing emitted from the base: its cursor stays.
 	if token != nil {
 		next.Base = token.Base
 	}
@@ -337,19 +312,13 @@ func mergePage(
 	return only, next, c, nil
 }
 
-// refuseBasePage holds the store to [BasePage]'s first three requirements, each
-// of which is one walk of the page just answered against bounds the merge
-// already has. They were written down rather than checked because the loss lands
-// in the reader rather than here — and that is exactly why the check belongs
-// here: the reader is a queue that panics, or an iterator that skips a
-// descending key in silence, and neither can name the store that did it.
+// refuseBasePage checks [BasePage]'s first three requirements; the caller,
+// which holds the ask, checks the fourth.
 //
-// from is where this pagination resumes, inclusive: minKey on the first page and
-// the key after the last one emitted on every later one. No conforming store can
-// answer below it. Its own token resumes after its last row, and the two
-// branches that leave that token untouched emit only window keys strictly below
-// the base page's first — so the rows it repeats are the ones it has not had
-// emitted yet.
+// from is where this pagination resumes, inclusive: minKey on the first page,
+// then the key after the last one emitted. A conforming store never answers
+// below it: its token resumes after its last row, and the branch that keeps a
+// token unchanged emits only window keys strictly below that page's first row.
 func refuseBasePage(page []p.InternalHistoryTask, token []byte, minKey, from, maxKey tasks.Key) error {
 	if len(page) == 0 {
 		if len(token) > 0 {
@@ -373,11 +342,11 @@ func refuseBasePage(page []p.InternalHistoryTask, token []byte, minKey, from, ma
 	return nil
 }
 
-// mergeSorted merges two ascending runs, dropping a key the two share; the
-// base's row wins, being the durable copy the queue will complete. It returns
-// the merged page, the collisions and the comparisons made. The sources are
-// disjoint by construction, the window dropping its tasks in the drain that
-// puts them in the store, so a collision is counted rather than raised.
+// mergeSorted merges two ascending runs and returns the page, the collisions
+// and the comparisons. On a shared key the base row wins, as the durable copy
+// the queue will complete. The sources are disjoint by construction (a drain
+// removes from the window what it writes to the store), so a collision is
+// counted, not raised.
 func mergeSorted(base, tail []p.InternalHistoryTask) ([]p.InternalHistoryTask, int, int) {
 	out := make([]p.InternalHistoryTask, 0, len(base)+len(tail))
 	collisions, comparisons := 0, 0
@@ -401,18 +370,15 @@ func mergeSorted(base, tail []p.InternalHistoryTask) ([]p.InternalHistoryTask, i
 	return append(out, tail[j:]...), collisions, comparisons
 }
 
-// taskBounds normalises the requested range so one comparator serves both
-// category types, mirroring the store: immediate queries filter on task id
-// alone, scheduled ones on fire time. Upstream lets an immediate range name
-// either a zero fire time or tasks.DefaultFireTime, so an unnormalised
-// immediate range puts every window task above a zero-time maximum and drops
-// the lot, or below a zero-time minimum and returns keys the caller did not ask
-// for, which panics the history service.
+// taskBounds normalises the requested range as the store does: immediate
+// categories filter on task id alone, scheduled ones on fire time. Upstream
+// lets an immediate range use a zero fire time or tasks.DefaultFireTime;
+// unnormalised, a zero-time maximum drops every window task, and a zero-time
+// minimum returns unrequested keys, which panics the history service.
 //
-// It is the range's half of what [TaskRange.Covers] does per row, spelled out
-// because this package names no store. The window's own keys
-// need no normalisation: every immediate-category task type's GetKey() already
-// returns NewImmediateKey (TestEveryImmediateKeyIsNormalised).
+// It is the range's half of [TaskRange.Covers]. Window keys need no
+// normalisation: every immediate task type's GetKey() already returns
+// NewImmediateKey (TestEveryImmediateKeyIsNormalised).
 func taskBounds(category tasks.Category, minKey, maxKey tasks.Key) (tasks.Key, tasks.Key) {
 	if category.Type() == tasks.CategoryTypeImmediate {
 		return tasks.NewImmediateKey(minKey.TaskID), tasks.NewImmediateKey(maxKey.TaskID)

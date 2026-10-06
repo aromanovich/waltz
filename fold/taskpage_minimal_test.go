@@ -8,15 +8,15 @@ package fold_test
 // direction: a model built from real behaviour satisfies every requirement the
 // merge has, including the ones nobody had written down, so a requirement
 // missing from [fold.BasePage]'s doc could not be discovered by running against
-// it. Three were missing.
+// it.
 //
 // This base honours exactly what that doc states and is adversarial in
-// everything it is left free to do: it parts with one row at a time whatever it
-// was asked for, it hands a token back beside its last row and reports the range
-// exhausted only with an empty page, and it can be seeded so that a window task
-// ties the last key of a base page. If the merge is correct over every base like
-// it, the stated requirements are *sufficient* — which is the property the
-// corpus run cannot state, however long it runs.
+// everything it is left free to do: it parts with one or two rows at a time
+// whatever it was asked for, it hands a token back beside its last row and
+// reports the range exhausted only with an empty page, and it can be seeded so
+// that a window task ties a key of a base page. If the merge is correct over
+// every base like it, the stated requirements are *sufficient* — which is the
+// property the corpus run cannot state, however long it runs.
 
 import (
 	"fmt"
@@ -32,7 +32,7 @@ import (
 )
 
 // minimalBase answers from a fixed ascending set of rows, under
-// [fold.BasePage]'s three requirements and nothing more.
+// [fold.BasePage]'s four requirements and nothing more.
 type minimalBase struct {
 	// rows is this base's whole content for the category, ascending by key.
 	rows []p.InternalHistoryTask
@@ -44,12 +44,12 @@ type minimalBase struct {
 	// trailingToken hands a token back beside the last row rather than reporting
 	// exhaustion with it, so the pagination has to survive one more call
 	// answering nothing. Real plugins emit a token only on a full page, which is
-	// why this shape has never been driven.
+	// why the plugin model never drives this shape.
 	trailingToken bool
 
-	// The three requirements, each with a way to break it. Off, this base keeps
-	// all three; on, one of them is broken and everything else is still kept, so
-	// the merge's refusal is about that requirement alone
+	// Three of the requirements, each with a way to break it. Off, this base
+	// keeps all four; on, one of them is broken and everything else is still
+	// kept, so the merge's refusal is about that requirement alone
 	// ([TestABaseThatBreaksTheRequirementsIsRefused]).
 	ignoresRange bool
 	// repeatsOnce resumes one row back, exactly once, so the pagination still
@@ -212,16 +212,15 @@ func sortedTaskIDs(base, window []int64) []int64 {
 
 // TestABaseThatBreaksTheRequirementsIsRefused turns [fold.BasePage]'s first
 // three requirements from prose into a refusal each. Every base here keeps the
-// other two, so what is refused is that requirement alone.
+// others, so what is refused is that requirement alone.
 //
-// Refusing them reverses what this file used to say, and the third one is the
-// reason. Judged in general a failing read does look worse than a store that
-// pages oddly — but the third breach does not cost a failing read. The merge
-// reads the empty page as the end, stops calling the base, and hands back a
-// pagination that is over, so the queue completes the range over rows it was
-// never shown and deletes acked task rows. Against that a refusal is the cheap
-// outcome, and once the page is walked at all the other two cost nothing further
-// and name the store instead of panicking in somebody else's reader.
+// The third is why they are refused rather than carried: its breach does not
+// cost a failing read. The merge reads the empty page as the end, stops calling
+// the base, and hands back a pagination that is over, so the queue completes the
+// range over rows it was never shown and deletes acked task rows. Against that a
+// refusal is the cheap outcome, and once the page is walked at all the other two
+// cost nothing further and name the store instead of panicking in somebody
+// else's reader.
 func TestABaseThatBreaksTheRequirementsIsRefused(t *testing.T) {
 	rows := func(ids ...int64) []p.InternalHistoryTask {
 		var out []p.InternalHistoryTask

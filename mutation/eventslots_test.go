@@ -10,11 +10,10 @@ import (
 	p "go.temporal.io/server/common/persistence"
 )
 
-// [Mutation.EventSlots] is the only enumeration of the event batches a request
-// carries, and the payload carries none of them (D3), so a slot nobody names is
-// a mutation acked over history nodes nobody wrote — durable, correct, and
-// invisible to every functional suite. Cases name a slot's contents, in the
-// order the store receives them.
+// [Mutation.EventSlots] is what both writers of a request's event batches walk,
+// so a slot nobody names is a mutation acked over history rows nobody wrote —
+// durable, correct, and invisible to every functional suite. Cases name a
+// slot's contents, in the order the store receives them.
 func TestEveryRequestShapesEventSlotsAreNamed(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -104,11 +103,11 @@ func TestEveryRequestShapesEventSlotsAreNamed(t *testing.T) {
 	require.Nil(t, Mutation{}.EventSlots(), "a mutation holding no request carries no events")
 }
 
-// One row accounts for each event-bearing request field: a
-// field holding new events is one fieldset_test records as dropped for D3, and
-// one [Mutation.EventSlots] hands to whoever writes the mutation. A field
-// Temporal adds to a request is dropped from the payload by construction, so
-// this is what makes it a slot rather than lost state.
+// One row accounts for each event-bearing request field: a field holding new
+// events is one fieldset_test records as carrying event batches, and one
+// [Mutation.EventSlots] hands to whoever writes them. A field Temporal adds to
+// a request is absent from the payload by construction, so this is what makes
+// it a slot rather than lost state.
 func TestEveryFieldOfNewEventsIsASlotAndIsRecordedDropped(t *testing.T) {
 	batches := reflect.TypeFor[[]*p.InternalAppendHistoryNodesRequest]()
 

@@ -1,18 +1,16 @@
-// Package trim is the lazy deletion of WAL entries the cold store already
-// holds: the cadence that decides when, the one trim in flight, and the two
-// counters that tell a cadence that fired from a trim that reached the log.
+// Package trim deletes WAL entries the cold store already holds: it decides
+// when to trim, runs at most one trim at a time, and counts trims fired and
+// trims that reached the log.
 //
-// It runs beside the apply cycle rather than in it, which is the whole of why
-// it is a package. A stuck log may not stop a shard from acking and applying,
-// so the trim is detached — and a `go` statement in a function holding the
-// loop's state is the one ownership break nothing can see into. Here there is
-// no such state to hold: a [Trimmer] is handed a watermark by value, and the
-// cycle's rule is the compiler's.
+// Trims run beside the apply cycle, not in it, so a stuck log cannot stop a
+// shard from acking and applying. It is a separate package so the goroutine
+// it starts cannot reach the cycle's loop state: a [Trimmer] gets the
+// watermark by value.
 //
-// Trimming is part of the latency budget rather than hygiene: a backend's
-// reads get dearer as its log gets longer ([wal.Log.Trim]), so a drain is what
-// fires one, rather than a sweeper on a clock of its own. A failed trim is
-// logged and retried at the next cadence, and halts nothing.
+// A drain triggers trims, because a backend's reads get slower as its log
+// grows ([wal.Log.Trim]). A failed trim is logged and halts nothing: a
+// cadenced one is retried at the next cadence, a forced one when its caller
+// forces again.
 package trim
 
 import (
@@ -29,13 +27,13 @@ import (
 	"github.com/aromanovich/waltz/walmetrics"
 )
 
-// budget is how long one trim may take before it is abandoned. It is not a
-// deadline the caller waits on: whoever asked has been answered a drain ago.
+// budget is how long one trim may run before it is abandoned. No caller
+// waits on it.
 const budget = time.Minute
 
-// Cadence is the two numbers a trim fires on, whichever trips first: drains
-// since the last trim, and time since it. It is passed at the decision rather
-// than held, so both may move under a shard this node is already holding.
+// Cadence says when a trim fires: after Every drains or After time since the
+// last trim, whichever comes first. It is passed per call, not stored, so the
+// policy can change while the shard is held.
 type Cadence struct {
 	Every int
 	After time.Duration
@@ -43,11 +41,9 @@ type Cadence struct {
 
 // Trimmer keeps one shard's log short.
 //
-// [Trimmer.Drained] and [Trimmer.Force] are the cycle's loop and no other
-// goroutine, which is what lets the cadence be plain fields. [Trimmer.Counters]
-// is the loop's too, plus one read by whoever retires the cycle — taken after
-// that caller's [Trimmer.Wait] and once the loop is gone, which is what makes
-// reading the plain fired field there safe.
+// Only the cycle's loop calls [Trimmer.Drained] and [Trimmer.Force], so the
+// cadence fields need no lock. [Trimmer.Counters] is called from the loop, or
+// by whoever retires the cycle after [Trimmer.Wait] once the loop has exited.
 type Trimmer struct {
 	shard  wal.ShardID
 	log    wal.Log
@@ -55,43 +51,37 @@ type Trimmer struct {
 	emit   *walmetrics.Emitter
 	logger log.Logger
 
-	// The cadence, owned by the caller's loop: drains since the last trim, when
-	// it was, and how many have fired.
+	// Owned by the caller's loop.
 	sinceTrim int
 	lastAt    time.Time
 	fired     int
 
-	// running and mu guard the one detached trim and the one follow-up a Force
-	// may queue behind it; committed is written by the trim's goroutine, since
-	// only it knows the outcome.
+	// running and mu guard the one running trim and the one follow-up a Force
+	// may queue behind it. committed is written by the trim goroutine.
 	running  sync.WaitGroup
 	mu       sync.Mutex
 	inFlight bool
-	// flightUpTo and doneUpTo are where the running trim is going and where a
-	// committed one has been; pending (0 is none) is the queued follow-up,
-	// coalesced to the highest watermark asked for. Together they are how
-	// [Trimmer.start] refuses a request no trim needs.
+	// flightUpTo is the running trim's target, doneUpTo the last committed
+	// one. pending (0 = none) is the queued follow-up, raised to the highest
+	// watermark asked for. [Trimmer.start] uses them to skip needless trims.
 	flightUpTo wal.Seqno
 	doneUpTo   wal.Seqno
 	pending    wal.Seqno
 	committed  atomic.Int64
 }
 
-// New returns a Trimmer for one shard. now is where its clock starts, so the
-// time half of the cadence is measured from the cycle's birth rather than from
-// the zero time, which would fire on the first drain.
+// New returns a Trimmer for one shard. Cadence.After is measured from now;
+// starting from the zero time would fire on the first drain.
 func New(shard wal.ShardID, log wal.Log, clock clock.TimeSource, emit *walmetrics.Emitter, logger log.Logger, now time.Time) *Trimmer {
 	return &Trimmer{shard: shard, log: log, clock: clock, emit: emit, logger: logger, lastAt: now}
 }
 
-// Drained tells the Trimmer that a drain committed and left the watermark at
-// applied. It starts a trim when the cadence says so — after the commit, off
-// the critical path, up to the committed watermark with no safety lag, since
-// recovery reads the watermark rather than the log.
+// Drained tells the Trimmer a drain committed and left the watermark at
+// applied. When the cadence is due it starts a trim up to applied, with no
+// safety lag: recovery replays only entries above the watermark.
 //
-// A cadence that comes due while a trim is in flight is skipped rather than
-// queued: the next one takes a watermark that has moved further, and two trims
-// of one log are the same trim twice.
+// If a trim is already running, a due cadence is skipped, not queued; the
+// next one will trim to a later watermark.
 func (t *Trimmer) Drained(applied wal.Seqno, cadence Cadence) {
 	t.sinceTrim++
 	now := t.clock.Now()
@@ -99,8 +89,7 @@ func (t *Trimmer) Drained(applied wal.Seqno, cadence Cadence) {
 		return
 	}
 	if !t.start(applied, false) {
-		// In flight — skipped, and the cadence keeps accruing — or the
-		// watermark is already covered and there is nothing to give back.
+		// Skipped or already covered; the cadence keeps accruing.
 		return
 	}
 	t.sinceTrim = 0
@@ -108,18 +97,15 @@ func (t *Trimmer) Drained(applied wal.Seqno, cadence Cadence) {
 	t.fired++
 }
 
-// Force starts a trim at once, outside the cadence: a backend that reported
-// storage pressure is owed the applied entries' space now, not a cadence from
-// now. A trim already in flight takes one follow-up rather than losing the
-// request, coalesced to the highest watermark asked for; one that a trim has
-// already reached, or is reaching, schedules nothing, so a level standing
-// across ticks re-trims an unchanged watermark exactly never. Only a request
-// that scheduled an attempt counts as a fired one; the cadence resets either
-// way, because a request the trimmer refused is one a trim already covers, and
-// the next cadenced trim is owed no sooner for it.
+// Force starts a trim now, outside the cadence, for a backend reporting
+// storage pressure. If a trim is running, one follow-up is queued, raised to
+// the highest watermark asked for. A watermark already trimmed or being
+// trimmed schedules nothing, so repeated pressure on an unchanged watermark
+// costs no trims. Only a scheduled attempt counts as fired; the cadence
+// resets either way, since a refused request is already covered.
 //
-// A failed forced trim is not retried from here: the pressure that asked for it
-// is a level, and whoever polls it forces again while it stands.
+// A failed forced trim is not retried here: the caller polls the pressure and
+// forces again while it stands.
 func (t *Trimmer) Force(applied wal.Seqno) {
 	if !wal.CheckTrim(applied) {
 		// Nothing has ever been applied, so there is no space to give back.
@@ -132,29 +118,23 @@ func (t *Trimmer) Force(applied wal.Seqno) {
 	}
 }
 
-// Wait blocks until no trim is in flight. Whoever retires a cycle calls it, so
-// that a backend outlives the last read it was asked for.
+// Wait blocks until no trim is running. Whoever retires a cycle calls it, so
+// the backend outlives the last trim.
 func (t *Trimmer) Wait() { t.running.Wait() }
 
-// Counters is what this shard's trims have done: cadences that fired, and the
-// subset that reached the log. Two numbers rather than one, because a run whose
-// every trim failed would otherwise read like one whose cadence never fired —
-// and a reading taken while a trim is in flight leaves fired one above
-// committed, which is the honest answer rather than a race.
+// Counters returns trims fired (cadenced or forced) and those that committed.
+// Two numbers, so that all trims failing does not look like none firing.
+// While a trim is running or queued, fired exceeds committed by those.
 func (t *Trimmer) Counters() (fired, committed int) {
 	return t.fired, int(t.committed.Load())
 }
 
-// start runs one trim beside the caller's loop, and reports whether it
-// scheduled an attempt. queue is what a trim already in flight does with the
-// request: a cadence is skipped — the next one takes a watermark that has
-// moved further — where a forced request queues one follow-up, coalesced to
-// the highest watermark asked for. Either way, a request no trim needs — at or
-// below where one is going, is queued to go, or has already been — schedules
-// nothing: a failed trim leaves doneUpTo where it was, so the retry still
-// gets through, while a repeat of a committed one would give the backend
-// nothing back. It takes the watermark as a value and holds nothing of the
-// caller's: what the goroutine touches is this Trimmer's own guarded fields.
+// start runs one trim in a goroutine and reports whether it scheduled an
+// attempt. If a trim is running, queue=false skips the request and
+// queue=true queues one follow-up at the highest watermark asked for. A
+// request at or below a running, queued or committed target schedules
+// nothing. A failed trim leaves doneUpTo unchanged, so a retry still runs.
+// The goroutine touches only this Trimmer's guarded fields.
 func (t *Trimmer) start(upTo wal.Seqno, queue bool) bool {
 	t.mu.Lock()
 	if t.inFlight {
@@ -176,9 +156,8 @@ func (t *Trimmer) start(upTo wal.Seqno, queue bool) bool {
 	t.running.Add(1)
 	t.mu.Unlock()
 	go func() {
-		// Order: inFlight is cleared before Done, so a Wait that returns leaves
-		// the next cadence free to fire rather than skipping itself. Wait also
-		// covers a queued follow-up, because the goroutine runs it before Done.
+		// inFlight is cleared before Done, so after Wait returns the next
+		// cadence can fire. Wait also covers a queued follow-up.
 		defer t.running.Done()
 		for {
 			t.emit.Trim(walmetrics.TrimStarted)
@@ -186,8 +165,7 @@ func (t *Trimmer) start(upTo wal.Seqno, queue bool) bool {
 			err := t.log.Trim(ctx, t.shard, upTo)
 			cancel()
 			if err != nil {
-				// Both outcomes are counted, because "trims are failing" is a
-				// ratio.
+				// Count failures too: the failure rate is a ratio.
 				t.emit.Trim(walmetrics.TrimFailed)
 				t.logger.Warn("apply cycle: trim failed, retrying at the next cadence",
 					tag.ShardID(int32(t.shard)), tag.Error(err))

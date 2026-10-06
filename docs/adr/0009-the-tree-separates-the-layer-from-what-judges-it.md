@@ -6,6 +6,9 @@ Date: 2026-08-03
 
 Accepted. Settles the repository layout.
 
+**Amended** three times — see the last three sections. The last of them moves `verify/` to
+`internal/verify/` and reverses "Considered and not taken: `internal/`", which is left as written.
+
 ## Context
 
 The packages had sat flat, beside a root package of ~13k lines holding the acceptance, the
@@ -36,11 +39,11 @@ and **the root package is the front door** — `Compose`, the configuration, the
 
 ## Consequences
 
-**The dependency order is documented, not nested.** `fold → cycle → apply → wrapper → waltz` is the
-direction the layer reads in, and nesting cannot express it: `cycle` imports `fold`, but `fold`
-stands alone, so putting it inside `cycle` would be a lie. The handbook's
-[03-components.md](../handbook/03-components.md) carries the order. This is the one place where the
-tree's legibility rests on prose.
+**The dependency order is documented, not nested.** Bottom-up it is `wal → fold → apply → cycle →
+waltz`, with `wrapper` a branch beside `cycle` that no other layer package imports, and nesting
+cannot express it: `cycle` imports `fold`, but so does `apply`, and `fold` stands alone, so putting
+it inside `cycle` would be a lie. The handbook's [03-components.md](../handbook/03-components.md)
+carries the order. This is the one place where the tree's legibility rests on prose.
 
 **The root package holds Go files, and that is the whole point of it.** It is not an index: it is
 the one composition (`Compose`), the `wal` section, the dynamic-config settings and the door out to
@@ -93,7 +96,7 @@ Grouping already delivers what the rename was for.
 
 What was done instead: a `doc.go` or a package comment whose first line says in plain words what the
 package is, the handbook for the order nesting cannot express, and the `CONTEXT.md` entries for
-Wrapper, Node, Cycle and Checker.
+Wrapper, Composition, Cycle and Checker.
 
 ## Amendment — a third thing at the module root, and one more judge
 

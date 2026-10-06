@@ -140,7 +140,7 @@ func TestEveryKnobReachesADistinctPolicyField(t *testing.T) {
 			"the section set %q, and cycle.Config.%s did not take its value", k.key, name)
 	}
 
-	// The half Policy cannot see: every key decodes into the field its row
+	// The half StaticConfig cannot see: every key decodes into the field its row
 	// reads. The whole struct is compared, so a key the decoder dropped shows as
 	// a zero where a distinctive value belongs.
 	section := map[string]any{}

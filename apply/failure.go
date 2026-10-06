@@ -1,16 +1,13 @@
-// Package apply is what a drain's outcome means: the class the cycle branches
-// on, the errors that carry it, and the readback that names which row diverged.
+// Package apply interprets a drain's outcome: the class the cycle branches on,
+// the errors that carry it, and the readback that names which row diverged.
 //
-// It writes nothing. The write path is the caller's, behind cold.Applier, and
-// an implementation of that interface speaks back to the cycle in this
-// vocabulary — [Refuse] for what it turned away before anything reached the
-// cold store, [Attribute] to turn a bare condition failure into the rows it was
-// about, and [Classify] for the rule the cycle reads both through.
+// It writes nothing; the write path is behind cold.Applier. An applier reports
+// back with [Refuse] (turned away before anything reached the cold store) and
+// [Attribute] (names the rows behind a condition failure); the cycle reads both
+// through [Classify].
 //
-// It judges what it is handed and may not name wal.Log or wal.Entry: an outcome
-// says what a drain did, and what the cycle does about the log next — pace,
-// trim, halt — is the cycle's policy. A package that can reach the log is a
-// package where those land early, one convenience at a time.
+// It must not name wal.Log or wal.Entry: what to do with the log next (pace,
+// trim, halt) is the cycle's policy, not this package's.
 package apply
 
 import (
@@ -44,14 +41,13 @@ const (
 	ClassShardLost
 
 	// ClassInvariantViolated: a version or current-row assertion failed. Under
-	// fencing this layer is the shard's only writer, so it is a broken
-	// invariant and not contention: halt the shard, do not retry. The error is
-	// an [*InvariantViolationError] with the attribution.
+	// fencing this layer is the only writer, so this is a broken invariant, not
+	// contention: halt the shard, do not retry. The error is an
+	// [*InvariantViolationError].
 	ClassInvariantViolated
 
-	// ClassUnknownOutcome: an ambiguous code reached apply and the transaction
-	// may or may not have committed. Read the watermark before anything else
-	// (cold.Watermarker); re-folding by version instead corrupts.
+	// ClassUnknownOutcome: the transaction may or may not have committed. Read
+	// the watermark first (cold.Watermarker); re-folding by version corrupts.
 	ClassUnknownOutcome
 )
 
@@ -71,10 +67,9 @@ func (c Class) String() string {
 	return fmt.Sprintf("Class(%d)", int(c))
 }
 
-// Classify sorts what an Apply returned into the class that decides the
-// caller's next move. Anything it cannot prove refused, fenced or
-// condition-failed is an unknown outcome: calling a commit a failure is how a
-// batch gets applied twice.
+// Classify maps an Apply error to the class that decides the caller's next
+// move. Anything not provably refused, fenced or condition-failed is an
+// unknown outcome: treating a commit as a failure applies a batch twice.
 func Classify(err error) Class {
 	if err == nil {
 		return ClassCommitted
@@ -100,10 +95,8 @@ func isInvariantViolation(err error) bool {
 	return errors.As(err, &wf) || errors.As(err, &cur) || errors.As(err, &cond)
 }
 
-// ErrRefused matches, via errors.Is, what [Refuse] wrapped: an error an Apply
-// raised before anything was sent to the cold store. A refused drain wrote
-// nothing and needs no recovery, unlike one whose transaction had already
-// opened.
+// ErrRefused matches, via errors.Is, any error wrapped by [Refuse]. A refused
+// drain wrote nothing and needs no recovery.
 var ErrRefused = errors.New("apply: refused before anything reached the cold store")
 
 // refusedError marks an error as refused, keeping its message.
@@ -116,15 +109,14 @@ func (e *refusedError) Is(target error) bool {
 }
 
 // Refuse marks an error as raised before anything was sent to the cold store,
-// which is what makes [Classify] answer [ClassRefused] for it.
+// so [Classify] returns [ClassRefused] for it.
 func Refuse(err error) error { return &refusedError{err: err} }
 
-// Diverged names one row whose state is not where fold thought it was. RunID is
-// empty when the row is the workflow's current-execution row rather than a
-// run's base row; either version is -1 when that side has none to report —
-// AssertedBase under a MustNotExist assertion, ActualBase where the row is
-// gone, both for any current-row divergence. Detail always says what was
-// asserted and what the cold store holds.
+// Diverged names one row whose state is not what fold asserted. RunID is empty
+// for the workflow's current-execution row. A version is -1 when that side has
+// none: AssertedBase under MustNotExist, ActualBase when the row is gone, both
+// for a current-row divergence. Detail says what was asserted and what the cold
+// store holds.
 type Diverged struct {
 	NamespaceID string
 	WorkflowID  string
@@ -134,38 +126,33 @@ type Diverged struct {
 	ActualBase   int64
 	Detail       string
 
-	// HeadSeqno and TailSeqno are the window slice answering for this row: the
-	// request's own for a run row, the whole workflow's for the current row,
-	// whose assertion is the workflow's rather than any one request's. The cut
-	// point is derived from the head.
+	// HeadSeqno and TailSeqno are the window slice behind this row: the
+	// request's for a run row, the whole workflow's for the current row.
+	// CutSeqno is derived from the head.
 	HeadSeqno wal.Seqno
 	TailSeqno wal.Seqno
 }
 
-// InvariantViolationError reports a condition the accumulator vouched for that
-// did not hold in the cold store. Terminal for the shard: halt it, do not
-// retry. Diverged is the attribution the cold store's own error cannot give,
-// since it reports one failing assertion and names no workflow.
+// InvariantViolationError reports a condition fold vouched for that did not
+// hold in the cold store. Terminal for the shard: halt it, do not retry.
+// Diverged adds the attribution the store's error lacks (it names no workflow).
 type InvariantViolationError struct {
-	// Cause is the cold store's own condition failure, as it reached apply.
+	// Cause is the cold store's condition failure, as it reached apply.
 	Cause error
 
-	// Diverged names every row the readback found somewhere else than fold
-	// asserted. It can be empty — the divergence may have been repaired between
-	// the transaction and the readback — which changes nothing about the class.
+	// Diverged lists every row the readback found differing from fold's
+	// assertion. It may be empty (repaired before the readback); the class is
+	// the same.
 	Diverged []Diverged
 
 	// CutSeqno is the highest seqno a partial re-drain may acknowledge: one
-	// below the lowest entry answering for any diverged row. Zero means nothing
-	// may be acknowledged, and covers three cases that demand the same of the
-	// caller — no divergence was found, [wal.FirstSeqno] itself diverged, and
-	// ReadbackErr, where a row nobody read could answer for an entry below
-	// anything seen. Applying anything above it would leave entries applied
-	// above any watermark the drain could set.
+	// below the lowest head of any diverged row. Zero means acknowledge
+	// nothing: no divergence found, [wal.FirstSeqno] diverged, or ReadbackErr
+	// is set (an unread row could cover a lower entry).
 	CutSeqno wal.Seqno
 
-	// ReadbackErr is set when the attribution read itself failed; Diverged is
-	// then incomplete and says only what was seen before the failure.
+	// ReadbackErr is set when the attribution read failed; Diverged then holds
+	// only what was seen before the failure.
 	ReadbackErr error
 }
 
@@ -188,10 +175,9 @@ func (e *InvariantViolationError) Error() string {
 func (e *InvariantViolationError) Unwrap() error { return e.Cause }
 
 // Attribute reads back every row the drain asserted and names the ones that
-// diverged; reads only. It must run after the transaction that asserted the
-// epoch: a base row read before the epoch is held can see a previous owner's
-// in-flight transaction land underneath it, and the divergence it would then
-// report is not a bug.
+// diverged. It only reads. It must run after the transaction that asserted the
+// epoch: before that, a previous owner's in-flight transaction can still land
+// and show up as a false divergence.
 func Attribute(
 	ctx context.Context, rows *baserow.Rows, cause error, shard wal.ShardID, batch fold.Batch,
 ) *InvariantViolationError {
@@ -199,7 +185,6 @@ func Attribute(
 
 	sliceOf := workflowSlices(batch)
 	for e := range batch.Each() {
-		// One closure, so the seqno pair CutSeqno reads below is written once.
 		diverged := func(runID string, assertedBase, actualBase int64, detail string) {
 			out.Diverged = append(out.Diverged, Diverged{
 				NamespaceID: e.NamespaceID, WorkflowID: e.WorkflowID, RunID: runID,
@@ -231,8 +216,8 @@ func Attribute(
 			}
 		}
 
-		// Read back once per workflow record, not once per request naming it —
-		// the same first-namer rule the assertions were registered under.
+		// Once per workflow, by the first request naming it, as the assertion
+		// was registered.
 		if cur := e.Workflow().Current; cur != nil && e.FirstOfWorkflow() {
 			d, err := currentDiverged(ctx, rows, shard, e, cur, sliceOf[e.Workflow()])
 			if err != nil {
@@ -245,9 +230,8 @@ func Attribute(
 		}
 	}
 
-	// After the whole batch, not per entry: a scan that returned above left rows
-	// nobody read, and any of them could answer for an entry below everything
-	// seen so far. The zero the early returns keep is "acknowledge nothing".
+	// Only after a complete scan: an early return leaves unread rows that could
+	// cover a lower entry, so it keeps CutSeqno at zero (acknowledge nothing).
 	for i, d := range out.Diverged {
 		if i == 0 || d.HeadSeqno-1 < out.CutSeqno {
 			out.CutSeqno = d.HeadSeqno - 1
@@ -260,9 +244,8 @@ func Attribute(
 // request naming it.
 type wfSlice struct{ head, tail wal.Seqno }
 
-// workflowSlices measures each workflow's slice. Requests are ordered by tail,
-// so the first one naming a workflow need not carry that workflow's lowest
-// head, and the current row's assertion is answered for by all of them.
+// workflowSlices measures each workflow's slice across all its requests.
+// Requests are ordered by tail, so the first need not have the lowest head.
 func workflowSlices(batch fold.Batch) map[*fold.WorkflowRecord]wfSlice {
 	out := map[*fold.WorkflowRecord]wfSlice{}
 	for e := range batch.Each() {
@@ -277,13 +260,9 @@ func workflowSlices(batch fold.Batch) map[*fold.WorkflowRecord]wfSlice {
 }
 
 // currentDiverged checks the workflow's current-execution row against fold's
-// head-of-window assertion, through the same predicate that judged it before the
-// append. The read carries the row's last_write_version, so all four assertion
-// kinds are judged on everything the store asserts.
-//
-// Nil and no error is a row that held: the two answers a caller acts on are one
-// value each, where a divergence beside a bool beside an error is two
-// combinations that mean nothing and a caller that has to know which.
+// assertion, with the same predicate used before the append. The read includes
+// last_write_version, so all four assertion kinds are fully judged. It returns
+// nil, nil when the row held.
 func currentDiverged(
 	ctx context.Context, rows *baserow.Rows, shard wal.ShardID,
 	e *fold.Emitted, cur *fold.CurrentAssertion, slice wfSlice,
@@ -316,15 +295,15 @@ func currentDiverged(
 			"the cold store holds %q in state %s at %d",
 			cur.RunID, cur.LastWriteVersion, current, state, version)
 	case fold.CurrentNotEquals:
-		// A claim about a row, so an absent one refuses it as well.
+		// An absent row also fails this assertion.
 		if resp == nil {
 			d.Detail = fmt.Sprintf("asserted current run is not %s, and there is no current row", cur.RunID)
 			break
 		}
 		d.Detail = fmt.Sprintf("asserted current run is not %s, and it is", cur.RunID)
 	default:
-		// An applier refuses a kind it cannot register before the drain executes,
-		// so this is a floor: a halt whose divergence names nothing is unreadable.
+		// Unreachable: an applier refuses unknown kinds before executing. Still
+		// say something, so the halt is readable.
 		d.Detail = fmt.Sprintf("current-row assertion kind %d reaches no attribution, "+
 			"the cold store holds %q in state %s at %d", cur.Kind, current, state, version)
 	}

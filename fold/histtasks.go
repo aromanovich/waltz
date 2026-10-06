@@ -1,14 +1,12 @@
 package fold
 
-// The history-task path through the window: the rows an AddHistoryTasks writes
-// and the ranges a RangeCompleteHistoryTasks declares garbage. A range folding
-// in drops every task the window already holds inside it; a task arriving
-// after a range is kept, because the sequential path keeps it too. Pending
-// ranges die at the drain that applies them.
+// History tasks in the window: rows from AddHistoryTasks and ranges deleted by
+// RangeCompleteHistoryTasks. A range drops every task the window already holds
+// inside it; a task arriving after the range is kept, as the sequential path
+// keeps it. Pending ranges are cleared by the drain that applies them.
 //
-// [TaskRange.Covers] is the store's own DELETE predicate, and it is the single
-// answer to what the cold store loses, what the window drops and what a merged
-// read hides.
+// [TaskRange.Covers] is the store's DELETE predicate and the only answer to
+// what the cold store loses, what the window drops and what a merged read hides.
 
 import (
 	"cmp"
@@ -22,7 +20,7 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// TaskRange is one range delete the window carries, in the caller's own terms.
+// TaskRange is one range delete the window carries, in the caller's terms.
 type TaskRange struct {
 	Category     tasks.Category
 	InclusiveMin tasks.Key
@@ -33,45 +31,41 @@ type TaskRange struct {
 // inserts and the ranges it deletes. Separate from [Emitted] because a task
 // names no run, asserts nothing and is keyed by (shard, category, key) alone.
 type TaskWork struct {
-	// Insert are the rows an AddHistoryTasks put into the window, by category.
-	// The workflow those requests named is dropped; the store below ignores it.
+	// Insert is the AddHistoryTasks rows, by category. The workflow those
+	// requests named is dropped; the store ignores it.
 	Insert map[tasks.Category][]p.InternalHistoryTask
-	// Delete are the window's range deletes, merged where they join. Each costs
-	// one statement at the drain.
+	// Delete is the range deletes, merged where they join; one statement each.
 	Delete []TaskRange
 	// TailSeqno is the last task mutation folded in; the drain's watermark must
-	// be at or above it. No HeadSeqno beside it, unlike [Emitted]: task work
-	// asserts nothing, so a failed drain has no partial-apply cut to take.
+	// be at or above it. There is no HeadSeqno: task work asserts nothing, so
+	// a failed drain has no partial-apply cut.
 	TailSeqno wal.Seqno
-	// Counts is one row per category the window touched. One table and not two
-	// maps: the two numbers share a key space, and a consumer joining them itself
-	// reports a category present in one and absent from the other either twice or
-	// not at all, with no green run showing either.
+	// Counts has one row per category touched. One table rather than two maps,
+	// so a consumer cannot mis-join a category present in only one.
 	Counts map[string]TaskCounts
 }
 
-// Empty reports work a drain need not carry. Counters alone do not make a
-// [TaskWork] non-empty.
+// Empty reports work a drain need not carry. Counts alone do not make it
+// non-empty.
 func (w TaskWork) Empty() bool { return len(w.Insert) == 0 && len(w.Delete) == 0 }
 
-// TaskCounts is one category's two numbers: how many task rows a range removed
-// from the window, and how many the drain writes. Two counts rather than a share,
-// so "everything was dropped" stays distinguishable from "there were no tasks".
+// TaskCounts is, for one category, the task rows a range dropped from the
+// window and the rows the drain writes. Two counts, not a ratio, so "all
+// dropped" differs from "no tasks".
 type TaskCounts struct{ Dropped, Written int }
 
-// Covers reports that this range removes the key under the store's own
-// predicate: an immediate category is ranged on task_id, a scheduled one on
-// task_visibility_ts with its task ids not looked at. The asymmetry is
-// reproduced rather than repaired: covering less than the delete removes
-// answers a read with a row that is already gone, covering more hides a row
-// nothing will ever delete.
+// Covers reports whether this range removes key under the store's predicate:
+// immediate categories range on task_id, scheduled ones on task_visibility_ts
+// ignoring task ids. The asymmetry is reproduced deliberately: covering less
+// than the store's delete returns rows already gone, covering more hides rows
+// nothing will delete.
 func (r TaskRange) Covers(key tasks.Key) bool {
 	return cmpBound(r.Category, r.InclusiveMin, key) <= 0 &&
 		cmpBound(r.Category, key, r.ExclusiveMax) < 0
 }
 
-// cmpBound orders two keys the way the store does for this category. What a
-// range covers, whether two join and which maximum wins all go through it.
+// cmpBound orders two keys as the store does for this category. Coverage,
+// range joining and max selection all go through it.
 func cmpBound(category tasks.Category, a, b tasks.Key) int {
 	if category.Type() == tasks.CategoryTypeImmediate {
 		return cmp.Compare(a.TaskID, b.TaskID)
@@ -79,50 +73,40 @@ func cmpBound(category tasks.Category, a, b tasks.Key) int {
 	return stored(a.FireTime).Compare(stored(b.FireTime))
 }
 
-// storedResolution is the resolution a fire time has once it is a row:
-// microseconds, which is what a timestamp column holds in every store this has
-// been run against. Comparing finer is a different predicate, not a stricter
-// one: a range maximum a nanosecond above a task's fire time covers that task
-// here and nothing in the store, losing a row the sequential path keeps. A
-// constant because this package names no store.
+// storedResolution is a stored fire time's resolution: microseconds, as in
+// every store's timestamp column so far. Comparing finer would differ from the
+// store: a range maximum a nanosecond above a task's fire time would cover it
+// here but not in the store, losing a row the sequential path keeps.
 //
-// It is therefore a requirement on the store and not only a fact about it: a
-// scheduled task's fire time must survive a round trip at microsecond
-// resolution or finer. Coarser is the direction that loses, and it loses
-// twice over — a range maximum truncated here to a microsecond covers a task the
-// store's own DELETE would leave alone, so [Accumulator.sweepTasks] drops that
-// task out of the window before any drain writes it, and [hideDeleted] hides its
-// row from the merged read. The reader sees neither, completes the range, and
-// acks past a task that is still there.
+// So it is a requirement on the store: scheduled fire times must round-trip at
+// microsecond resolution or finer. If coarser, a range maximum truncated here
+// covers a task the store's DELETE keeps; [Accumulator.sweepTasks] drops it
+// from the window and [hideDeleted] hides its row, so the reader completes the
+// range past a task that still exists.
 const storedResolution = time.Microsecond
 
 func stored(t time.Time) time.Time { return t.Truncate(storedResolution) }
 
-// rangeAcc is one category's undrained range deletes: the deletes this window
-// still owes the cold store, merged where they join. The drain that applies
-// them empties them.
+// rangeAcc is one category's undrained range deletes, merged where they join.
+// The drain that applies them empties it.
 type rangeAcc struct {
 	category tasks.Category
 	ranges   []TaskRange
 }
 
-// taskRows enumerates every place a task row lives in this window: each pending
-// request's task slots, its orphaned tasks, and the rows an AddHistoryTasks put
-// in beside the workflows. Three shapes, one walk, because the read, a range's
-// sweep and the drain's count must reach the same set — a row the read misses is
-// one a queue completes and acks past, so it is a lost timer rather than a stale
-// answer, and a reader may not be able to tell which door a row came through.
+// taskRows yields every place a task row lives in the window: each pending
+// request's task slots, its orphaned tasks, and the AddHistoryTasks rows. The
+// read, a range's sweep and the drain's count must all see the same set: a row
+// the read misses is one a queue completes past, a lost timer.
 //
-// What it yields is addressable because the sweep replaces the maps rather than
-// writing through them: a slice already handed to a reader is not this
-// accumulator's to edit.
+// It yields pointers so the sweep can replace the maps instead of writing
+// through them; a slice already handed to a reader must not change.
 func (a *Accumulator) taskRows() iter.Seq[*map[tasks.Category][]p.InternalHistoryTask] {
 	return func(yield func(*map[tasks.Category][]p.InternalHistoryTask) bool) {
 		for _, w := range a.workflows {
 			for _, pr := range w.pending {
-				// The slots come from the record format's own enumeration
-				// (mutation.TaskSlots), so a request shape added there is
-				// reached here without an edit.
+				// mutation.TaskSlots enumerates the slots, so a new request
+				// shape is covered without an edit here.
 				for _, slot := range pr.m.TaskSlots() {
 					if !yield(slot) {
 						return
@@ -152,9 +136,8 @@ func (a *Accumulator) rangeState(category tasks.Category) *rangeAcc {
 // fail: the drain's transaction makes the epoch assertion anyway (I11).
 func (a *Accumulator) addTasks(seqno wal.Seqno, req *p.InternalAddHistoryTasksRequest) {
 	for category, list := range req.Tasks {
-		// A category carrying no rows files no home: a key with an empty list
-		// would make the drain's task work non-empty, and a transaction that
-		// writes nothing is what [TaskWork.Empty] exists to spare the store.
+		// No key for an empty list: it would make [TaskWork.Empty] false and
+		// send the store a transaction that writes nothing.
 		if len(list) == 0 {
 			continue
 		}
@@ -167,10 +150,9 @@ func (a *Accumulator) addTasks(seqno wal.Seqno, req *p.InternalAddHistoryTasksRe
 }
 
 // addRangeCompleteTasks folds one RangeCompleteHistoryTasks: the range is kept
-// for the drain to apply, and everything the window already holds inside it
-// goes — out of every home [Accumulator.taskRows] names and not just the rows
-// an AddHistoryTasks put in, a mutable-state write's own task map holding most
-// of them.
+// for the drain, and every window task inside it is dropped from every place
+// [Accumulator.taskRows] names, not just the AddHistoryTasks rows (most live in
+// mutable-state writes' task maps).
 func (a *Accumulator) addRangeCompleteTasks(seqno wal.Seqno, req *p.RangeCompleteHistoryTasksRequest) {
 	r := TaskRange{
 		Category:     req.TaskCategory,
@@ -182,15 +164,12 @@ func (a *Accumulator) addRangeCompleteTasks(seqno wal.Seqno, req *p.RangeComplet
 	a.markTaskSeqno(seqno)
 }
 
-// addRange records a range to apply, merging it with the last one when the two
-// join or overlap. A gap between two ranges is kept rather than closed:
-// closing it would delete rows nobody asked to be gone.
+// addRange records a range, merging it with the last one when they join or
+// overlap. A gap between ranges is kept: closing it would delete rows nobody
+// asked to delete.
 //
-// Joining is tested at both ends. A queue's checkpoints rise, so in practice a
-// range extends the last one and nothing else — but a range lying wholly below
-// it neither joins nor overlaps, and testing only its minimum against the last
-// maximum would take it into the merge, find nothing to extend, and drop a
-// delete that has already been acked.
+// Joining is tested at both ends. Ranges usually rise, but one wholly below
+// the last would pass a min-only test, extend nothing, and drop an acked delete.
 func (t *rangeAcc) addRange(r TaskRange) {
 	if n := len(t.ranges); n > 0 {
 		last := &t.ranges[n-1]
@@ -218,8 +197,7 @@ func (a *Accumulator) sweepTasks(r TaskRange) {
 	}
 }
 
-// countDropped is where every drop in this package is counted, so no call site
-// carries a per-category map of its own. n == 0 is a no-op.
+// countDropped counts every drop in this package. n == 0 is a no-op.
 func (a *Accumulator) countDropped(category string, n int) {
 	if n == 0 {
 		return
@@ -239,9 +217,7 @@ func (a *Accumulator) drainTasks() TaskWork {
 	work := TaskWork{
 		TailSeqno: a.taskTail,
 		Insert:    a.addedTasks,
-		// Counted here rather than by the caller, so that "over the window and
-		// therefore before this empties it" is the order of two statements in one
-		// function instead of an obligation on whoever calls them.
+		// Counted here, before the window is emptied below.
 		Counts: a.taskCounts(),
 	}
 
@@ -254,9 +230,8 @@ func (a *Accumulator) drainTasks() TaskWork {
 	return work
 }
 
-// filterTaskMap removes the covered tasks from one home. Maps and slices are
-// replaced rather than written through, since a slice handed to a reader must
-// not change under it.
+// filterTaskMap removes covered tasks from one map, replacing maps and slices
+// rather than writing through them: a slice handed to a reader must not change.
 func filterTaskMap(
 	in map[tasks.Category][]p.InternalHistoryTask,
 	covered func(tasks.Category, tasks.Key) bool,
@@ -288,11 +263,9 @@ func filterTaskMap(
 	return out
 }
 
-// keepUncovered is list with the dropped rows removed, and how many went. The
-// copy is made where it becomes necessary, which is the first dropped row: until
-// then the caller's own slice is the answer, and handing it back unmodified keeps
-// the rule both callers are under — never write through a slice a reader holds.
-// Most calls drop nothing.
+// keepUncovered returns list without the dropped rows, and how many were
+// dropped. It copies only at the first dropped row and otherwise returns list
+// itself, never writing through a slice a reader may hold.
 func keepUncovered(
 	list []p.InternalHistoryTask, drop func(tasks.Key) bool,
 ) ([]p.InternalHistoryTask, int) {
@@ -314,10 +287,9 @@ func keepUncovered(
 	return kept, len(list) - len(kept)
 }
 
-// taskCounts is the drain's count table: every task row the transaction will
-// write, beside what a range already dropped. It reads the window, so it is
-// [Accumulator.drainTasks]'s first act — after that the rows an AddHistoryTasks
-// put in are the batch's, and the written count would silently be short of them.
+// taskCounts is the drain's count table: rows the transaction will write and
+// rows ranges dropped. It reads the window, so [Accumulator.drainTasks] must
+// call it before emptying the window, or Written silently falls short.
 func (a *Accumulator) taskCounts() map[string]TaskCounts {
 	counts := map[string]TaskCounts{}
 	for home := range a.taskRows() {

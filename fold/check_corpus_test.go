@@ -94,7 +94,7 @@ func driveCorpus(t *testing.T, cfg mutgen.Config, n, window int, resend bool) co
 		// The biconditional emptydrain_test.go states one kind at a time, here
 		// over a stream that mixes them — including the refusal drains and the
 		// trailing one over an empty window. cycle.drain settles an empty batch
-		// off Stats.MutationsIn, and a window that acked entries and folded to
+		// off Batch.Settles, and a window that acked entries and folded to
 		// nothing leaves their bytes charged against I10 forever.
 		require.Equal(t, batch.Stats().MutationsIn == 0, batch.Empty(),
 			"a drain is empty exactly where its window folded nothing")

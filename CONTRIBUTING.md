@@ -22,7 +22,8 @@ subsystem.
   will fail if you break it.
 
 The gate is `make test`, `make race`, `make lint` and `make vuln` — `make check` is all four. None
-of them needs anything installed: no cluster, no container, no fixed port, no cgo.
+of them needs a cluster, a container or a fixed port, and only `make race` needs cgo — the race
+detector does, so it wants a C compiler on the PATH.
 
 `make race` is separate from `make test` because only one of the two is cheap, and it is the one
 that cannot answer for the shipped concurrency: a goroutine per shard owning an accumulator and a

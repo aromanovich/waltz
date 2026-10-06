@@ -25,7 +25,7 @@ func TestAWatermarkThatMovesReachesARunningCycle(t *testing.T) {
 
 	static := Defaults()
 	static.Sync = false
-	// A clock that never advances, so the age watermark cannot be what drains
+	// A clock that never advances, so the age trigger cannot be what drains
 	// this window.
 	static.timeSource = clock.NewEventTimeSource()
 
@@ -71,7 +71,7 @@ func TestFixedIsTheCompletePolicy(t *testing.T) {
 	// The four whose zero is a reading rather than a hole, so filling them would
 	// take a configuration away instead of completing one.
 	zeroed := Fixed(Config{})()
-	require.Zero(t, zeroed.Mutations, "a size watermark of zero drains every write")
+	require.Zero(t, zeroed.Mutations, "a size trigger of zero drains every write")
 	require.Zero(t, zeroed.Bytes)
 	require.Zero(t, zeroed.TrimEvery, "a trim cadence of zero trims at every drain")
 	require.Zero(t, zeroed.TrimAfter)
@@ -92,7 +92,7 @@ func TestTheAnswerIsFilledAndNotJustTheStaticHalf(t *testing.T) {
 	require.Equal(t, Defaults().Age, live().Age,
 		"the age has no reading at zero, so the source cannot answer one")
 	require.Zero(t, live().Mutations,
-		"the size watermark does, so the source can: drain every write")
+		"the size trigger does, so the source can: drain every write")
 	require.Zero(t, live().TrimEvery, "and so does the trim cadence: trim at every drain")
 
 	// A source that moves is still read at every call, not frozen by the fill.

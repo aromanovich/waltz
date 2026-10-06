@@ -26,7 +26,7 @@ func registry() tasks.TaskCategoryRegistry { return tasks.NewDefaultTaskCategory
 // compareOptions ignores what no encoding preserves: proto internal state, and
 // the monotonic reading a time.Time read from a clock carries. A category is
 // compared by id because that is all the payload carries — the type and the name
-// come back from the registry this process built.
+// come back from the task-category registry this process built.
 var compareOptions = []cmp.Option{
 	protocmp.Transform(),
 	cmp.Comparer(func(a, b time.Time) bool {
@@ -50,7 +50,8 @@ func TestRoundTripUpdate(t *testing.T) {
 	require.NoError(t, err)
 
 	// RangeID is the epoch (I11) and travels with the entry, so the codec drops
-	// it and apply refills it. The only difference a round trip may have.
+	// it and apply is handed the entry's epoch instead. The only difference a
+	// round trip may have.
 	require.Zero(t, decoded.Update.RangeID, "RangeID must not survive the codec: it is the epoch")
 	original.Update.RangeID = 0
 
@@ -146,8 +147,8 @@ func TestRoundTripEveryKind(t *testing.T) {
 }
 
 // The two delete requests carry the same four fields and must still decode as
-// different kinds: fold makes one a tombstone for the workflow and the other
-// for the current-run pointer.
+// different kinds: fold makes one a tombstone for a run and the other for the
+// current-run pointer.
 func TestDeleteKindsAreNotInterchangeable(t *testing.T) {
 	del, err := Encode(Mutation{Delete: &p.DeleteWorkflowExecutionRequest{ShardID: 1, RunID: "r"}})
 	require.NoError(t, err)
@@ -206,8 +207,9 @@ func TestFireTimeZeroIsNotTheEpoch(t *testing.T) {
 	require.True(t, got[1].Key.FireTime.IsZero(), "the zero time did not survive as zero")
 }
 
-// Category ids are re-resolved through the process's own registry, so an id
-// this node lacks must be an error: a fallback would drop tasks silently.
+// Category ids are re-resolved through the process's own task-category
+// registry, so an id this node lacks must be an error: a fallback would drop
+// tasks silently.
 func TestUnknownCategoryIsAnError(t *testing.T) {
 	reg := tasks.NewDefaultTaskCategoryRegistry()
 	unknown := tasks.NewCategory(9999, tasks.CategoryTypeImmediate, "made-up")
@@ -294,12 +296,12 @@ func TestCassandraBlobIsRefused(t *testing.T) {
 }
 
 // TestABlobEncodingDecodeCannotParseIsRefusedBeforeTheAppend is the side the
-// refusal has to be on, and it was on the other one. [Decode] admits proto3 alone
-// for the two blobs it parses — the execution info and the execution state — and
-// [Encode] took any encoding at all. So a mutation carrying a JSON-encoded state
-// appended, acked, and then failed to decode for every owner that inherited it:
-// each reads the tail, fails at this blob, leaves the cycle unstarted, and the
-// next request retries it. The write is not lost, it is unavailable for good.
+// refusal has to be on. [Decode] admits proto3 alone for the two blobs it
+// parses — the execution info and the execution state — so a mutation carrying
+// a JSON-encoded state that [Encode] let through would append, ack, and then
+// fail to decode for every owner that inherited it: each reads the tail, fails
+// at this blob and halts halted-invariant, and the next owner fails the same
+// way. The write is not lost, it is unavailable for good.
 //
 // Which is [ErrUncarriedProto]'s failure one field along, and this test is that
 // one's shape too: the refusal is checked where it still writes nothing, and the
@@ -602,7 +604,7 @@ func sampleSnapshot() p.InternalWorkflowSnapshot {
 		DBRecordVersion:  1,
 		// Non-zero, because a zero here cannot tell a field the codec carries
 		// from one it drops: the round trip below compares what came back, and
-		// this fixture held the only snapshot Condition in the tree.
+		// this fixture holds the only snapshot Condition in the tree.
 		Condition: 11,
 
 		ActivityInfos:       map[int64]*commonpb.DataBlob{1: blob("activity-1")},

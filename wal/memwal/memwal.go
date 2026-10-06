@@ -1,22 +1,17 @@
-// Package memwal is the [wal] contract ([ADR 0002]) in process memory, and the
-// only log shipped here. It is a backend and not a test double, and passing the
-// conformance suite in [waltest] is what says so.
+// Package memwal implements the [wal] contract ([ADR 0002]) in process memory.
+// It is the only log shipped here, and a real backend, not a test double: it
+// passes the conformance suite in [waltest].
 //
-// A map of shards under one mutex, and per shard: the epoch that owns the log,
-// the entries it still holds, and the seqno the next append must start at. That
-// last one is the design. A backend that keeps its entries as rows derives an
-// append's verdict from the rows around it and so has to keep the log's last
-// entry through a trim, plus a marker for the one seqno no row can answer for;
-// here the tail is state, so a trim may take everything and the log still knows
-// where its next entry goes and that the seqnos below it are spent. The two
-// shapes therefore differ below a trimmed prefix, where appending is
-// [wal.ErrAlreadyWritten] here and [wal.ErrGap] there. Both refuse and write
-// nothing — which is the contract's and asserted by the suite — while the
-// contract picks neither answer, and no correct caller gets there.
+// Each shard stores its owning epoch, the entries it still holds, and next,
+// the seqno the next append must use. Because next is kept explicitly, a trim
+// may remove every entry and the log still knows where to continue. A
+// row-based backend instead infers this from neighbouring rows, so the two
+// answer an append below a trimmed prefix differently: [wal.ErrAlreadyWritten]
+// here, [wal.ErrGap] there. Both refuse and write nothing, which is all the
+// contract requires.
 //
-// Payloads are copied in and out: this is the only backend that could hand out
-// the caller's own memory, where a caller reusing an append buffer would
-// silently rewrite the log.
+// Payloads are copied in and out, so a caller reusing an append buffer cannot
+// rewrite the log.
 //
 // [ADR 0002]: ../../docs/adr/0002-wal-contract-is-backend-independent.md
 // [waltest]: ../waltest
@@ -31,37 +26,33 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// Backend holds every shard's log in this process's memory. Each one is a log
-// of its own: two Backends share nothing, and a shard exists in exactly the one
-// it was fenced in.
+// Backend holds every shard's log in this process's memory. Two Backends
+// share nothing.
 type Backend struct {
-	// One mutex for every shard, not one per shard: nothing here is slow
-	// enough for the lock to be visible to anything above it.
+	// One mutex for all shards: nothing here is slow enough to need more.
 	mu     sync.Mutex
 	shards map[wal.ShardID]*shardLog
 }
 
 var _ wal.Log = (*Backend)(nil)
 
-// Close releases nothing. The log is this value, and a caller that drops it has
-// released it.
+// Close releases nothing; dropping the Backend releases the log.
 func (b *Backend) Close() {}
 
-// New returns an empty Backend: no shards, and so no log that is anybody's.
+// New returns an empty Backend.
 func New() *Backend {
 	return &Backend{shards: make(map[wal.ShardID]*shardLog)}
 }
 
-// shardLog is one shard's log. Held by pointer so that a shard fetched from the
-// map is the shard, and not a copy of it that an append would write into.
+// shardLog is one shard's log, stored by pointer so appends modify the map's
+// copy.
 type shardLog struct {
-	// epoch is who owns the log. Zero means nobody does.
+	// epoch owns the log; zero means unowned.
 	epoch wal.Epoch
-	// entries are the entries the log still holds: ascending, contiguous, and
-	// starting wherever the last trim left them.
+	// entries are ascending and contiguous, starting after the last trim.
 	entries []wal.Entry
-	// next is the seqno the next append must start at. It survives a trim that
-	// takes every entry, and only ever goes up.
+	// next is the seqno the next append must use. It survives a trim of every
+	// entry and never decreases.
 	next wal.Seqno
 }
 
@@ -98,8 +89,6 @@ func (b *Backend) Append(
 	defer b.mu.Unlock()
 	log := b.logFor(shard)
 
-	// next is the whole of what this backend knows, and the contract derives
-	// both answers from it.
 	if err := wal.RefuseAtNext(shard, epoch, seqno, log.epoch, log.next); err != nil {
 		return err
 	}
@@ -131,9 +120,8 @@ func (b *Backend) ReadFrom(
 	if log == nil || len(log.entries) == 0 {
 		return nil, nil
 	}
-	// The entries are contiguous, so the window start is arithmetic rather than
-	// a search. from is an arbitrary uint64, so the offset is compared before
-	// it is narrowed to an index.
+	// Entries are contiguous, so the start is computed, not searched. The
+	// offset is bounds-checked before use as an index, since from is any uint64.
 	base := log.entries[0].Seqno
 	count := wal.Seqno(len(log.entries))
 	offset := wal.Seqno(0)
@@ -178,19 +166,15 @@ func (b *Backend) Trim(ctx context.Context, shard wal.ShardID, upTo wal.Seqno) e
 		log.entries = nil
 		return nil
 	}
-	// Copied rather than re-sliced: the dropped entries would stay reachable
-	// through the backing array, payloads and all, and a continuously trimmed
-	// log would never give a byte back. The tail's memory budget is measured
-	// against this backend.
+	// Copy rather than re-slice, or the backing array keeps dropped entries
+	// and their payloads alive and trimming never frees memory.
 	log.entries = slices.Clone(log.entries[drop:])
 	return nil
 }
 
-// logFor returns the shard's log, creating an empty unowned one if the shard is
-// new — an append that is then refused leaves one behind. A read or a trim of a
-// shard nobody fenced answers "nothing" rather than bringing one into being.
-//
-// Callers hold b.mu.
+// logFor returns the shard's log, creating an empty unowned one if needed (a
+// refused append leaves it behind). Reads and trims do not call it, so they
+// create nothing. Callers hold b.mu.
 func (b *Backend) logFor(shard wal.ShardID) *shardLog {
 	log := b.shards[shard]
 	if log == nil {
@@ -200,9 +184,8 @@ func (b *Backend) logFor(shard wal.ShardID) *shardLog {
 	return log
 }
 
-// clonePayload gives the log a copy of the caller's bytes, or the caller a copy
-// of the log's. An empty payload stays empty rather than becoming nil: the
-// contract has an entry's payload never nil.
+// clonePayload copies a payload. An empty payload stays non-nil, as the
+// contract requires.
 func clonePayload(payload []byte) []byte {
 	clone := make([]byte, len(payload))
 	copy(clone, payload)

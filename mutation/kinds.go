@@ -2,52 +2,44 @@ package mutation
 
 import p "go.temporal.io/server/common/persistence"
 
-// kindInfo is one row of the kind enumeration: the bookkeeping facts about a
-// [Kind], not its behaviour, which stays in the per-kind switches in fold,
-// check and apply. [Mutation.Kind] and [Mutation.ShardID] stay hand-written
-// fan-outs; every mutation field must have exactly one row that agrees with
-// both. The last two columns are read at run time —
-// [Mutation.RangeID] and [Mutation.EventSlots] are the table — so a kind added
-// without them fails by name in the kind guard rather than fencing against zero
-// or writing no events.
+// kindInfo is one row of the kind enumeration: bookkeeping facts about a
+// [Kind]. Behaviour stays in the per-kind switches in fold and the applier.
+// [Mutation.Kind] and [Mutation.ShardID] are hand-written; every mutation field
+// needs exactly one row agreeing with both. [Mutation.RangeID] and
+// [Mutation.EventSlots] read the last two columns, so a kind added without
+// them fails the kind guard by name instead of fencing against zero or writing
+// no events.
 //
-// History-task maps are deliberately not a column beside events: they are keyed
-// by [Part] as well as by kind, and which parts a request carries is a fact
-// about the instance rather than about the kind — a continue-as-new brings a
-// second one — so the column would hold a switch per row instead of a fact per
-// row. [Mutation.TaskSlot] keys on part first for that reason, and
-// every new kind must name its slots through [Mutation.TaskSlot].
+// History-task maps are not a column: which [Part]s a request carries depends
+// on the instance (continue-as-new adds one), not the kind. Every kind names
+// its task slots through [Mutation.TaskSlot].
 type kindInfo struct {
 	name string // what [Kind.String] returns
 
-	// slot is the [Mutation] field the kind's request travels in, as a selector
-	// rather than a name so that a renamed field breaks the row at compile
-	// time. The guard recovers the name from the pointer, by address.
+	// slot selects the [Mutation] field carrying the kind's request (a selector,
+	// so a rename fails to compile). The guard finds the name by address.
 	slot func(*Mutation) any
 
 	present func(Mutation) bool  // whether that field is set
 	shard   func(Mutation) int32 // the shard the request names, read from that field
 
-	// rangeID is the epoch the caller wrote under, read off the request; 0 for
-	// the kinds whose request carries no such field.
+	// rangeID is the epoch the caller wrote under; 0 if the request has none.
 	rangeID func(Mutation) int64
 
-	// events names the request's slices of new history events, in the order
-	// they must reach the store. This row is the only enumeration of them, and
-	// it is what both writers walk — the one that puts them down through the
-	// store and clears them, and the codec that carries whatever is left — so a
-	// kind whose row omits one is a mutation acked over history nodes nobody
-	// wrote (ADR 0014).
+	// events lists the request's new-history-event slices, in store order.
+	// Both writers (wrapper and fold) walk it, so an omitted slice means a
+	// mutation acked over history rows nobody wrote (ADR 0014).
+	// [Mutation.ClearEvents] and the codec list the same fields by hand.
 	events func(Mutation) [][]*p.InternalAppendHistoryNodesRequest
 }
 
-// The rows for a request whose type has no such field. Named rather than
-// written per row, so that a nil column stays a missing decision.
+// Explicit values for requests without such a field, so a nil column still
+// means a missing decision.
 func noRangeID(Mutation) int64                                   { return 0 }
 func noEvents(Mutation) [][]*p.InternalAppendHistoryNodesRequest { return nil }
 
-// kinds is the enumeration, indexed by [Kind]. [KindInvalid]'s row is the zero
-// value; [Kind.String] answers for it out of band.
+// kinds is the enumeration, indexed by [Kind]. [KindInvalid]'s row is zero;
+// [Kind.String] handles it separately.
 var kinds = [KindCount]kindInfo{
 	KindCreate: {
 		name: "create", slot: func(m *Mutation) any { return &m.Create },

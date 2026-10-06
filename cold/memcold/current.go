@@ -20,26 +20,18 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// GetCurrentExecutionWithLastWriteVersion is the one read this store adds to
-// the embedded one. Upstream's GetCurrentExecution selects the whole
-// current_executions row and then drops last_write_version, because
-// [p.InternalGetCurrentExecutionResponse] has nowhere to hold it; a create
-// asserts on that column, so a layer that cannot see it can confirm the
-// assertion and never refuse it.
+// GetCurrentExecutionWithLastWriteVersion is GetCurrentExecution plus the
+// row's last_write_version, which [p.InternalGetCurrentExecutionResponse]
+// cannot hold. A create asserts on that column; without it the layer could
+// confirm an assertion it should refuse.
 //
-// Everything else is upstream's read, down to the error classes it hands back:
-// an absent row is a *serviceerror.NotFound and a broken database is a
-// *serviceerror.Unavailable. The caller separates them — the first is "no such
-// workflow", the second is a failure — and a store answering absence any other
-// way makes the layer treat a live workflow as unstarted.
+// Errors match upstream: an absent row is *serviceerror.NotFound, a broken
+// database *serviceerror.Unavailable. Answering absence any other way makes
+// the layer treat a live workflow as unstarted.
 //
-// The namespace id is parsed rather than asserted, which is where this departs
-// from the read it is derived from: upstream's own uses primitives.MustParseUUID
-// and panics on a malformed one. Every write path in this store already parses
-// through the same helper, and this read is the one obligation the layer puts on
-// the store below — it runs on every delegated condition check — so a panic here
-// is the process rather than the call. That the id cannot be malformed today is a
-// claim about today's callers.
+// Unlike upstream (primitives.MustParseUUID), a malformed namespace id is an
+// error, not a panic: this read runs on every delegated current-row check, and
+// a panic would take down the process.
 func (s *Store) GetCurrentExecutionWithLastWriteVersion(
 	ctx context.Context,
 	request *p.GetCurrentExecutionRequest,
@@ -63,10 +55,9 @@ func (s *Store) GetCurrentExecutionWithLastWriteVersion(
 	return currentRowResponse(row)
 }
 
-// currentRowResponse is one current_executions row as every assertion in this
-// package is judged against it, absence included. The drain reads the row under
-// its own lock and the layer reads it through the method above; one derivation,
-// so the two cannot disagree about what the store holds.
+// currentRowResponse converts a current_executions row (or its absence) into
+// what assertions are judged against. Both the drain's locked read and the
+// layer's read above use it, so they cannot disagree.
 func currentRowResponse(row *sqlplugin.CurrentExecutionsRow) (*p.InternalGetCurrentExecutionResponse, int64, error) {
 	if row == nil {
 		return nil, 0, nil
@@ -81,17 +72,14 @@ func currentRowResponse(row *sqlplugin.CurrentExecutionsRow) (*p.InternalGetCurr
 	}, row.LastWriteVersion, nil
 }
 
-// executionStateOf is the row's serialised state, and the columns beside it only
-// for a record written before that blob existed — upstream's own order, because
-// the two carry different amounts: the blob has the run id and the request ids
-// and the columns do not. What stands on those two is the conflict error the
-// layer refuses a write with, whose run id decides whether the history service
-// resolves the conflict at all and whose request ids are what a retried start
-// deduplicates on.
+// executionStateOf returns the row's serialised state, falling back to the
+// columns only for a record written before the blob existed (upstream's
+// order). The blob has every request id, the columns only the creating one;
+// the conflict error built from this needs the run id (so history resolves the
+// conflict) and the request ids (so a retried start deduplicates).
 //
-// A blob that will not deserialise is reported rather than quietly answered out
-// of the columns: the caller would get a row that names no run and no way to
-// tell it from one that never had them.
+// A blob that fails to deserialise is an error, not a silent fallback to the
+// columns, which would drop request ids undetectably.
 func executionStateOf(row *sqlplugin.CurrentExecutionsRow) (*persistencespb.WorkflowExecutionState, error) {
 	if len(row.Data) > 0 && row.DataEncoding != "" {
 		state, err := serialization.WorkflowExecutionStateFromBlob(p.NewDataBlob(row.Data, row.DataEncoding))

@@ -64,7 +64,7 @@ func TestAnEmptyWindowRefusesNothing(t *testing.T) {
 }
 
 // TestTheRecoveryDrainsOnceAndSaysWhatItDid pins what [fold.Refusal] reports:
-// that a drain happened at all, which callers count as a drain cadence, and that
+// that a drain happened at all, which a caller counts as a drain, and that
 // an error is the drain's own rather than fold's. Neither is recoverable from
 // the error alone.
 func TestTheRecoveryDrainsOnceAndSaysWhatItDid(t *testing.T) {

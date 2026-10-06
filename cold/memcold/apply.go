@@ -36,52 +36,36 @@ var (
 // is never called; see [cold.HistoryApplier].
 func (*Store) AppliesHistory() {}
 
-// Apply is the cold package's contract implemented, and the reference for a
+// Apply implements the cold package's contract and is the reference for a
 // client implementing it over another database.
 //
-// The order of the transaction is the contract, statement for statement:
+// The transaction, in order:
 //
-//  1. the epoch, as a compare-and-set on the shard's range id. First, so a
-//     drain that lost the shard reports a lost shard rather than the version
-//     failure a fenced writer would find underneath it — the shard's new owner
-//     has been writing, and every version this drain stands on is stale for a
-//     reason that is not this shard's to halt over.
-//  2. the event-history rows this window carried, before anything that points at
-//     them. This store puts them in the same transaction; the contract allows a
-//     store whose bulk path cannot join one to write them first instead, the
-//     order being what is pinned.
-//  3. the task range deletes, before any task row this drain writes. A task
-//     that arrived after a range is one fold deliberately kept, and a delete
-//     running after that insert would take it away — a timer that never fires
-//     rather than a row left behind.
-//  4. the merged requests, in the batch's own tail-seqno order. Each opens with
-//     the current-execution row where the workflow's record rides it — fold's
-//     head-of-window assertion and then the window's own write, once per
-//     workflow — then the head-of-window db_record_version on every run row the
-//     request touches, then its rows.
-//  5. the shard-level task rows, and the watermark.
+//  1. The epoch, as a locked compare of the shard's rangeID. First, so a drain
+//     that lost the shard reports a lost shard, not the stale-version failure
+//     the new owner's writes would cause.
+//  2. The event-history rows, before anything that points at them. Here they
+//     share the transaction; the contract also allows writing them first.
+//  3. The task range deletes, before any task insert. Otherwise a delete would
+//     remove a task fold deliberately kept: a timer that never fires.
+//  4. The merged requests, in tail-seqno order. Each starts with the
+//     current-execution row where the workflow's record rides it (fold's
+//     assertion, then the window's write, once per workflow), then the
+//     db_record_version assertion on every run row it touches, then its rows.
+//  5. The shard-level task rows, and the watermark.
 //
-// A client owes the same five and gets none of them from an
-// ExecutionStore: that interface has nowhere to declare a transaction spanning
-// many workflows, so the write path has to be built beside it, on whatever the
-// driver offers below. An implementer whose driver offers nothing below cannot
-// satisfy the contract by trying harder inside it.
+// An ExecutionStore cannot express a transaction spanning many workflows, so
+// a client must build this beside it, on what its driver offers.
 //
-// What this one gets for free from being one transaction on one connection is
-// worth naming, because a client on a different engine will not have it: the
-// statements take effect in the order they are issued. So an assertion reads
-// the rows as every earlier request of this same batch left them, a run
-// tombstoned and recreated inside one window needs no special case, and the
-// only ordering rules left are the two stated above — the epoch first and the
-// range deletes before the inserts. An engine that gathers a transaction's
-// statements and reorders them by table has to reproduce those orderings some
-// other way, and a batch that lands in a different order is not the same batch.
+// One transaction on one connection applies statements in issue order, so an
+// assertion sees earlier requests of the same batch, and a run deleted and
+// recreated in one window needs no special case. An engine that reorders
+// statements (e.g. by table) must preserve orders 1–3 some other way.
 //
-// The outcome: nil is committed; [apply.Refuse] is a drain nothing was written
-// for, refused before the transaction opened; *p.ShardOwnershipLostError is the
-// epoch; a condition failure comes back attributed by [apply.Attribute], naming
-// the rows that diverged; anything else is an unknown outcome and the caller
-// must read the watermark before it does anything else.
+// Outcome: nil is committed; [apply.Refuse] means nothing was written;
+// *p.ShardOwnershipLostError is the epoch; a condition failure is attributed
+// by [apply.Attribute]; anything else is an unknown outcome, and the caller
+// must read the watermark before doing anything else.
 func (s *Store) Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 	if err := refusals(shard, epoch, batch); err != nil {
 		return err
@@ -89,27 +73,22 @@ func (s *Store) Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, b
 
 	tx, err := s.db.BeginTx(ctx)
 	if err != nil {
-		// Not a refusal: nothing was written, but nothing establishes that from
-		// here, and a caller told "refused" would not read the watermark back.
+		// Not a refusal: we cannot prove nothing was written, and a caller told
+		// "refused" would not read the watermark.
 		return serviceerror.NewUnavailablef("memcold: opening the drain's transaction on shard %d: %v", shard, err)
 	}
 
 	if err := s.drain(ctx, tx, shard, epoch, batch); err != nil {
 		if rerr := tx.Rollback(); rerr != nil {
-			// A transaction that will not roll back has an outcome nobody here
-			// can state: the statements this drain had already issued may yet
-			// land. Reporting the assertion that failed would be a definite
-			// answer to an open question, and the one rule [cold.Applier] has
-			// about ambiguity is not to round it down — the cycle reads the
-			// watermark on this and would have given up on the batch instead.
+			// Without a rollback the issued statements may still land, so the
+			// outcome is unknown. [cold.Applier] forbids reporting it as a
+			// definite failure; Unavailable makes the cycle read the watermark.
 			return serviceerror.NewUnavailablef(
 				"memcold: the drain of shard %d failed (%v) and its transaction would not roll back: %v",
 				shard, err, rerr)
 		}
-		// The readback runs after the rollback and not before it: the database
-		// is served by one connection, and a read taken while the drain's
-		// transaction still holds it would wait for a transaction waiting for
-		// the read.
+		// Read back only after the rollback: there is one connection, and a
+		// read while the transaction holds it would deadlock.
 		if apply.Classify(err) == apply.ClassInvariantViolated {
 			return apply.Attribute(ctx, baserow.New(s), err, shard, batch)
 		}
@@ -121,14 +100,12 @@ func (s *Store) Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, b
 	return nil
 }
 
-// refusals are the checks that must fail before the transaction opens, so that
-// what they answer is [apply.ClassRefused] — an input to fix, with no outcome to
-// recover. Everything a batch is internally consistent about is
-// [fold.Accumulator.Drain]'s postcondition and is not re-derived here; what is
-// left is this call's own pairing, and the two fan-outs whose unrecognised arm
-// would otherwise commit: an unhandled request kind writes nothing for the
-// request, and a current-row assertion kind fold's own switch has no arm for is
-// confirmed rather than checked.
+// refusals are the checks made before the transaction opens, so a failure is
+// [apply.ClassRefused]. Batch consistency is [fold.Accumulator.Drain]'s
+// postcondition and is not rechecked. What remains is the shard/epoch pairing
+// and two switches whose unknown arm would otherwise commit silently: an
+// unhandled request kind would write nothing, and an unknown current-row
+// assertion kind would be confirmed unchecked.
 func refusals(shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 	if epoch == 0 {
 		return apply.Refuse(errors.New("memcold: epoch 0 is not an epoch to write under"))
@@ -161,30 +138,22 @@ func refusals(shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error {
 	return nil
 }
 
-// drain is everything the transaction carries, in the order the numbered list
-// above states — which is this store's, [cold.Applier] stating what a drain
-// must carry and not the sequence. A store ordering it otherwise would leak
-// every row the window's own range sweep took out.
-//
-// It does not commit: the caller does, so that a failure here is always a
-// transaction still open and always rolled back.
+// drain issues the transaction's statements in the order listed on [Store.Apply].
+// It does not commit: the caller does, so a failure here always leaves an open
+// transaction to roll back.
 func (s *Store) drain(
 	ctx context.Context, tx sqlplugin.Tx, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch,
 ) error {
 	shardID := int32(shard)
 
-	// The epoch's boundary is the request loop, not the deletes: moving it past
-	// these is an equivalence — nothing between them asserts, and a rolled-back
-	// transaction writes no rows either way — while moving it past the loop is
-	// red, which is what `TestAStaleEpochShadowsTheVersionFailureUnderIt` holds.
+	// The epoch must precede the request loop
+	// (TestAStaleEpochShadowsTheVersionFailureUnderIt); the deletes do not assert.
 	if err := assertEpoch(ctx, tx, shardID, int64(epoch)); err != nil {
 		return err
 	}
 
-	// Inside the transaction, which this store may do and a client with a
-	// separate bulk path may not: what the contract pins is that these rows are
-	// durable before the mutable state naming them is, and one transaction is
-	// the strongest way to keep that.
+	// History must be durable no later than the mutable state naming it; one
+	// transaction guarantees that.
 	if err := applyHistory(ctx, tx, batch.History()); err != nil {
 		return err
 	}
@@ -208,10 +177,9 @@ func (s *Store) drain(
 	return SetWatermark(ctx, tx, shard, batch.Watermark())
 }
 
-// assertEpoch is the drain's fence: the shard's range id must still be the one
-// this writer holds. A shard with no row is a lost shard rather than a failure —
-// this writer cannot own a shard that is not there, and reporting an unknown
-// outcome would leave the caller retrying a drain that can never land.
+// assertEpoch is the drain's fence: the shard's rangeID must still be this
+// writer's. A missing shard row is a lost shard: an unknown outcome would have
+// the caller retry a drain that can never land.
 func assertEpoch(ctx context.Context, tx sqlplugin.Tx, shardID int32, epoch int64) error {
 	rangeID, err := tx.ReadLockShards(ctx, sqlplugin.ShardsFilter{ShardID: shardID})
 	switch {
@@ -232,8 +200,8 @@ func assertEpoch(ctx context.Context, tx sqlplugin.Tx, shardID int32, epoch int6
 	return nil
 }
 
-// applyRequest drives one merged request: the workflow's current-row facts if
-// this is where they belong, then the run assertions, then the rows.
+// applyRequest writes one merged request: the current row if this request
+// carries it, then the run assertions, then the rows.
 func (s *Store) applyRequest(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, e *fold.Emitted,
 ) error {
@@ -294,8 +262,8 @@ func (s *Store) applyRequest(
 		if err := deleteRun(ctx, tx, shardID, req.NamespaceID, req.WorkflowID, req.RunID); err != nil {
 			return err
 		}
-		// The tasks the collapse orphaned: the Delete has no task slot of its
-		// own, and a task lost here is lost in the tail as well.
+		// Tasks orphaned by the collapse: a Delete has no task slot, and a task
+		// dropped here is lost for good.
 		if err := applyTasks(ctx, tx, shardID, e.OrphanedTasks()); err != nil {
 			return err
 		}
@@ -306,8 +274,8 @@ func (s *Store) applyRequest(
 		}
 	}
 
-	// Batches never merge, so each is a row of its own, written after the
-	// request that may have cleared the rows already there.
+	// Batches never merge: one row each, written after the request, which may
+	// have cleared existing rows.
 	for _, b := range e.BufferedBatches {
 		run, err := parseRun(b.RunID)
 		if err != nil {
@@ -320,12 +288,10 @@ func (s *Store) applyRequest(
 	return nil
 }
 
-// applyCurrentRow settles the workflow's current-execution row once per
-// workflow record: fold's head-of-window assertion, and then the write its tail
-// left. Both are the workflow's rather than any one request's, which is why
-// they ride the request [fold.Emitted.FirstOfWorkflow] marks — the store reports
-// the first failing assertion, and hoisting every workflow's to the front of
-// the batch would change which failure a mixed drain reports.
+// applyCurrentRow checks fold's assertion on the current-execution row and
+// writes the window's last current-row write, once per workflow, on the request
+// [fold.Emitted.FirstOfWorkflow] marks. Not hoisted to the front of the batch:
+// that would change which failure a mixed drain reports first.
 func applyCurrentRow(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, ns primitives.UUID, e *fold.Emitted,
 ) error {
@@ -339,10 +305,8 @@ func applyCurrentRow(
 		return err
 	}
 	if cur := wf.Current; cur != nil {
-		// Judged through fold's own predicate, against the row shaped the way
-		// this store's versioned read returns it: what the layer confirmed
-		// before the ack and what the drain asserts have to be the same
-		// question asked twice.
+		// Same predicate and row shape as the pre-ack check, so the drain asks
+		// exactly the question the layer confirmed.
 		base, version, err := currentRowResponse(row)
 		if err != nil {
 			return err
@@ -359,16 +323,11 @@ func applyCurrentRow(
 	return writeCurrentRow(ctx, tx, shardID, ns, e.WorkflowID, cw, row != nil)
 }
 
-// writeCurrentRow puts the window's last current-row write into the store,
-// inserting or updating according to what the assertion read found: the plugin
-// offers the two statements and no upsert, and the row was read a statement ago
-// under this transaction's lock.
+// writeCurrentRow writes the window's last current-row write, inserting or
+// updating according to the locked read just made (the plugin has no upsert).
 //
-// The columns beside the blob are recovered from it. [fold.CurrentWrite] carries
-// the run, the state and the last write version, and the create request id,
-// status and start time live only inside the serialised state — so the row's
-// scalars and its blob agree by construction rather than by two derivations
-// staying in step.
+// Create request id, status and start time exist only inside the blob, so they
+// are decoded from it; row and blob agree by construction.
 func writeCurrentRow(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32,
 	ns primitives.UUID, workflowID string, cw *fold.CurrentWrite, exists bool,
@@ -421,11 +380,11 @@ func writeCurrentRow(
 	return nil
 }
 
-// deleteCurrentRow applies a folded DeleteCurrent. The guard is the request's
-// run and must never become an assertion — a delete-current naming a run that is
-// no longer current is an ordinary no-op — except where fold reports the window
-// removed the row it wrote itself: the row in the store is then the pre-window
-// one, which the request cannot name, so the delete takes whatever is there.
+// deleteCurrentRow applies a folded DeleteCurrent, guarded by the request's
+// run. The guard is not an assertion: naming a run that is no longer current
+// is a no-op. If the window removed a row it wrote itself (CurrentRemoved),
+// the stored row is the pre-window one the request cannot name, so the delete
+// takes whatever is there.
 func deleteCurrentRow(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, ns primitives.UUID, e *fold.Emitted,
 ) error {
@@ -452,10 +411,8 @@ func deleteCurrentRow(
 	return nil
 }
 
-// assertRuns places one request's head-of-window run assertions, in run-id
-// order. The order is not the map's: the drain reports the first assertion that
-// fails, and a map's iteration would make which failure a caller sees differ
-// between two runs of the same batch.
+// assertRuns checks one request's run assertions in run-id order, not map
+// order, so the first failure reported is the same on every run of a batch.
 func assertRuns(
 	ctx context.Context, tx sqlplugin.Tx, shardID int32, ns primitives.UUID, e *fold.Emitted,
 ) error {
@@ -480,15 +437,12 @@ func assertRuns(
 	return nil
 }
 
-// applyHistory writes the window's event batches: one node row each, and a tree
-// row beside a batch that opens a branch.
+// applyHistory writes the window's event batches: one history_node row each, and
+// a history_tree row beside a batch that opens a branch.
 //
-// Both are upserts, which is what makes a repeated drain safe rather than a
-// duplicate-key failure the shard cannot get past: a history node is immutable
-// and keyed by (shard, tree, branch, node, transaction), so the row written
-// twice is the same row. The plugin is the one doing that — sqlite REPLACEs and
-// postgres takes the conflict — and a store whose insert is not an upsert owes
-// its own answer to the same question.
+// Both are upserts (the plugin's REPLACE / ON CONFLICT), so a repeated drain
+// rewrites the same immutable row instead of failing on a duplicate key the
+// shard could never get past. A store without upsert must solve this itself.
 func applyHistory(ctx context.Context, tx sqlplugin.Tx, batches []*p.InternalAppendHistoryNodesRequest) error {
 	for _, r := range batches {
 		treeID, err := parseTree(r.BranchInfo.TreeId)

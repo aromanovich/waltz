@@ -9,29 +9,25 @@ import (
 	"go.temporal.io/server/common/resolver"
 )
 
-// AbstractDataStoreFactory puts a [Store] behind the seam a real server reaches
-// a non-plugin store through: name a custom datastore in
-// Persistence.DataStores and hand this to temporal.WithCustomDataStoreFactory.
-// Wrap it in the layer's own decorator
-// (wrapper.NewAbstractDataStoreFactory) and the WAL sits between the history
-// service and this database.
+// AbstractDataStoreFactory exposes a [Store] to a server as a custom
+// datastore: name one in Persistence.DataStores and pass this to
+// temporal.WithCustomDataStoreFactory. Wrap it in
+// wrapper.NewAbstractDataStoreFactory to put the WAL in front of it.
 type AbstractDataStoreFactory struct {
 	store *Store
 }
 
 var _ client.AbstractDataStoreFactory = (*AbstractDataStoreFactory)(nil)
 
-// NewAbstractDataStoreFactory is the store as a server sees it. Every service
-// of that server gets the same database, because there is only one and it was
-// created when store was.
+// NewAbstractDataStoreFactory returns the store as a server sees it. Every
+// service gets the same database, created by [New].
 func NewAbstractDataStoreFactory(store *Store) *AbstractDataStoreFactory {
 	return &AbstractDataStoreFactory{store: store}
 }
 
-// NewFactory ignores every argument. The database, its cluster name, its logger
-// and its metrics handler were fixed by [New]; a server presenting different
-// ones is a caller that composed a store for one cluster and started another,
-// which this cannot repair and will not paper over by rebuilding underneath it.
+// NewFactory ignores every argument: the database, cluster name, logger and
+// metrics handler were fixed by [New], and it does not rebuild for different
+// ones.
 func (f *AbstractDataStoreFactory) NewFactory(
 	config.CustomDatastoreConfig,
 	resolver.ServiceResolver,
@@ -42,19 +38,17 @@ func (f *AbstractDataStoreFactory) NewFactory(
 	return &dataStoreFactory{store: f.store}
 }
 
-// dataStoreFactory vends the two stores waltz is about from the [Store], and
-// everything else — matching, metadata, cluster metadata, the queues, nexus
-// endpoints — from the SQL factory unchanged. None of those is inside the
-// layer, and none of them is this package's to have an opinion about.
+// dataStoreFactory vends the execution and shard stores from the [Store], and
+// every other store (matching, metadata, queues, nexus endpoints) from the SQL
+// factory unchanged.
 type dataStoreFactory struct {
 	store *Store
 }
 
 var _ p.DataStoreFactory = (*dataStoreFactory)(nil)
 
-// Close does nothing. A server builds one of these per service and they all wrap
-// the one [Store], so closing here would force the sql.Factory underneath shut
-// while other services are still vending stores from it.
+// Close does nothing: every service's factory wraps the one [Store], so closing
+// would shut the sql.Factory under services still using it.
 func (f *dataStoreFactory) Close() {}
 
 func (f *dataStoreFactory) NewExecutionStore() (p.ExecutionStore, error) {

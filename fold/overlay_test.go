@@ -192,8 +192,9 @@ func withChecksum(name string) func(*p.InternalWorkflowMutation) {
 // snapshot the window holds, which answers with no base at all.
 //
 // It claims a field is filled and not what with — which source each comes from
-// is judged case by case in the tests around it. What a zero costs, and which
-// five of the thirteen used to be droppable, are in .claude/rules/fold.md.
+// is judged case by case in the tests around it, the collections' in
+// [TestEveryCollectionOfAReadAnswerComesFromItsOwnSource]. What a zero costs is
+// in .claude/rules/fold.md.
 func TestEveryFieldOfAReadAnswerIsFilled(t *testing.T) {
 	answer := reflect.TypeFor[p.InternalWorkflowMutableState]()
 	require.NotZero(t, answer.NumField(), "the answer's type has no fields: this judges nothing")
@@ -284,8 +285,7 @@ func blobsOf[K comparable](m map[K]*commonpb.DataBlob) []string {
 //
 // The answer is assembled by three hand-filled mirrors — snapshotOfBase on the
 // way in, copySnapshot for a window's own state, mutableStateOf on the way out
-// — and each names all six by hand. Nine such crossings left the whole of
-// `go test ./...` green, every collection but the activities in every mirror.
+// — and each names all six by hand.
 //
 // What it costs is not a stale answer. The caller writes the run back from
 // what it read, and a snapshot-bearing write clears the run's tables first —
@@ -344,11 +344,7 @@ func TestEveryCollectionOfAReadAnswerComesFromItsOwnSource(t *testing.T) {
 // from, so adopting the new run into the reset's own part answers every read of
 // it with the reset run's state — and folds a later delta of the new run onto
 // the reset's snapshot, which is the reset run's state destroyed and the new
-// run's write lost. Both acked.
-//
-// Nothing drove it: no fixture in the tree reads or folds the new run of a
-// reset inside the window that created it, so the adopt could be moved with the
-// whole of `go test ./...` green. A reset whose new run is written to again in
+// run's write lost. Both acked. A reset whose new run is written to again in
 // the same window is ordinary traffic — it is what the workflow continues as.
 func TestEachRunOfAResetIsReadOutOfItsOwnPart(t *testing.T) {
 	a := fold.New(shard)
@@ -496,7 +492,7 @@ func TestTheOverlayIsReadOnlyOnTheAccumulator(t *testing.T) {
 }
 
 // TestTheOverlayDoesNotWriteThroughTheBase is the same rule for the caller's
-// base row, which belongs to whoever answered the thunk. Two moments, and the
+// base row, which belongs to the caller that read it. Two moments, and the
 // second is the one snapshotOfBase answers for: the fold must not reach the row
 // while it renders, and what it hands back must not be the row's own maps —
 // there too the copy is a line per collection.
@@ -678,12 +674,11 @@ func TestTheCurrentRowIsAnsweredInOrder(t *testing.T) {
 	})
 
 	t.Run("a guard over a workflow with no current row at all", func(t *testing.T) {
-		// The absence arm of the same rule, which nothing drove: a delete-current
-		// in the window over a workflow the cold store has no row for. It is the
-		// ordinary shape of a deletion that races the drain applying the create,
-		// and without the nil check the guard is compared against a row that is
-		// not there — a nil dereference on the shard's own goroutine, answering a
-		// read.
+		// The absence arm of the same rule: a delete-current in the window over
+		// a workflow the cold store has no row for. It is the ordinary shape of a
+		// deletion that races the drain applying the create, and without the nil
+		// check the guard is compared against a row that is not there — a nil
+		// dereference on the shard's own goroutine, answering a read.
 		a := fold.New(shard)
 		add(t, a, mkDeleteCurrent(runX))
 

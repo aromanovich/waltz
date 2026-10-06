@@ -18,7 +18,7 @@ import (
 )
 
 // TestAReadTheHaltRulePassesThroughIsStillCounted: the count sits between the
-// gate and the halt rule, so passing a read to the cold store does not hide it
+// gate and the routing rule, so passing a read to the cold store does not hide it
 // from the counters. A witness reads Reads as "reads this shard answered", and
 // a mode whose reads are all passed through would otherwise report none.
 func TestAReadTheHaltRulePassesThroughIsStillCounted(t *testing.T) {
@@ -32,7 +32,7 @@ func TestAReadTheHaltRulePassesThroughIsStillCounted(t *testing.T) {
 	base := &coldStore{info: "cold"}
 	_, err := e.c.getWorkflowExecution(context.Background(), getExec(ns, wf, run), base.read)
 	require.NoError(t, err)
-	require.Equal(t, 1, base.asked(), "the halt rule passed it through")
+	require.Equal(t, 1, base.asked(), "the routing rule passed it through")
 	require.Equal(t, 1, e.c.Stats().Reads)
 }
 

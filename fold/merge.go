@@ -5,18 +5,17 @@ import (
 	"go.temporal.io/server/service/history/tasks"
 )
 
-// mergeItems folds one mutation's upsert/delete pair for a single collection
-// into the accumulator's, resolving upsert-vs-delete per key: the later
-// operation wins and the key leaves the other set. Emitted unresolved, the
-// store issues every upsert before every delete, so a key re-upserted after
-// being deleted would be written and then deleted again — an acked write gone.
+// mergeItems folds one mutation's upserts and deletes for one collection into
+// the accumulator's, resolving per key: the later operation wins and the key
+// leaves the other set. Unresolved, the store runs every upsert before every
+// delete, so a key re-upserted after a delete would be deleted: an acked write
+// lost.
 func mergeItems[K comparable, V any](
 	ups map[K]V, dels map[K]struct{},
 	srcUps map[K]V, srcDels map[K]struct{},
 ) (map[K]V, map[K]struct{}) {
-	// A key one source mutation both upserts and deletes ends up upserted here
-	// and deleted in the store, which orders the two statements the other way
-	// round.
+	// A key one source mutation both upserts and deletes ends up upserted
+	// here, but deleted by the store, which runs upserts first.
 	for k := range srcDels {
 		if dels == nil {
 			dels = make(map[K]struct{})
@@ -49,10 +48,9 @@ func applyDelta[K comparable, V any](state map[K]V, ups map[K]V, dels map[K]stru
 	return state
 }
 
-// mergeTasks concatenates task groups in arrival order. Tasks are queue entries
-// rather than workflow state: no snapshot or tombstone barrier collapses them
-// (I8). A range delete still does, out of these slots as out of every other
-// home.
+// mergeTasks concatenates task groups in arrival order. Tasks are queue
+// entries, not mutable state: no snapshot or tombstone barrier collapses them
+// (I8). A range delete still removes them.
 func mergeTasks(dst, src map[tasks.Category][]p.InternalHistoryTask) map[tasks.Category][]p.InternalHistoryTask {
 	for category, list := range src {
 		if dst == nil {
@@ -64,8 +62,8 @@ func mergeTasks(dst, src map[tasks.Category][]p.InternalHistoryTask) map[tasks.C
 }
 
 // mergeMutation folds src into dst: collections merge with per-key resolution,
-// tasks concatenate, every scalar comes from src. The buffered-events fields
-// are left alone — they do not merge, and runState.foldBuffered owns them.
+// tasks concatenate, every scalar comes from src. Buffered-events fields are
+// left alone: they do not merge, and runState.foldBuffered owns them.
 func mergeMutation(dst, src *p.InternalWorkflowMutation) {
 	dst.UpsertActivityInfos, dst.DeleteActivityInfos = mergeItems(
 		dst.UpsertActivityInfos, dst.DeleteActivityInfos, src.UpsertActivityInfos, src.DeleteActivityInfos)
@@ -115,8 +113,8 @@ func applyMutationToSnapshot(dst *p.InternalWorkflowSnapshot, src *p.InternalWor
 	dst.Checksum = src.Checksum
 }
 
-// replaceSnapshot puts src's whole state into dst, a snapshot superseding a
-// snapshot, keeping the tasks accumulated so far.
+// replaceSnapshot replaces dst's state with src's (a snapshot superseding a
+// snapshot), keeping the tasks accumulated so far.
 func replaceSnapshot(dst, src *p.InternalWorkflowSnapshot) {
 	prior := dst.Tasks
 	*dst = *src

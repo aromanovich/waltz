@@ -1,21 +1,10 @@
-// Package basetest is the pre-window rows in memory.
+// Package basetest is an in-memory [baserow.Store]: the pre-window rows, for
+// tests that stand up a write path without a database.
 //
-// It is the second adapter at the seam [baserow.Store] names, and the reason it
-// exists is the reason [github.com/aromanovich/waltz/internal/verify/coldtest] does:
-// the first adapter is a real store over a real database, so every package that
-// has to stand a write path up wrote a pair of maps and an absence rule of its
-// own.
-//
-// Absence is what makes that costly rather than untidy. A row that is not there
-// arrives as a NotFound and [baserow.Rows] turns it into a nil row, which is
-// what a delegated assertion is stated over — so a double answering absence its
-// own way leaves the suite green and the rule unjudged. Here it is answered
-// once.
-//
-// Unlike coldtest this package names the seam it stands at. coldtest satisfies
-// [cold.Applier] and [cold.Watermarker] by shape and imports nothing of cold;
-// this one is an adapter at a seam whose whole purpose is to be reachable from
-// the three packages that read through it.
+// It exists so absence is answered one way everywhere. A missing row is a
+// NotFound, which [baserow.Rows] turns into the nil row delegated assertions
+// are stated over; a double answering absence differently would leave the
+// suite green and the rule unjudged.
 package basetest
 
 import (
@@ -30,15 +19,9 @@ import (
 	"github.com/aromanovich/waltz/baserow"
 )
 
-// Store is one cold store's two mutable-state reads: runs by id, current rows
-// by workflow id, and a count of what was asked of each.
-//
-// The zero rows are the useful starting point rather than a degenerate one: a
-// store nobody has staged is the store a create asserts against, and every read
-// of it is an absence.
-//
-// The reads run on the cycle's own goroutine while a test stages from its own,
-// so the map access is locked.
+// Store holds run rows by run id and current rows by workflow id, and counts
+// reads of each. An unstaged store is what a create asserts against: every
+// read is an absence. Locked, because the cycle reads while the test stages.
 type Store struct {
 	mu       sync.Mutex
 	runs     map[string]int64
@@ -48,24 +31,22 @@ type Store struct {
 	reads    Reads
 }
 
-// row is a current-execution row as the cold store answers it: the run, its
-// state, and the last_write_version column beside it.
+// row is a current-execution row: run, state and last_write_version.
 type row struct {
 	runID            string
 	state            enumsspb.WorkflowExecutionState
 	lastWriteVersion int64
 }
 
-// Reads is what a store was asked for, counted apart. Which of the two a
-// request costs is the property most of these tests are about: the current row
-// is read for an assertion the window handed on, and the run's row only where
-// the window holds nothing for it.
+// Reads counts reads of each kind, which most tests here assert on: the current
+// row is read for a delegated assertion, the run row only when the window holds
+// nothing for that run.
 type Reads struct {
 	Run     int
 	Current int
 }
 
-// New is a store holding no rows: every read is an absence.
+// New returns a store with no rows.
 func New() *Store {
 	return &Store{
 		runs:     map[string]int64{},
@@ -74,19 +55,17 @@ func New() *Store {
 	}
 }
 
-// Rows is the store as the write path takes it. The two reads travel as one
-// value, so a fixture cannot bring one reader and not the other.
+// Rows wraps the store as the write path takes it, both reads in one value.
 func (s *Store) Rows() *baserow.Rows { return baserow.New(s) }
 
-// SetRun gives a run a row at a db_record_version, which is what an update's
-// delegated assertion stands on.
+// SetRun stages a run row at db_record_version, which an update asserts on.
 func (s *Store) SetRun(runID string, version int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runs[runID] = version
 }
 
-// SetCurrent gives a workflow a current-execution row in full.
+// SetCurrent stages a workflow's current-execution row.
 func (s *Store) SetCurrent(
 	workflowID, runID string, state enumsspb.WorkflowExecutionState, lastWriteVersion int64,
 ) {
@@ -95,57 +74,55 @@ func (s *Store) SetCurrent(
 	s.current[workflowID] = row{runID: runID, state: state, lastWriteVersion: lastWriteVersion}
 }
 
-// SetRunning gives a workflow a live current run. No version: only the
-// completed shape is asserted against one.
+// SetRunning stages a running current run, with no version: only a completed
+// run's version is asserted on.
 func (s *Store) SetRunning(workflowID, runID string) {
 	s.SetCurrent(workflowID, runID, enumsspb.WORKFLOW_EXECUTION_STATE_RUNNING, 0)
 }
 
-// SetCompleted is the row a start over a reused workflow ID asserts on: the
-// previous run, finished, at a given last_write_version.
+// SetCompleted stages a finished previous run at lastWriteVersion, which a
+// start reusing the workflow ID asserts on.
 func (s *Store) SetCompleted(workflowID, runID string, lastWriteVersion int64) {
 	s.SetCurrent(workflowID, runID, enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED, lastWriteVersion)
 }
 
-// Holds is a workflow as an update asserts it: the current row names runID, and
-// that run's own row is at version. A window opening with an update needs both;
-// one opening with a create asserts absence and needs neither.
+// Holds stages what an update asserts: the current row names runID and that
+// run's row is at version. A window opening with a create needs neither.
 func (s *Store) Holds(workflowID, runID string, version int64) {
 	s.SetRunning(workflowID, runID)
 	s.SetRun(runID, version)
 }
 
-// DeleteRun takes a run's row out, as a drain carrying a tombstone does.
+// DeleteRun removes a run's row, as a drain carrying a tombstone does.
 func (s *Store) DeleteRun(runID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.runs, runID)
 }
 
-// DeleteCurrent takes a workflow's current-execution row out.
+// DeleteCurrent removes a workflow's current-execution row.
 func (s *Store) DeleteCurrent(workflowID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.current, workflowID)
 }
 
-// FailAll makes every read fail with err instead of answering, which is what a
-// cold store nobody can reach does to the condition authority.
+// FailAll makes every read fail with err, like an unreachable cold store.
 func (s *Store) FailAll(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.err = err
 }
 
-// FailRun makes one run's row fail while the rest answer, which is what a blip
-// or a dead session does to an attribution mid-batch.
+// FailRun makes reads of one run's row fail with err, like a transient error
+// mid-batch.
 func (s *Store) FailRun(runID string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failRuns[runID] = err
 }
 
-// Reads is what has been asked of this store so far.
+// Reads returns the read counts so far.
 func (s *Store) Reads() Reads {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -168,8 +145,7 @@ func (s *Store) GetWorkflowExecution(
 	if !ok {
 		return nil, serviceerror.NewNotFoundf("workflow execution not found for run %s", req.RunID)
 	}
-	// A row the store answers always carries a state, whatever the caller reads
-	// off it.
+	// A returned row always carries a state.
 	return &p.InternalGetWorkflowExecutionResponse{
 		State:           &p.InternalWorkflowMutableState{},
 		DBRecordVersion: version,
@@ -189,11 +165,9 @@ func (s *Store) GetCurrentExecutionWithLastWriteVersion(
 	if !ok {
 		return nil, 0, serviceerror.NewNotFoundf("no current execution for workflow %s", req.WorkflowID)
 	}
-	// The run is the field beside the state and not a copy inside it, which is
-	// the shape upstream's own read hands back and therefore the least a
-	// conforming store answers with. A double that filled both would keep a
-	// consumer that reads the state's copy green against every store that does
-	// not.
+	// RunID is set only on the response, not inside ExecutionState, matching
+	// upstream. Filling both would hide a consumer that reads the copy real
+	// stores leave empty.
 	return &p.InternalGetCurrentExecutionResponse{
 		RunID:          cur.runID,
 		ExecutionState: &persistencespb.WorkflowExecutionState{State: cur.state},

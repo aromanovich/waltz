@@ -2,30 +2,25 @@ package cycle
 
 import "time"
 
-// Policy is where a cycle reads its configuration, called at the decision rather
-// than at the acquire, so what a policy that moved changes is the next drain and
-// not the next epoch. Do not cache its [Config] on the cycle.
+// Policy is where a cycle reads its configuration. It is called at each
+// decision, not at the acquire, so a moved setting changes the next drain
+// rather than the next epoch. Do not cache its [Config] on the cycle.
 //
-// Every call must answer a complete [Config], clock, age and the four bounds
-// included, because nothing downstream defaults anything. Filling is unexported,
-// so use [Fixed] or [Live]: a source written by hand outside this package hands
-// a cycle a nil clock, four zero bounds and a zero age. The nil clock panics
-// [New] inside the acquire; past that one, a zero hard max refuses every write
-// and a zero age re-arms the loop's timer at a whole CPU per shard.
+// Every call must return a complete [Config] (clock, age and the four bounds)
+// because nothing downstream fills defaults. Build one with [Fixed] or [Live]:
+// a hand-written source gives a nil clock (panics in [New]), a zero hard max
+// (refuses every write) and a zero age (the timer spins a CPU per shard).
 type Policy func() Config
 
-// Moving is the half of the policy a decision re-reads: the drain watermarks and
-// the trim cadence, read at [Cycle.add], the age tick and [Cycle.drain].
+// Moving is the part of the policy re-read at each decision: the drain
+// triggers and the trim cadence, read at [Cycle.add], the age tick,
+// [Cycle.drain] and [Cycle.replay]. Sync and DrainOnRead are excluded because
+// changing the mode mid-write would break what the caller was promised; the
+// four bounds because [Config.CheckBudget] checks them once, before boot.
 //
-// The rest of [Config] is not here. Sync and DrainOnRead are the mode, and a
-// mode that changed mid-flight would change what a caller already inside a write
-// was promised. The four bounds are [Config.CheckBudget]'s arithmetic, whose
-// purpose is to refuse a node before it boots.
-//
-// A nil getter means the static value stands, not the zero: a window of no
-// mutations drains every write and a trim cadence of zero trims on every drain.
-// A getter that *answers* zero is that same reading, except for Age, which has
-// none and is filled with the measured default ([Config.fill]).
+// A nil getter keeps the static value. A getter returning zero means zero:
+// zero mutations drains every write, a zero trim cadence trims every drain.
+// Age has no zero meaning and is filled with the default ([Config.fill]).
 type Moving struct {
 	Mutations func() int
 	Bytes     func() int
@@ -34,24 +29,18 @@ type Moving struct {
 	TrimAfter func() time.Duration
 }
 
-// Fixed is the policy that does not move: what a caller holding a [Config] as a
-// Go literal has. It fills once, here.
+// Fixed is a policy that never moves. It fills c once, here.
 func Fixed(c Config) Policy {
 	c.fill()
 	return func() Config { return c }
 }
 
-// Live is the policy whose watermarks and cadence come from somewhere that can
-// change while the node runs — the server's dynamic config, through
-// waltz.NewPolicy.
-//
-// static is read once, here, and carries the mode, the bounds and the clock. A
-// call costs five reads of the source and a struct copy, so read sites take one
-// snapshot per decision rather than one per field.
-//
-// The answer is filled and not just the static half: a getter reads a key an
-// operator can set to anything at any moment, so a field whose zero has no
-// reading has to be completed after the source is read rather than before.
+// Live is a policy whose triggers and cadence can change while the node runs
+// (the server's dynamic config, through waltz.NewPolicy). static is read once
+// and carries the mode, the bounds and the clock. A call costs five source
+// reads and a struct copy, so take one snapshot per decision, not per field.
+// Each answer is filled after the getters run, since an operator can set a key
+// to zero at any moment.
 func Live(static Config, m Moving) Policy {
 	static.fill()
 	return func() Config {

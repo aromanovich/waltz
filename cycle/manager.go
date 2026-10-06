@@ -13,42 +13,43 @@ import (
 	"github.com/aromanovich/waltz/walmetrics"
 )
 
-// Manager is the node's cycles, one per shard, each pinned to the epoch it was
-// created at. The wrapper's ShardObserver hook talks to it, and it is the only
-// place a cycle is created or retired. An acquire is observable and a close is
-// not, so a cycle is retired only by a higher epoch superseding it and nothing
-// reaps an idle one — one goroutine and an empty accumulator, a bounded leak.
+// Manager holds the node's cycles, one per shard, each pinned to the epoch it
+// was created at. The wrapper's ShardObserver hook talks to it, and it is the
+// only place a cycle is created. A cycle leaves the map only when a higher
+// epoch supersedes it or the node shuts down; an idle one is never reaped (a
+// bounded leak: one goroutine, an empty accumulator). A cycle stopped by name
+// (Layer.RetireShard) stays in the map, reporting halted-lost, because its
+// tail is acked entries the reports still read.
 type Manager struct {
 	deps   Deps
 	policy Policy
 
-	// held owns the shard map, the retired counters and the mutex over both.
-	// Manager has no lock of its own, which is what stops any code here holding
-	// one across a call into a cycle ([held]).
+	// held owns the shard map, the retired counters and their mutex. Manager
+	// has no lock of its own, so nothing here can hold one across a call into
+	// a cycle ([held]).
 	held *held
 }
 
-// Totals is every cycle this node has held, added up. A witness's reading: a
-// caller that needs one shard's state asks that shard's cycle.
+// Totals is every cycle this node has held, added up. One shard's state comes
+// from that shard's cycle.
 type Totals struct {
-	// Shards is the cycles held right now; Epochs counts every cycle this node
-	// has ever created, so Epochs > Shards is a node that has re-acquired.
+	// Shards is the cycles held now; Epochs counts every cycle ever created,
+	// so Epochs > Shards means the node has re-acquired.
 	Shards int
 	Epochs int
 
-	// Counters summed over every cycle this node has held, retired ones
-	// included, in the same type a cycle counts into so this seam loses nothing.
+	// Counters summed over every cycle this node has held, retired included.
 	Counters
 
-	// Acked and Applied are positions in a log that outlives the cycle, and
-	// TailEntries a count of what the tail holds right now, so all three come
-	// from the cycles held now and stay outside [Counters]'s merge: a retired
-	// cycle's tail is its successor's to replay and count again.
+	// Acked and Applied are log positions and TailEntries the tail's current
+	// size, so all three come from the cycles held now, outside [Counters]: a
+	// retired cycle's tail is its successor's to replay and count again.
 	Acked, Applied wal.Seqno
 	TailEntries    int
 
-	// Halted names every shard whose current cycle is not running. A retired
-	// cycle's state stays out: being superseded is the fence working.
+	// Halted names every shard whose current cycle is not running, including
+	// one stopped by name. Superseded cycles are left out: that is the fence
+	// working.
 	Halted []string
 }
 
@@ -56,8 +57,7 @@ type Totals struct {
 func (m *Manager) Totals() Totals {
 	retired, current := m.held.totals()
 
-	// Asked outside the lock, which the shape above guarantees: each is answered
-	// by that cycle's own goroutine, and every read path resolves through
+	// Ask each cycle outside the lock: the read path resolves through
 	// [Manager.Shard], which wants the same mutex.
 	total := retired
 	total.Shards = len(current)
@@ -76,19 +76,17 @@ func (m *Manager) Totals() Totals {
 	return total
 }
 
-// NewManager builds the registry. Every cycle it creates reads the same
-// [Policy] — the source and not a copy, so a watermark that moves reaches the
-// cycles this node already holds. It refuses a node whose hard_max × shards
-// does not fit its tail budget ([Config.CheckBudget]), and a binary with no
-// registry has no cycle at all, so that error is the layer refusing to start.
-// Reading the budget once is sound because those four fields are the ones
-// [Moving] does not carry.
+// NewManager builds the registry. Every cycle reads the same [Policy] source,
+// not a copy, so a moved setting reaches cycles already held. An error means
+// the layer refuses to start: HardMaxBytes × MaxShards does not fit the tail
+// budget ([Config.CheckBudget]), or there is no task-category registry.
+// Reading the budget once is sound because [Moving] carries none of its fields.
 func NewManager(deps Deps, policy Policy) (*Manager, error) {
 	if err := policy().CheckBudget(); err != nil {
 		return nil, err
 	}
-	// The other startup assertion: without a registry a node recovers nothing,
-	// silently, until the first failover. See [Deps.Registry].
+	// Without a registry a node silently recovers nothing until the first
+	// failover. See [Deps.Registry].
 	if deps.Registry == nil {
 		return nil, ErrNoRegistry
 	}
@@ -104,31 +102,24 @@ func NewManager(deps Deps, policy Policy) (*Manager, error) {
 }
 
 // WritesHistory reports whether an intercepted write's event batches ride the
-// record this layer appends, which is a property of the cold store underneath
-// and of nothing else: one that declares [cold.HistoryApplier] writes them in
-// the drain's own publication, and one that does not gets them through the base
-// store before the append, as every store did before that interface existed.
-//
-// There is no setting. A deployment's answer is which store it composed, and the
-// deps are fixed at construction, so the two halves of the question — who writes
-// the batches, and who is told to — are one value derived in one place and
-// cannot be configured apart.
+// appended record. A cold store that declares [cold.HistoryApplier] writes them
+// in the drain; any other gets them through the base store before the append.
+// There is no setting: deriving it from the composed store keeps who writes the
+// batches and who is told to from being configured apart.
 func (m *Manager) WritesHistory() bool {
 	_, ok := m.deps.Writer.(cold.HistoryApplier)
 	return ok
 }
 
-// Use points this node's cycles at the server's metrics handler; it satisfies
-// wrapper.MetricsSink, which is how a handler built long after this registry
-// reaches it. First call wins, and a nil handler is ignored.
+// Use points this node's cycles at the server's metrics handler (it satisfies
+// wrapper.MetricsSink). First call wins; a nil handler is ignored.
 func (m *Manager) Use(h metrics.Handler) { m.deps.Metrics.Use(h) }
 
-// ShardAcquired fences the log at the new epoch and installs a fresh cycle for
-// it. Fence first, and let the rangeID land only if the fence held: the log's
-// epoch may never lag the database's. An acquire at an epoch a cycle already
-// holds is idempotent, since fencing is; one at a lower epoch is refused with
-// wal.ErrFenced wrapped in a message naming both epochs. Only the log's own
-// Fence error goes back untouched.
+// ShardAcquired fences the log at the new epoch and installs a fresh cycle.
+// The fence comes first and the rangeID lands only if it held: the log's epoch
+// may never lag the database's. An acquire at the held epoch is a no-op; one
+// at a lower epoch returns wrapped wal.ErrFenced naming both. The log's own
+// Fence error is returned unwrapped.
 func (m *Manager) ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wal.Epoch) error {
 	current := m.held.get(shard)
 
@@ -149,23 +140,19 @@ func (m *Manager) ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wa
 
 	previous, took := m.held.install(shard, fresh)
 	if !took {
-		// The fence stands, and is not undone: a fence changes ownership and
-		// nothing else, the log outlives this process, and the shard's next owner
-		// fences above it. What may not stand is the cycle, which would ack into
-		// a log this layer has stopped draining and released.
+		// The fence stays (it only changes ownership; the next owner fences
+		// above it). The cycle may not: it would ack into a log no longer
+		// drained.
 		fresh.Retire()
 		return fmt.Errorf("%w: shard %d at epoch %d", ErrClosed, shard, epoch)
 	}
 
 	if previous != nil {
-		// Stopped without a drain: its epoch is fenced out, so what it held is
-		// not its to apply and the entries stay in the log for this epoch. The
-		// stop is what answers with its count, so nothing it does on the way
-		// out — an in-flight page, a trim committing — falls between the two.
-		//
-		// No lock is held here and none can be: the read path resolves under
-		// the same mutex, so a cycle inside a base read would wait on an
-		// acquire waiting on it.
+		// Stopped without a drain: its epoch is fenced out, so its entries stay
+		// in the log for this epoch. Retire itself returns the counters, so
+		// nothing it does on the way out falls between stop and count.
+		// No lock may be held here: the read path resolves under the same
+		// mutex, so a cycle inside a base read would deadlock with us.
 		m.held.retire(previous.Retire())
 		m.deps.Logger.Info("apply cycle superseded",
 			tag.ShardID(int32(shard)), tag.NewInt64("epoch", int64(epoch)))
@@ -177,29 +164,25 @@ func (m *Manager) ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wa
 // acquired it. The ExecutionStore wrapper asks per write.
 func (m *Manager) Shard(shard wal.ShardID) *Cycle { return m.held.get(shard) }
 
-// Residue is one shard a shutdown could not empty: its cycle stopped while the
-// tail still held acked entries no drain applied. Nothing here has lost them —
-// they are in the log, which is what a successor's replay reads — so a residue
-// is not a failed shutdown.
-//
-// It is reported because a shutdown is the one stop with no successor implied.
-// Whether one follows is the operator's to know and nobody else's, and a node
-// coming back up in passthrough composes no log, so this is the last moment
-// these entries are nameable at all.
+// Residue is one shard a shutdown could not empty: its tail still held acked
+// entries no drain applied. They are not lost (a successor replays them from
+// the log), so a residue is not a failed shutdown. It is reported because only
+// the operator knows whether a successor follows; a node restarted in
+// passthrough reads no log, so this is the last chance to name them.
 type Residue struct {
 	Shard wal.ShardID
 	Epoch wal.Epoch
-	// Entries is the tail as its last publish left it: acked, unsettled, and the
-	// next owner of this shard to apply.
+	// Entries is the tail at its last publish: acked, unsettled, for the next
+	// owner to apply. For a cycle halted inside its replay it can read zero
+	// over entries the log still holds (an open entry in DURABILITY.md).
 	Entries int
-	// Cause is what the shutdown drain answered — nil where it committed and
-	// what is left is a halt's tail or a stall's.
+	// Cause is what the shutdown drain returned (the halt or stall that kept
+	// the tail), or nil if the cycle was already stopped by name.
 	Cause error
 }
 
-// Close drains and stops every cycle, and answers with every shard whose tail it
-// could not empty. Shutdown is the one moment a tail is drained without a
-// watermark asking for it.
+// Close drains and stops every cycle and returns every shard whose tail it
+// could not empty.
 func (m *Manager) Close(ctx context.Context) []Residue {
 	var left []Residue
 	for _, c := range m.held.takeAll() {
@@ -221,15 +204,11 @@ func (m *Manager) Close(ctx context.Context) []Residue {
 }
 
 // residue is what a cycle held when its loop stopped, read off the mirror
-// because there is no loop left to ask. cause is what its shutdown drain
-// answered, carried so that a halt's tail and a budget that ran out are
-// distinguishable by whoever reads the list.
-// An empty tail is a residue too when cause is non-nil, and that is the half
-// that is not arithmetic: the counters say what this cycle acked, and a close
-// that failed is one that could not establish what the shard holds — a failed
-// watermark read leaves the tail at its floor, which reads as zero exactly like
-// a shard that is clean. The caller's question is whether removing the layer
-// strands anything, and the only safe answer to "nobody looked" is to say so.
+// since no loop is left to ask. cause is its shutdown drain's error.
+// A non-nil cause makes even an empty tail a residue: a failed close never
+// established what the shard holds. A failed watermark or log read leaves the
+// tail at its floor, which reads as zero exactly like a clean shard, and the
+// caller is deciding whether removing the layer strands anything.
 func (c *Cycle) residue(cause error) (Residue, bool) {
 	entries, _ := c.mirror.Size()
 	if entries == 0 && cause == nil {

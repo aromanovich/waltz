@@ -1,10 +1,11 @@
 package memcold_test
 
-// What one drain does to a real database. Every case here is about the
-// all-or-nothing part rather than about row layout, which the four conformance
-// suites already judge: a drain that commits leaves its rows and its watermark,
-// and a drain that fails leaves neither — including the rows the statements
-// before the failing one had already written.
+// What one drain does to a real database. The four conformance suites judge
+// the inherited methods and never call Apply, so what is judged here is the
+// write nothing upstream judges: a drain that commits leaves its rows, where
+// their readers read them, and its watermark, and a drain that fails leaves
+// neither — including the rows the statements before the failing one had
+// already written.
 
 import (
 	"context"
@@ -166,11 +167,11 @@ func TestTheLastWriteFailingUndoesTheEarlierOnes(t *testing.T) {
 	require.False(t, ok, "a drain that wrote nothing may not leave a position behind")
 }
 
-// TestARangeDeleteActsBeforeTheDrainsOwnInserts pins the one ordering rule that
-// is not visible in the rows: fold keeps a task that arrived after a range
-// delete, because the sequential path keeps it, and it only survives if the
-// delete runs before the insert. Getting it backwards deletes a timer nobody
-// asked to be gone.
+// TestARangeDeleteActsBeforeTheDrainsOwnInserts pins the order the cold
+// package's first obligation states inside the transaction: fold keeps a task
+// that arrived after a range delete, because the sequential path keeps it, and
+// it only survives if the delete runs before the insert. Getting it backwards
+// deletes an acked task nobody asked to be gone.
 func TestARangeDeleteActsBeforeTheDrainsOwnInserts(t *testing.T) {
 	h := newDrains(t)
 	category := tasks.CategoryTransfer
@@ -426,7 +427,7 @@ func newDrains(t *testing.T) *drains {
 	return h
 }
 
-// bumpRange takes the shard at the next range id, which is what a new owner
+// bumpRange takes the shard at the next rangeID, which is what a new owner
 // does and what makes every epoch below it stale.
 func (h *drains) bumpRange() {
 	h.t.Helper()
@@ -451,9 +452,10 @@ func (h *drains) fold(ms ...mutation.Mutation) fold.Batch {
 	return acc.Drain()
 }
 
-// create and update carry an execution-info blob, which mutbuild leaves nil
-// because every other caller writes to a double. A store dereferences it: a
-// request without one is not a shape this layer receives.
+// create and update carry an execution-info blob, which mutbuild's Create and
+// Update leave nil because every other caller of those writes to a double. A
+// store dereferences it: a request without one is not a shape this layer
+// receives.
 // Options are forwarded rather than applied to what comes back, so a caller's
 // own fields are in the request mutbuild validates rather than written past it.
 func (h *drains) create(workflowID, runID string, opts ...mutbuild.SnapshotOpt) mutation.Mutation {
@@ -671,12 +673,13 @@ func blob(name string) *commonpb.DataBlob {
 }
 
 // TestACreateOfARunThatExistsFailsAtItsAssertion pins which statement answers a
-// duplicate, and it is the reason [Store.Apply] does not translate a failed
-// insert into a condition failure of its own.
+// duplicate, and it is the reason [memcold.Store.Apply] does not translate a
+// failed insert into a condition failure of its own.
 //
-// The drain asserts every run row it touches under the transaction's lock, one
-// statement before it writes any of them, so a create whose run is already there
-// is answered there — with the row named. An insert reached past that assertion
+// The drain asserts the workflow's current row and every run row a request
+// touches under the transaction's lock before it writes any of them, so a create
+// whose run is already there is answered at an assertion — the current row's,
+// which comes first — with the row named. An insert reached past that assertion
 // and failed anyway is not a duplicate at all: fencing makes this layer the
 // shard's only writer, so nothing legitimate put the row in between. Reading it
 // as one would hand a definite answer to what the driver reports for a disk that
@@ -715,12 +718,11 @@ func TestACreateOfARunThatExistsFailsAtItsAssertion(t *testing.T) {
 // Payloads are compared as a set: which order the table hands them back in is
 // the store's business, and what this is about is whether any of them is missing.
 //
-// The second workflow holds what this does *not* reach. A row's run comes off the
-// batch and its workflow off the emitted request, so this catches a batch that
-// leaked across workflows and not one filed under the wrong run of the same
-// workflow — two workflows being two emitted requests, each carrying one run's
-// batches. The unguarded half needs a request that carries two runs at once, a
-// continue-as-new or a conflict-resolve, which mutbuild does not build.
+// The second workflow catches a batch that leaked across workflows: a row's run
+// comes off the batch and its workflow off the emitted request, two workflows
+// being two emitted requests, each carrying one run's batches. A batch filed
+// under the wrong run of the same workflow needs a request carrying two runs at
+// once, which is TestBufferedBatchesLandUnderTheirOwnRun.
 func TestEveryBufferedBatchReachesTheDatabase(t *testing.T) {
 	h := newDrains(t)
 	first, second := uuid.NewString(), uuid.NewString()
@@ -842,9 +844,9 @@ func requireEveryCollectionEmptied(t *testing.T, state *p.InternalWorkflowMutabl
 	}
 }
 
-// TestASnapshotClearsWhatTheRunHeldBefore is the third literal of seven, after
-// the applier's upserts and its deletes: the clears a snapshot-bearing write runs
-// before it writes whole state. A snapshot replaces a run's tables rather than
+// TestASnapshotClearsWhatTheRunHeldBefore is the fourth literal naming the seven,
+// after a delta's upserts, its deletes and a snapshot's collections: the clears a
+// snapshot-bearing write runs before it writes whole state. A snapshot replaces a run's tables rather than
 // amending them, so a collection missing from that literal leaves rows from before
 // the snapshot in place — state the sequential path does not have, answered to the
 // next reader and written back by the next snapshot-bearing write.
@@ -884,8 +886,8 @@ func TestASnapshotClearsWhatTheRunHeldBefore(t *testing.T) {
 // new run the reset starts — and the applier writes each in its own arm. Deleting
 // either of the last two left the whole of `go test ./...` green, the differential
 // oracle included: `mutgen.emitConflictResolve` emits the reset snapshot and nil
-// for the other two, so nothing in the tree ever built a reset that carried them,
-// and both arms of the oracle run through this same applier anyway.
+// for the other two, so the corpus never builds a reset that carries them, and
+// both arms of the oracle run through this same applier anyway.
 //
 // What a missing arm costs is a whole run's state, acked: the new run a reset
 // starts is the run the workflow continues as, so losing it leaves the current row
@@ -1167,14 +1169,14 @@ func TestARetriedStartIsRefusedWithTheConflictItCanActOn(t *testing.T) {
 		"and carries the request ids the start is deduplicated against")
 }
 
-// TestATimerTaskLandsInTheTimerTable is the one place a task's *category*
-// decides which table it goes to, and nothing drove it. A scheduled category is
-// written by fire time, and the timer category has a table of its own
-// (`timer_tasks`) that the timer queue is the only reader of. Delete the branch
-// that picks it and the rows go to the generic scheduled table instead: the drain
-// commits, the watermark moves, the log is trimmed, and the timer queue reads its
-// own table and finds nothing. An acked timer that never fires is not a stale
-// answer — nothing retries it, and the workflow waits for ever.
+// TestATimerTaskLandsInTheTimerTable pins the timer arm of the category fan-out
+// on its own. A scheduled category is written by fire time, and the timer
+// category has a table of its own (`timer_tasks`) that the timer queue is the
+// only reader of. Delete the branch that picks it and the rows go to the
+// generic scheduled table instead: the drain commits, the watermark moves, the
+// log is trimmed, and the timer queue reads its own table and finds nothing. An
+// acked timer that never fires is not a stale answer — nothing retries it, and
+// the workflow waits for ever.
 //
 // The differential oracle cannot see this: both of its arms run through this same
 // applier, so a row sent to the wrong table is sent there twice and the comparison
@@ -1208,7 +1210,7 @@ func TestATimerTaskLandsInTheTimerTable(t *testing.T) {
 }
 
 // TestBufferedBatchesLandUnderTheirOwnRun is the half
-// TestEveryBufferedBatchReachesTheDatabase could not reach: a row whose run comes
+// TestEveryBufferedBatchReachesTheDatabase does not reach: a row whose run comes
 // off the batch and whose workflow comes off the emitted request is wrong in a way
 // no single-run fixture sees. It needs one request owning two runs, which a
 // continue-as-new is — the update carries the closing run's own delta and the new
@@ -1230,7 +1232,7 @@ func TestBufferedBatchesLandUnderTheirOwnRun(t *testing.T) {
 	}
 	// The continue-as-new: assembled rather than asked for, mutbuild validating a
 	// plain update and the new run being set past it — the same concession its own
-	// doc names for the two fixtures that already do this.
+	// doc names for the other two fixtures that do this.
 	continued := h.update(wf, closing, 3, buffered("closing run's signal"))
 	fresh := h.build.Create(h.namespaceID, wf, next, mutbuild.WithInfoBlob(blob("info")))
 	continued.Update.NewWorkflowSnapshot = &fresh.Create.NewWorkflowSnapshot

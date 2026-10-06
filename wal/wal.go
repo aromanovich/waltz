@@ -1,40 +1,21 @@
-// Package wal is the write-ahead log contract the layer in front of a Temporal
-// history shard's cold store is built on.
+// Package wal is the write-ahead log contract in front of a Temporal history
+// shard's cold store. The layer depends on these five guarantees and nothing
+// else, so the log is replaceable ([ADR 0002], [chapter 04], [CONTEXT.md]).
 //
-// Everything above it (fold, apply, overlay, replay) depends on these five
-// guarantees and on nothing else, so the log underneath can be replaced. See
-// [ADR 0002] and [chapter 04]; the vocabulary is [CONTEXT.md].
-//
-//  1. Total order per shard: the writer, single by virtue of epoch fencing,
-//     assigns seqnos itself.
+//  1. Total order per shard: the single writer (fencing keeps it single)
+//     assigns seqnos.
 //  2. [Log.Fence] atomically cuts off appends of all lower epochs.
-//  3. Cumulative ack: a successful [Log.Append] up to seqno n means every entry
-//     ≤ n is durable, so "confirmed ⟺ seqno ≤ commitSeqno" is inherited rather
-//     than implemented. Durable is a claim about storage and not about the value
-//     that acked, which wal/waltest's suite cannot ask: every case there reads
-//     back through that same value, so a backend acking into memory it never gets
-//     out of the process passes all of them. waltest.CheckReopen is that
-//     obligation as a check a deployment runs — open the storage a second time and
-//     ask the fresh value — and guarantee 2 has the same blind spot one clause
-//     over, an owning epoch that never leaves the process fencing nobody at a
-//     failover.
-//  4. Gap-freedom: an append never skips a seqno, so a shard's log is one
-//     unbroken run. [Log.Trim] moves its lower end and [Log.Append] its upper
-//     end; nothing puts a hole in the middle, so replay needs no hole tracking.
-//  5. Readback: [Log.ReadFrom] returns every entry a completed append acked and
-//     no trim has removed, in seqno order. [Log.Trim] moves the log's lower end
-//     and nothing else, so what it leaves stays readable from that new lower
-//     end, and the shard's ownership and its next seqno survive it. A trim is
-//     the *only* removal this excuses: a retention window, a TTL on the table
-//     or a compaction that drops old records each break it, and each breaks it
-//     silently — wal/waltest's suite runs in milliseconds and cannot express
-//     time, so a backend that expires entries passes every case of it and loses
-//     the first tail that outlives its policy. waltest.CheckRetention is that
-//     one obligation as a check a deployment runs, since only a deployment can
-//     spend the time it takes.
+//  3. Cumulative ack: a successful [Log.Append] at seqno n means every entry
+//     ≤ n is durable in storage, not just in the process that acked. Same for
+//     the fenced epoch. The suite cannot see this; waltest.CheckReopen can.
+//  4. Gap-freedom: an append never skips a seqno, so the log is one unbroken
+//     run between its trimmed lower end and its appended upper end.
+//  5. Readback: [Log.ReadFrom] returns every acked entry no trim removed, in
+//     seqno order. Trim is the only removal allowed: retention, TTLs and
+//     compaction that drop entries violate this silently. The suite cannot
+//     see this either; waltest.CheckRetention can.
 //
-// A WAL entry's payload is opaque bytes here: no Temporal types in this package
-// or in its implementations.
+// Payloads are opaque bytes: no Temporal types here or in implementations.
 //
 // [ADR 0002]: ../docs/adr/0002-wal-contract-is-backend-independent.md
 // [chapter 04]: ../docs/handbook/04-contracts.md
@@ -46,251 +27,151 @@ import (
 	"errors"
 )
 
-// ShardID identifies a Temporal history shard. Every shard has its own log,
-// independent of every other shard's.
+// ShardID identifies a Temporal history shard. Each shard has its own log.
 type ShardID uint32
 
-// Seqno is the position of an entry in one shard's log: a per-shard LSN the
-// writer assigns itself. Total order within a shard, no gaps.
+// Seqno is an entry's position in its shard's log, assigned by the writer.
 type Seqno uint64
 
-// Epoch is the shard-ownership token every append carries, identical to
-// Temporal's rangeID (invariant I11). It may grow without an ownership change,
-// because the server renews rangeID whenever a shard exhausts its ID range.
-//
-// Zero is not a valid epoch; see [ErrZeroEpoch].
-//
-// Whoever hands epochs out owes the log a strictly greater epoch per acquire:
-// fencing cannot separate two writers holding the same epoch, and they race for
-// seqnos and lose.
+// Epoch is the shard-ownership token every append carries: Temporal's rangeID
+// (I11), which can also grow without an ownership change. Zero is invalid
+// ([ErrZeroEpoch]). Each acquire must use a strictly greater epoch: fencing
+// cannot separate two writers holding the same one.
 type Epoch uint64
 
-// FirstSeqno is the seqno of a shard's first entry. Seqnos below it are not
-// entries: they are reserved for whatever bookkeeping a backend needs.
+// FirstSeqno is the seqno of a shard's first entry. Lower seqnos are reserved
+// for backend bookkeeping.
 const FirstSeqno Seqno = 1
 
 // Entry is one record of a shard's log.
 type Entry struct {
-	// Seqno is the entry's position in its shard's log.
 	Seqno Seqno
-	// Epoch is the epoch the writer held when it appended the entry. Epochs
-	// are non-decreasing along a shard's log.
+	// Epoch is the writer's epoch at append time; non-decreasing along the log.
 	Epoch Epoch
-	// Payload is opaque to this layer, and is never nil for an entry that the
-	// log returns.
-	//
-	// The bytes are the reader's to keep: a payload the log hands out aliases
-	// neither the log's own state nor another entry of the same read, so a
-	// caller may hold it past the next call and decode into it in place.
+	// Payload is never nil in a returned entry. It belongs to the reader: it
+	// aliases neither the log's state nor another entry, so the caller may keep
+	// it and decode into it in place.
 	Payload []byte
 }
 
-// Errors a caller is expected to handle. Anything else comes back as an
-// ordinary error and means a programming mistake or an infrastructure failure,
-// both of which the caller can only report.
-//
-// Match with [errors.Is]; implementations wrap these with context.
+// Errors a caller is expected to handle; match with [errors.Is], since
+// implementations wrap them. Any other error is a bug or an infrastructure
+// failure, which the caller can only report.
 var (
-	// ErrFenced means the log is not the caller's to write: some other epoch
-	// has fenced it, or the caller never fenced it at its own epoch. Shard
-	// ownership is gone (or was never taken) and the caller must stop writing.
+	// ErrFenced means another epoch fenced the log, or the caller never fenced
+	// at its own. The caller must stop writing.
 	ErrFenced = errors.New("wal: shard is not fenced at this epoch")
 
-	// ErrAlreadyWritten means the seqno the append asked for is taken. After an
-	// append that failed ambiguously it is the answer to "did it land?": it
-	// did, so retrying an append is safe and this error is the retry's success
-	// signal.
-	//
-	// It is that without qualification, because one entry is what an append
-	// writes: the seqno is taken or it is not, and there is no half of it for
-	// the answer to be about. [ErrFenced] outranks it, so a writer whose epoch
-	// grew across the ambiguity must replay under the epoch it holds now, or
-	// read the log, to learn whether the first attempt landed.
+	// ErrAlreadyWritten means the seqno is taken. After an ambiguous failure,
+	// a retry that gets this knows the first attempt landed: it is the retry's
+	// success signal. [ErrFenced] outranks it, so a writer whose epoch changed
+	// in between must retry at its current epoch or read the log to find out.
 	ErrAlreadyWritten = errors.New("wal: seqno already written")
 
-	// ErrGap means the append would leave a hole: the entry below it is
-	// missing (guarantee 4). It is the expected outcome of a pipelined append
-	// that reached the backend out of order; retry once the predecessor lands.
+	// ErrGap means the entry below seqno is missing (guarantee 4), e.g. a
+	// pipelined append arrived out of order; retry once the predecessor lands.
 	ErrGap = errors.New("wal: predecessor seqno is missing")
 
-	// ErrZeroEpoch is what a caller that forgot to set an epoch gets, rather
-	// than an [ErrFenced] that reads like a lost shard. Epoch 0 is the "nobody
-	// owns this" reading of an absent fence, so nothing can be claimed with it.
+	// ErrZeroEpoch is returned for epoch 0, which means "nobody owns this", so
+	// a caller that forgot to set an epoch is not told its shard was lost.
 	ErrZeroEpoch = errors.New("wal: epoch 0 is not a valid epoch")
 )
 
 // Log is the WAL contract: one append-only, fenced, gap-free sequence of
-// entries per shard. Implementations are called WAL backends.
+// entries per shard, implemented by a WAL backend. Methods are safe for
+// concurrent use, but each shard must have one writer.
 //
-// Every method is safe for concurrent use, which is not a licence for two
-// writers: concurrent appends to one shard race for seqnos and lose.
+// A call whose context is already done changes nothing. A cancel in flight may
+// leave an [Log.Append] durable, so treat it as ambiguous: retry and read
+// [ErrAlreadyWritten] as the ack, or read the log. Context errors match
+// [context.Canceled] or [context.DeadlineExceeded] via [errors.Is].
 //
-// Every method but [Log.Close] takes a context, and all four owe it the same. A
-// context already cancelled when the call begins is observed before the log
-// changes, so such a call leaves it exactly as it was. Cancellation in flight is
-// the case the contract does not resolve: an [Log.Append] cut off between the
-// request and its ack may be durable, which is why a cancelled append counts as
-// an attempt like any other — a caller that must know replays the same entry and
-// reads [ErrAlreadyWritten] as the ack, or reads the log. An error a method returns
-// because of its context satisfies [errors.Is] against [context.Canceled] or
-// [context.DeadlineExceeded], whatever the backend wraps it in. Arguments the
-// contract does not admit outrank the context: a call that is both cancelled
-// and malformed reports the argument.
+// Invalid arguments are refused before the context and change nothing: epoch 0
+// ([ErrZeroEpoch]); with ordinary errors, an append below [FirstSeqno] or with
+// a nil payload, and a read limit ≤ 0. Never reinterpret them (limit 0 as an
+// empty read gives the caller an endless loop). Only a read from below
+// [FirstSeqno] is clamped.
 //
-// Those arguments are refused and refusing changes nothing: a zero epoch, with
-// [ErrZeroEpoch]; and, with ordinary errors, an append below [FirstSeqno] or
-// with a nil payload, and a read whose limit is not positive. A backend that
-// interprets one instead — answering a limit of zero with no entries and no
-// error — hands its caller a loop that never ends or an ack for an entry the
-// log does not hold, and both look like the log working. The single out-of-range
-// argument that is clamped rather than refused is a read from below
-// [FirstSeqno], which is where a caller reading the whole log starts.
-//
-// None of it has to be re-derived per backend. [CheckFence], [CheckAppend],
-// [CheckRead] and [CheckTrim] hold the argument rules, and [FenceRefusal],
-// [AppendRefusal] and [RefuseAtNext] turn what a backend found into the error
-// this contract names, in the precedence it names it in. wal/memwal is the
-// worked example.
+// [CheckFence], [CheckAppend], [CheckRead], [CheckTrim], [FenceRefusal],
+// [AppendRefusal] and [RefuseAtNext] implement these rules and the error
+// precedence; wal/memwal is the worked example.
 type Log interface {
-	// Fence claims the shard's log for epoch, atomically cutting off every
-	// append of a lower epoch, so a zombie ex-owner cannot slip an append past
-	// a completed Fence (invariant I4).
-	//
-	// It is idempotent per epoch, so a process restart without a change of
-	// ownership can replay the same acquire path. Fencing at a higher epoch is
-	// how the same owner renews (epoch := rangeID, I11); fencing at a lower one
-	// fails with [ErrFenced].
-	//
-	// A fence changes ownership and nothing else: the entries stay, and the new
-	// owner continues the log at the next seqno rather than starting one. A
-	// fence that fails changes nothing, ownership included.
-	//
-	// Appends are refused until the log is fenced at the appending epoch.
+	// Fence claims the shard's log for epoch, atomically cutting off appends
+	// of every lower epoch so a zombie ex-owner cannot append after it (I4).
+	// Appends are refused until the log is fenced at their epoch. Idempotent
+	// per epoch, so a restart can replay the acquire; a higher epoch is also
+	// how an owner renews (I11); a lower one fails with [ErrFenced]. Entries
+	// stay and the new owner continues at the next seqno. A failed Fence
+	// changes nothing.
 	Fence(ctx context.Context, shard ShardID, epoch Epoch) error
 
 	// Append writes payload as the entry at seqno, under epoch. seqno must be
-	// at least [FirstSeqno]; the payload may be empty but not nil.
+	// at least [FirstSeqno]; the payload may be empty but not nil. One entry
+	// per call, no batch: a partial batch would have no honest error
+	// ([ADR 0010]). The backend must not retain or read payload after Append
+	// returns, so the caller may reuse the buffer.
 	//
-	// One entry is the unit, and there is no batch. An append that carried
-	// several entries would have to say what it left behind when only some of
-	// them landed, and the three refusals below cannot: each of them says the
-	// write is whole one way or the other. Backends whose append is one
-	// transaction, one statement or one replicated command could carry a batch
-	// and are not asked to: a log with no atomic multi-record append cannot,
-	// and a contract only some implementations can keep is not one
-	// ([ADR 0010]).
-	//
-	// The payload stays the caller's: no backend retains the slice or reads it
-	// after Append returns, whatever it returns, so an encoder's scratch buffer
-	// may be reused as soon as the call does.
-	//
-	// Returning nil means every entry up to and including seqno is durable
-	// (cumulative ack, guarantee 3), so the caller's commitSeqno becomes seqno.
-	//
-	// Errors:
+	// nil means every entry ≤ seqno is durable (guarantee 3), so commitSeqno
+	// becomes seqno. Errors, none of which write anything:
 	//   - [ErrFenced] when the log belongs to another epoch,
 	//   - [ErrAlreadyWritten] when the seqno is taken,
 	//   - [ErrGap] when the entry below seqno is missing.
-	// None of the three writes anything.
-	//
-	// Where more than one applies, [ErrFenced] wins: [ErrAlreadyWritten] is an
-	// ack, and a zombie would take the word of the writer that took the shard
-	// from it as its own commitSeqno.
+	// [ErrFenced] wins when several apply: [ErrAlreadyWritten] is an ack, and
+	// a zombie must not take the new owner's entry as its own.
 	//
 	// [ADR 0010]: ../docs/adr/0010-the-log-appends-one-entry-at-a-time.md
 	Append(ctx context.Context, shard ShardID, epoch Epoch, seqno Seqno, payload []byte) error
 
-	// ReadFrom returns up to limit entries of the shard's log with seqno at or
-	// above from, in seqno order. Replay after a shard acquire rebuilds the
-	// tail with it, starting just above appliedSeqno. limit must be positive.
-	//
-	// A from below [FirstSeqno] reads from [FirstSeqno]. Fewer than limit
-	// entries means the log ends there, so a caller reading the whole log loops
-	// until a short read.
-	//
-	// A read that follows a successful [Log.Fence] sees every entry the log
-	// held when the fence took it; a backend that handed the new owner a
-	// shorter log would have it append over entries that are already there.
+	// ReadFrom returns up to limit (> 0) entries with seqno ≥ from, in seqno
+	// order; from below [FirstSeqno] reads from [FirstSeqno]. A short read
+	// means the log ends there. Replay reads from just above appliedSeqno.
+	// A read after a successful [Log.Fence] must see every entry held at the
+	// fence, or the new owner would append over existing entries.
 	ReadFrom(ctx context.Context, shard ShardID, from Seqno, limit int) ([]Entry, error)
 
-	// Trim deletes the shard's entries at or below upTo. The apply cycle calls
-	// it lazily for entries already folded into the cold store, because a small
-	// log is what keeps a backend's reads cheap.
+	// Trim deletes the shard's entries at or below upTo; the apply cycle calls
+	// it for entries already in the cold store, to keep reads cheap.
 	//
-	// The one obligation here is the caller's, and it is the only place in this
-	// contract where a mistake destroys acknowledged data rather than refusing
-	// it: upTo may never exceed the seqno the cold store has committed. Above
-	// that seqno the log is the only copy, and a trim is the one operation in
-	// this package that does not refuse, does not halt and cannot be undone. No
-	// backend can check it — a log knows nothing about a cold store, and this
-	// method deliberately carries no epoch, so a trim from a superseded owner is
-	// as legal as any other and is safe only because that owner's upTo was
-	// committed before it was superseded. Whoever calls this owes the check to
-	// itself; in this repository it is cycle.Cycle's, which passes
-	// tailstate.Tail.Applied and moves that field only behind a committed drain.
+	// Caller's obligation: upTo must never exceed the seqno the cold store has
+	// committed. Above it the log is the only copy, and Trim cannot be undone.
+	// No backend can check this: the log knows no cold store, and Trim takes
+	// no epoch. cycle.Cycle keeps it by passing tailstate.Tail.Applied, which
+	// moves only after a committed drain.
 	//
-	// Trimming entries that are not there is not an error: Trim states where
-	// the log should start, and repeating it is harmless.
-	//
-	// Whatever upTo says, the log stays appendable at the next seqno and
-	// ownership stays put. A backend may keep entries it needs to promise that
-	// — one that checks an append for gap-freedom against the stored entry
-	// below it has to keep the last one — so a trim past the tail may leave the
-	// tail behind.
-	//
-	// The seqnos it removed stay spent: an append at one is refused and writes
-	// nothing, with [ErrAlreadyWritten] or [ErrGap] as the backend keeps its
-	// position — the contract picks neither, since one that derives the answer
-	// from its rows has deleted them. A backend handing a trimmed seqno out
-	// again would put a hole in the log and ack a commitSeqno below entries it
-	// still holds.
+	// Trimming absent entries is not an error. Ownership is unchanged and the
+	// log stays appendable at the next seqno; a backend may keep entries it
+	// needs for that (e.g. the last one, to check gap-freedom). Trimmed seqnos
+	// stay spent: an append at one is refused with [ErrAlreadyWritten] or
+	// [ErrGap] (backend's choice), since reuse would put a hole in the log.
 	Trim(ctx context.Context, shard ShardID, upTo Seqno) error
 
-	// Close releases what the backend holds around the log: a connection, a
-	// lease, the goroutine some backends keep ownership alive from. Call it
-	// once, after the last append and after any drain — the entries stay, and
-	// whoever fenced a shard owns it until that ownership expires or a
-	// successor takes it.
-	//
-	// Most backends hold nothing and do nothing here. It is on the contract
-	// rather than reached for with a type assertion so that a composition
-	// cannot hold a backend it never learned to release: a backend that keeps
-	// its claim alive from a goroutine of its own — a lease renewal, a
-	// keepalive on the transaction its appends run under — leaves a process
-	// that never closes it owning shards it has stopped writing to.
+	// Close releases what the backend holds (a connection, a lease, a
+	// keepalive goroutine); without it a backend can keep owning shards it no
+	// longer writes. Call it once, after the last append and any drain.
+	// Entries stay, and ownership lasts until it expires or a successor fences.
 	Close()
 }
 
-// PressureLevel is how urgently a backend wants the log's storage back.
-// Ordered: each level asks everything the ones below it ask.
+// PressureLevel is how urgently a backend wants storage back. Each level
+// includes what the lower ones ask.
 type PressureLevel int
 
 const (
-	// PressureNone is no outstanding report. It is not a health promise: a
-	// backend reports what its operations happened to observe, and one that
-	// observed nothing answers this.
+	// PressureNone means nothing reported; not a health promise.
 	PressureNone PressureLevel = iota
-	// PressureDrain asks the layer to stop accumulating: drain what it holds
-	// and trim the applied entries now, outside any configured cadence.
+	// PressureDrain asks the layer to drain and trim now, off-cadence.
 	PressureDrain
-	// PressureStop asks the layer to stop appending as well, until the level
-	// drops. What was acked stays acked; refusing the next write is the
-	// reaction that keeps the promise without touching it.
+	// PressureStop also asks it to stop appending until the level drops.
+	// Acked entries stay acked; new writes are refused.
 	PressureStop
 )
 
-// PressureSource is the optional face a backend grows when its storage can run
-// low while appends still succeed: the append is durable, and the same
-// response warns that the space it landed in is running out. Failing such an
-// append instead would report an entry the log holds as one it does not, so
-// this is the channel for everything the warning says beyond the ack.
-//
-// Pressure is a level, not an event. The backend keeps it current from
-// whatever its own operations observe and lowers it itself once the condition
-// clears; the layer polls it around every write and on its age tick, so
-// answering must be cheap and safe for concurrent use. Which operation raised
-// it does not travel with it, deliberately: the level describes the storage,
-// not the call that noticed.
+// PressureSource is optionally implemented by a backend whose storage can run
+// low while appends still succeed. Such an append is durable and must not be
+// failed (that would deny an entry the log holds); the warning goes here.
+// Pressure is a level, not an event: the backend keeps it current and lowers
+// it itself. The layer polls it around every write and on its age tick, so it
+// must be cheap and safe for concurrent use.
 type PressureSource interface {
 	Pressure(shard ShardID) PressureLevel
 }

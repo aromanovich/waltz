@@ -1,21 +1,12 @@
-// Package drive is the half of a run that *writes*: one mutation into one
-// ExecutionStore call, a shard taken so those calls have an epoch to carry, and
-// [Stream] — a generated stream behind the codec, for the callers that want what
-// came back out of a log. It judges nothing.
+// Package drive is the writing half of a run: it turns one mutation into one
+// ExecutionStore call, takes a shard so calls carry an epoch, and [Stream]s a
+// generated stream through the codec. It judges nothing; the checker does.
 //
-// # Why it knows nothing about testing
+// Nothing here takes a *testing.T: everything returns an error, so a binary
+// driving a stream under kill -9 runs the same code a test fixture does.
 //
-// A fixture is a `*testing.T` API: it fails tests and skips when no cluster is
-// reachable. Everything here returns an error instead, so a driver with no test
-// to fail — a binary driving a stream under `kill -9` — runs the same code a
-// fixture does, and the driving half stays one implementation both are judged
-// through.
-//
-// It reaches for the persistence interface, for [mutation.Kind] and for the
-// generator, and, in [Recorder], for `wal`'s two id types beside the checker's
-// record — and for nothing else of the layer: what a call *means* is the
-// checker's business. The dependency on verify/mutgen only points this way — a
-// generator that could reach the thing driving it would be tuned to it.
+// It depends on mutgen, never the reverse: a generator that could see its
+// driver would end up tuned to it.
 package drive
 
 import (
@@ -26,17 +17,14 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// Apply drives one mutation through an ExecutionStore, stamping the epoch the
-// store asserts. The mutation carries no RangeID — the codec drops it, because
-// it is the epoch and travels with the WAL entry (invariant I11) — so a decoded
-// mutation cannot be handed to a store as it stands, and the epoch has to come
-// from whoever took the shard. The three requests that are handed over unstamped
-// have no RangeID field of their own.
+// Apply drives one mutation through store, stamping epoch as the RangeID. The
+// codec drops RangeID (it is the epoch, carried by the WAL entry; invariant
+// I11), so the caller that took the shard supplies it. The three unstamped
+// requests have no RangeID field.
 //
-// A mutation holding no request, or several, is refused with
-// [mutation.ErrNotExactlyOneRequest] rather than ignored, so a ninth kind added
-// to [mutation.Mutation] without an arm here fails loudly instead of silently
-// applying nothing.
+// A mutation with zero or several requests returns
+// [mutation.ErrNotExactlyOneRequest], so a new kind without an arm here fails
+// loudly instead of applying nothing.
 func Apply(ctx context.Context, store p.ExecutionStore, epoch int64, m mutation.Mutation) error {
 	switch m.Kind() {
 	case mutation.KindCreate:

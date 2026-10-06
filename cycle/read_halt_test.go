@@ -1,6 +1,7 @@
 package cycle
 
-// What the three reads answer when the replay they triggered halts the cycle.
+// What three of the four reads answer when the replay they triggered halts the
+// cycle. The fourth, the branch page, routes as a mutable-state read.
 // Replay is the only road to [StateHaltedLost] that arrives with the cycle
 // unstarted, on a reader, with the halt discovered inside the call being
 // answered.
@@ -8,8 +9,9 @@ package cycle
 // Two halves of the rule, both stated beside [loopRoute]: on halted-lost the
 // state alone decides a task read, because another owner's acks are in neither
 // this tail nor (yet) the cold store; the mutable-state reads keep the tail
-// rule, because they have callers that legitimately do not own the shard. These also pin that the read which discovers the halt is answered
-// exactly like every read after it — see [Cycle.startForRead].
+// rule, because they have callers that legitimately do not own the shard.
+// These also pin that the read which discovers the halt is answered exactly
+// like every read after it — see [Cycle.startForRead].
 
 import (
 	"context"
@@ -27,7 +29,7 @@ import (
 	"github.com/aromanovich/waltz/wal/waltest"
 )
 
-// readAnswers is what each of a cycle's three reads answered.
+// readAnswers is what each of the three reads [askAllThree] issues answered.
 type readAnswers struct{ exec, current, tasks error }
 
 // askAllThree issues both mutable-state reads and a task read over one cycle.
@@ -99,8 +101,8 @@ func TestACycleFencedAwayInsideReplayRefusesTaskReadsAndOnlyThose(t *testing.T) 
 }
 
 // TestATaskReadThatIsItselfTheFirstRequestIsRefused makes the readiness gate's
-// placement before the halt rule load-bearing: here the task read is the
-// request that triggers the replay. A halt rule consulted first would see a
+// placement before the routing rule load-bearing: here the task read is the
+// request that triggers the replay. A routing rule consulted first would see a
 // running cycle, say nothing, and merge the page out of a window the replay has
 // since reset — a cold-store-only page on a shard this node no longer owns,
 // handed to the caller that completes the range over it.
@@ -151,15 +153,15 @@ func TestACycleFencedAwayHoldingATailRefusesAllThree(t *testing.T) {
 
 // TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree is why
 // [loopRoute] looks at halted-lost specifically rather than at "is it halted":
-// the tail rule alone applies here, and converting this to ShardOwnershipLost
-// would hand the divergence on as an ordinary failover.
+// every refusal here is the halt itself, and converting it to
+// ShardOwnershipLost would hand the divergence on as an ordinary failover.
 //
 // The tail is what makes that rule safe for the two mutable-state reads, and an
 // entry this build cannot decode is charged to it by [Cycle.strand] before the
 // halt. Without that charge the tail reads empty — the entry never reached
 // [Cycle.accept] — and an empty tail is exactly what [tailRoute] passes through,
 // so both would be answered from a cold store that does not hold this entry.
-// The task read no longer rests on the charge: [loopRoute] refuses it at either
+// The task read does not rest on the charge: [loopRoute] refuses it at either
 // halt whatever the tail says, since a page answered out of the cold store hands
 // back that store's own token. What the charge still buys it is the refusal's
 // reach — every read on the shard rather than this one class.
@@ -185,9 +187,9 @@ func TestACycleHaltedInvariantInsideReplayKeepsTheTailRuleForAllThree(t *testing
 
 // TestAReplayThatFailedWithoutHaltingIsStillAnError bounds
 // [Cycle.startForRead]'s swallow: a replay that could not read its page leaves
-// the cycle running and the window empty, so there is no halt rule to answer
-// with and the read must fail rather than be served from a window that was
-// never rebuilt.
+// the cycle running and the window empty, so there is no halt for the routing
+// rule to answer with and the read must fail rather than be served from a
+// window that was never rebuilt.
 func TestAReplayThatFailedWithoutHaltingIsStillAnError(t *testing.T) {
 	ctx := context.Background()
 	log := newLog()
@@ -214,9 +216,8 @@ func TestAReplayThatFailedWithoutHaltingIsStillAnError(t *testing.T) {
 // decodes to ErrUnknownCategory here. It also carries a transfer task, which
 // this node's transfer queue does read.
 //
-// Before [Cycle.strand] existed the tail read empty and this page came back
-// served, empty and short task 42 — the queue would have completed its range and
-// acked past a key nothing will ever write.
+// Served, this page would come back empty and short task 42 — the queue would
+// complete its range and ack past a key nothing will ever write.
 func TestAnUndecodableEntryLeavesNoQueueAbleToAckPastIt(t *testing.T) {
 	ctx := context.Background()
 	log := memwal.New()

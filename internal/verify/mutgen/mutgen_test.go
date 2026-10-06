@@ -141,10 +141,9 @@ func TestAThinStreamNamesWhatItLacks(t *testing.T) {
 	require.Contains(t, missing, "a tombstone")
 }
 
-// TestAShapeNobodyAskedForIsNotMissing: a caller that turns the task rates off
-// — as one whose claims are stated run by run must, because a task record is
-// neither a create nor an update — must not be told its stream lacks history
-// tasks.
+// TestAShapeNobodyAskedForIsNotMissing: a caller that turns TaskDensity off —
+// and with it every task the stream could carry, standalone adds included —
+// must not be told its stream lacks history tasks.
 func TestAShapeNobodyAskedForIsNotMissing(t *testing.T) {
 	quiet := config(12)
 	quiet.TaskDensity, quiet.AddTasksRate, quiet.RangeCompleteRate = 0, 0, 0
@@ -204,8 +203,8 @@ func TestKeyReuseSetsThePerKeyCollapse(t *testing.T) {
 // state is already a snapshot — and the refusal is not a defect on either side:
 // it is a valid stream fold cannot express as merged requests, recovered by
 // draining and letting the refused mutation head a fresh window. Every consumer
-// of a generated stream needs that loop, so the corpus's own test is where it
-// is written down.
+// of a generated stream needs that loop, [fold.Accumulator.AddOrDrain], and this
+// test is what says the default stream still makes it run.
 func TestChainsFold(t *testing.T) {
 	stream, report := take(t, config(6), 400)
 
@@ -572,7 +571,8 @@ func TestVersionChainIsTheOneTheStoreAsserts(t *testing.T) {
 
 // TestStreamSurvivesTheCodec: the corpus exists to travel through the WAL, so a
 // mutation this package builds that the codec cannot carry is a corpus bug, not
-// a codec bug — and it is cheaper to find here than in a folder comparison.
+// a codec bug — and it is cheaper to find here than in the acceptance oracle's
+// comparison of a folded database with an unfolded one.
 func TestStreamSurvivesTheCodec(t *testing.T) {
 	stream, _ := take(t, config(13), 150)
 	registry := tasks.NewDefaultTaskCategoryRegistry()

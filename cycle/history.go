@@ -1,18 +1,14 @@
 package cycle
 
-// Merge-on-read for event history: who may answer a branch page, when, and out
-// of which window. The page's contents are not here — the cut, the token, the
-// order and the dedup are [fold.Accumulator.HistoryPage], beside the window they
-// read.
+// Merge-on-read for event history: who may answer a branch page, and when.
+// The page's contents (cut, token, order, dedup) are
+// [fold.Accumulator.HistoryPage].
 //
-// It is the third merged read and it routes like the two mutable-state ones
-// rather than like the task page. A history reader does not delete what it read,
-// so a page short a node is a workflow rebuilt short its newest events rather
-// than a row nobody asks for again — which is the staleness [tailRoute] already
-// decides who may pay. What it does share with the task page is a token this
-// layer wrote, so every route that answers without the window unwraps it first
-// ([fold.BaseHistoryToken]): one of ours reaching a plugin's parser fails a
-// pagination in the middle.
+// It routes like the mutable-state reads, not the task page: a history reader
+// deletes nothing, so a short page is staleness, which [tailRoute] decides.
+// Like the task page its token is ours, so every route that answers without
+// the window unwraps it first ([fold.BaseHistoryToken]); our token reaching
+// the plugin's parser fails the pagination.
 
 import (
 	"context"
@@ -24,16 +20,13 @@ import (
 )
 
 // BaseHistory is the cold store's own branch read, handed down by the wrapper.
-// It takes a request rather than closing over one, because the merge issues a
-// different one than the caller's: its own page size, and the base's own token.
-//
-// An alias for [wrapper.ShardReader]'s reason: the two packages that must agree
-// on this signature may not import each other.
+// It takes a request because the merge sends its own page size and token. An
+// alias, like [BaseTasks], so [wrapper.ShardReader] can spell the same type.
 type BaseHistory = func(context.Context, *p.InternalReadHistoryBranchRequest) (*p.InternalReadHistoryBranchResponse, error)
 
 // ReadHistoryBranch answers one page of a branch for the shard the request
-// names. treeID is parsed from the branch token by the wrapper, the branch-token
-// codec being the store's.
+// names. The wrapper parses treeID from the branch token, whose codec is the
+// store's.
 func (m *Manager) ReadHistoryBranch(
 	ctx context.Context,
 	req *p.InternalReadHistoryBranchRequest,
@@ -65,13 +58,10 @@ func (c *Cycle) readHistoryBranch(
 	return resp, err
 }
 
-// baseAlone is the cold store's answer for a page this layer is not merging
-// into: the caller's own request with its page token unwrapped, since the token
-// it holds may be one this layer wrote on an earlier page.
-//
-// Unwrapping loses the window's half of that page, which is exactly what the
-// route deciding to pass through has already decided is acceptable — a
-// non-empty tail is refused rather than passed through.
+// baseAlone reads a page from the cold store alone, unwrapping the caller's
+// token in case this layer wrote it. That drops the window's half of the page,
+// which the pass-through route has already judged safe (a non-empty tail is
+// refused instead).
 func baseAlone(
 	req *p.InternalReadHistoryBranchRequest, base BaseHistory,
 ) func(context.Context) (*p.InternalReadHistoryBranchResponse, error) {
@@ -82,9 +72,8 @@ func baseAlone(
 	}
 }
 
-// readHistoryPage is the loop's half. The window's view is taken inside
-// [Cycle.prelude] so a replay that resets the accumulator is not read around,
-// and the page itself is built after it.
+// readHistoryPage is the loop's half. The page is built after [Cycle.prelude],
+// so a replay that resets the accumulator is not read around.
 func (c *Cycle) readHistoryPage(
 	ctx context.Context,
 	s *state,
@@ -92,11 +81,9 @@ func (c *Cycle) readHistoryPage(
 	treeID string,
 	base BaseHistory,
 ) (*p.InternalReadHistoryBranchResponse, error) {
-	// No view is taken, for the reason the task page takes none: Reads and
-	// ReadsHeld are the mutable-state overlay's numbers, and three witness rules
-	// read ReadsHeld as "the overlay crossed a held workflow". A branch page
-	// raising it would let that claim be satisfied by a read that never touched
-	// the overlay at all — the silent pass those rules exist to catch.
+	// No takeView, so Reads and ReadsHeld stay the overlay's: witnesses read
+	// ReadsHeld as "the overlay crossed a held workflow", and a branch page
+	// raising it would hide an overlay that did nothing.
 	switch pass, err := c.prelude(ctx, s, mutableStateRead, nil); {
 	case err != nil:
 		return nil, err

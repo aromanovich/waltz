@@ -1,31 +1,25 @@
 // Package waltz puts a write-ahead log in front of a Temporal history shard's
-// cold store, so that many mutations are acked into the log and folded into one
-// cold-store transaction. It implements no persistence itself: the log is a
-// [wal.Log] and the cold store is a [cold.Store], both the caller's. One
-// implementation of each ships here, wal/memwal and cold/memcold, and both die
-// with the process.
+// cold store: mutations are acked into the log and many are folded into one
+// cold-store transaction. The log ([wal.Log]) and the cold store ([cold.Store])
+// are the caller's. The shipped ones, wal/memwal and cold/memcold, die with the
+// process.
 //
-// waltz is developed against go.temporal.io/server v1.29.6 and needs Go 1.26 or
-// newer. The requirement on the server is a floor under minimal version
-// selection and not a pin, so a consumer already on a newer one builds against
-// it with no diagnostic: the WAL record format mirrors v1.29.6's request
-// structs field-for-field, and the mirror's completeness is checked against
-// that version here, never in a consumer's build. A field a newer server adds
-// is a field this codec drops from a write it has already acked.
+// waltz targets go.temporal.io/server v1.29.6 and Go 1.26+. The server version
+// is a floor, not a pin, so a newer server builds with no warning. The WAL
+// record format mirrors v1.29.6's request structs field for field, and that is
+// checked only here and not for every struct (open in DURABILITY.md): a field
+// a newer server adds is dropped from a write already acked.
 //
-// [Compose] is the only composition; a new caller's need belongs there as a
-// parameter. [Layer.AbstractFactory] is the door out: the value a custom main
-// hands to temporal.WithCustomDataStoreFactory, which is the whole of how a
-// server is built over this layer.
+// [Compose] is the only composition; a new caller's need becomes a parameter
+// there. [Layer.AbstractFactory] returns what a custom main passes to
+// temporal.WithCustomDataStoreFactory.
 //
-// The configuration is a `wal` section inside the custom datastore's own
-// options. An absent section is passthrough; a malformed one is a refusal to
-// start ([ADR 0006]).
+// Configuration is a `wal` section in the custom datastore's options. Absent
+// means passthrough; malformed refuses to start ([ADR 0006]).
 //
-// The layer's lifecycle brackets the server's: it is composed before the server
-// is built, so a failed budget assertion stops the binary, and [Layer.Shutdown]
-// runs after it has stopped, so the shutdown drain still has a store to write
-// to.
+// Compose the layer before building the server, so a failed budget check stops
+// the binary. Call [Layer.Shutdown] after the server stops, so the drain runs
+// with no writers left.
 //
 // [ADR 0006]: docs/adr/0006-the-wal-configuration-is-a-section-of-the-datastore-options.md
 package waltz
@@ -53,66 +47,52 @@ import (
 	"github.com/aromanovich/waltz/wrapper"
 )
 
-// Layer is the WAL layer this process owns: the registry the wrapper talks to,
+// Layer is the process's WAL layer: the shard registry the wrapper talks to,
 // over the backends it was composed with.
 //
-// Exactly one per process, not one per data store factory: a shard's cycle
-// carries its epoch from the acquire through the writes that follow, so two
-// registries would be two windows for one shard, each unaware of the other.
+// Build exactly one per process, not one per data store factory: two
+// registries would hold two windows for one shard, each unaware of the other.
 type Layer struct {
-	// policy is what this layer's cycles read, kept so a caller can ask what the
-	// node runs at rather than sample the dynamic config again: two samples of a
-	// start-up setting can differ.
+	// policy is kept so callers read the same policy the cycles do; sampling the
+	// dynamic config again could give a different start-up value.
 	policy  cycle.Policy
 	manager *cycle.Manager
-	// log is kept for its close alone: the cycles reach it through the manager,
-	// and a backend holding a connection or a pinger has nobody else to release
-	// it ([wal.Log.Close]).
+	// log is kept only to close it; nothing else releases its connections.
 	log wal.Log
-	// metrics is this node's one emitter: the cycles record through it and so do
-	// the stores [Layer.Options] composes, so the server's handler reaches both
-	// halves of the layer's numbers by being handed over once.
+	// metrics is the node's one emitter, shared by the cycles and the stores
+	// built over [Layer.Options], so one handler hand-off reaches both.
 	metrics *walmetrics.Emitter
 }
 
 // TaskCategories builds the task category registry the layer decodes an
-// inherited tail with, here rather than from fx because the layer is composed
-// first. It depends on cfg: the archival category exists exactly when archival
-// is enabled, and a default registry would refuse to replay entries carrying
-// archival tasks.
+// inherited tail with. The caller builds it because the layer is composed
+// before fx could provide it. The archival category exists only when cfg
+// enables archival, so a default registry cannot replay archival tasks.
 func TaskCategories(dc *dynamicconfig.Collection, cfg *config.Config) Registry {
 	return Registry{r: temporal.TaskCategoryRegistryProvider(resource.ArchivalMetadataProvider(dc, cfg))}
 }
 
-// Registry is the answer to "which registry does this node decode a tail
-// with", and it is constructible only by [TaskCategories] and
-// [DefaultTaskCategories]. Upstream's
-// interface is what [cycle.Deps] takes and must be — mutation.Decode needs it —
-// but a composition that accepted it directly would accept
-// tasks.NewDefaultTaskCategoryRegistry too, which is a second answer: the same
-// set today, and a different one the day archival is configured.
+// Registry is the task category registry a node decodes a tail with. Only
+// [TaskCategories] and [DefaultTaskCategories] build one, so
+// tasks.NewDefaultTaskCategoryRegistry cannot reach a composition: it matches
+// today and diverges once archival is configured.
 //
-// The zero value is refused by [cycle.NewManager] rather than treated as the
-// default, since a node that decodes with no registry recovers nothing until
-// the first failover.
+// [cycle.NewManager] refuses the zero value: a node with no registry would
+// recover nothing.
 type Registry struct{ r tasks.TaskCategoryRegistry }
 
-// Categories is the registry as the layer's own components take it.
+// Categories unwraps the upstream interface that [cycle.Deps] takes.
 func (reg Registry) Categories() tasks.TaskCategoryRegistry { return reg.r }
 
-// DefaultTaskCategories is [TaskCategories] for a cluster that configures no
-// archival. It answers the same set as tasks.NewDefaultTaskCategoryRegistry and
-// is not that call: a registry a node decodes with is built the way a node
-// builds one, so a caller reaching for the plain default is a second answer to
-// which registry a node has.
+// DefaultTaskCategories is [TaskCategories] for a cluster with no archival. It
+// goes through the same upstream path a node uses rather than calling
+// tasks.NewDefaultTaskCategoryRegistry, so there is one rule for the set.
 func DefaultTaskCategories() Registry {
 	return TaskCategories(dynamicconfig.NewNoopCollection(), &config.Config{})
 }
 
-// checkPolicy refuses a composition with nothing to read its decisions from.
-// Every one of them samples the policy, the budget assertion first, so a nil is
-// a dereference at that first read rather than a composition that did not
-// happen.
+// checkPolicy refuses a nil policy up front; otherwise it would panic at the
+// first read, the budget check.
 func checkPolicy(policy cycle.Policy) error {
 	if policy == nil {
 		return errors.New("waltz: no policy: it is the whole of what this node runs at, so a process " +
@@ -121,43 +101,31 @@ func checkPolicy(policy cycle.Policy) error {
 	return nil
 }
 
-// Backends is where a composed layer's bytes go: the log its appends are
-// ordered in, and the cold store one drain becomes a transaction on and an
-// unknown outcome is read back from.
+// Backends is where a layer's bytes go: the log that orders appends, and the
+// cold store each drain commits to and an unknown outcome is read back from.
 //
-// They are [Compose]'s parameter rather than something it builds, and that is
-// the point of the type: this library implements neither. Both are seams the
-// layer is meant to be answerable at without a cluster — wal/memwal is a whole
-// implementation of the WAL contract (ADR 0002), and [cold.Store] exists so a
-// drain's outcome can be varied without one. A caller that wants the intercept
-// path in process reaches it here rather than by building a second registry,
-// which is the one thing this package asks callers not to do.
+// The caller builds both; [Compose] builds neither. To run intercept mode over
+// in-process backends, pass them here; never build a second registry.
 type Backends struct {
 	Log  wal.Log
 	Cold cold.Store
 }
 
-// Compose is the one graph every process running intercept mode builds. Its
-// five varying inputs:
+// Compose builds the layer; every process running intercept mode calls it.
 //
-//   - backends is where the bytes go, and the reason it is a parameter is on
-//     [Backends];
-//   - policy is required, and is a [cycle.Policy]: a source read at each
-//     decision, so a caller holding one that moves ([NewPolicy]) and one holding
-//     fixed numbers ([cycle.Fixed]) reach the same composition;
-//   - categories is required: it is what replay decodes a tail with, and
-//     [cycle.NewManager] refuses nil rather than starting a node whose recovery
-//     is silently off;
-//   - logger is optional, and nil is a noop: the layer's own warnings — a
-//     shutdown drain that did not commit, a trim retried at the next cadence —
-//     then have nowhere to go;
-//   - handler is optional, and nil is the production value: the server hands one
-//     down through [wrapper.MetricsSink] after this runs.
+//   - policy is required. It is read at each decision: pass [NewPolicy] for a
+//     dynamic config or [cycle.Fixed] for fixed numbers.
+//   - categories is required: replay decodes a tail with it.
+//   - logger may be nil (noop); the layer's warnings, such as a shutdown drain
+//     that did not commit or a failed trim, are then dropped.
+//   - handler is nil in production: the server hands one over later through
+//     [wrapper.MetricsSink].
 //
-// It opens nothing, reaches nothing and takes no context: everything that talks
-// to a cluster happens while the backends are built. So whatever they hold
-// stays the caller's, and must outlive the layer, since [Layer.Shutdown] drains
-// through it.
+// Compose opens nothing and takes no context; connecting happens when the
+// caller builds the backends. The backends stay the caller's and must outlive
+// the layer, because [Layer.Shutdown] drains through them. The budget check
+// (cycle.Config.CheckBudget) runs here, so call Compose before building the
+// server.
 func Compose(
 	backends Backends,
 	policy cycle.Policy,
@@ -172,18 +140,13 @@ func Compose(
 		logger = log.NewNoopLogger()
 	}
 
-	// The node's one emitter, built here rather than left to [cycle.NewManager]
-	// so that the value the cycles record through is one this layer can also
-	// hand the stores ([Layer.Options]). A nil handler records nowhere until
-	// [walmetrics.Emitter.Use] arrives with the server's.
+	// Built here so the cycles and the stores ([Layer.Options]) share it. A nil
+	// handler records nowhere until [walmetrics.Emitter.Use] supplies one.
 	emitter := walmetrics.New(handler)
 
 	manager, err := cycle.NewManager(cycle.Deps{
 		Log: backends.Log,
-		// [cycle.Deps] keeps the two halves apart and this is the only place they
-		// are spliced, so what a deployment cannot express a suite still can: a
-		// watermark that stops answering while its applier goes on committing is
-		// how a replay is driven to abandon a tail it has already applied.
+		// Deps keeps writer and recoverer apart so a suite can fail one alone.
 		Writer:    backends.Cold,
 		Recoverer: backends.Cold,
 		Registry:  categories.Categories(),
@@ -201,34 +164,27 @@ func Compose(
 	}, nil
 }
 
-// Options is the whole of what the wrapper is composed with: the registry is
-// the shard observer, the write path and the read path at once, and the emitter
-// is the one this layer's cycles record through, so a store built over these
-// options and the cycle behind it report to the same handler — the one
-// [wrapper.MetricsSink] hands over.
+// Options is everything the wrapper needs: the registry (shard observer, write
+// path and read path in one) and the layer's emitter, so the stores and the
+// cycles report to the one handler [wrapper.MetricsSink] hands over.
 func (l *Layer) Options() wrapper.Options {
 	return wrapper.Options{Layer: l.manager, Metrics: l.metrics}
 }
 
-// AbstractFactory is the value a custom main hands to
-// temporal.WithCustomDataStoreFactory: base — the persistence plugin that owns
-// the cold store — decorated with opts. opts is the whole of the mode, the zero
-// value being passthrough, so this is the door a binary with no `wal` section
-// takes as well.
+// AbstractFactory decorates base, the persistence plugin that owns the cold
+// store, with opts, for temporal.WithCustomDataStoreFactory. Zero opts is
+// passthrough, so a binary with no `wal` section uses this too.
 //
-// Metrics are not an argument: the server's handler does not exist yet and
-// arrives at [wrapper.AbstractDataStoreFactory.NewFactory], which fills it into
-// the stores and hands it to the layer through [wrapper.MetricsSink].
+// The server's metrics handler does not exist yet; it arrives at
+// [wrapper.AbstractDataStoreFactory.NewFactory], which hands it to the layer
+// through [wrapper.MetricsSink].
 func AbstractFactory(base client.AbstractDataStoreFactory, opts wrapper.Options) client.AbstractDataStoreFactory {
 	return wrapper.NewAbstractDataStoreFactory(base, opts)
 }
 
-// AbstractFactory is [AbstractFactory] carrying this layer's own options, and
-// the reason it is a method: the pairing of a composition with the factory that
-// carries it was written out at every call site, and a layer composed but never
-// handed to one is a node running passthrough with a `wal` section that says
-// otherwise — which nothing reports, since that is what an empty layer looks
-// like from outside. So the whole of building a server over this library is
+// AbstractFactory is [AbstractFactory] with this layer's options. A layer
+// never handed to its factory silently runs passthrough, so build the server
+// with
 //
 //	temporal.WithCustomDataStoreFactory(layer.AbstractFactory(base))
 //
@@ -237,21 +193,16 @@ func (l *Layer) AbstractFactory(base client.AbstractDataStoreFactory) client.Abs
 	return AbstractFactory(base, l.Options())
 }
 
-// Policy is what this layer's cycles read: the section's half and the dynamic
-// config's, as one source. Calling it answers the policy now, which for the
-// live settings need not be what it answered a minute ago.
+// Policy is the source this layer's cycles read, section and dynamic config
+// combined. Live settings may answer differently on each call.
 func (l *Layer) Policy() cycle.Policy { return l.policy }
 
-// Totals is what every shard this layer has held reports, summed — the number a
-// witness reads to say the layer was not empty.
+// Totals sums the counters of every shard this layer has held.
 func (l *Layer) Totals() cycle.Totals { return l.manager.Totals() }
 
-// ShardStats is what one shard's cycle knows about itself, and false if this
-// node holds none. These and not the registry: the registry is also a write
-// path, and [wrapper.Options] is the one that has an epoch check in front of it.
-//
-// A value and not the cycle: callers may observe its counters and epoch, but
-// may not gain its Retire and Close controls.
+// ShardStats returns a snapshot of one shard's cycle, or false if this node
+// holds none. It returns a value, not the cycle or the registry, so callers
+// can read counters and epoch without gaining a write path or Retire/Close.
 func (l *Layer) ShardStats(shard wal.ShardID) (cycle.Stats, bool) {
 	c := l.manager.Shard(shard)
 	if c == nil {
@@ -260,27 +211,22 @@ func (l *Layer) ShardStats(shard wal.ShardID) (cycle.Stats, bool) {
 	return c.Stats(), true
 }
 
-// RetireShard stops one shard's cycle without draining it, and reports whether
-// the epoch named is the one this node still holds. It is what a process that
-// died leaves behind, which is why it is named apart from [Layer.Shutdown]: a
-// drain writes, and a kill does not.
+// RetireShard stops one shard's cycle without draining it, as a killed process
+// would, and reports whether epoch matched. Unlike [Layer.Shutdown] it writes
+// nothing.
 //
-// epoch is which acquisition is being retired, and a mismatch retires nothing.
-// Without it a late unload — a shard context cleaned up after the shard was
-// reacquired above it — stops the owner that superseded it, since the caller
-// has no other way to say which of the two it means. It is the check
-// [cycle.Manager.Write] makes for the same reason, in the one other door that
-// names an epoch.
+// epoch names the acquisition to retire; a mismatch retires nothing. Without
+// it, a late unload after the shard was reacquired would stop the new owner.
+// [cycle.Manager.Write] checks epochs for the same reason.
 //
-// The stopped cycle stays the shard's, and that is not an omission: its tail is
-// acked entries still in the log, so [Layer.ShardStats] and [Layer.Totals] go
-// on answering for it off the mirror. Removing it here would answer a shard
-// nobody holds, which is the zero a caller reads as "nothing stranded".
+// The stopped cycle stays registered on purpose: its tail is acked entries
+// still in the log, and [Layer.ShardStats] and [Layer.Totals] must keep
+// reporting them. Removing it would report zero, which reads as "nothing
+// stranded".
 func (l *Layer) RetireShard(shard wal.ShardID, epoch wal.Epoch) bool {
 	c := l.manager.Shard(shard)
-	// The cycle whose epoch was checked is the cycle retired, never a re-lookup:
-	// an epoch does not move under a cycle, so an acquire landing beside this
-	// cannot redirect it onto the successor it just installed.
+	// Retire the cycle whose epoch was checked, never a re-lookup, so a
+	// concurrent acquire cannot redirect the retire onto its new cycle.
 	if c == nil || c.Epoch() != epoch {
 		return false
 	}
@@ -288,26 +234,23 @@ func (l *Layer) RetireShard(shard wal.ShardID, epoch wal.Epoch) bool {
 	return true
 }
 
-// Shutdown stops the layer: every shard that still holds a window is drained
-// into the cold store, and the log is released.
+// Shutdown drains every shard that still holds a window into the cold store,
+// reports halted shards instead of draining them, and closes the log.
 //
-// It must run after the server has stopped: the drain writes to the cold store
-// the mutations of writers the server is shutting down. budget bounds the apply
-// transactions — one per shard, in sequence — and not a trim already in flight,
-// which is waited out on the minute of its own detached context; a drain the
-// budget cuts short leaves a tail, not lost data (invariant I2: it is in the
-// log, acked), which the next owner's replay picks up.
+// Call it after the server has stopped, so no writer is still adding to the
+// windows being drained, and while the backends are still open.
 //
-// The budget is put on a context detached from the caller's cancellation,
-// and that detach is why this is a door rather than an idiom every caller
-// writes. A shutdown drain runs where a context has just been cancelled — that
-// is what "shutdown" means — and one inheriting that cancellation returns at
-// once, leaving a tail behind and nothing in the log that says so.
-// Given a budget, the error is an [*UndrainedError] and nothing else: every
-// tail emptied, or these did not. A budget that is not one is refused instead of
-// obeyed: [context.WithTimeout] reads zero as a deadline already past, where
-// much of Go reads it as no limit, so obeying it would drain nothing and report
-// every shard as holding a tail — the answer a caller passing zero meant least.
+// budget bounds the apply transactions, run shard by shard (a shard whose tail
+// is not yet replayed applies the replay first). A trim already in flight is
+// waited out regardless: each attempt has its own detached one-minute context,
+// plus one follow-up a forced trim may have queued. A drain cut short leaves a tail in the log, acked and
+// not lost (I2), for the next owner's replay.
+//
+// The budget runs on a context detached from ctx's cancellation, because
+// shutdown usually starts just after a cancel; inheriting it would return at
+// once and leave a tail silently. With a valid budget the only error is an
+// [*UndrainedError]. budget <= 0 is refused: [context.WithTimeout] treats zero as already
+// expired, so it would drain nothing.
 func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) error {
 	if budget <= 0 {
 		return fmt.Errorf("waltz: a shutdown budget of %s is not a budget: pass the time the drains "+
@@ -318,18 +261,17 @@ func (l *Layer) Shutdown(ctx context.Context, budget time.Duration) error {
 	return l.close(drainCtx)
 }
 
-// UndrainedError is what [Layer.Shutdown] answers when a tail outlived it: the
-// shards still holding acked entries no drain applied, and how many each holds.
+// UndrainedError lists the shards still holding acked entries after
+// [Layer.Shutdown], with each one's entry count. A listed shard is never
+// clean, even at count zero: a cycle that halted in replay and then failed to
+// re-read the log reports zero (open in DURABILITY.md).
 //
-// It reports neither a lost write nor a failed shutdown. Those entries are in
-// the log and a successor's replay is what they are there for, so a node
-// restarting into the same configuration needs nothing from this value. One
-// caller does: whoever is taking the layer *out*. Removing the `wal` section
-// strands exactly these entries and says nothing, because passthrough composes
-// no log and so cannot see that they exist — which makes a shutdown that
-// answered nil the only evidence that removing it is safe.
+// It is not a lost write: the entries are in the log for the next owner's
+// replay, so a node restarting with the same config can ignore it. It matters
+// when removing the `wal` section: passthrough cannot see the log, so these
+// entries would be stranded silently. Remove the section only after a
+// Shutdown that returned nil.
 type UndrainedError struct {
-	// Shards is every shard whose tail outlived the shutdown.
 	Shards []cycle.Residue
 }
 
@@ -353,11 +295,8 @@ func (e *UndrainedError) Error() string {
 	return b.String()
 }
 
-// close is [Layer.Shutdown] once the context is the layer's own.
-//
-// The log is closed after the drain and not before: a drain still trims through
-// it, and a backend whose close ends the ownership that trim rests on would fail
-// it and leave the log unshortened.
+// close is [Layer.Shutdown] on the detached context. The log closes after the
+// drain because the drain still trims through it.
 func (l *Layer) close(ctx context.Context) error {
 	left := l.manager.Close(ctx)
 	l.log.Close()

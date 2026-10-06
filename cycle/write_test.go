@@ -122,8 +122,9 @@ func TestAFencedShardAnswersShardOwnershipLost(t *testing.T) {
 // arm re-acquires the shard in the background.
 func TestAHaltedInvariantIsNotAFailover(t *testing.T) {
 	ctx := context.Background()
-	// Async: at a window of one a condition failure is the caller's answer
-	// rather than a halt.
+	// Async: sync mode's window of one makes a condition failure the caller's
+	// answer rather than a halt. A window of two acks the create and fails the
+	// drain the update trips.
 	m := newManager(t, &fakeApplier{errs: []error{&p.WorkflowConditionFailedError{Msg: "stale"}}},
 		func(c *Config) { c.Sync = false; c.Mutations = 2 })
 	require.NoError(t, m.ShardAcquired(ctx, testShard, 7))
@@ -163,8 +164,8 @@ func TestTheRefusalReachesTheBoundaryUntouched(t *testing.T) {
 // assertion, since a wrapped copy would satisfy errors.As and is what is
 // forbidden.
 //
-// A condition failure found at drain time is attributable only at a window of
-// one, because every other caller has been acked. One the accumulator answers
+// A condition failure found at drain time is attributable only at sync mode's
+// window of one, because every other caller has been acked. One the accumulator answers
 // is attributable at any window: its subject is the mutation in this caller's
 // own call, and the check runs before the append, so nothing was acked.
 func TestAConditionTheWindowAnswersIsTheCallersOwnError(t *testing.T) {
@@ -198,10 +199,10 @@ func TestAConditionTheWindowAnswersIsTheCallersOwnError(t *testing.T) {
 
 // TestAWindowedWriteRetainsTheCallersOwnRequest is the ownership half of
 // wrapper.ShardWriter.Write: past a Write the window has not drained, the
-// layer holds the caller's request itself. That is what puts the drain's
-// rangeID stamp (apply) in a struct whose caller returned long ago, and a
-// copy taken anywhere between the seam and the drain would answer the doc's
-// promise with a mutation nobody can observe.
+// layer holds the caller's request itself. That is what puts the fold's
+// in-place merge in a struct whose caller returned long ago, and a copy taken
+// anywhere between the seam and the drain would answer the doc's promise with
+// a mutation nobody can observe.
 func TestAWindowedWriteRetainsTheCallersOwnRequest(t *testing.T) {
 	ctx := context.Background()
 	applier := &fakeApplier{}
@@ -216,7 +217,7 @@ func TestAWindowedWriteRetainsTheCallersOwnRequest(t *testing.T) {
 	require.NoError(t, write(ctx, m, held, 7))
 	require.Empty(t, applier.drains, "the window holds it, and the caller is gone")
 
-	require.NoError(t, write(ctx, m, mkCreate(ids()), 7), "the second write trips the watermark")
+	require.NoError(t, write(ctx, m, mkCreate(ids()), 7), "the second write trips the mutations trigger")
 	require.Len(t, applier.drains, 1)
 	require.Same(t, held.Create, applier.drains[0][0].Request.Create,
 		"the drain must reach the caller's own request rather than a copy of it")

@@ -69,9 +69,9 @@ func TestTheCadenceAlsoCountsTime(t *testing.T) {
 
 // TestTheTimeHalfIsDueAtItsOwnInterval drives the age comparison at the value it
 // is configured with, which the case above does not: it advances two minutes
-// against a one-minute interval, so moving that comparison to `<=` left the whole
-// of `go test ./...` green. The count half's boundary was already driven — a
-// cadence of three, reached at three — and this is the other one.
+// against a one-minute interval, so moving that comparison to `<=` leaves it
+// green. The count half's boundary is driven above — a cadence of three, reached
+// at three — and this is the other one.
 //
 // A trim one tick late costs a log that stays one cadence longer than the
 // configured one, which is the number an operator sizing the log's storage reads.

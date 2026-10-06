@@ -1,8 +1,8 @@
 package waltest
 
-// The other way a backend breaks guarantee 5 with every call succeeding: it
-// answers a read with fewer entries than it holds, and a page short of its limit
-// is the end of the log to everything that reads one.
+// Another way a backend breaks guarantee 5 while every call succeeds: a read
+// returns fewer entries than it holds, and readers treat a short page as the
+// end of the log.
 
 import (
 	"context"
@@ -10,21 +10,17 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// Truncating is a [wal.Log] answering every read with at most Cap entries,
-// however many the caller asked for and however many are there. That is how a
-// backend pages when its real limit is a response size rather than a row count —
-// a message size, a query response, a driver's row buffer — and it is legal-
-// looking from outside: no error, ascending seqnos, a page like any other.
+// Truncating is a [wal.Log] that answers every read with at most Cap entries,
+// whatever the limit. A backend paging by response size rather than row count
+// behaves like this, with no error and a normal-looking page.
 //
-// It is not a log a backend may be, which is what tells it from [Faulty]:
-// a faulting log refuses calls, as a correct backend does under load, while this
-// one succeeds and answers less than it holds. [Expiring] is the other of its
-// kind. It is here so that a caller reading a whole log can be shown to check
-// that it reached the end rather than to trust a short page for it.
+// Like [Expiring] and [Unfenced], it breaks the contract on purpose. It shows
+// that a caller reading a whole log checks it reached the end rather than
+// trusting a short page.
 type Truncating struct {
 	wal.Log
 
-	// Cap is the most entries a read answers with. Zero or less caps nothing.
+	// Cap is the most entries a read returns; zero or less means no cap.
 	Cap int
 }
 

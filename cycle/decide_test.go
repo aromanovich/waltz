@@ -2,8 +2,9 @@ package cycle
 
 // The decisions of decide.go, asked directly and enumerated: the five moments a
 // read can arrive in, both units across I10's bound, the recognised and
-// unrecognised errors at each state, and every drain cause at every window size. The cycle-shaped tests beside this file say what a cycle
-// does, which is a different claim.
+// unrecognised errors at each state, and every drain cause [drainCauses] lists
+// at every window size. The cycle-shaped tests beside this file say what a
+// cycle does, which is a different claim.
 //
 // The attribution rule cannot be falsified through a cycle at all: the only
 // cause carrying [answersCaller] is issued at one call site, where sync mode's
@@ -57,7 +58,8 @@ func requireRoute(t *testing.T, want, got readRoute, refusal, halt error) {
 // constraints rather than behaviour — halted-lost refuses a task read whatever
 // the tail says, a stopped cycle refuses one whatever its state, an unreadable
 // drain refuses both whoever is asking, and halted-invariant is never converted
-// to ShardOwnershipLost — are marked where they sit.
+// to ShardOwnershipLost while its loop is there to ask — are marked where they
+// sit.
 func TestEveryMomentAReadCanArriveInRoutesBothReaders(t *testing.T) {
 	// The value [Cycle.halted] would have built; every [refuseAsHalt] row
 	// asserts this exact value comes back.
@@ -80,9 +82,9 @@ func TestEveryMomentAReadCanArriveInRoutesBothReaders(t *testing.T) {
 		}
 	})
 
-	// Three states × two readers × the tail's two, and the stall over all of
-	// them: a drain nobody could read the outcome of is a fact about the tail
-	// and not about who holds the shard.
+	// Three states × two readers × the tail's two, and the stall beside them:
+	// a drain nobody could read the outcome of is a fact about the tail and not
+	// about who holds the shard.
 	t.Run("the cycle answers for itself", func(t *testing.T) {
 		const at = wal.Seqno(2) // the drain a stalled tail is stalled at
 
@@ -117,8 +119,10 @@ func TestEveryMomentAReadCanArriveInRoutesBothReaders(t *testing.T) {
 			{"lost, task read, empty tail", StateHaltedLost, true, 0, taskRead, refuseAsLost},
 			{"lost, task read, held tail", StateHaltedLost, false, 0, taskRead, refuseAsLost},
 
-			// Halted-invariant: the shard has not moved on, so the tail rule is
-			// the whole rule and both readers get the same answer.
+			// Halted-invariant: the shard has not moved on, so the mutable-state
+			// read keeps the tail rule, while a task read is refused with the
+			// halt whatever the tail says — a page out of the cold store hands
+			// back that store's own token.
 			{"invariant, mutable-state read, empty tail", StateHaltedInvariant, true, 0, mutableStateRead, passThrough},
 			{"invariant, mutable-state read, held tail", StateHaltedInvariant, false, 0, mutableStateRead, refuseAsHalt},
 			{"invariant, task read, empty tail", StateHaltedInvariant, true, 0, taskRead, refuseAsHalt},
@@ -393,9 +397,10 @@ func TestOnlyAFenceBecomesShardOwnershipLost(t *testing.T) {
 // The drain's attribution.
 // ---------------------------------------------------------------------------
 
-// drainCauses is every declared cause, with what the attribution rule makes of
-// it at a window of one. Written once, so a tenth cause is given a reading by
-// both tests below rather than by whichever one somebody remembered.
+// drainCauses is nine of the ten declared causes — drainStoragePressure is not
+// among them — with what the attribution rule makes of each at a window of one.
+// Written once, so a cause added here is given a reading by both tests below
+// rather than by whichever one somebody remembered.
 var drainCauses = []struct {
 	name  string
 	cause drainCause
@@ -513,7 +518,7 @@ func TestTheSettlementOfEveryClass(t *testing.T) {
 	// it reads them through [attribute] — so the rows here are that rule's,
 	// mapped onto what the drain then does.
 	t.Run("ClassInvariantViolated", func(t *testing.T) {
-		// Three points and no loop over the nine causes: a loop here would have
+		// Three points and no loop over the causes: a loop here would have
 		// to build its expectation by calling [attribute], which is what this
 		// arm calls, so it would restate the implementation and move with it.
 		// The rule itself is held across every cause and window by [attribute]'s

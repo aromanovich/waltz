@@ -7,14 +7,17 @@ paths:
 
 The root package (`waltz`) is what a running server composes the layer out of:
 the `wal` section of the custom datastore's options, the policy the server's
-dynamic config carries, the backends the layer runs over, the registry a tail is
-decoded with, and the door out to `temporal.WithCustomDataStoreFactory`. It is
+dynamic config carries, the backends the layer runs over, the task-category
+registry a tail is decoded with, and the door out to `temporal.WithCustomDataStoreFactory`. It is
 the front door: what a caller names to compose, beside the log, the cold store
 and the policy it hands `Compose`. What to know before changing any of it:
 
 * **`Compose` is the one composition, and there may not be a second.** Everything
-  that runs intercept mode calls it. So do not add a `cycle.NewManager` call
-  anywhere else — what a new caller needs is a *parameter*, and the ones that
+  that runs intercept mode calls it. So do not compose intercept mode out of a
+  `cycle.NewManager` call anywhere else — the suites under `internal/verify/`
+  that build a manager drive the cycle below the wrapper, with no
+  `wrapper.Options` over it, and are not a second composition. What a new
+  caller of intercept mode needs is a *parameter*, and the ones that
   exist (backends, policy, categories, logger, handler) are exactly what callers
   vary. **The policy stays a parameter**: a run that varies the window varies it
   and nothing else. It is a `cycle.Policy` — a source read at each decision — so
@@ -26,8 +29,8 @@ and the policy it hands `Compose`. What to know before changing any of it:
   with, so a caller that wants to read the layer's numbers hands its handler to
   the factory rather than to `Compose`;
 * **the collaborators are a parameter too, and that is what makes the rule above
-  keepable.** `Backends` — the log, the writer and the recoverer — is handed to
-  `Compose`, which builds none of the three. That is unchanged by there being a
+  keepable.** `Backends` — the log and the cold store — is handed to `Compose`,
+  which builds neither. That is unchanged by there being a
   shipped implementation of each (`wal/memwal`, `cold/memcold`): a composition
   reaching for one itself would be a second configuration of the store, with
   nothing to reconcile it against the one the server was handed, and the caller
@@ -37,9 +40,10 @@ and the policy it hands `Compose`. What to know before changing any of it:
   so a drain's outcome can be varied without a cluster, and no composition could
   reach either. So a second `cycle.NewManager` grew in the tests, twice.
   `Compose` opens nothing, reaches nothing and takes no context, so a
-  composition is two lines and needs no store at all
-  (`TestTheCompositionIsReachableWithoutAColdStore`). Whatever the backends hold
-  stays the caller's and must outlive the layer, since `Shutdown` drains through
+  composition is two lines and needs no cluster
+  (`TestTheCompositionIsReachableWithoutAColdStore`); whatever talks to storage
+  happened while the caller built the backends. Whatever they hold stays the
+  caller's and must outlive the layer, since `Shutdown` drains through
   it;
 * **what a composed `Layer` hands back is narrow reads, not the registry.**
   `Totals()` and `ShardStats(id)` are what callers outside this package actually
@@ -130,11 +134,13 @@ and the policy it hands `Compose`. What to know before changing any of it:
   renamed, re-homed or given a different default is edited there in the same
   commit**, and nothing will tell you if it is not. Its "when it is read" column
   is the `live` field of a row, which is why that field exists;
-* **the budget refusal happens before anything is opened**, and that ordering is
-  the claim: `hardMaxBytes × maxShards ≤ tailBudgetBytes` is
-  `cycle.NewManager`'s, reached through `Compose`, which opens nothing and takes
-  no context. So an operator whose numbers do not fit is told so by a process
-  that never connected, rather than after a connection attempt;
+* **the budget refusal happens before the layer starts, not before the backends
+  connect**: `hardMaxBytes × maxShards ≤ tailBudgetBytes` is
+  `cycle.Config.CheckBudget`, asserted first thing in `cycle.NewManager`, reached
+  through `Compose` — which opens nothing itself, but is handed backends the
+  caller has already opened. So a process refuses to start over numbers that do
+  not fit; one that wants that refusal with nothing connected runs
+  `policy().CheckBudget()` before it builds the backends;
 * **`WAL.StaticConfig()` is the section's half and `NewPolicy(dc, w)` is the
   whole.** The first returns `cycle.Defaults()` with the two mode flags overlaid,
   so it is what an assertion about a *section* compares against; every number in
@@ -145,7 +151,7 @@ and the policy it hands `Compose`. What to know before changing any of it:
   stop leaves a tail — which the next owner replays. Do not "fix" the default to
   sync: a default that quietly picked the degenerate window would make "the
   server works" mean less than it says;
-* **the registry the layer decodes a tail with comes from here** and is the
+* **the task-category registry the layer decodes a tail with comes from here** and is the
   server's own (`TaskCategories`), built by the caller because the layer is
   composed before the fx graph that would otherwise provide it. It is two calls
   into upstream on purpose: a copy of the archival rule would be a second place
@@ -182,4 +188,7 @@ and the policy it hands `Compose`. What to know before changing any of it:
   what its shard holds leaves the tail at its floor, which reads as zero exactly
   like a shard that is clean, so `Cycle.residue` reports a non-nil cause as a
   residue whatever the count says.
-  `TestAShutdownSeesATailNoRequestEverMadeItLookAt` is red without either.
+  `TestAShutdownSeesATailNoRequestEverMadeItLookAt` is red without either. A
+  cycle that halted inside its replay has not started either, and the start
+  floors the tail its halt was holding — the first Open entry in
+  `DURABILITY.md`, where the residue's zero is that floor and not a clean shard.

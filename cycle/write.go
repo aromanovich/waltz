@@ -1,12 +1,11 @@
 package cycle
 
-// The boundary the ExecutionStore wrapper writes through: one method, and the
-// translation of what a cycle answers into what the history service's write
-// path understands. It is here because the wrapper may not import cycle.
+// The ExecutionStore wrapper's write entry point, and the translation of a
+// cycle's answer into errors the history service understands.
 //
-// Nothing here wraps: ContextImpl.handleWriteErrorLocked type-switches on
-// concrete types with no errors.As, so an unrecognised value becomes an unknown
-// outcome and a background re-acquire.
+// Nothing here wraps errors: ContextImpl.handleWriteErrorLocked type-switches
+// on concrete types, so a wrapped one becomes an unknown outcome and a
+// background re-acquire.
 
 import (
 	"context"
@@ -23,15 +22,13 @@ import (
 // drain carrying it did. base carries the cold-store reads the condition
 // authority needs for assertions the window does not determine ([baserow.Rows]).
 //
-// epoch is the rangeID the caller wrote under, checked here as the plugin's own
-// write would have conditioned its transaction on it (I11): without it a shard
-// context already fenced out has its write re-stamped with this node's epoch and
-// accepted. Zero means no rangeID, as on the deletes, which the drain's epoch
-// CAS fences instead.
+// epoch is the caller's rangeID, checked as the plugin's own write would
+// (I11); otherwise a fenced-out shard context's write would be accepted under
+// this node's epoch. Zero means none (deletes, range-complete); the drain's
+// epoch CAS fences those.
 //
-// A shard this node holds no cycle for is answered with ShardOwnershipLost.
-// Falling through to the store below would be a write around the log, and the
-// next drain would assert a base version that write already moved.
+// With no cycle for the shard the answer is ShardOwnershipLost: writing to the
+// store directly would bypass the log and break the next drain's assertions.
 func (m *Manager) Write(
 	ctx context.Context,
 	mut mutation.Mutation,
@@ -46,8 +43,8 @@ func (m *Manager) Write(
 	if epoch != 0 && epoch != c.Epoch() {
 		return lost(shard, fmt.Sprintf("the write carries epoch %d, this node's cycle holds %d", epoch, c.Epoch()))
 	}
-	// Two statements, because the state is read after the write: the halt
-	// [storeError] translates is usually the one this write discovered.
+	// State is read after the write: the halt [storeError] translates is
+	// usually one this write caused.
 	err := c.write(ctx, mut, base)
 	return storeError(c.State(), shard, err)
 }

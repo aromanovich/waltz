@@ -423,9 +423,9 @@ func TestClearBufferedEventsDropsEarlierBatches(t *testing.T) {
 }
 
 // TestAClearFoldingIntoASnapshotHasNoSlotToMark is the other arm of the same
-// rule, and the one nothing drove: where the run's window state is a *snapshot*,
-// the clear has no merged mutation to set the flag on — the snapshot's own write
-// replaces the run's rows wholesale, so there is nothing for a flag to ask for.
+// rule: where the run's window state is a *snapshot*, the clear has no merged
+// mutation to set the flag on — the snapshot's own write replaces the run's rows
+// wholesale, so there is nothing for a flag to ask for.
 // Without the nil check that absence is a dereference, and a panic in Add is on
 // the shard's own goroutine.
 func TestAClearFoldingIntoASnapshotHasNoSlotToMark(t *testing.T) {
@@ -445,7 +445,7 @@ func TestAClearFoldingIntoASnapshotHasNoSlotToMark(t *testing.T) {
 }
 
 // TestTombstone: a deletion collapses the run's pending state into the
-// Delete; the collapsed mutations' tasks survive as orphans (I7).
+// Delete; the collapsed mutations' tasks survive as orphans (I8).
 func TestTombstone(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,
@@ -465,28 +465,17 @@ func TestTombstone(t *testing.T) {
 	require.Len(t, out, 1, "the update collapsed into the tombstone")
 	require.Equal(t, mutation.KindDelete, out[0].Request.Kind())
 	require.Equal(t, []string{"t-upd"}, taskNames(out[0].OrphanedTasks()),
-		"a task is in the WAL tail or in the store (I7): the fold may not lose it")
+		"a task is in the WAL tail or in the store (I8): the fold may not lose it")
 	require.Equal(t, fold.RunAssertion{BaseVersion: 1}, out[0].RunAssertions()[runX])
 	require.Equal(t, 3, stats.MutationsIn, "the failed add does not count; the idempotent delete does")
 }
 
-// TestEveryKindIsRefusedAfterATombstone: four sites raise ErrAfterTombstone and
-// one of them was driven. The other three are not decoration — a run's state after
-// a delete has no owner, so a handler that folds onto it dereferences nil: the
-// refusal is what stands between an impossible stream and a panic on the shard's
-// own goroutine, which takes the process with it.
-//
-// Impossible is the right word and is exactly why the refusal exists rather than
-// a guess: the single writer would have seen its assertion fail. But [Add] is also
-// where a replay arrives, with no [Accumulator.Check] in front of it, so what
-// reaches it is what some previous owner acked rather than what this one validated.
 // TestAConflictResolvesCurrentMutationNeedsAWindowStateItCanMergeWith drives the
 // refusal beside the tombstone ones, and it is a different rule: the run is live,
 // and what the fold cannot do is merge this request's mutation of it with the state
-// the window already holds. Nothing drove it either, and without it the merge runs
-// on a state it cannot express — a nil dereference where the window holds a
-// snapshot, and a request carrying somebody else's envelope where it holds an
-// update that continued-as-new.
+// the window already holds. Without the refusal the merge runs on a state it cannot
+// express — a nil dereference where the window holds a snapshot, and a request
+// carrying somebody else's envelope where it holds an update that continued-as-new.
 //
 // ErrRefused rather than ErrInvalidStream, because the stream is legal and it is
 // this accumulator that cannot express it: the drain empties the window and the
@@ -550,6 +539,16 @@ func TestASnapshotOverAContinuedAsNewPairIsRefused(t *testing.T) {
 	require.Contains(t, out[0].RunAssertions(), runY)
 }
 
+// TestEveryKindIsRefusedAfterATombstone: four sites raise ErrAfterTombstone. A
+// run's state after a delete has no owner, so a handler that folds onto it
+// dereferences nil: the refusal is what stands between an impossible stream and a
+// panic on the shard's own goroutine, which takes the process with it.
+//
+// Impossible is the right word and is exactly why the refusal exists rather than
+// a guess: the single writer would have seen its assertion fail. But
+// [fold.Accumulator.Add] is also where a replay arrives, with no
+// [fold.Accumulator.Check] in front of it, so what reaches it is what some previous
+// owner acked rather than what this one validated.
 func TestEveryKindIsRefusedAfterATombstone(t *testing.T) {
 	// A conflict-resolve's current mutation must land on a run whose window state
 	// is an update it can merge with, so that arm needs two runs: one tombstoned
@@ -593,8 +592,6 @@ func TestEveryKindIsRefusedAfterATombstone(t *testing.T) {
 // against a row the first request's own delete has already removed inside the
 // same transaction: a head at v1 holds at the delete and reports *must exist* at
 // the create, which halts the shard over a window this package admits by design.
-// That it read the other way round for a while is why the claim now names which
-// request carries it.
 func TestCreateBehindTombstone(t *testing.T) {
 	a := fold.New(shard)
 	add(t, a,
@@ -745,11 +742,6 @@ func TestAddValidation(t *testing.T) {
 // the entries are not a stream any owner wrote — and folding it anyway is how a
 // corrupt log becomes a corrupt *store*: two pending requests for one run, or a
 // tombstoned run's state written back under it.
-//
-// Refusing is the whole mechanism and none of it was driven: each of these guard
-// clauses could be deleted with the entire tree green, because every existing case
-// drives streams that are valid. They are cheap to state and the shapes are exactly
-// the ones nobody will think to write by hand later.
 func TestAStreamNoSingleWriterCouldHaveProducedIsRefused(t *testing.T) {
 	const runZ = "run-z"
 	continueInto := func(run string) mutation.Mutation {

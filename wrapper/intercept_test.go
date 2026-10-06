@@ -204,7 +204,7 @@ func TestInterceptModeTakesTheTwelveAndOnlyTheTwelve(t *testing.T) {
 				require.Empty(t, layer.reads, "%s is not a read", method.Name)
 
 			case answered[method.Name]:
-				// The three. No expectation is set on the base and this layer
+				// The four. No expectation is set on the base and this layer
 				// does not call the thunk, so a cold-store read fails the
 				// controller: the wrapper reads nothing on its own account.
 				got := reflect.ValueOf(store).MethodByName(method.Name).Call(args)
@@ -227,7 +227,7 @@ func TestInterceptModeTakesTheTwelveAndOnlyTheTwelve(t *testing.T) {
 				assertOnlyTheLayersError(t, got, layer.err, method.Name)
 
 			default:
-				// The other 16 must reach the same base method they reach in
+				// The other 15 must reach the same base method they reach in
 				// passthrough and nothing else; gomock fails any other call.
 				want := returnValues(t, ctrl, method.Name, method.Type)
 				expectOnce(t, base, method.Name, args, want)
@@ -239,7 +239,7 @@ func TestInterceptModeTakesTheTwelveAndOnlyTheTwelve(t *testing.T) {
 				require.Empty(t, layer.got,
 					"%s must not reach the WAL: the record format has eight shapes and this is not one", method.Name)
 				require.Empty(t, layer.reads,
-					"%s must not reach the layer's read path: the covered set is three reads", method.Name)
+					"%s must not reach the layer's read path: the covered set is four reads", method.Name)
 			}
 		})
 	}
@@ -448,13 +448,13 @@ func TestTheEpochTravelsWithTheWrite(t *testing.T) {
 	require.Equal(t, []wal.Epoch{11, 12, 13, 14, 0, 0}, writes.epochs)
 }
 
-// TestTheEventsGoDownBeforeTheMutation: event history stays out of the WAL in
-// v1 (decision D3), so a write's event blobs go to the cold store through
-// AppendHistoryNodes before the mutation is acked. Otherwise the log holds a
-// mutable state pointing at history nodes nobody wrote — an entry that is
-// durable and correct, which is why no functional suite sees it. Every
-// intercepted kind is driven, so a request shape whose events go nowhere fails
-// by name; which slots each shape has is
+// TestTheEventsGoDownBeforeTheMutation: over a store that does not declare
+// cold.HistoryApplier the record carries no event batches, so a write's event
+// blobs go to the cold store through AppendHistoryNodes before the mutation is
+// acked. Otherwise the log holds a mutable state pointing at history rows
+// nobody wrote — an entry that is durable and correct, which is why no
+// functional suite sees it. Every intercepted kind is driven, so a request
+// shape whose events go nowhere fails by name; which slots each shape has is
 // [mutation.Mutation.EventSlots]' own suite.
 func TestTheEventsGoDownBeforeTheMutation(t *testing.T) {
 	ctx := context.Background()
@@ -572,7 +572,7 @@ func TestTheEventsGoDownBeforeTheMutation(t *testing.T) {
 // InternalAppendHistoryNodesRequest per WorkflowEvents it was handed, so a
 // transaction writing several batches to one run is an ordinary shape. Stopping
 // after the first leaves every batch behind it unwritten and the mutation acked
-// anyway — a mutable state pointing at history nodes nobody wrote, which is the
+// anyway — a mutable state pointing at history rows nobody wrote, which is the
 // failure the table above exists for, one dimension over.
 func TestEverySlotsEventsGoDownAndNotJustItsFirst(t *testing.T) {
 	ctx := context.Background()
@@ -681,11 +681,12 @@ func events(id string) *p.InternalAppendHistoryNodesRequest {
 	}
 }
 
-// The two branches at the store, which is the whole of what this store
-// does with it. False is the shipped one: the batches go down through the base
-// store and come off the mutation, so the record the layer appends carries none
-// and the drain writes them nowhere. True skips both, and the batches reach the
-// layer still on the request — where the append is what makes them durable.
+// The two branches [ShardWriter.WritesHistory] takes at the store, which is the
+// whole of what this store does with it. False is a store that does not declare
+// cold.HistoryApplier: the batches go down through the base store and come off
+// the mutation, so the record the layer appends carries none and the drain
+// writes them nowhere. True skips both, and the batches reach the layer still
+// on the request — where the append is what makes them durable.
 func TestTheStoreWritesTheEventsItselfOnlyWhereTheRecordWillNotCarryThem(t *testing.T) {
 	for _, writes := range []bool{false, true} {
 		t.Run(map[bool]string{false: "record carries none", true: "record carries them"}[writes], func(t *testing.T) {

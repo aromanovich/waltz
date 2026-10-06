@@ -15,11 +15,12 @@ by `internal/verify/mutbuild`. What to know before changing any of it:
 * **a suite that wants a corpus asks for one**: `mutgen.Corpus(cfg, n)` returns
   the mutations, their payloads and the report, and `Report.Missing()` is the
   coverage claim — a block several suites each maintained by hand. It is
-  config-aware, so a stream with the task rates off is not missing
-  history tasks, and it is judged in `mutgen`'s own tests rather than
+  config-aware, so a stream with a knob off is not missing the shape that knob
+  produces (a stream at `TaskDensity` 0 is not missing history tasks), and it
+  is judged in `mutgen`'s own tests rather than
   by suites agreeing with each other. A run of 10^5 and up still
-  drives `Generator.Next` itself: materialising that stream is gigabytes of
-  payload, and a consumer folding as it goes keeps none of it;
+  drives `Generator.Next` itself: materialising that stream holds every request
+  and payload at once, and a consumer folding as it goes keeps none of it;
 * the collapse ratio is meaningless without the knob it was measured at. A
   stream at `WorkflowReuse` 0 reports ratio 1.00, and so would a fold that
   collapsed nothing — `mutgen.Report` prints the two together and
@@ -54,9 +55,11 @@ by `internal/verify/mutbuild`. What to know before changing any of it:
   resumable, since a second generator on one seed re-emits creates the store
   already holds. **A caller that models the store's *client* rather than its
   contents keeps its own generator**, deliberately: the request it makes is the
-  generated one and not what a replay would produce. That is the one exception
-  and it is a decision about what such a run's calls mean, not an unconverted
-  call site;
+  generated one and not what a replay would produce. So does a fold test that
+  stands where the hot path does (`fold/check_corpus_test.go`,
+  `fold/taskpage_corpus_test.go`, `fold/refusal_test.go`), since the hot path
+  folds the caller's request too. Each is a decision about what such a run's
+  calls mean, not an unconverted call site;
 * determinism is load-bearing and easy to lose. The seed is the only source of
   randomness, timestamps come off a fixed base, and **no protobuf map field may
   be populated** in anything the generator builds: the serializer's output for a

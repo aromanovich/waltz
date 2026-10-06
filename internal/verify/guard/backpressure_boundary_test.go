@@ -148,10 +148,10 @@ func TestTheRefusalSurvivesTheWholeInterceptPath(t *testing.T) {
 	require.False(t, p.OperationPossiblySucceeded(err),
 		"a refused write must be one the shard knows did not happen")
 
-	// The base store above answers the condition authority's two reads and
-	// fails every other call, which is the point: apart from that residual read
-	// an intercepted write must not reach the store below, so a wrapper that
-	// fell through fails by name rather than passing.
+	// The base store below the wrapper answers the condition authority's two
+	// reads and fails every other call, which is the point: apart from that
+	// residual read an intercepted write must not reach the store below, so a
+	// wrapper that fell through fails by name rather than passing.
 }
 
 // unreachableStore is the base store this test's writes must not reach, in the
@@ -265,7 +265,7 @@ func tripATail(t *testing.T) error {
 // noDrain is the cycle's two collaborators in the smallest shape that gets a
 // tail full: no drain ever runs, and the shard has never had a watermark.
 func noDrain() *coldtest.Cold {
-	return coldtest.Refusing(errors.New("no drain should have run: the window watermark is out of reach"))
+	return coldtest.Refusing(errors.New("no drain should have run: the window's size trigger is out of reach"))
 }
 
 // aMutation is a brand-new workflow, built through mutbuild because the encoder

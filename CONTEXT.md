@@ -18,8 +18,9 @@ _Avoid_: operation, write, update (ambiguous about granularity)
 The two mutations that are about a queue rather than about a workflow:
 AddHistoryTasks and RangeCompleteHistoryTasks. They name no run, assert nothing,
 and are the reason the word "mutation" no longer implies "mutable state". Both
-travel through the log, and that is one decision rather than two: a road each
-would put the delete's effect at a different moment than the writes it covers.
+travel through the log, and that is one decision rather than two: routing the
+two differently would put the delete's effect at a different moment than the
+writes it covers.
 A delete that transits runs before the drain writes the rows it was meant to
 cover and leaves them behind; a delete deferred alone covers a timer created
 after the caller's checkpoint, the store's range delete being by fire-time
@@ -89,19 +90,25 @@ ascending, deduplicated, inside the requested range and no longer than the
 caller's batch size, with the window's undrained deletion ranges subtracted from
 the cold store's half of it. The dedup is a safety net rather than the
 mechanism: the two sources are disjoint by construction, and what makes the page
-honest is the order they are emitted in.
+honest is where it may cut — at the end of a base page or below its first row,
+never inside one, since the base's token is the plugin's own bytes. A
+history-branch page is merged the same way, under the same cut rule, with
+nothing to subtract (`fold.Accumulator.HistoryPage`).
 _Avoid_: overlay for tasks (the overlay renders one run's state; this
 concatenates two sources and paginates)
 
 **Apply**:
-The cycle that writes folded summary updates into the cold store in one
-transaction with the appliedSeqno bump and an epoch CAS.
+The step that writes folded summary updates into the cold store in one
+transaction with the appliedSeqno bump and an epoch CAS, with whatever event
+history the batch carries durable no later than that transaction.
 
 **Drain**:
-One pass of that cycle: fold a window, write it in a single transaction, move
-appliedSeqno. A drain is all-or-nothing — a rejected one leaves the cold store
-exactly as a drain that never ran would, so appliedSeqno is the only witness to
-whether it happened.
+One pass of the apply cycle: fold a window, write it in a single transaction,
+move appliedSeqno — or, for a window that folded to no database work, settle its
+entries in memory with no transaction and no move. A transactional drain is
+all-or-nothing over everything it publishes — event history excepted, which a
+store may make durable before the transaction opens — so appliedSeqno is the
+only witness to whether it committed.
 
 **Base version**:
 The `DBRecordVersion` of a run's row in the cold store as of the last
@@ -127,16 +134,16 @@ The highest seqno a partial re-drain may acknowledge after a condition failure:
 one below the lowest entry answering for any diverged row. Nothing re-drains
 partially, so `apply.InvariantViolationError.CutSeqno` is forensic — and a zero
 there is not a position but "acknowledge nothing", covering three cases at once:
-no divergence was found, the window's first entry diverged, and the readback
-failed with rows unread. Applying anything above a cut point would leave entries
-applied above any watermark the drain could set.
+no divergence was found, the log's first entry (`wal.FirstSeqno`) diverged,
+and the readback failed with rows unread. Applying anything above a cut point
+would leave entries applied above any watermark the drain could set.
 
 **Replay**:
 What a new owner does with the tail it inherits: read
 `(appliedSeqno, commitSeqno]`, fold it into a fresh accumulator, drain. It runs
 on the shard's first request rather than inside the acquire, and that request is
-served behind it — so "readiness" is that placement rather than a gate — and it
-is triggered by a read as much as by a write.
+served behind it — that placement is the readiness gate, and there is no flag
+to check — and it is triggered by a read as much as by a write.
 _Avoid_: recovery (the layer's other recovery is one drain whose outcome was
 lost, and the rule they share is the interesting part: read the watermark
 first, never re-derive from base versions)
@@ -144,13 +151,14 @@ first, never re-derive from base versions)
 **Condition authority (авторитет условия)**:
 The rule that every assertion a mutation carries is verified **before** the ack —
 the append is the ack and the ack is the answer, so a check after it has neither
-an addressee nor an undo — and the set that rule is about: exactly the
-assertions the fold discards. Recorded assertions travel with the drain's
-transaction and stay claims about the pre-window row; discarded ones stand on
-the window's own state. The two partition, so nothing is checked twice and a new
+an addressee nor an undo. The accumulator answers exactly the assertions the
+fold discards, which stand on the window's own state; recorded ones stay claims
+about the pre-window row, read from the cold store before the append (outside
+sync mode) and asserted again in the drain's transaction. The two partition —
+no assertion is evaluated against both the window and the base row — so a new
 request shape needs no check of its own once its assertions are derived. The
-predicate is read-only on the accumulator, and an assertion the window does not
-determine is **refused** rather than admitted.
+predicate is read-only on the accumulator, and a discarded assertion the window
+does not determine is **refused** rather than admitted.
 _Avoid_: validation, precondition check (both suggest something the store would
 repeat; this one is what answers instead of the store)
 
@@ -192,7 +200,7 @@ matches concrete types and anything it does not recognise becomes a background
 re-acquire; never raised on a read as a size bound, though the unresolved
 refusal is raised there too, and never on the ShardStore path, since refusing a
 rangeID renewal would turn degradation into a lost shard. Degradation, not loss.
-_Avoid_: throttling, rate limit (both name a pace; this is a bound on memory)
+_Avoid_: throttling, rate limit (both name a pace; this is a bound on the tail)
 
 **Epoch**:
 The shard-ownership token carried by every WAL append and checked by apply.
@@ -238,13 +246,16 @@ configurations of one cycle, not two write paths.
 _Avoid_: synchronous/asynchronous (a windowed mode's ack is not asynchronous —
 it is given at the append)
 
-**Node (композиция)**:
+**Composition (композиция)**:
 What a running server composes the layer out of: the `wal` section of the
 custom datastore's options — the mode — plus the nine policy
 settings the server's dynamic config carries, the backends they run over and
-the registry a tail is decoded with. A composition, not a cluster member —
-the server is the node, this is what it builds. It is the root package,
-`waltz`, and `waltz.Layer` is what a composition hands back.
+the task-category registry a tail is decoded with. A composition, not a cluster
+member — the server is the node, this is what it builds. It is the root package,
+`waltz`: `waltz.Compose` is the call, and `waltz.Layer` is what it hands back.
+_Avoid_: node where the difference matters (the node is the history process
+that builds this; "the node's budget" and "the node's config" are this
+composition's)
 
 **Checker (проверяльщик)**:
 The record a driver writes of the calls it made and what it was told: two
@@ -268,14 +279,6 @@ the metric emissions optional), so an instrument a run does not have skips
 exactly the claims that read it and weakens none of the rest.
 _Avoid_: smoke check, sanity assert (both name something weaker than the suite;
 this is the stronger claim)
-
-**Ownership generation (поколение владения)**:
-The unit such a run's length is measured in: one node's life on one shard — a
-kill, a successor, and the tail replayed between them. Wall clock is not a unit
-here and drains are the layer's own decision, so a schedule stated in either
-would be a function of the thing under test. The evidence a run produces is
-linear in generations and in nothing else.
-_Avoid_: round, iteration (neither names the kill that makes it evidence)
 
 **Cold store (холодное хранилище)**:
 Whatever the caller plugs in behind `cold.Store` — an applier and a watermarker,
@@ -343,7 +346,7 @@ Names that are taken, and by what:
 |---|---|---|
 | **Drain** | one pass of the apply cycle (above) | stopping a layer or a node — that is `Shutdown`, which drains *and* closes |
 | **Watermark** | appliedSeqno (above) | the age/size drain triggers, which are triggers |
-| **Registry** | `cycle.Manager`, the shards this node holds | `waltz.Registry`, which is task categories |
+| **Registry** | `cycle.Manager`, the shards this node holds | `waltz.Registry`, which is task categories and is written qualified: the task-category registry |
 | **Held** | a read: the window has something to say about this row | carrying a head assertion, which is `asserts*` |
 | **Policy** | `cycle.Policy`, a source of `Config` read at the decision | `WAL.StaticConfig()`, which is a `Config` value |
 | **Take** | `Window.Take`, which *empties* the window | building a read's view, which is `takeView` |

@@ -3,7 +3,8 @@ package mutation
 // The kind guard holds the table in kinds.go and the code to each other: a
 // field of [Mutation] with no row, or a row whose accessors read the
 // neighbouring field, fails here rather than in a drain months later. It says
-// nothing about behaviour, which fold, check and apply guard themselves.
+// nothing about behaviour, which fold and the cold store's applier guard
+// themselves.
 
 import (
 	"reflect"

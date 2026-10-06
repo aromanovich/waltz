@@ -5,9 +5,11 @@ paths:
 
 # This repo: the cold store seam and the store that ships at it
 
-`cold/` is the contract a drain lands on — `Applier`, `Watermarker`, and the four
-things an implementation owes — and `cold/memcold/` is the one implementation
-here. The four obligations are on the package doc and the handbook's
+`cold/` is the contract a drain lands on — `Store`, `Applier`, `Watermarker`, the
+`HistoryApplier` a store declares when it writes a batch's event history itself,
+and the four things an implementation owes, with the fifth that it bound its own
+calls — and `cold/memcold/` is the one implementation here. The obligations are
+on the package doc and the handbook's
 [04-contracts.md](../../docs/handbook/04-contracts.md) is their long form.
 
 What to know before changing any of it:
@@ -19,8 +21,9 @@ What to know before changing any of it:
   already answers**, and do not "fix" an inherited one — a divergence from
   upstream is a store that Temporal's suites judge and this repository's
   opinion overrules. What may be added beside them is what Temporal has no
-  method for, which today is three things: the folded window's transaction, the
-  watermark, and the current row's `last_write_version`;
+  method for, which today is three things: the folded window's transaction —
+  which, since the store declares `cold.HistoryApplier`, writes the batch's
+  event history too — the watermark, and the current row's `last_write_version`;
 * **what judges it is Temporal's four exported suites**
   (`conformance_test.go`), and a suite of ours at this seam would be this
   repository's opinion of what a store owes. `Apply` is the exception, because
@@ -33,10 +36,12 @@ What to know before changing any of it:
   reason the store holds a handle at all, and the transferable half of the
   design: an implementer whose driver offers nothing below the per-workflow
   interface cannot satisfy the contract by trying harder inside it;
-* **the seven collections are named in two literals, and both are held to the
-  type.** `applyMutation` names them off a delta and `applySnapshotCollections`
-  off whole state, and a collection missing from either is rows the drain
-  *acknowledged* and never wrote — with the watermark committed beside them, so
+* **the seven collections are named in four literals, and all four are held
+  to the type.** `applyMutation` names their upserts and their deletes off a
+  delta, `applySnapshotCollections` names them off whole state and
+  `clearCollections` empties them before whole state is written, and a
+  collection missing from any of them is a write the drain
+  *acknowledged* and never made — with the watermark committed beside them, so
   the log is trimmed past them. It is the only failure on this path with nothing
   behind it: a drain that refuses, fails or dies leaves its entries in the log
   for the next owner, and this one does not. Nothing above caught it — the four
@@ -52,14 +57,23 @@ What to know before changing any of it:
   second list for the snapshot arm or for the read-back, both of which reach the
   same collection by taking the `Upsert` prefix off. It is held to the type in
   both directions: an `Upsert*` with no entry, and an entry for a collection a
-  delta no longer has, each fail by name;
+  delta no longer has, each fail by name. The deletes literal has the same
+  guard in `TestEveryCollectionsDeletesReachTheDatabase`: a dropped delete is a
+  row the acked write removed and the store still holds. The clears have
+  theirs in `TestASnapshotClearsWhatTheRunHeldBefore`: a dropped clear is a row
+  from before a snapshot surviving a write that does not carry it. A buffered
+  batch is the eighth thing
+  with the same failure and no literal names it: batches never merge, so
+  they travel on neither a delta nor a snapshot, and the applier's own loop
+  over them is what `TestEveryBufferedBatchReachesTheDatabase` holds;
 
-* **two orderings in `Apply` are the contract and not transcription** — the
+* **three orderings in `Apply` are the contract and not transcription** — the
   epoch CAS first, so a lost shard is reported as one rather than as the version
-  failure underneath it; and the task range deletes before any task row the
-  drain writes, because fold deliberately keeps a task that arrived after a
-  range and a delete running later would take it away. SQL executes in issue
-  order; an engine that reorders by table has to reproduce both some other way;
+  failure underneath it; the event history no later than the mutable state that
+  names it; and the task range deletes before any task row the drain writes,
+  because fold deliberately keeps a task that arrived after a range and a delete
+  running later would take it away. SQL executes in issue order; an engine that
+  reorders by table has to reproduce all three some other way;
 * **the attribution readback runs after the rollback, never before.** The
   database is served by one connection, so a read taken while the drain's
   transaction still holds it waits for a transaction waiting for the read. The

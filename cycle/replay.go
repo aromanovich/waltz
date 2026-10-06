@@ -1,45 +1,27 @@
 package cycle
 
-// Replay: what a new owner does with a tail it did not write. A read loop from
-// the watermark's successor to the end of the log, into the accumulator, and
-// four decisions:
+// Replay applies the tail a previous owner left: it reads from the watermark's
+// successor to the end of the log into the accumulator.
 //
-//   - it is [Cycle.start] grown a body, which makes it the readiness gate: a
-//     request arriving mid-replay parks in [ask] behind it. A read
-//     triggers it as much as a write does, or a read on an inherited tail is
-//     answered from a cold store the log is ahead of;
-//   - it ends in a drain, so the window is empty when the first caller is
-//     served. Left to the ordinary watermarks it would mix entries whose
-//     callers are gone with a fresh caller's write, where a condition failure
-//     is attributable to nobody and halts;
-//   - a provisional entry is carried alone and its condition failure is a drop
-//     (below);
-//   - an entry above this cycle's epoch means we are the zombie, since epochs
-//     are non-decreasing and a Fence cuts off every lower one. Halt lost,
-//     checked here rather than left to the apply transaction's epoch CAS,
-//     because the new owner's fence and its rangeID bump are not atomic and in
-//     between a zombie's CAS still succeeds.
+//   - It runs inside [Cycle.start], so it is the readiness gate: requests park
+//     in [ask] until it finishes. Reads trigger it too, or a read on an
+//     inherited tail would be answered from a cold store the log is ahead of.
+//   - It ends in a drain, so the first caller meets an empty window. Otherwise
+//     old entries would share a batch with a fresh write, and a condition
+//     failure there could be attributed to nobody.
+//   - An entry above this cycle's epoch means another owner fenced us: halt
+//     lost. This is checked here, not left to the apply transaction's epoch
+//     CAS, because a new owner's fence and rangeID bump are not atomic.
+//   - It has no bound: a tail over I10 must still be replayed, or the shard is
+//     unrecoverable. It does not re-run the condition authority (the callers
+//     are gone) nor rebuild windows below the watermark.
 //
-// # Why a provisional entry may be dropped
-//
-// An ack is normally the answer, which is what makes a condition failure at
-// apply a divergence. Sync mode acks before the condition is verified, since its
-// drain is what answers the caller, and such an entry stays in the log above the
-// watermark: replaying it naively fails its assertion again and halts a healthy
-// shard on its new owner. The two classes cannot be told apart after the fact,
-// so the writer marks them at the append (Payload.provisional, set in
-// [Cycle.add]); absent means verified.
-//
-// The drop is safe because a provisional entry replays to the outcome its own
-// drain would have produced: the fence makes this layer the shard's only writer
-// and replay applies the log in its own order, so the condition meets the state
-// it met before.
-//
-// Replay does not re-run the condition authority, whose callers are all gone,
-// and does not rebuild a window the previous owner drained, since an entry below
-// the watermark is a row the cold store holds. It does not bound itself either:
-// I10 bounds what a running cycle acks, and a tail that exceeds it must still be
-// replayed or the shard is unrecoverable.
+// Provisional entries: sync mode acks before the condition is verified, so its
+// entries are marked at the append (Payload.provisional, set in [Cycle.add]).
+// Each replays alone and a condition failure drops it rather than halting. That
+// is safe because the fence makes this layer the only writer and replay keeps
+// log order, so the condition meets the same state as the first time. Any
+// other entry's condition failure still halts.
 
 import (
 	"context"
@@ -53,25 +35,17 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// replay reads the tail the previous owner left and applies it. The floor has
-// already been read: s.next is the watermark's successor.
-//
-// A failure leaves the cycle unstarted and the window empty, so the next
-// request retries from the watermark. It does not halt — a log read that failed
-// is not an answer.
+// replay applies the tail; s.next is already the watermark's successor. A
+// failed log read does not halt: the cycle stays unstarted with an empty
+// window, and the next request retries from the watermark.
 func (c *Cycle) replay(ctx context.Context, s *state) error {
 	if c.deps.Registry == nil {
-		// A payload's task groups name their category by id, so a cycle with no
-		// registry could not decode a tail even if it found one. See
-		// [Deps.Registry].
+		// Task groups name their category by id; see [Deps.Registry].
 		return fmt.Errorf("%w (shard %d)", ErrNoRegistry, c.shard)
 	}
-	// One read of the policy for the whole replay, for the reason [Cycle.add]
-	// takes one per write: a tail cut into transactions under bounds that moved
-	// halfway through is a recovery no configuration describes.
+	// One policy read for the whole replay, so the bounds cannot change midway.
 	cfg := c.policy()
-	// A page is the window's own size, so at most one window's worth of encoded
-	// entries is resident beyond the accumulator.
+	// Pages are window-sized, bounding what is resident beside the accumulator.
 	page := max(cfg.Mutations, 1)
 	marks := cfg.watermarks()
 	for e, err := range wal.Entries(ctx, c.deps.Log, c.shard, s.next, page) {
@@ -82,21 +56,16 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 			return err
 		}
 	}
-	// The loop above ends on a page shorter than the one it asked for, which the
-	// contract says is the end of the log. A backend whose real limit is a
-	// response size answers short for the size instead, and taking that for the
-	// end brings the shard up serving reads and task pages that are missing
-	// everything above the cut — which their callers then ack past. So the end is
-	// confirmed rather than inferred, one entry, once per acquire. A conformance
-	// case can only probe one size; this holds whatever the budget is.
+	// The loop stops on a short page, which the contract calls the end of the
+	// log. A backend that caps response size also answers short, and trusting
+	// that would serve reads missing everything above the cut. So one more
+	// one-entry read confirms the end.
 	rest, err := c.deps.Log.ReadFrom(ctx, c.shard, s.next, 1)
 	if err != nil {
 		return fmt.Errorf("cycle: shard %d: confirming the tail ends below seqno %d: %w", c.shard, s.next, err)
 	}
 	if len(rest) > 0 {
-		// Which halt is the same question the loop asks of every entry it reaches,
-		// and it has to be asked here too: the successor that fenced this cycle
-		// away can append between the loop's last read and this one.
+		// A fencing successor may have appended since the loop's last read.
 		if fenced := c.fencedAway(rest[0]); fenced != nil {
 			c.halt(s, StateHaltedLost, fenced)
 			return c.halted(s)
@@ -108,13 +77,8 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 	}
 
 	if s.counted().Replayed == 0 {
-		// A clean acquire: nothing above the watermark, so there is nothing to
-		// drain and nothing to say. Both halves matter and neither is arithmetic.
-		// The line below is what an operator reads as "this shard changed hands
-		// with writes in flight", and one printed on every acquire is one nobody
-		// reads; the drain below it would take an empty window, which settles
-		// nothing and reaches no store, so what it costs is the reading rather
-		// than the work.
+		// Clean acquire. Skip the log line, which tells an operator the shard
+		// changed hands with writes in flight and is worthless if printed always.
 		return nil
 	}
 	c.deps.Logger.Info("apply cycle: replaying the tail a previous owner left",
@@ -128,24 +92,16 @@ func (c *Cycle) replay(ctx context.Context, s *state) error {
 	return nil
 }
 
-// FencedAway is the cause carried where the fence is discovered rather than
-// returned: a replay finding the log already at a higher epoch, and a drain
-// whose watermark another owner has moved past ([Cycle.resolve]). The words are
-// load-bearing outside this package: at the store boundary every road to a
-// fence answers the same ShardOwnershipLost, so an instrument that has to tell
-// these roads from an append fence has only the cause to read. Match on this
-// constant rather than copying the string.
+// FencedAway is the halt cause when a fence is discovered rather than returned
+// by an append: replay finds a higher epoch in the log, or a drain finds the
+// watermark moved past by another owner ([Cycle.resolve]). Every fence reaches
+// the store boundary as the same ShardOwnershipLost, so callers telling these
+// apart read the cause; match on this constant, not a copy of the string.
 const FencedAway = "the shard has been fenced away"
 
-// fencedAway reports an entry written above this cycle's epoch, which means this
-// cycle is the zombie: epochs are non-decreasing along a log and a fence cuts off
-// every lower one, so somebody took the shard. Nil when the entry is one this
-// cycle may account for.
-//
-// Two sites ask it, and they must not answer it differently: what it decides is
-// halted-lost against halted-invariant, and reading a failover as a divergence
-// this process owns puts a shard that changed hands under an operator's nose as
-// a bug.
+// fencedAway returns an error if e was written above this cycle's epoch, which
+// means another owner fenced this cycle away; nil otherwise. Both callers must
+// use it so a failover is never mistaken for halted-invariant.
 func (c *Cycle) fencedAway(e wal.Entry) error {
 	if e.Epoch <= c.epoch {
 		return nil
@@ -154,8 +110,7 @@ func (c *Cycle) fencedAway(e wal.Entry) error {
 		e.Seqno, e.Epoch, c.epoch, FencedAway)
 }
 
-// replayEntry folds one entry of the tail, drains around it when it is
-// provisional, and lets the ordinary size watermarks cut the rest.
+// replayEntry folds one tail entry, draining around it if it is provisional.
 func (c *Cycle) replayEntry(
 	ctx context.Context, s *state, e wal.Entry, marks window.Watermarks,
 ) error {
@@ -164,8 +119,7 @@ func (c *Cycle) replayEntry(
 		return c.halted(s)
 	}
 	if e.Seqno != s.next {
-		// Guarantee 4 says seqnos are gap-free. If they are not, the log is not
-		// what this layer's invariants are written against.
+		// Log guarantee 4: seqnos are gap-free.
 		err := fmt.Errorf("the log skips from seqno %d to %d", s.next, e.Seqno)
 		c.strand(s, e, err)
 		return c.halted(s)
@@ -173,9 +127,7 @@ func (c *Cycle) replayEntry(
 
 	m, provisional, err := mutation.DecodeEntry(e.Payload, c.deps.Registry)
 	if err != nil {
-		// A newer codec, or a task category this node has no registration for.
-		// Both are fatal to the replay on purpose, and the entry is acked, so
-		// there is nothing to do but stop.
+		// A newer codec or an unregistered task category: fatal by design.
 		c.strand(s, e, fmt.Errorf("decoding seqno %d: %w", e.Seqno, err))
 		return c.halted(s)
 	}
@@ -185,9 +137,8 @@ func (c *Cycle) replayEntry(
 		return c.halted(s)
 	}
 
-	// A provisional entry may legitimately fail its condition, and a drain fails
-	// all-or-nothing, so it may share a batch with nothing: the window in front
-	// of it is drained first, and it is drained alone after.
+	// A provisional entry may fail its condition and a drain is all-or-nothing,
+	// so it is drained alone: the window before it first, then itself.
 	if provisional {
 		if err := c.drain(ctx, s, drainReplay); err != nil {
 			return err
@@ -200,48 +151,33 @@ func (c *Cycle) replayEntry(
 	if provisional {
 		return c.drain(ctx, s, drainReplayProvisional)
 	}
-	// The steady state's size watermarks, so a replayed transaction is the size
-	// of an ordinary one: a tail at I10's bound applied whole would be a
-	// transaction nothing has ever executed. The age watermark is not consulted,
-	// since every entry here is already as old as the incident — which is why
-	// the rule is asked for by name rather than off the whole policy.
+	// Size triggers only, so replayed transactions are ordinary-sized. The age
+	// trigger would fire on every entry, all as old as the incident.
 	if s.window.Trips(marks) != window.NoTrip {
 		return c.drain(ctx, s, drainReplay)
 	}
 	return nil
 }
 
-// strand halts the invariant side over an entry the replay could not take, and
-// charges that entry to the tail on the way — which is the whole of the
-// difference between this and a bare [Cycle.halt].
+// strand halts invariant over an entry replay could not take, after adding the
+// entry to the tail. Its callers (a seqno gap, an undecodable entry, an entry
+// for another shard, an entry past the confirmed end) halt before
+// [Cycle.accept], so without this the tail would stay empty, and [tailRoute]
+// would pass mutable-state and history reads to a cold store missing this
+// acked entry. Only non-emptiness matters; the count itself is meaningless.
 //
-// The three callers all halt *before* [Cycle.accept], so nothing else would put
-// the entry in the tail, and the entry is acked and in no cold store. A tail
-// left empty here is read one way only: [tailRoute] takes it as "everything this
-// shard acked is in the cold store" and passes both readers through. For a task
-// read that is the loss the merge exists to prevent — the queue is handed a page
-// that is short exactly these rows, completes the range it asked for, and acks
-// past keys no owner will ever write, since the entry that carries them cannot
-// be decoded by this build at all.
-//
-// What the tail then reports is not a count anybody should read: whatever sits
-// above the entry was never looked at, and a seqno gap moves the commit over
-// the hole it names. Non-empty is the whole of what is needed — it is the only
-// thing [tailRoute] asks, and a halted cycle's bound is read by nobody.
+// Open in DURABILITY.md: [Cycle.Close] re-runs start, which floors this tail
+// away and restores it only if its replay reads the log again.
 func (c *Cycle) strand(s *state, e wal.Entry, cause error) {
 	s.tail.Ack(e.Seqno, len(e.Payload))
 	c.halt(s, StateHaltedInvariant, cause)
 }
 
-// dropProvisional settles a replayed provisional entry whose condition failed:
-// its caller already has the answer, or saw the ambiguity. The entry is settled
-// exactly as [Cycle.answerWriter] settles one, and replay carries on.
-//
-// This is not "a condition failure at replay is forgiven". An entry whose
-// assertion was verified before its ack cannot legitimately fail, and one that
-// does still halts.
+// dropProvisional settles a replayed provisional entry whose condition failed,
+// as [Cycle.answerWriter] does; its caller already got the answer. Replay
+// continues. Non-provisional condition failures still halt.
 func (c *Cycle) dropProvisional(s *state, seqno wal.Seqno, held *window.Taken, cause error) error {
-	// No transaction wrote its rows, so the watermark may not move over it.
+	// No transaction wrote its rows, so the watermark must not move over it.
 	s.tail.Settle(seqno, held, tailstate.KeepWatermark)
 	s.counted().Dropped++
 	c.deps.Logger.Info("apply cycle: a replayed provisional entry did not apply, and was not meant to",

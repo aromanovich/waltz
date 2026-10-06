@@ -2,11 +2,11 @@
 // decorator over the base plugin's DataStoreFactory whose ExecutionStore and
 // ShardStore the history service talks to in place of the plugin's own.
 //
-// [Options] is the whole of the mode switch: no layer is passthrough, where
-// every call transits; a layer is intercept, where eleven methods are answered
-// from the WAL and a twelfth is refused ([ErrCompleteHistoryTaskUnsupported]).
+// [Options] is the only mode switch. Without a layer it is passthrough: every
+// call transits. With one it is intercept: twelve methods go through the WAL
+// and a thirteenth is refused ([ErrCompleteHistoryTaskUnsupported]).
 //
-// [ADR 0003] is why this runs in the server's process.
+// [ADR 0003] explains why this runs in the server's process.
 //
 // [ADR 0003]: ../docs/adr/0003-wal-layer-runs-in-process.md
 package wrapper
@@ -27,25 +27,22 @@ import (
 	"github.com/aromanovich/waltz/walmetrics"
 )
 
-// ShardObserver is told that a shard's rangeID moved, and the epoch is the new
-// one (invariant I11). Usually that is a new owner, but not always: the server
-// renews a shard's rangeID whenever it exhausts its ID range, so the owner that
-// already holds the shard arrives here again at a higher epoch. Nothing reports
-// the other direction: closing a shard makes no persistence call.
+// ShardObserver is told when a shard's rangeID moves; epoch is the new value
+// (invariant I11). This may be the current owner again: the server bumps the
+// rangeID when it exhausts its ID range. Closing a shard is not reported, as it
+// makes no persistence call.
 type ShardObserver interface {
-	// ShardAcquired runs before the base store commits the bump, and an error
-	// from it fails the acquire without the base store being called, so a failed
-	// fence never leaves a moved rangeID behind. The error reaches the shard
-	// controller unwrapped.
+	// ShardAcquired runs before the base store commits the bump. An error fails
+	// the acquire without calling the base store, so a failed fence never leaves
+	// a moved rangeID. The error reaches the shard context unwrapped, which
+	// retries the acquire with backoff.
 	ShardAcquired(ctx context.Context, shard wal.ShardID, epoch wal.Epoch) error
 }
 
-// ShardLayer is the WAL layer as one shard's stores see it. One interface
-// rather than four fields, because a writer with no reader reads stale, a write
-// path never told about the acquire refuses every write for that shard, and a
-// layer nobody handed the metrics handler to emits nothing while every suite
-// stays green. The last of those is the quietest, which is why it is a face
-// here rather than a type assertion at the hand-off.
+// ShardLayer is the WAL layer as one shard's stores see it. It is one interface
+// so the four parts cannot be configured apart: a writer without its reader
+// reads stale, a writer never told of the acquire refuses every write, and a
+// layer never handed the metrics handler silently emits nothing.
 type ShardLayer interface {
 	ShardObserver
 	ShardWriter
@@ -53,38 +50,33 @@ type ShardLayer interface {
 	MetricsSink
 }
 
-// ShardWriter is the WAL layer's write path: one write, acked into the shard's
-// log, and in sync mode applied — with the drain's outcome — before the call
-// returns.
+// ShardWriter is the WAL layer's write path: a write is acked into the shard's
+// log and, in sync mode, applied before the call returns.
 type ShardWriter interface {
 	// WritesHistory reports whether an intercepted write's event batches ride
-	// the record this layer appends. False means the caller owes them to the
-	// base store before it calls Write, and owes it to strip them off the
-	// mutation once it has.
+	// the appended record. If false, the caller must write them to the base
+	// store before calling Write, then strip them from the mutation.
 	//
-	// A face rather than a field of [Options] for the reason [ShardLayer] is one
-	// interface: the two could otherwise be configured apart, and one of the two
-	// disagreements loses data. A store told the batches ride the record, over a
-	// layer whose store does not write them, writes them nowhere — and acks a
-	// mutable state over history nobody wrote.
+	// It is part of the layer, not a field of [Options], so it cannot disagree
+	// with the store: claiming the batches ride the record when the store does
+	// not write them would ack mutable state over history nobody wrote.
 	WritesHistory() bool
 
-	// Write acks m into its shard's log and reports what the apply transaction
-	// did with it; the mutation names its own shard.
+	// Write acks m into its shard's log (m names the shard) and returns the
+	// apply outcome.
 	//
-	// The layer takes ownership of m's request: in a windowed mode it is
-	// retained past this call and merged in place with the window's other
-	// requests. A caller may not read or reuse it once Write has returned.
+	// The layer takes ownership of m's request: windowed modes keep it and merge
+	// it in place. The caller must not read or reuse it after Write returns.
 	//
-	// epoch is the rangeID the caller wrote under, so a write from a fenced-out
-	// shard context is refused rather than re-stamped with this node's. Zero
-	// means "the caller named no epoch", not "epoch 0"; the two deletes and the
-	// range delete carry none, and the drain's own CAS fences them instead.
+	// epoch is the rangeID the caller wrote under; a fenced-out shard context is
+	// refused, not re-stamped. Zero means "no epoch", not epoch 0: the two
+	// deletes and the range delete carry none and are fenced by the drain's CAS.
 	//
-	// The error is the store's own (condition failure, fenced shard, tail at its
-	// bound), unwrapped, and is attributable to this caller only at a window of
-	// one. base is called inside the goroutine that owns the window, at most
-	// once per asserted row.
+	// The error is the store's own, unwrapped (condition failure, fenced shard,
+	// tail at its bound). A condition failure always belongs to this caller:
+	// windowed writes settle conditions before the append, and a sync drain
+	// carries only this mutation. base is called on the goroutine that owns the
+	// window, at most once per asserted row.
 	Write(
 		ctx context.Context,
 		m mutation.Mutation,
@@ -93,52 +85,46 @@ type ShardWriter interface {
 	) error
 }
 
-// ShardReader is the read path: the four reads whose answer one of the writes
-// can change. base is how the cold store is reached, since the layer below may
-// not name a store; the layer calls it inside the goroutine that owns the
-// window, so a read cannot observe a drain in flight. Errors come back
-// unwrapped.
+// ShardReader is the read path: the four reads a write can change. base reaches
+// the cold store (the layer may not name one) and is called on the goroutine
+// that owns the window, so a read never sees a drain in flight. Errors come
+// back unwrapped.
 type ShardReader interface {
-	// GetWorkflowExecution answers a mutable-state read: the base row merged
-	// with whatever the shard's window holds for the run, or the window's answer
-	// alone where it holds whole state, or NotFound where it holds a tombstone.
+	// GetWorkflowExecution returns the base row merged with the window's state
+	// for the run, the window's state alone if it holds whole state, or NotFound
+	// if it holds a tombstone.
 	GetWorkflowExecution(
 		ctx context.Context,
 		req *p.GetWorkflowExecutionRequest,
 		base func(context.Context) (*p.InternalGetWorkflowExecutionResponse, error),
 	) (*p.InternalGetWorkflowExecutionResponse, error)
 
-	// GetCurrentExecution answers a current-execution read, a separate question
-	// from the one above: that row is written by the window's last writer, not
-	// by the merged request.
+	// GetCurrentExecution answers from the window's last writer, not from the
+	// merged request.
 	GetCurrentExecution(
 		ctx context.Context,
 		req *p.GetCurrentExecutionRequest,
 		base func(context.Context) (*p.InternalGetCurrentExecutionResponse, error),
 	) (*p.InternalGetCurrentExecutionResponse, error)
 
-	// GetHistoryTasks answers one page of a task range from the cold store's
-	// rows and the shard's window at once. Its base closure takes a request
-	// because the merge asks a different question than the caller did: BatchSize
-	// minus what the window contributes, resumed from the base's own token. The
-	// returned token is this layer's, carrying the base's inside it. Unlike the
-	// two above, refused for a shard the layer does not hold, whose one caller
-	// would otherwise ack past a page short a tail.
+	// GetHistoryTasks returns one page of a task range, merging cold rows with
+	// the window. base takes its own request: BatchSize minus the window's
+	// share, resumed from the base's token. The returned token is the layer's
+	// and wraps the base's. Unlike the reads above, it is refused for a shard
+	// the layer does not hold; otherwise its caller could ack past a page
+	// missing the tail.
 	GetHistoryTasks(
 		ctx context.Context,
 		req *p.GetHistoryTasksRequest,
 		base func(context.Context, *p.GetHistoryTasksRequest) (*p.InternalGetHistoryTasksResponse, error),
 	) (*p.InternalGetHistoryTasksResponse, error)
 
-	// ReadHistoryBranch answers one page of a branch from the cold store's rows
-	// and whatever event batches the shard's window still holds. treeID is
-	// parsed from the opaque branch token by the wrapper, which is where the
-	// store's own codec is reachable.
+	// ReadHistoryBranch returns one page of a branch, merging cold rows with
+	// the window's event batches. The wrapper parses treeID from the branch
+	// token, since only it can reach the store's codec.
 	//
-	// It is asked whatever the store below does with a write's batches, and not
-	// only where the records carry them: a tail written under a store that took
-	// them is replayed by a node composed with one that does not, so whether the
-	// window holds nodes is a fact about the log rather than about this node.
+	// It is called even if [ShardWriter.WritesHistory] is false: a replayed
+	// tail may carry batches written under another node's composition.
 	ReadHistoryBranch(
 		ctx context.Context,
 		req *p.InternalReadHistoryBranchRequest,
@@ -147,36 +133,27 @@ type ShardReader interface {
 	) (*p.InternalReadHistoryBranchResponse, error)
 }
 
-// MetricsSink is the layer's half of the metrics hand-off: the server's own
-// handler reaches [NewFactory] only after the layer is composed, so it arrives
-// afterwards rather than at construction. A face of [ShardLayer], so a layer
-// that cannot take it does not compile — the failure it replaces was silent, a
-// renamed method leaving the layer unmetered with every suite green.
+// MetricsSink receives the server's metrics handler, which reaches
+// [AbstractDataStoreFactory.NewFactory] only after the layer is composed. It is
+// part of [ShardLayer] so a layer that cannot take it does not compile.
 type MetricsSink interface {
-	// Use is called with the handler the server gave NewFactory, before the
-	// stores it built have served anything, and once per persistence graph: an
-	// implementation takes the first handler and ignores the rest.
+	// Use is called with the handler given to NewFactory, before its stores
+	// serve anything, once per persistence graph. Implementations keep the
+	// first handler and ignore the rest.
 	Use(h metrics.Handler)
 }
 
 // Options is what the layer contributes to the stores it decorates. Zero value:
 // pure passthrough.
 type Options struct {
-	// Layer, when set, is intercept mode: acquires are reported to it, the eight
-	// writes go into the WAL through it, the two mutable-state reads through its
-	// overlay and the task and history reads through their merges. Nil is
-	// passthrough.
+	// Layer, when set, selects intercept mode: it hears acquires, takes the
+	// eight writes into the WAL and serves the four reads. Nil is passthrough.
 	Layer ShardLayer
-	// Metrics is where the wrapper's own counters go, and it is the emitter the
-	// layer records through rather than a handler of this seam's own: both
-	// halves of the numbers are then pointed at the server's stack by the one
-	// [MetricsSink.Use] below, so no service's handler can take half of them.
+	// Metrics receives the wrapper's counters. It is the layer's own emitter,
+	// so one [MetricsSink.Use] points both halves at the same handler.
 	//
-	// Nil records nowhere and stays that way — nothing here can reach the
-	// layer's emitter, [MetricsSink] being a write-only door. A caller that
-	// wants the counters takes its options from a composition
-	// (waltz.Layer.Options), which fills this in; one built by hand gets a store
-	// that works and emits nothing.
+	// Nil records nothing. waltz.Layer.Options fills it in; hand-built Options
+	// without it give a working store that emits nothing.
 	Metrics *walmetrics.Emitter
 }
 
@@ -195,11 +172,10 @@ func NewAbstractDataStoreFactory(base client.AbstractDataStoreFactory, opts Opti
 	return &AbstractDataStoreFactory{base: base, opts: opts}
 }
 
-// NewFactory hands the server a decorated data store factory. Every argument
-// transits untouched, and this is where the server's metrics handler enters the
-// layer, through [MetricsSink] and only there: the stores this builds record into
-// [Options.Metrics], which the layer already holds, so the handler taken by the
-// first service to build persistence is the one the whole layer reports to.
+// NewFactory returns a decorated data store factory; every argument transits
+// untouched. The metrics handler enters the layer here, via [MetricsSink], and
+// only here: the first service to build persistence sets the handler the whole
+// layer reports to.
 func (f *AbstractDataStoreFactory) NewFactory(
 	cfg config.CustomDatastoreConfig,
 	r resolver.ServiceResolver,
@@ -208,18 +184,15 @@ func (f *AbstractDataStoreFactory) NewFactory(
 	metricsHandler metrics.Handler,
 ) p.DataStoreFactory {
 	if f.opts.Layer != nil {
-		// Passthrough composes no layer, so there is nothing to tell — and
-		// nothing to count either: every counter this package raises is on the
+		// Passthrough needs no handler: every counter here is on the
 		// intercepted path.
 		f.opts.Layer.Use(metricsHandler)
 	}
 	return NewDataStoreFactory(f.base.NewFactory(cfg, r, clusterName, logger, metricsHandler), f.opts)
 }
 
-// DataStoreFactory is the decorator proper: the ExecutionStore and the
-// ShardStore come back wrapped, everything else as the plugin built it, since
-// the task stores, namespace and cluster metadata, the queues and the Nexus
-// endpoints are outside the layer.
+// DataStoreFactory wraps the ExecutionStore and ShardStore; every other store
+// is outside the layer and returned as the plugin built it.
 type DataStoreFactory struct {
 	base p.DataStoreFactory
 	opts Options
@@ -238,10 +211,8 @@ func (f *DataStoreFactory) NewExecutionStore() (p.ExecutionStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Returning the constructor's pair straight through would box a nil
-	// *ExecutionStore into a non-nil p.ExecutionStore, so a caller branching on
-	// the store rather than the error gets one whose first method dereferences
-	// nil — the stack trace the refusal exists to avoid.
+	// Returning the pair directly would box a nil *ExecutionStore into a
+	// non-nil interface that panics on first use.
 	decorated, err := NewExecutionStore(store, f.opts)
 	if err != nil {
 		return nil, err

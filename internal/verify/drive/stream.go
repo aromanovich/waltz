@@ -9,45 +9,33 @@ import (
 	"github.com/aromanovich/waltz/mutation"
 )
 
-// Delivery is one generated mutation on its way into whatever writes it: the
-// bytes a log would carry for it, and what comes back out of them.
+// Delivery is one generated mutation after a codec round trip.
 type Delivery struct {
-	// Index counts from 0 over the whole stream rather than over one
-	// [Stream.Drive] call, so it is the seqno a consumer would assign minus one.
+	// Index counts from 0 over the whole stream, not one [Stream.Drive] call:
+	// it is the consumer's seqno minus one.
 	Index int
-	// Mutation is the decoded form and never the generated one: every task is
-	// rebuilt through the registry, and what the payload does not carry — the
-	// rangeID (I11), the new events — is gone, so a codec loss reaches a
-	// consumer here rather than being covered by the value the generator kept.
+	// Mutation is the decoded form, never the generated one, so codec losses
+	// (such as the dropped rangeID, I11) reach the consumer.
 	Mutation mutation.Mutation
-	// Payload is the encoded form, for a consumer that keeps the bytes — a
-	// second path that must not be handed a request the first has touched, or a
-	// measurement of what the log carries.
+	// Payload is the encoded form, for a consumer that keeps the bytes or
+	// needs a second copy untouched by the first.
 	Payload []byte
 }
 
-// Stream is a generated mutation stream with the codec in front of it: the verb
-// for driving one at anything that folds or writes what a log carried. Every
-// mutation is encoded and decoded before a consumer sees it, because what a
-// replay hands fold and the store came back out of the log rather than out of
-// the generator — the hot path folds the caller's own request, so the codec's
-// losses show only on the value a replay rebuilds.
+// Stream is a generated mutation stream whose every mutation is encoded and
+// decoded before a consumer sees it. That is what a replay sees: the hot path
+// folds the caller's own request, so codec losses show only on replay.
 //
-// That round trip is the whole of it and there is no way past it, which is what
-// keeps a caller out: a driver modelling the *client* of a store wants the
-// request as the generator built it, so it holds a [mutgen.Generator] of its
-// own. The two are not interchangeable: what a client sent — its rangeID, its
-// new events — and what came back out of the log are different values, and a
-// driver that confuses them changes what its own calls mean.
+// A driver modelling a store's client needs the request as generated (with its
+// rangeID), so it uses its own [mutgen.Generator] instead; the two values are
+// not interchangeable.
 //
-// What shape of stream it is comes from the [mutgen.Config] — [mutgen.Default],
-// [mutgen.WorkflowRunsOnly], [mutgen.UnbrokenChains] — and not from knobs a
-// caller zeroes.
+// The stream's shape comes from the [mutgen.Config] ([mutgen.Default],
+// [mutgen.WorkflowRunsOnly], [mutgen.UnbrokenChains]).
 //
-// It is resumable, which is why it is a value and not a function: a caller
-// driving one stream in two phases must not restart it, since mutgen's task ids
-// and version chains only move forward and a second generator on the same seed
-// re-emits creates the store already holds.
+// A Stream is resumable. A caller driving in phases must keep one Stream: task
+// ids and version chains only move forward, and a fresh generator on the same
+// seed would re-emit creates the store already holds.
 type Stream struct {
 	g        *mutgen.Generator
 	seed     int64
@@ -64,8 +52,8 @@ func NewStream(cfg mutgen.Config) (*Stream, error) {
 	return &Stream{g: g, seed: cfg.Seed, registry: tasks.NewDefaultTaskCategoryRegistry()}, nil
 }
 
-// Next generates one mutation and puts it through the codec. Every error names
-// the seed, which is what reproduces it.
+// Next generates one mutation and round-trips it through the codec. Errors
+// name the seed, which reproduces them.
 func (s *Stream) Next() (Delivery, error) {
 	m, err := s.g.Next()
 	if err != nil {
@@ -84,12 +72,9 @@ func (s *Stream) Next() (Delivery, error) {
 	return d, nil
 }
 
-// Drive hands the next n mutations to sink, stopping at the first error. The
-// sink's own error is returned as it is: it is the consumer's failure, and
-// wrapping it here would put this package's vocabulary in front of it.
-//
-// A caller whose stop rule is a measured quantity rather than a count — bytes
-// folded, a counter it is watching — writes its loop over [Stream.Next].
+// Drive hands the next n mutations to sink, stopping at the first error. A
+// sink error is returned unwrapped. To stop on something other than a count,
+// loop over [Stream.Next].
 func (s *Stream) Drive(n int, sink func(Delivery) error) error {
 	for range n {
 		d, err := s.Next()
@@ -103,5 +88,5 @@ func (s *Stream) Drive(n int, sink func(Delivery) error) error {
 	return nil
 }
 
-// Report is what the stream has turned out to be so far.
+// Report summarises what the stream has generated so far.
 func (s *Stream) Report() mutgen.Report { return s.g.Report() }

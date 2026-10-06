@@ -23,8 +23,7 @@ var build = mutbuild.For(shard)
 // TestAnInvalidStateIsRefusedRatherThanBuilt is the check, broken on purpose.
 // COMPLETED with a RUNNING status is the pair
 // ValidateCreateWorkflowStateStatus exists to catch — the store refuses it, so
-// a fixture carrying it drives a request Temporal never sends. Before this
-// package, three test files could each build one and nothing would say so.
+// a fixture carrying it drives a request Temporal never sends.
 func TestAnInvalidStateIsRefusedRatherThanBuilt(t *testing.T) {
 	refusal := refuses(t, func() {
 		build.Create("ns", "wf", "run", mutbuild.WithState(
@@ -73,10 +72,8 @@ func refuses(t *testing.T, fn func()) string {
 	return refusal
 }
 
-// TestEveryRunCarriesItsStateAsABlob is the defect this package was written to
-// close: cycle's create carried the blob because the read path
-// deserialises it, apply's did not, and the two names were the same.
-// Only the blob is recorded, so a mutation carrying the struct alone survives a
+// TestEveryRunCarriesItsStateAsABlob: the read path deserialises the blob, and
+// only the blob is recorded, so a mutation carrying the struct alone survives a
 // fold and vanishes on replay.
 func TestEveryRunCarriesItsStateAsABlob(t *testing.T) {
 	ns, wf, run := "ns", "wf", "run-1"

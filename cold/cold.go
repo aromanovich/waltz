@@ -1,76 +1,60 @@
 // Package cold is the cold store contract: the seam a drain lands on, as [wal]
-// is the seam an ack lands on. [Store] is what a deployment implements, and in
-// production it is the caller's to satisfy — no package of the layer writes to a
-// store of its own. The one implementation here is cold/memcold, which is not a
-// package of the layer: it sits under this seam where a deployment's store sits.
+// is the seam an ack lands on. A deployment implements [Store]; no package of
+// the layer writes to a store of its own. cold/memcold, the one implementation
+// here, sits under this seam as a deployment's store would.
 //
-// A cold store here is whatever holds a Temporal history shard's mutable state,
-// its history tasks, its history events and its replication DLQ: Temporal's own
-// persistence.ExecutionStore and persistence.ShardStore, reached through the
-// [Applier] a drain hands its batch to. The layer folds many acked mutations
-// into one batch and hands it over once; what the store owes back is four
-// things, and each is a way the acked-is-never-lost rule can be broken from
-// below.
+// A cold store holds a Temporal history shard's mutable state, history tasks,
+// history events and replication DLQ (persistence.ExecutionStore and
+// ShardStore). A drain folds many acked mutations into one batch and hands it
+// to the [Applier] once. The store owes four things; breaking any of them loses
+// acked data:
 //
 //  1. One drain is one publication. The merged requests, the task work and the
-//     watermark are one transaction: a batch that lands half-applied leaves rows
-//     no replay can reconstruct, since the mutations behind it were acked,
-//     folded and collapsed, so what a replay re-drives is that same window
-//     against rows the half that landed has already moved.
+//     watermark commit in one transaction. A half-applied batch cannot be
+//     repaired by replay: replay re-drives the same folded window against rows
+//     the half that landed has already moved.
 //
-//     [Batch.History] is the one part that may be written outside it, and the
-//     freedom is deliberate: a store whose bulk path cannot join its
-//     mutable-state transaction may write those rows first, by whatever means it
-//     likes. What is pinned is the order and not the mechanism — every history
-//     row must be durable **before** that transaction starts. History nodes are
-//     immutable and keyed by (tree, branch, node, transaction), so a repeated
-//     write is the same row and a drain that failed after them leaves orphans
-//     nobody references. The other order is the one that cannot be recovered
-//     from: a mutable state published over nodes that are not there points at
+//     [fold.Batch.History] may be written outside that transaction, by any
+//     means, but every history row must be durable no later than the mutable
+//     state that names it: inside the transaction or before it starts. History
+//     nodes are immutable and keyed by (tree, branch, node, transaction), so
+//     writing them twice is harmless and a failed drain leaves only
+//     unreferenced orphans. The reverse order publishes state pointing at
 //     history nobody wrote.
 //
-//  2. The watermark commits inside that transaction. It is the seqno the batch
-//     carries ([Applier]), and [Watermarker] reads it back — the only witness to
-//     what a drain did, and the reason a store may never derive that answer from
-//     the rows themselves. A watermark written beside the transaction rather than
-//     in it is a shard that either replays what it applied or trims what it did
-//     not.
+//     Inside the transaction, the batch's range deletes run before its task
+//     inserts. The window keeps a task that arrived after a range even if the
+//     range covers its key, so inserting first and deleting second deletes an
+//     acked task.
 //
-//  3. The epoch is asserted first, and the store refuses the whole batch if it
-//     has moved. Fencing is what makes the layer a shard's single writer, and an
-//     applier that writes under a stale epoch has two. Nothing else in the
-//     transaction stands behind this one for every batch: the run rows carry a
-//     version that a second owner would have moved, but a window of task work
-//     asserts nothing at all, so a range completion drained under an epoch that
-//     is gone deletes rows the shard's real owner acked.
+//  2. The watermark (the batch's seqno) commits inside that transaction.
+//     [Watermarker] reads it back as the only record of what a drain did; never
+//     derive it from the rows. A watermark written outside the transaction
+//     makes the shard replay what it applied or trim what it did not.
 //
-//  4. The outcome comes back in [apply]'s five classes. Committed, refused,
-//     shard lost, invariant violated, unknown outcome: the cycle branches on
-//     them, and the fifth is the one a store gets wrong by rounding an ambiguous
-//     code down to a failure. That is a batch applied twice.
+//  3. The epoch is asserted first, and the whole batch is refused if it has
+//     moved. Fencing makes the layer a shard's single writer. Nothing else in
+//     the transaction catches a stale owner for every batch: run rows carry a
+//     version, but task work asserts nothing, so a range completion under a
+//     stale epoch deletes rows the real owner acked.
 //
-// A fifth thing is owed and is not on that list, because it is not about what a
-// drain leaves behind: **an [Applier] must bound its own calls.** Four of the
-// layer's drains run on a context of their own with no deadline on it, which is
-// deliberate — what they carry is earlier writers' acked mutations, and bounding
-// the transaction by whichever caller happens to be on the line turns one expired
-// client deadline into a drain that did not commit — so an implementation that can
-// block for ever does. It blocks the shard's whole loop, which serves that shard's
-// writes and all four of its reads, and a graceful shutdown waits on that loop
-// with no bound of its own. The cycle deliberately has no timeout to offer here:
-// cutting a drain short produces an unknown outcome, which stalls the shard, so a
-// bound this layer imposed would trade a hang for the state it treats as worst.
-// Whatever the store's own driver, statement or request timeout is, it is the only
-// thing between a wedged store and a wedged node.
+//  4. The outcome comes back in [apply]'s five classes: committed, refused,
+//     shard lost, invariant violated, unknown outcome. Reporting an ambiguous
+//     result as a failure instead of unknown gets the batch applied twice.
 //
-// Intercept mode asks for two reads besides, both of them pre-window rows it
-// asserts on rather than answers a caller with: a run's mutable state, and a
-// workflow's current-execution row with its last_write_version beside it. That
-// pair is [baserow.Store], and the version is why it is a contract of this
-// layer at all — Temporal's own response type has nowhere to carry that column.
-// A store that cannot answer the versioned read is refused while the server is
-// still starting rather than run in a reduced mode: there is no honest way to
-// serve intercept over it.
+// An [Applier] must also bound its own calls. Most drains run on a context with
+// no deadline, because they carry earlier writers' acked mutations and must not
+// fail because one caller's deadline expired. An Apply that hangs blocks the
+// shard's loop, which serves all of its writes and reads, and graceful shutdown
+// waits on that loop without a bound. The layer imposes no timeout because a
+// cut-short drain is an unknown outcome, which stalls the shard. The store's
+// own driver, statement or request timeout is the only bound.
+//
+// Intercept mode also asserts on two pre-window rows: a run's mutable state,
+// and a workflow's current-execution row with its last_write_version. That pair
+// is [baserow.Store]; it is part of this layer's contract because Temporal's
+// response type has no field for that version. A store that cannot answer the
+// versioned read is refused at server start, not run in a reduced mode.
 //
 // [apply]: ../apply
 // [baserow.Store]: ../baserow
@@ -83,67 +67,45 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// Store is the cold store a deployment hands the layer: both halves of the
-// seam, and one value answering both.
-//
-// The halves are stated apart below because they are called from different
-// places at different times — a drain writes, a recovering owner reads — but
-// they are not separable, and this type is where that is said in a way a
-// composition cannot get wrong. A watermark is only meaningful about the
-// transactions that wrote it (obligation 2 above): read one from a store other
-// than the one the drains landed in and the layer trims a log against a witness
-// that never saw it, or replays entries the store already holds. Neither is
-// visible from here, and both are the acked-is-never-lost rule broken.
+// Store is the cold store a deployment hands the layer. Both halves must be one
+// value: a watermark read from a store other than the one the drains wrote to
+// makes the layer trim entries that store never saw, or replay ones it holds.
 type Store interface {
 	Applier
 	Watermarker
 }
 
-// Applier is the write path one drain goes through, and the caller's to supply.
-// An interface so a test can vary a drain's outcome without a cluster, and so
-// the class of store can change without an invariant moving.
+// Applier is the write path of one drain.
 type Applier interface {
-	// Apply commits everything batch carries — the merged request per dirty
-	// workflow, the history-task work, the range completions — and
-	// batch.Watermark(), in one transaction, under an epoch it compare-and-sets
-	// first, with batch.History() durable before that transaction opens. The
-	// four obligations in this package's doc say why each of those is not
-	// negotiable.
+	// Apply commits everything batch carries (the merged request per dirty
+	// workflow, the history-task work, the range completions) and
+	// batch.Watermark() in one transaction, after a compare-and-set on epoch,
+	// with batch.History() durable no later than the commit. The package doc
+	// says why.
 	//
-	// The error is the whole of what the cycle learns, and it is read through
-	// apply.Classify rather than compared: return nil only if the transaction
-	// committed, a *persistence.ShardOwnershipLostError if the epoch had moved,
-	// a condition failure if an assertion did not hold, and apply.Refuse for
-	// input this store cannot express. Anything else is an unknown outcome, and
-	// that is the right answer for every ambiguous transport code — a timeout,
-	// a dropped connection, a context deadline. Do not round one down to a
-	// failure: the cycle answers an unknown outcome by reading the watermark,
-	// and answers a failure by giving up on the batch.
+	// The cycle reads the error through apply.Classify. Return nil only if the
+	// transaction committed; *persistence.ShardOwnershipLostError if the epoch
+	// had moved; a condition failure if an assertion did not hold; apply.Refuse
+	// for input this store cannot express. Anything else, including every
+	// ambiguous timeout, dropped connection or context deadline, is an unknown
+	// outcome, which the cycle resolves by reading the watermark. Never report
+	// an ambiguous result as a failure: the cycle gives up on a failed batch.
 	//
-	// ctx may carry no deadline, and often does not: the age tick's drain, the
-	// two size watermarks' and the refusal drain all run detached, since what
-	// they carry is earlier writers' acked mutations and no caller is waiting for
-	// the outcome. So the bound is the store's own — see the fifth obligation in
-	// this package's doc for what an unbounded Apply costs.
+	// ctx often has no deadline (size, age, refusal and storage-pressure drains
+	// run detached), so Apply must bound itself; see the package doc.
 	Apply(ctx context.Context, shard wal.ShardID, epoch wal.Epoch, batch fold.Batch) error
 }
 
-// HistoryApplier is what an [Applier] declares to say it writes
-// [fold.Batch.History]. A claim rather than a method, because the writing
-// happens inside Apply and there is nothing for a second signature to add.
+// HistoryApplier is declared by an [Applier] that writes [fold.Batch.History]
+// itself, inside Apply. Over an applier that does not declare it, the layer
+// writes each live write's events through the store below before appending,
+// and its batches carry none.
 //
-// Declaring it is what puts history in the batch, and the batch carries history
-// only where the applier the layer holds declares it: a layer composed over one
-// that does not gets the events written through the store below before each
-// append instead, and its batches carry none. So an applier that would
-// ignore the field never meets one — the failure it would cause, a mutable state
-// committed over events nobody wrote, is acked and lost with every suite green,
-// and there is no configuration that can reach it.
-//
-// The claim is cheap to keep honest because declaring it is also the only way to
-// be handed anything: a store that declares it and then ignores
-// [fold.Batch.History] loses its own deployment's history on the first window
-// that carries any.
+// Replay does not check the declaration: a tail written over a declaring store
+// carries event batches whatever the successor declares (an Open entry in
+// DURABILITY.md). So any applier handed a non-empty [fold.Batch.History] must
+// write it under obligation 1, declared or not; ignoring it commits mutable
+// state over events nobody wrote.
 type HistoryApplier interface {
 	Applier
 
@@ -151,34 +113,24 @@ type HistoryApplier interface {
 	AppliesHistory()
 }
 
-// Watermarker is the recovery half of the same seam: the only read the layer
-// makes through this contract, though not its only read of the store — intercept
-// mode asserts on the two pre-window rows this package's doc names.
+// Watermarker is the recovery half of the seam.
 type Watermarker interface {
-	// Watermark reads back the seqno of the last [Applier.Apply] that committed
-	// for this shard — the value that transaction wrote inside itself, never a
-	// value derived from the rows and never one cached in this process.
+	// Watermark returns the seqno written by the last committed [Applier.Apply]
+	// for this shard: the value that transaction stored, never one derived from
+	// the rows or cached in this process.
 	//
-	// The three results are three different answers and the cycle acts on each
-	// differently:
+	//   - (seqno, true, nil): every entry up to seqno is in this store; a new
+	//     owner replays from seqno+1. After an unknown outcome, the drain
+	//     committed if seqno equals exactly the one it carried; a higher seqno
+	//     means another owner wrote, and the cycle treats it as such.
+	//   - (_, false, nil): no drain has ever committed for this shard; a new
+	//     owner replays the whole log. After an unknown outcome the cycle reads
+	//     this as "did not commit" and halts the shard.
+	//   - (_, _, err): the answer could not be read, which is not the same as
+	//     false. The cycle stalls the tail and retries.
 	//
-	//   - (seqno, true, nil) — every entry up to and including seqno is in this
-	//     store. A new owner replays from seqno+1. A drain whose outcome was
-	//     unknown committed if seqno is *exactly* the one it carried, which is
-	//     what makes [Applier.Apply]'s "commits batch.Watermark()" load-bearing
-	//     rather than incidental: the value identifies the drain. A seqno above
-	//     it names a drain that is not the one asking, and the cycle reads that
-	//     as an owner it does not know about.
-	//   - (_, false, nil) — no drain has ever committed for this shard. The
-	//     seqno is ignored, and a new owner replays the log from the bottom.
-	//   - (_, _, err) — the answer could not be read. This is not "false", and
-	//     the difference is the point: after an unknown outcome, false means the
-	//     drain did not commit and an error means nobody knows yet. The cycle
-	//     stalls the tail on an error and retries; it halts the shard on false.
-	//
-	// Reporting a seqno above what actually committed is the one failure that
-	// loses data: the layer would trim entries the store never received and
-	// replay from above them. Under an ambiguous write, answer with the error
-	// or with what is durably recorded — never with what was probably written.
+	// Never report a seqno above what committed: the layer would trim entries
+	// the store never received. When unsure, return the error or what is
+	// durably recorded.
 	Watermark(ctx context.Context, shard wal.ShardID) (wal.Seqno, bool, error)
 }

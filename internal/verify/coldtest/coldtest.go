@@ -1,17 +1,10 @@
-// Package coldtest is the cold store a drain lands in, in memory.
+// Package coldtest is an in-memory test double for the cold store, at the
+// [cold.Applier] and [cold.Watermarker] seams.
 //
-// It is the second adapter here at the two seams the apply cycle reaches the
-// cold store through, [cold.Applier] and [cold.Watermarker]. The other is
-// cold/memcold, which is a store: it writes the rows a batch carries and answers
-// what became of them. This one answers the drain's outcome instead — refused,
-// counted, the watermark read back — which is what a package composing a layer
-// to test something else needs and what a store has no way to be asked for.
-//
-// It is a double and not a cold store: it counts the drains that landed and the
-// watermark each moved, and interprets nothing. What a folded batch *means* has
-// no specification apart from a real store's behaviour, so a memory store that
-// answered that question would be a second implementation of the thing under
-// test rather than a fixture for it.
+// Unlike cold/memcold, which stores the rows a batch carries, it records only
+// the drain's outcome: refused or not, how many landed, and the watermark each
+// moved. It never interprets a batch; doing so would be a second implementation
+// of the store under test.
 package coldtest
 
 import (
@@ -22,13 +15,9 @@ import (
 	"github.com/aromanovich/waltz/wal"
 )
 
-// Cold is one cold store: an applier and the watermark reader beside it. One
-// value serves as both, which is the point — a composition whose drains land
-// somewhere the watermark does not read back is a shard that replays what it
-// already applied.
-//
-// It satisfies cold.Applier and cold.Watermarker — and so cold.Store — by
-// shape, which is the whole of what it stands in for.
+// Cold is both the applier and the watermark reader, so the watermark always
+// reads back what the drains wrote; otherwise a shard would replay what it had
+// already applied. It satisfies cold.Store.
 type Cold struct {
 	mu      sync.Mutex
 	refusal error
@@ -36,21 +25,17 @@ type Cold struct {
 	applied map[wal.ShardID]wal.Seqno
 }
 
-// New is a cold store no drain has written to: every shard reads as having no
-// watermark, which is the state a replay starts from.
+// New returns an empty store: every shard reads as having no watermark.
 func New() *Cold { return &Cold{applied: map[wal.ShardID]wal.Seqno{}} }
 
-// Refusing is a cold store every drain fails against, for a test whose point is
-// that no drain belongs in it. The refusal is returned unwrapped, so what a
-// caller classifies is what it passed in.
+// Refusing returns a store on which every Apply fails with err, unwrapped.
 func Refusing(err error) *Cold {
 	c := New()
 	c.refusal = err
 	return c
 }
 
-// Apply records the drain and moves the shard's watermark to what the batch
-// carried.
+// Apply counts the drain and sets the shard's watermark to the batch's.
 func (c *Cold) Apply(_ context.Context, shard wal.ShardID, _ wal.Epoch, batch fold.Batch) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -62,10 +47,9 @@ func (c *Cold) Apply(_ context.Context, shard wal.ShardID, _ wal.Epoch, batch fo
 	return nil
 }
 
-// Watermark is what this store's own drains moved, so a shard nothing drained
-// reads as absent rather than as zero — the two answers the seam distinguishes,
-// and the ones a real store may not collapse even though the cycle floors both
-// at [wal.FirstSeqno] − 1.
+// Watermark returns the last drained seqno. A shard never drained reads as
+// absent (ok false), not zero: the seam distinguishes the two, even though the
+// cycle floors both at [wal.FirstSeqno] − 1.
 func (c *Cold) Watermark(_ context.Context, shard wal.ShardID) (wal.Seqno, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -73,7 +57,7 @@ func (c *Cold) Watermark(_ context.Context, shard wal.ShardID) (wal.Seqno, bool,
 	return seqno, ok, nil
 }
 
-// Drains is how many landed here.
+// Drains returns how many drains landed.
 func (c *Cold) Drains() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

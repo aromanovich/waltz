@@ -1,501 +1,68 @@
 # The geometry of an acknowledged write
 
-## Three positions, not two
+Suppose a caller has received success, but the workflow's mutable-state row in the cold store has
+not changed yet. The write is durable in the log, visible through the layer, and waiting to be
+folded into the cold store. Most of this design follows from taking that interval seriously.
 
-Suppose a caller has received success, but the corresponding mutable-state row in the cold store has
-not yet changed. The write is neither pending nor complete in the ordinary database sense. It is
-durable in the log, visible through the layer, and waiting to be folded into the cold store. Most of
-this design follows from taking that interval seriously.
-
-One shard therefore has three significant positions:
-
-```text
-appliedSeqno <= resolved <= commitSeqno < next seqno
-```
-
-`commitSeqno` is the highest entry the log has acknowledged. `appliedSeqno` is the highest entry
-whose effects a cold-store transaction contains. Between them, `resolved` marks the highest entry
-whose fate is known. Usually `resolved` and `appliedSeqno` move together. They separate when a
-window folds to no database work — an `AddHistoryTasks` carrying no rows is the one mutation that
-does — so its entries are finished, but there was no transaction in which to advance the persistent
-watermark.
-
-This third position prevents two tempting mistakes. Measuring the tail as
-`commitSeqno - appliedSeqno` charges already-settled entries against the memory bound. Advancing
-`appliedSeqno` without a transaction lets trimming erase entries that a new owner still needs for
-replay. The tail is consequently the interval `(resolved, commitSeqno]`: durable work whose outcome
-is still open.
-
-The same entries also have an in-memory shape, called a **window**, but the window is not the tail.
-The tail is a range of log positions. The window is a slice of that range, folded into one summary
-per dirty workflow. A drain empties the window when it starts and releases the corresponding tail
-only after the outcome is known. If the outcome cannot be read, the window is empty and the tail is
-still charged, which is exactly what the process can say: those entries were acknowledged, and
-nobody here knows whether they were applied.
-
-Those three positions and the window are the whole geometry, and the rest of this chapter is the
-vocabulary and the rules that hang off them. It defines every term the handbook uses in a narrow
-sense, then states every numbered invariant with the file that enforces it and the suite that would
-catch a violation. Three things to know before reading it:
-
-* The vocabulary here is the repository's own, kept in [`../../CONTEXT.md`](../../CONTEXT.md) beside
-  its Russian aliases; the entries below are that glossary translated rather than paraphrased.
-* It is the vocabulary of the **layer**. What judges the layer from outside — the checker and the
-  witness — is [chapter 11](11-verification.md#the-words-for-what-judges-the-layer).
-* When two words look interchangeable in this repository they usually are not, and the last section
-  names the pairs.
+This chapter names the parts of that interval, defines the handbook's terms, and states the eleven
+numbered invariants with the code and suite behind each. The vocabulary, with its Russian aliases,
+is in [`../../CONTEXT.md`](../../CONTEXT.md); the words for what judges the layer are in [chapter
+11](11-verification.md#the-words-for-what-judges-the-layer).
 
 ---
 
 ## The words a reader arrives with
 
-Ten words are expensive precisely because they look familiar. If you operate Temporal or a database
-you already own them; this handbook uses them for something else, and nothing in the sentence warns
-you that the meaning changed. Each is introduced by explicit contrast at its first use and then
-means exactly one thing. The table comes before the glossary proper because a misread here is a
-misread of everything after it.
+Ten familiar words mean something narrower in this book.
 
 | word | what a Temporal or database user means | what it means here | how they are kept apart |
 |---|---|---|---|
 | **shard** | a storage partition | a Temporal history shard: the key range one history process owns | a store's own units are written "partition", never "shard" |
-| **task** | the activity or workflow task a worker polls off a task queue | a history task: the deferred-work row a transition writes, read by a queue inside the history service | nothing in the layer polls or matches a task queue; every count and every fold is over rows |
+| **task** | the activity or workflow task a worker polls off a task queue | a history task: the deferred-work row a transition writes, read by a queue in the history service | nothing in the layer polls a task queue; every count and fold is over rows |
 | **queue** | a task queue | one task category's stream and its reader in the history service | as above |
 | **history** | a workflow's event history | the history *service*, or a history *task* | "event history" and "history service" are written out in full |
 | **replay** | re-running workflow code over its event history | what a new owner does with an inherited tail | the Temporal sense is never used, only contrasted |
-| **watermark** | a queue's deletion watermark | unqualified, appliedSeqno | the drain's size thresholds are `window.Watermarks` in code and its age threshold is `cycle.Config.Age`; all three are **triggers** everywhere else, which is also what the metric tag calls them |
-| **node** | a history node, meaning a process | a history process, as everywhere in Temporal; and separately `waltz.Layer`, the composition such a process builds, which is what "the node's budget" and "the node's config" are about | the composition is called the composition where the difference matters; `history_node` rows of the event tree are never called nodes in prose |
+| **watermark** | a queue's deletion watermark | unqualified, appliedSeqno | the drain's size thresholds (`window.Watermarks` in code) and age threshold (`cycle.Config.Age`) are **triggers** everywhere else, as the metric tag calls them |
+| **node** | a history node, meaning a process | a history process; separately, "the node's budget" and "the node's config" mean `waltz.Layer`, the composition that process builds | the composition is named where the difference matters; `history_node` rows of the event tree are never called nodes |
 | **range** | the shard's rangeID | a task deletion range, or a task read range | `rangeID` is always one word |
-| **immediate** | nothing in particular | two different things, and they never appear in one sentence: an *immediate transaction* is one a store settles without a distributed coordinator, while an *immediate category* is a task category keyed on task id rather than on a fire time | the noun after the word is always written |
-| **state** | a workflow's mutable state | `cycle.State`, one of `running`, `halted-lost`, `halted-invariant` | the three values are written in full, never "halted" or "lost"; the workflow's is always "mutable state" |
+| **immediate** | nothing in particular | two things, never in one sentence: an *immediate transaction* is one a store settles without a distributed coordinator; an *immediate category* is a task category keyed on task id rather than fire time | the noun after the word is always written |
+| **state** | a workflow's mutable state | `cycle.State`: `running`, `halted-lost` or `halted-invariant` | the values are written in full, never "halted" or "lost"; the workflow's is always "mutable state" |
 
-**Watermark** is the pair most easily crossed. In this chapter the word alone always means
-appliedSeqno; the drain's size thresholds appear a few lines away and are called triggers
-throughout, even though the code spells them `window.Watermarks`.
+## Three positions, not two
 
-## The glossary, in reading order
+One shard has three significant positions:
 
-The entries follow the log's own order — positions first, then what moves them — so related terms
-remain adjacent when this section is used as a reference. An early entry may name an operation whose
-own entry comes later.
-
-**Shard.** A Temporal history shard, the unit of everything here. One shard has one log, one
-in-memory accumulator, one goroutine and one owner; nothing in the layer crosses a shard boundary.
-`wal.ShardID` is the identifier, and it is the raw shard number rather than any store's own mapping
-of it. Which shard a workflow belongs to is a hash and nothing else:
-`common.WorkflowIDToHistoryShard` fingerprints `namespaceID + "_" + workflowID`, takes it modulo the
-cluster's history shard count and adds one — so shard ids are 1-based, and the count is written into
-cluster metadata at the cluster's first start and does not change afterwards.
-*Not to be confused with:* a storage partition, which is how a table is physically laid out. One
-shard's rows may lie in any number of partitions, and one partition may hold rows of many shards.
-
-**Epoch (`wal.Epoch`).** The shard-ownership token every log append carries and every drain's
-transaction asserts. It is *identical to Temporal's rangeID* — one token, not two mechanisms.
-
-* **It may grow without an ownership change**, because the server renews rangeID whenever a shard
-  exhausts its task-ID range.
-* **Zero is not a valid epoch** (`wal.ErrZeroEpoch`), and whoever hands epochs out owes the log a
-  strictly greater one per acquire: fencing cannot separate two writers holding the same epoch.
-
-This is **fencing, not locking**, and the difference decides how ownership works here. A lock has to
-keep the second claimant out, so something must track who holds it and be able to revoke it from an
-owner that has hung. A fence keeps nobody out. It sits at the write instead: `rangeID` is a fence
-token in the exact sense — a monotonic number checked by the side that *accepts* the write, inside
-the same transaction as the write itself. So a zombie owner is never told that it is a zombie, and
-nothing waits for it to work that out. Its append is refused and its apply transaction fails its
-compare-and-swap, so there is nothing to roll back. On the happy path the check costs nothing,
-because it rides a transaction that had to happen anyway. Why not a lease with a timer instead:
-[chapter 13](13-designs-that-were-rejected.md#a-lease-with-a-timer).
-
-*Not to be confused with:* term, generation — the same concept in other literature, and neither word
-is used here.
-
-**seqno (`wal.Seqno`).** The position of an entry in one shard's log: a per-shard LSN the single
-writer assigns itself. Total order within a shard and no gaps, both contractual. The first entry
-sits at `wal.FirstSeqno`, which is 1; lower numbers are reserved for a backend's own bookkeeping.
-
-**commitSeqno.** The highest seqno the log has durably acknowledged. The ack is *cumulative*: an ack
-of n means every entry at or below n is durable. A mutation is confirmed to its caller if and only
-if its seqno is at or below commitSeqno — that is invariant I2, and it is inherited from the log
-contract rather than implemented above it.
-
-**appliedSeqno.** The highest seqno whose effects are in the cold store. It is persisted atomically
-with each apply batch, in that batch's own transaction, and replay starts just above it.
-
-**resolved.** The highest seqno whose fate is settled, whether or not the cold store holds it:
-appliedSeqno, plus anything above it that a drain released without writing a transaction. It is the
-position the tail is measured from, it lives only in memory, and a new owner starts it at the
-watermark it reads.
-
-**Tail.** The entries that are durable in the log and not yet settled — a count and a byte total
-over a seqno range, not a container. The entries themselves are in the log; what is in memory is the
-*window's* folded form of them (**fold, and the accumulator**, below). The tail and that window
-differ twice over:
-
-* **not the same set** — the window empties when a drain starts, the tail only when that drain
-  commits;
-* **not entry-shaped** — a window's worth of mutations folds per dirty workflow, usually into one
-  merged request; a tombstone and the run created behind it are two requests.
-
-It is emphatically **not** `commitSeqno − appliedSeqno`: a drain can release entries without moving
-appliedSeqno, so the tail is measured from `resolved`. `tailstate.Tail.Entries` is the one spelling
-of it, and [the log picture](#the-log-picture) below is the whole geometry.
-
-**Mutation.** One `ExecutionStore`-level write request the log carries, and the unit of atomicity:
-one mutation is one log entry. Eight request shapes exist — create, update, conflict-resolve, set,
-delete, delete-current, and the two task calls. *Not to be confused with:* "operation", "write",
-"update" — all three are ambiguous about granularity, and "mutation" no longer implies mutable state
-(see the next entry).
-
-The two deletions — `DeleteWorkflowExecution` and `DeleteCurrentWorkflowExecution` — travel through
-the log for a reason of their own, and not the one the two task calls have. A deletion must take
-effect after the writes it removes, and the window may be holding creates and updates for the very
-run being deleted. The two obvious routes each fail:
-
-* **let the delete transit straight to the cold store.** It would have to drain the window first, on
-  every such call, with the caller waiting on that transaction. That is the cost the layer exists to
-  avoid, paid on a call nobody expected to pay it on.
-* **record the delete and perform it later.** Between the acknowledgement and the deferred delete
-  the execution is still there to be read by a caller that was told it was gone.
-
-So in the accumulator a deletion becomes a tombstone (`fold.RunTombstone`, `fold.CurrentGone`)
-instead. A read after an acknowledged delete returns not-found, and no transaction has run.
-
-**Task record.** The two mutations that are about a queue rather than about a workflow:
-`AddHistoryTasks` and `RangeCompleteHistoryTasks`. They name no run and assert nothing.
-
-Both travel through the log, and that is one decision rather than two: routing the add and the range
-delete differently would let the delete take effect at a different moment than the writes it covers,
-and that fails in both directions.
-
-* A delete that **transits** straight to the cold store runs before the drain writes the rows it was
-  meant to cover, and leaves them behind.
-* A delete **deferred alone** covers a timer created after the caller's checkpoint, because the
-  store's range delete works by fire-time interval rather than by task id.
-
-In the log they take effect in the order the caller wrote them.
-
-Every task belongs to a **category**, and a category is one of two kinds, which decides what its
-rows are keyed and ranged on: an **immediate** category (transfer, visibility, replication) is keyed
-on task id, a **scheduled** category (timers) on fire time. The distinction is Temporal's rather
-than the layer's, and it survives into every range the layer carries. *Not to be confused with:*
-"task write", which names only half of it.
-
-**Deletion range (`fold.TaskRange`).** A `[InclusiveMin, ExclusiveMax)` of one task category, as the
-caller's own checkpoint states it. It does not outlive the drain that carries it, and what that
-means for the tasks on either side of it is [I7 below](#i7-at-more-length).
-*Not to be confused with:* an ack level, which is a standing per-category cursor a queue keeps above
-the store. A deletion range is one caller's request, and it dies with the drain that carries it.
-
-**Window.** The slice of the tail that one apply batch folds; in the general case it is the whole
-tail. Fold's rule is stated over a window: for each run, the assertion that reaches the drain is the
-one carried by the *first* mutation of that run in the window, and the data is everything folded
-after it (**condition authority**, below). `cycle/window.Window` counts what has been folded since
-the last drain, and its bytes are not the tail's.
-
-**Fold, and the accumulator.** Fold is the compaction of a window: merging one workflow's mutations
-into one summary update. `fold.Accumulator` is the value that holds it. The rules are mechanical
-only — no Temporal business logic — and there are three of them worth memorising:
-
-* a snapshot-bearing mutation **resets** that run's accumulator;
-* an update **merges**;
-* a deletion turns it into a **tombstone**.
-
-Two things about the shape of that, both of which read as arbitrary until they are stated:
-
-* **the unit is the workflow, not the run.** One merged request can carry more than one run — that
-  is what continue-as-new and conflict resolution look like — and the current-execution facts are
-  the workflow's rather than any one run's. `fold.WorkflowRecord` therefore holds them once: the
-  head-of-window assertion on the current row, the row the window would write, and whether the
-  window's net effect was to remove that row. Apply registers those assertions on exactly one
-  request of the batch, the one `fold.Emitted.FirstOfWorkflow()` marks, so two requests of the same
-  workflow cannot assert the same row twice or disagree about it. It is also why the collapse
-  ratio's denominator counts workflows.
-* **the rules are mechanical because a rule stated in Temporal's terms would be a second
-  implementation of the server's semantics.** The layer sits under a component that changes on its
-  own schedule; anything it re-derives about that component's meaning is a copy it must keep in step,
-  with nothing to notice when it falls behind. It is also what leaves "the fold is correct" with
-  exactly one meaning: the folded path leaves the cold store where the sequential path would have
-  left it. That follows from the rules being mechanical, not from a choice of instrument.
-
-**Collapse ratio.** Mutations in a window divided by the dirty workflows the window folds to;
-`fold.Stats.CollapseRatio` computes it, and the two metric series `wal_drained_mutations` and
-`wal_drained_workflows` are its numerator and denominator. It is a function of the *window*, not a
-constant of the layer: a corpus that never re-touches a workflow reports 1.0, which reads like a
-pass and measures nothing.
-
-**Drain.** One pass of the apply cycle over a folded window. A non-empty batch is written in one
-transaction and moves appliedSeqno; an empty batch writes no transaction and settles its entries in
-memory without moving the watermark. A transactional drain is all-or-nothing over everything it
-publishes — event history excepted, which is durable before the transaction opens — and appliedSeqno is
-the witness to whether that transaction committed. *Not to be confused with:* stopping a layer or a
-node, which is `Shutdown` (it drains *and* closes).
-
-**Apply.** The step that turns folded summary updates into cold-store writes: one transaction
-carrying the merged requests, the appliedSeqno bump and the epoch compare-and-swap, over event history
-the batch carried and the store has already made durable. Who performs it
-is `cold.Applier`, which no package of the layer implements — the drain hands over a `fold.Batch` and
-never a column. What the layer keeps of it is `apply`, the package that says what a drain's outcome
-demands of its caller: the five classes an error sorts into — committed, refused, shard lost,
-invariant violated, unknown outcome — and what each one obliges the cycle to do next.
-
-**Base row, base version.** Two names for what a delegated assertion stands on, read after the epoch
-is acquired and never before.
-
-* The **base row** is the cold store's own copy of the two rows: one run's row, and the workflow's
-  current-execution row with its `last_write_version` beside it. `baserow.Rows` is one value
-  carrying both reads rather than two separate readers, because whatever delegates an assertion
-  needs both. Absence is folded in: a row that is not there arrives as a nil row, not as an error.
-* The **base version** is the `db_record_version` of the run's row *as of the last drain*: what the
-  folded request asserts, as distinct from the version it writes.
-
-*Not to be confused with:* "current version", which is ambiguous between the two; and "cold read",
-which names every read this layer makes.
-
-**Condition authority.** The rule that every assertion a mutation carries is verified **before** that
-mutation is acked. The append is the ack and the ack is the answer to the caller, so a check made
-after it has neither an addressee nor an undo. The accumulator answers only some of those assertions
-itself — exactly the ones the fold discards — and hands the rest on; that partition is below.
-
-Why there is anything to verify at all: a state transition is read-decide-write, and the decision is
-made strictly before the write. The history service takes the current mutable state — usually from
-its own cache — applies to it whatever happened (a worker's response, an arriving signal, a fired
-timer) and computes the next state, and time passes between the take and the write. An unconditional
-write at that moment means "erase whatever happened while I was thinking", and by then the shard may
-have been re-acquired, the state rebuilt, or a competing start of the same workflow id landed. Every
-mutable-state write therefore carries an assertion about the world the decision was made in. What
-the store does with those assertions, and why a failed one commits a transaction that wrote nothing,
-is [chapter 12](12-the-write-before-the-layer.md#the-write-is-one-query-not-a-transaction-of-many-statements).
-
-Assertions partition in two, and the partition is what "nothing is checked twice" means: no
-assertion is evaluated against both the window and the base row.
-
-* ***recorded*** — this mutation heads its run, so the assertion is handed to apply as
-  `fold.Delegated` and rides the drain's transaction as a claim about the pre-window row;
-* ***discarded*** — an earlier mutation of the window already heads that run, so the state the
-  assertion stands on is the window's own, and `fold.Accumulator.Check` evaluates it here.
-
-A recorded assertion is nevertheless *evaluated* twice, and the two evaluations answer different
-questions. Before the append the cycle reads the pre-window row and verifies the assertion against
-it, because that is the last moment the caller is still there to be told. In the drain the same
-assertion is registered as a statement of the transaction, because only there is it atomic with the
-write it guards. The first is for the caller and the second is for correctness; in sync mode the
-first is skipped, since the drain runs inside the call and its outcome is what the caller is told.
-
-The predicate is read-only on the accumulator. An assertion the window cannot determine is
-**refused** (`fold.ErrRefused`) rather than admitted, and the recovery is always the same: drain the
-window, retry the mutation at the head of a fresh one, where the assertion is recorded rather than
-answered here. `fold.Accumulator.AddOrDrain` and `fold.Accumulator.CheckOrDrain` are that recovery
-written once. It terminates because an empty window determines every assertion, so a second refusal
-of the same mutation is itself an invariant violation.
-
-Answering here is answering *instead of* the store, so a discarded assertion that does not hold owes
-the caller the store's own payload, not merely an error of the right Go type. `fold.currentConflict`
-rebuilds `*p.CurrentWorkflowConditionFailedError` from the very state blob the store would have
-deserialised — request ids, run id, execution state and status, last write version — because the
-server takes a current-row failure apart to decide whether to answer "already started" and whether
-to reuse the previous run. A run-row failure carries much less (a message, a next event id, a db
-record version) precisely because nothing dispatches on it. *Not to be confused with:* validation,
-precondition check — both suggest something the store would repeat, and this is what answers
-*instead of* the store.
-
-**Watermark.** Unqualified, it means appliedSeqno: the position a drain moves. The apply cycle's
-age and size **triggers** are a different thing and are always called triggers.
-
-**Cut point.** The highest seqno a partial *re*-drain would be entitled to acknowledge after a
-condition failure: one below the lowest entry answering for any diverged row. Nothing re-drains
-partially today, so the field is forensic — it is what an operator, or a future partial re-drain,
-could stand on. `apply.InvariantViolationError.CutSeqno` is the spelling, and a zero there means
-nothing may be acknowledged at all. Applying anything above a cut point would leave entries applied
-above any watermark the drain could set.
-
-**Provisional entry.** An entry whose condition had **not** been verified when it became durable,
-because the drain carrying it is what answers its caller: every write of sync mode. Its promise is
-"this will be applied, or its caller will be told it was not", so a condition failure on it at
-replay is a **drop** rather than a halt, which is what the same failure on any other entry is. The
-writer marks it at the append — `mutation.EncodeProvisional` rather than `mutation.Encode`, and
-replay reads the bit back — because the two classes cannot be told apart afterwards.
-*Not to be confused with:* unconfirmed, speculative — both describe an entry that is not acked, and
-this one is.
-
-**Replay.** What a new owner does with the tail it inherits: read `(appliedSeqno, commitSeqno]` from
-the retained log, fold it into a fresh accumulator, drain. Three things about where it sits:
-
-* it runs on the shard's first request, not at the acquire itself. The acquire fences the log and
-  installs a fresh cycle; the first read or write then reads the watermark, replays and drains
-  before it is served. That request is not refused — it parks on the cycle's loop behind the replay,
-  and that placement *is* the readiness gate. There is no "replaying" flag for anyone to check;
-* a read triggers it as much as a write does;
-* it does not bound itself by the tail limit: that bound is on what a running cycle acks, and an
-  over-sized inherited tail must still be replayed or the shard is unrecoverable.
-
-*Not to be confused with:* recovery — the layer's *other* recovery is one drain whose outcome was
-lost; what the two share is the rule "read the watermark first, never re-derive from base versions".
-Nor with Temporal's own **workflow replay**, which re-executes workflow code against an event history
-and is the thing determinism is about: that happens above persistence, while this executes no user
-code, reads no event history and carries acknowledged log entries into the cold store.
-
-**Trim.** Lazy deletion of log entries at or below appliedSeqno, with no safety lag — recovery reads
-the watermark rather than the log. It runs beside the cycle rather than in it; a failed trim is
-retried at the next cadence and halts nothing. It is part of the latency budget rather than hygiene:
-a log that is never trimmed grows without bound, and a backend's reads get dearer as its log gets
-longer, so trimming sits on the drain's budget rather than being a background chore.
-
-**Backpressure.** The refusal a shard's write meets before it is appended. Four things raise it,
-and the metric's `limit` tag says which:
-
-* `entries` — the tail has reached the hard limit in entries;
-* `bytes` — the tail has reached the hard limit in bytes;
-* `unresolved` — the shard's applier cannot read whether its last drain committed. This one is not
-  a size at all, and it is checked ahead of the other three;
-* `storage_pressure` — the WAL backend itself asked for no new appends until its storage recovers
-  ([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)). Not the layer's
-  bound at all, and checked ahead of the two sizes: while it stands, the layer's own drains and
-  trims are already forced, so a size would name the wrong constraint.
-
-Three things about how the refusal is raised:
-
-* **before the append**, so a refused mutation is provably not in the log;
-* **unwrapped**, as a `*serviceerror.ResourceExhausted` with the same cause and scope as the server's
-  own persistence limiter uses, because the shard's write path matches concrete types and anything it
-  does not recognise becomes a background re-acquire;
-* **never on the `ShardStore` path**, since refusing a rangeID renewal would turn degradation into a
-  lost shard. Neither size bound is ever raised on a read either. `unresolved` is: a cycle that
-  cannot say what its last drain did has nothing to answer a read from.
-
-*Not to be confused with:* throttling, rate limit — both name a pace, and this is a bound on memory.
-
-**Overlay.** The read interface of the fold accumulator: a read is the base row from the cold store
-plus what the window holds for that workflow, gated at commitSeqno. `fold.RunShape` — absent,
-snapshot, delta, tombstone — is what a run read branches on, and `fold.CurrentShape` — unheld,
-written, gone, guarded — is what a current-execution read branches on. Together they are the whole
-of it.
-
-**Merge-on-read.** One page of a task read answered from the window and the cold store at once:
-ascending, deduplicated, inside the requested range, and no longer than the caller's batch size. The
-window's undrained deletion ranges come off the cold store's half of the page and nothing else,
-since the window's own half was swept as each range folded in. The two sources are disjoint by
-construction, so the dedup is a safety net rather than the mechanism. What the page's correctness
-rests on is where it may cut: at the end of a base page or below its first row, never inside one.
-The cold store's pagination token is the underlying plugin's own bytes, which this layer may neither
-parse nor synthesise, so a half-emitted base page would lose rows on one side and duplicate them on
-the other. *Not to be confused with:* the overlay, which renders one run's state; this concatenates
-two sources and paginates.
-
-**Cold store.** Whatever a deployment's persistence implementation writes its rows into: the
-permanent target of apply, reached only through `cold.Applier` and `cold.Watermarker`. No package of
-the layer names a column, and none may name a store. `cold/memcold` is the one implementation of
-those two interfaces here: Temporal's own SQL persistence, embedded whole, over a SQLite database
-that lives in this process and dies with it. Everything above the seam is exercised against it, and
-it is a real store rather than a stub — Temporal's own persistence suites judge it exactly as they
-judge a plugin. A deployment supplies its own as one `cold.Store` — one value answering both halves
-of the seam — and what it owes is four things: one drain is one publication (the merged requests, the
-task work and the watermark in one transaction, opened only once every history row the batch carried
-is durable), the watermark commits inside it, the epoch is asserted first, and the outcome comes back
-in `apply`'s five classes. What
-each demands of the cycle is [chapter 04](04-contracts.md#apply--what-a-drains-outcome-demands), and why
-the watermark has to ride that transaction is [the recovery
-rule](04-contracts.md#the-recovery-rule-the-watermark-exists-for) there. *Not to be confused with:*
-"main storage", "base" — both overloaded.
-
-**WAL backend.** An implementation of the log contract: order, fencing, cumulative ack,
-gap-freedom, readback. `wal/memwal` is the one this library ships — the same contract in process
-memory, which is what everything above the log is tested on, and which is a real implementation
-rather than a stub: it refuses a stale epoch, keeps seqnos gapless and survives a trim the same way
-a durable log has to. A deployment supplies its own, and `wal/waltest` is how it finds out whether
-what it supplied is one. The contract exists so that a faster log can replace another without
-touching an invariant, and the five guarantees are the whole of what everything above the log is
-allowed to assume.
-
-**Cycle.** The layer's state machine, one goroutine per (shard, epoch). It owns the accumulator,
-decides when to drain, drives apply, answers reads and task pages from the window, replays an
-inherited tail and runs trim beside itself. Its three states are decisions rather than defensive
-branches:
-
-* `StateRunning` — the shard is this cycle's to write, and it is the only state that accepts work;
-* `StateHaltedLost` — the shard was fenced away, which is fencing working. The window is dropped,
-  nothing is trimmed, and the entries it held stay in the log for the next owner to replay;
-* `StateHaltedInvariant` — an assertion failed in a window whose failure could not be pinned on one
-  caller. A divergence this process owns: no retry and no failover.
-
-*Not to be confused with:* worker, loop — both understate that placing a read on this goroutine is
-what makes the read correct.
-
-**Wrapper.** The seam into a running server: a decorator over a base `DataStoreFactory` that takes
-twelve persistence methods into the layer, refuses a thirteenth — `CompleteHistoryTask`, with
-`wrapper.ErrCompleteHistoryTaskUnsupported` — and transits the rest. It wraps the base plugin rather
-than forking it, and it may import no persistence implementation at all, so which store sits
-underneath is the binary's business. *Not to be confused with:* adapter, proxy — both suggest
-translation, and this one decides routing.
-
-**Node, or composition.** What a running server composes the layer out of: the `wal` section of the
-custom datastore's options, the policy settings the server's dynamic config carries, the backends
-they run over, and the task-category registry a tail is decoded with. A composition, not a cluster
-member — the server is the node, and this is what it builds. `waltz.Compose` is the call, and
-`waltz.Layer` is what it hands back. Every key is [chapter 08](08-configuration.md).
-
-Terms from elsewhere in the handbook, stated once so they are not re-derived:
-
-* **passthrough / intercept** is what the wrapper does —
-  [chapter 01](01-overview.md#what-mode-names-here) owns it;
-* **sync / windowed** is what window the cycle keeps — the same section of
-  [chapter 01](01-overview.md#what-mode-names-here) owns it, and
-  [chapter 08](08-configuration.md) has the key;
-* the **checker** and the **witness** are what judges the layer rather than parts of it —
-  [chapter 11](11-verification.md#the-words-for-what-judges-the-layer) owns their vocabulary.
-
-### How the terms relate to each other
-
-The entries above build one object. A **shard** is the unit: one **cycle** goroutine, one log, one
-accumulator, and nothing crossing to another shard. The log carries **mutations**, one per entry,
-each at a **seqno**, and is acked to **commitSeqno**. What is acked and not yet settled is the
-**tail**; the prefix of it one drain will take is the **window**; **fold** compacts that window into
-the **accumulator**, and how far it compacts is the **collapse ratio**. The accumulator is then two
-things at once — what answers reads, through the **overlay** and **merge-on-read**, and what a
-**drain** hands to **apply** as one transaction. That transaction moves **appliedSeqno**, the
-unqualified **watermark**, and **trim** deletes the log at or below it.
-
-```mermaid
-graph TD
-  SH["one shard: one cycle, one log, one accumulator"]
-  LOG["the log: mutations at seqnos, acked to commitSeqno"]
-  TAIL["the tail: resolved .. commitSeqno"]
-  WIN["the window: the prefix one drain takes"]
-  ACC["fold.Accumulator: that window, folded"]
-  RD["reads: overlay and merge-on-read"]
-  CS["the cold store, at appliedSeqno"]
-
-  SH --> LOG
-  LOG -->|"acked and unsettled"| TAIL
-  TAIL -->|"a prefix of it"| WIN
-  WIN -->|"fold"| ACC
-  ACC -->|"answers"| RD
-  ACC -->|"one drain, one apply transaction"| CS
-  CS -->|"trim deletes at or below appliedSeqno"| LOG
+```text
+appliedSeqno <= resolved <= commitSeqno < next seqno
 ```
 
-That is the spine rather than the whole vocabulary. What is deliberately not on it:
+`commitSeqno` is the highest entry the log has acknowledged. `appliedSeqno`, the watermark, is the
+highest entry whose effects a cold-store transaction contains. `resolved` is the highest entry whose
+fate is known. It parts from `appliedSeqno` only when a drain, the pass that writes accumulated
+mutations to the cold store in one transaction, settles entries without a transaction in which to
+advance the watermark. [The log picture](#the-log-picture) shows when.
 
-* **wrapper** and **node** — the seam that puts a mutation on the line at all;
-* **epoch**, **condition authority**, **base row**, **backpressure** and the **cut point** — rules
-  every step is subject to rather than steps of their own;
-* the **task record** and its **deletion range** — carried by the same log and folded into the same
-  accumulator, but keyed by category rather than by workflow, so they never take part in the
-  per-workflow collapse the spine describes;
-* **replay** — the same line walked again by a new owner over a tail it inherited; the **WAL
-  backend** is whatever implements the log underneath it.
+The third position prevents two mistakes. Measuring the tail as `commitSeqno - appliedSeqno` would
+charge settled entries against the tail bound, so a run of them could wedge the shard against
+writers holding nothing. Advancing `appliedSeqno` without a transaction would let trim, which
+deletes log entries at or below it, erase entries a new owner still needs to replay. So the tail is
+`(resolved, commitSeqno]`: durable work whose outcome is still open.
 
----
+The window, the mutations acknowledged since the last drain, is a slice of the tail held in memory
+and folded into one summary per dirty workflow (usually one merged request, though a tombstone and
+the run created behind it are two). Tail and window release at different moments, as the second
+figure shows.
 
 ## The log picture
 
-One shard's log, left to right, with the two durable positions — the log's `commitSeqno` and the
-cold store's `appliedSeqno` — and the third, in-memory one the tail is actually measured from.
+Figure: one shard's log, with the two durable positions (`commitSeqno` in the log, `appliedSeqno`
+in the cold store) and the in-memory one the tail is measured from.
 
 ```mermaid
 graph LR
-  P["trimmed prefix: entries the log no longer holds"]
+  P["applied: in the cold store, trimmed from the log by and by"]
   A(("appliedSeqno"))
-  S["settled, not applied: entries a drain released without a transaction"]
+  S["settled, not applied: entries released without a transaction"]
   R(("resolved"))
   U["the unapplied tail: acked, fate still open"]
   C(("commitSeqno"))
@@ -508,240 +75,446 @@ graph LR
   C --> N
 ```
 
-How to read this. Circles are positions, boxes are stretches of log between them, and seqnos grow to
-the right.
+Circles are positions, boxes the stretches of log between them; seqnos grow to the right.
 
-* **At or below `commitSeqno`** — durable and confirmed to its caller. To the right of it nothing
-  exists yet, because the layer keeps no speculative entries: the append happens before the
-  accumulator sees the mutation.
-* **At or below `appliedSeqno`** — in the cold store. Trim eventually removes it from the log, up to
-  the committed watermark with no safety lag.
-* **The `settled, not applied` box** is why **tail is not `commitSeqno − appliedSeqno`**. A drain
-  whose batch carries no transaction — an `AddHistoryTasks` with no rows is the one mutation that
-  folds to such a batch — still releases the entries its window folded, and those entries are acked
-  and dead. Counting them would make the memory bound guard memory nobody holds; moving
-  `appliedSeqno` over them would strand a recovering owner, since a trim goes to `appliedSeqno`. So a
-  third position, `resolved`, sits between them, and the tail is `commitSeqno − resolved`.
-* **A condition that did not hold at the drain settles the same way**, and it is the other shape of
-  entry that lands in that box. The entry stays in the log forever: an append is not undoable, and
-  gap-freedom is what a seqno means. But nobody holds it and no drain will ever carry it, so I10's
-  accounting has to stop counting it — otherwise a run of such failures wedges the shard against
-  writers holding nothing. The watermark does neither obvious thing with it. It does not move with
-  the entry, because a trim past what the cold store holds strands a recovering owner. It does not
-  stick on the entry either: the next drain that commits moves the watermark past it, and the trim
-  follows. Every settle of this kind says so in one word, `tailstate.KeepWatermark`. It arises only
-  where a drain can still answer a caller — sync mode's one-mutation window, and a provisional entry
-  dropped at replay — which is why `wal_answered_condition_failures` reads zero in the shipped
-  windowed configuration.
+* At or below `commitSeqno`, an entry is durable and confirmed to its caller. Nothing lies to its
+  right: the append happens before the accumulator sees the mutation, so there are no speculative
+  entries.
+* At or below `appliedSeqno`, an entry is in the cold store, and trim removes it from the log with
+  no safety lag.
+* "Settled, not applied" holds acked, dead entries a drain released without a transaction: an empty
+  batch, such as an `AddHistoryTasks` with no rows, or a condition that failed at the drain and was
+  answered to its caller there. Such an entry stays in the log, because an append cannot be undone
+  and gap-freedom is what a seqno means. The tail bound (I10) stops counting it; the watermark stays
+  put until the next committed drain moves past it. The settle is marked `tailstate.KeepWatermark`.
+  An empty batch can arise in either mode. An answered condition failure arises only where a drain
+  can still answer a caller (sync mode, where the window holds one mutation and the drain runs
+  inside the call, or a provisional entry dropped at replay), so `wal_answered_condition_failures`
+  reads zero in the shipped windowed configuration.
 
-Where the window sits relative to all that:
+Figure: the window and the accumulator relative to the tail.
 
 ```mermaid
 graph TD
   TAIL["the tail: acked entries whose fate is open"]
   WIN["the window: what has been folded since the last drain"]
   ACC["fold.Accumulator: the window folded, per dirty workflow"]
+  RD["reads: overlay and merge-on-read"]
   DR["one drain: apply a non-empty batch, or settle an empty one"]
-  TAIL -->|"a prefix of it, at most all of it"| WIN
+  TAIL -->|"a slice of it, at most all of it"| WIN
   WIN -->|"folded into"| ACC
+  ACC -->|"answers"| RD
   ACC -->|"emitted as fold.Batch"| DR
-  DR -->|"a known outcome releases those entries"| TAIL
+  DR -->|"a commit, an empty batch or an answered condition releases those entries"| TAIL
 ```
 
-How to read this. The two of them empty at different moments:
-
-* the **window** empties when a drain *starts*;
-* the **tail** releases that window when the transaction commits, or immediately when the batch is
-  empty and no transaction is needed.
-
-That is why an unreadable drain outcome leaves entries charged against the tail with no window left
-to release them. That stalled state is itself a refusal reason for new writes;
-[chapter 06](06-shard-lifecycle.md) owns it.
+The window empties when a drain starts; the tail releases those entries when the transaction
+commits, or at once when the batch is empty. If the outcome cannot be read, the window is empty and
+the tail is still charged, because nobody knows whether the acknowledged entries were applied. That
+stalled state refuses new writes ([chapter
+05](05-write-path.md#7-failed-drain--the-outcome-could-not-be-read)). Task records are not drawn:
+they fold by category, not by workflow.
 
 ---
 
-## Why the distinctions are load-bearing
+## The glossary, in reading order
 
-Every distinction above has a simpler-looking alternative, so it is worth saying what each one is
-*for*. The simplifications fail only after a crash or a race, which is what makes them dangerous
-rather than merely wrong:
+The groups follow one write: the log it lands in, the window that holds it, the conditions it
+carries, the reads that see it, the owner that recovers it, the task rows it may carry, and the
+seams at either end. An entry that needs a later term says (below).
 
-* Acknowledging only after the cold-store write would remove the interval, but it would also put
-  every caller back behind that write and remove the decoupling that lets several mutations share
-  one transaction. Compaction, rather than a claimed latency win, is the benefit this layer exists
-  to provide.
+### The log
+
+**Shard.** A Temporal history shard, the unit of everything here: one log, one in-memory
+accumulator, one goroutine and one owner. Nothing in the layer crosses a shard boundary.
+`wal.ShardID` is the raw shard number, not any store's mapping of it. A workflow's shard is a hash:
+`common.WorkflowIDToHistoryShard` fingerprints `namespaceID + "_" + workflowID`, takes it modulo the
+cluster's history shard count and adds one, so shard ids are 1-based. The count is written into
+cluster metadata at the cluster's first start and never changes.
+*Not to be confused with:* a storage partition. One shard's rows may lie in many partitions, and one
+partition may hold rows of many shards.
+
+**Mutation.** One `ExecutionStore`-level write request the log carries, and the unit of atomicity:
+one mutation is one log entry. There are eight request shapes: create, update, conflict-resolve,
+set, delete, delete-current, and the two task calls (*task record*, below).
+*Not to be confused with:* "operation", "write", "update", all ambiguous about granularity.
+"Mutation" does not imply mutable state.
+
+The two deletions, `DeleteWorkflowExecution` and `DeleteCurrentWorkflowExecution`, travel through
+the log too and become a tombstone in memory (`fold.RunTombstone`, `fold.CurrentGone`), so a read
+after an acknowledged delete returns not-found before any transaction has run. Routed any other way,
+a delete either waits on a drain or leaves the execution readable after the caller was told it was
+gone.
+
+**seqno (`wal.Seqno`).** An entry's position in one shard's log: a per-shard LSN the single writer
+assigns itself. Seqnos are totally ordered within a shard and gap-free; both are contractual. The
+first entry is `wal.FirstSeqno`, which is 1; lower numbers are reserved for a backend's own
+bookkeeping.
+
+**commitSeqno, appliedSeqno, resolved, tail.** The positions of [Three positions, not
+two](#three-positions-not-two). The log's ack is cumulative: an ack of n means every entry at or
+below n is durable, so a mutation is confirmed to its caller if and only if its seqno is at or below
+commitSeqno (I2, from the log contract, not from code above it). appliedSeqno is persisted in each
+drain's own transaction, and replay starts just above it. resolved lives only in memory; a new owner
+starts it at the watermark it reads. The tail is a count and a byte total over a seqno range, not a
+container: the entries are in the log, and memory holds only the window's folded form of them.
+`tailstate.Tail.Entries` is its one spelling.
+
+**Epoch (`wal.Epoch`).** The shard-ownership token every log append carries and every drain's
+transaction asserts. It is Temporal's rangeID: one token, not two mechanisms. What it owes the log
+(strictly greater per acquire, never zero, free to grow without an ownership change) is in [chapter
+06](06-shard-lifecycle.md#2-use-the-ownership-token-temporal-already-has).
+
+This is fencing, not locking: nobody is kept out, but the side accepting a write checks a monotonic
+number inside the write's own transaction. A zombie, a former owner still running, is never told:
+its append is refused and its apply fails its compare-and-swap. Why not a lease with a timer:
+[chapter 13](13-designs-that-were-rejected.md#a-lease-with-a-timer).
+*Not to be confused with:* term, generation, which other literature uses for the same concept.
+
+**WAL backend.** An implementation of the log contract's five guarantees: order, fencing,
+cumulative ack, gap-freedom, readback. They are all code above the log may assume, so one log can
+replace another without touching an invariant ([chapter 04](04-contracts.md)). `wal/memwal`, the
+one shipped, is the contract in process memory. A deployment supplies its own and runs
+`wal/waltest` against it.
+
+### The window and the drain
+
+**Window.** The slice of the tail folded since the last drain, often all of it.
+`cycle/window.Window` counts it; the tail bound (I10) reads `tailstate.Tail`, never the window.
+
+**Fold, and the accumulator.** Fold compacts a window by merging one workflow's mutations into one
+summary update, held in `fold.Accumulator`. The three rules are mechanical, with no Temporal
+business logic:
+
+* a snapshot-bearing mutation resets that run's accumulator;
+* an update merges;
+* a deletion turns it into a tombstone.
+
+Mechanical rules give "the fold is correct" one meaning: the folded path leaves the cold store where
+the sequential path would. Rules in Temporal's terms would be a second copy of the server's
+semantics, drifting as it changes.
+
+The unit is the workflow, not the run. One merged request can carry several runs (continue-as-new,
+conflict resolution), and the current-execution facts belong to the workflow. `fold.WorkflowRecord`
+holds them once ([chapter 04](04-contracts.md#the-drain-and-the-batch)), and apply registers them on
+the one request `fold.Emitted.FirstOfWorkflow()` marks, so two requests of one workflow cannot
+assert the same row twice or disagree.
+
+**Collapse ratio.** Mutations in a window divided by the dirty workflows it folds to, computed by
+`fold.Stats.CollapseRatio`; the series `wal_drained_mutations` and `wal_drained_workflows` are its
+numerator and denominator. It describes a window, not the layer: a corpus that never touches a
+workflow twice reports 1.0, which looks like a pass and measures nothing.
+
+**Drain.** One pass of the apply cycle over a folded window. A non-empty batch is written in one
+transaction and moves appliedSeqno. An empty batch writes no transaction and settles its entries in
+memory without moving the watermark. A transactional drain is all-or-nothing over everything it
+publishes, except event history, which may be written ahead of the transaction and must be durable
+no later than it. appliedSeqno moves in that transaction because it is the witness to whether the
+transaction committed: moved in a second one, it could stand still while the data was applied, and
+an unknown outcome would be unresolvable.
+*Not to be confused with:* stopping a layer or a node, which is `Shutdown` (it drains *and*
+closes).
+
+**Apply.** The step that turns a drain's batch into cold-store writes: one transaction carrying the
+merged requests, the appliedSeqno bump and the epoch compare-and-swap. `cold.Applier` performs it;
+no package of the layer implements one, and the drain hands over a `fold.Batch`, never a column. The
+`apply` package sorts a drain's error into five classes (committed, refused, shard lost, invariant
+violated, unknown outcome) and says what each obliges the cycle to do next.
+
+**Cut point.** The highest seqno a partial re-drain could acknowledge after a condition failure: one
+below the lowest entry answering for any diverged row. Nothing re-drains partially, so the field
+(`apply.InvariantViolationError.CutSeqno`) is forensic; zero means nothing may be acknowledged
+([chapter 04](04-contracts.md#applyinvariantviolationerror--the-attribution)).
+
+### Conditions
+
+**Condition authority.** The rule that every assertion a mutation carries is verified before the
+mutation is acknowledged: the append is the ack and the answer to the caller, so a check made after
+it has nobody to tell and nothing to undo. Writes carry assertions because the history service
+decides from mutable state it read earlier, often from its cache; by the time it writes, the shard
+may have been re-acquired or a competing start of the same workflow id may have landed. What the
+store does with a failed assertion is in [chapter
+12](12-the-write-before-the-layer.md#the-write-is-one-query-not-a-transaction-of-many-statements).
+
+Assertions split in two, and none is evaluated against both the window and the cold store's row:
+
+* *Recorded*: this mutation is the run's first in the window, so the assertion is handed to apply
+  as `fold.Delegated` and rides the drain's transaction as a claim about the pre-window row; the
+  data is everything folded after it.
+* *Discarded*: an earlier mutation in the window already heads that run, so the assertion stands on
+  the window's own state, and `fold.Accumulator.Check` evaluates it there.
+
+A recorded assertion is evaluated twice: before the append, against the pre-window row, the last
+moment the caller can be told; and in the drain, as a statement of the transaction, the only place
+it is atomic with the write it guards. Sync mode skips the first check, since the drain's outcome
+is what the caller is told.
+
+The check is read-only on the accumulator. An assertion the window cannot determine is refused
+(`fold.ErrRefused`) rather than admitted, and the recovery is always to drain the window and retry
+the mutation at the head of a fresh one, where its assertion is recorded.
+`fold.Accumulator.AddOrDrain` and `fold.Accumulator.CheckOrDrain` implement it once. It terminates
+because an empty window determines every assertion, so a second refusal of the same mutation is
+itself an invariant violation.
+
+A failed discarded assertion is answered instead of the store, with the store's own error payload:
+`fold.currentConflict` rebuilds a current-row failure from the window's state blob, because the
+server reads its fields ([chapter 05](05-write-path.md#3-failed-write--the-condition-did-not-hold)).
+A run-row failure carries only a message, a next event id and a db record version, because nothing
+dispatches on it.
+*Not to be confused with:* validation, precondition check. Both suggest something the store would
+repeat; this answers instead of the store.
+
+**Base row, base version.** What a recorded assertion stands on, read after the epoch is acquired,
+never before.
+
+* The *base row* is the cold store's copy of two rows: the run's row, and the workflow's
+  current-execution row with its `last_write_version`. `baserow.Rows` carries both in one value,
+  because whatever records an assertion needs both. An absent row arrives as a nil row, not as an
+  error.
+* The *base version* is the `db_record_version` of the run's row as of the last drain: what the
+  folded request asserts, as distinct from the version it writes.
+
+*Not to be confused with:* "current version", ambiguous between the two, and "cold read", which
+names every read this layer makes.
+
+**Provisional entry.** An entry whose condition had not been verified when it became durable,
+because the drain carrying it answers its caller. Every write in sync mode is one. Its promise is
+"this will be applied, or its caller will be told it was not", so a condition failure on it at
+replay is a drop, where on any other entry it is a halt. The two cannot be told apart afterwards,
+so the writer marks the entry at the append (`mutation.EncodeProvisional` rather than
+`mutation.Encode`) and replay reads the bit back.
+*Not to be confused with:* unconfirmed, speculative. Both describe an entry that is not acked; this
+one is.
+
+### Reads
+
+**Overlay.** The accumulator's read interface: the cold store's base row plus what the window holds
+for that workflow, gated at commitSeqno. A run read branches on `fold.RunShape` (absent, snapshot,
+delta, tombstone), a current-execution read on `fold.CurrentShape` (unheld, written, gone,
+guarded); nothing else.
+
+**Merge-on-read.** One page of a task read, answered from the window and the cold store at once:
+ascending, deduplicated, inside the requested range, and no longer than the caller's batch size.
+The window's undrained deletion ranges are subtracted from the cold store's half only. Correctness
+rests on where the page cuts: the cold store's pagination token is the plugin's own bytes, which the
+layer may neither parse nor synthesise, so a page ends where a cold-store page ends or before its
+first row, never halfway through it ([chapter
+07](07-read-path.md#4-merge-tasks-two-ordered-sources-one-page)). A history-branch page merges the
+same way, with nothing to subtract (`fold.Accumulator.HistoryPage`).
+*Not to be confused with:* the overlay, which renders one run's state. Merge-on-read concatenates
+two sources and paginates.
+
+### Ownership and recovery
+
+**Cycle.** The layer's state machine: one goroutine per (shard, epoch) that owns the accumulator,
+decides when to drain, drives apply, answers reads, replays an inherited tail and runs trim beside
+itself. Its three states (`cycle.State`):
+
+* `running` (`StateRunning`): the shard is this cycle's to write, and the only state that accepts
+  work.
+* `halted-lost` (`StateHaltedLost`): the shard was fenced away, which is fencing working. The window
+  is dropped, nothing is trimmed, and its entries stay in the log for the next owner to replay.
+* `halted-invariant` (`StateHaltedInvariant`): an assertion failed in a window whose failure could
+  not be pinned on one caller. This process owns a divergence: no retry and no failover.
+
+*Not to be confused with:* worker, loop. Both hide that running a read on this goroutine is what
+makes it correct.
+
+**Replay.** What a new owner does with the tail it inherits: read `(appliedSeqno, commitSeqno]` from
+the retained log, fold it into a fresh accumulator, drain. It runs on the shard's first request,
+read or write, not at the acquire: that placement is the readiness gate ([chapter
+06](06-shard-lifecycle.md#the-first-request-is-the-readiness-gate)).
+*Not to be confused with:* recovery of one drain whose outcome was lost, which shares the rule
+"read the watermark first, never re-derive from base versions"; nor with Temporal's workflow
+replay. This one runs no user code and reads no event history back: it carries acknowledged
+entries, with their event batches, into the cold store.
+
+**Trim.** Lazy deletion of log entries at or below appliedSeqno. It runs beside the cycle, decided
+when a drain commits rather than on a clock of its own. Its cadence, what forces it and what a
+failure does are in [chapter 06](06-shard-lifecycle.md#7-trim-as-part-of-the-lifecycle).
+
+**Backpressure.** The refusal a shard's write meets before it is appended, raised as an unwrapped
+`*serviceerror.ResourceExhausted`. The `limit` tag names one of four causes:
+
+* `entries`: the tail has reached its hard limit in entries;
+* `bytes`: the tail has reached its hard limit in bytes;
+* `unresolved`: the applier cannot read whether the last drain committed;
+* `storage_pressure`: the WAL backend asked for no new appends until its storage recovers
+  ([chapter 04](04-contracts.md#walpressuresource--the-optional-pressure-face)).
+
+Because the refusal comes before the append, a refused mutation is provably not in the log. It is
+never raised on the `ShardStore` path, since refusing a rangeID renewal would turn degradation into
+a lost shard. `unresolved` also refuses reads, since the cycle has nothing to answer them from; size
+and storage pressure never do. Precedence, error shape and the checks: [chapter
+05](05-write-path.md#4-failed-write--backpressure-i10).
+*Not to be confused with:* throttling, rate limit. Both name a pace; this is a bound on the tail.
+
+### Tasks
+
+**Task record.** The two mutations about a queue rather than a workflow: `AddHistoryTasks` and
+`RangeCompleteHistoryTasks`. They name no run and assert nothing.
+
+Both travel through the log, so they take effect in the order the caller wrote them. A range delete
+routed any other way can leave behind rows it was meant to cover, or cover a timer created after the
+caller's checkpoint, because the store's range delete works by fire-time interval, not by task id.
+
+**Category.** A task category is one of two kinds, which decides what its rows are keyed and ranged
+on: an *immediate category* (transfer, visibility, replication) on task id, a *scheduled category*
+(timers) on fire time. The distinction is Temporal's, and it survives into every range the layer
+carries.
+*Not to be confused with:* "task write", which names only half of it.
+
+**Deletion range (`fold.TaskRange`).** An `[InclusiveMin, ExclusiveMax)` of one task category, as
+the caller's own checkpoint states it. It does not outlive the drain that carries it; see [I7
+below](#i7-at-more-length).
+*Not to be confused with:* an ack level, a standing per-category cursor a queue keeps above the
+store. A deletion range is one caller's request.
+
+### The seams
+
+**Cold store.** Whatever a deployment's persistence implementation writes its rows into: the
+permanent target of apply, reached only through `cold.Applier` and `cold.Watermarker`. No package of
+the layer names a column, and none may name a store. `cold/memcold`, the one shipped, is Temporal's
+own SQL persistence over an in-process SQLite database ([chapter
+04](04-contracts.md#the-implementation-shipped-at-this-seam)). A deployment's own `cold.Store`
+answers both halves and owes four things: one drain is one publication (every history row the batch
+carried durable no later than it), the watermark commits inside it, the epoch is asserted first,
+and the outcome comes back in `apply`'s five classes. It also bounds its own calls ([chapter
+04](04-contracts.md#apply--what-a-drains-outcome-demands), and [the recovery
+rule](04-contracts.md#the-recovery-rule-the-watermark-exists-for) there).
+*Not to be confused with:* "main storage", "base", both overloaded.
+
+**Wrapper.** The seam into a running server: a decorator over a base `DataStoreFactory` that takes
+twelve persistence methods into the layer, refuses a thirteenth (`CompleteHistoryTask`, with
+`wrapper.ErrCompleteHistoryTaskUnsupported`) and transits the rest. It wraps the base plugin rather
+than forking it and may import no persistence implementation, so the store underneath is the
+binary's business.
+*Not to be confused with:* adapter, proxy. Both suggest translation; this one decides routing.
+
+**Composition.** What a running server builds the layer out of: the `wal` section of the custom
+datastore's options, the policy settings in the server's dynamic config, the backends they run over,
+and the task-category registry a tail is decoded with. The server is the node; this is what it
+builds. `waltz.Compose` is the call and `waltz.Layer` the result. Every key is in [chapter
+08](08-configuration.md).
+
+*Passthrough / intercept* (what the wrapper does) and *sync / windowed* (what window the cycle
+keeps) are defined in [chapter 01](01-overview.md#what-mode-names-here).
+
+---
+
+## Why each distinction matters
+
+Each distinction above has a simpler-looking alternative that fails only after a crash or a race,
+so happy-path tests do not catch it.
+
+* Acknowledging only after the cold-store write removes the interval, and with it what the layer
+  exists to provide: several mutations sharing one transaction (compaction, not a latency win).
 * Acknowledging before the log append is durable creates a success that neither replay nor the cold
   store can recover.
 * Treating the accumulator as the source of truth loses acknowledged writes with the process.
-* Checking a discarded condition during a later drain answers a caller that has already gone away;
-  checking it before append makes refusal definitive.
-* Letting task inserts bypass the log while range deletes use it changes their relative order and
-  can either resurrect a covered task or delete a later one.
 * Giving the log and the cold store different ownership tokens leaves a gap in which an old owner
-  can be fenced from one and still write the other.
-* Draining a run at a time rather than a window at a time hands back the collapse the fold bought,
-  and leaves nowhere to put the progress mark atomically: five transactions over five runs leave
-  four intermediate states, and nothing in the cold store tells them apart.
-* Moving appliedSeqno in a second transaction after the batch's own makes an unknown outcome
-  unresolvable rather than merely ambiguous. Recovery asks one question — did the last drain commit?
-  — and answers it by reading the watermark back. Split across two transactions, the mark can stand
-  still while the data is already applied, and reading it answers nothing.
+  is fenced from one and still writes the other.
+* Draining a run at a time gives back the collapse the fold bought and leaves nowhere to put the
+  progress mark atomically: five transactions over five runs leave four intermediate states that
+  nothing in the cold store tells apart.
 
-Two simplifications a reader is likely to propose are not on that list, because refusing them is an
-argument rather than a definition: fencing only at the cold store, and putting the shard's own
-writes through the log. [Chapter 13](13-designs-that-were-rejected.md) holds both, beside the rest
-of what was tried and rejected.
-
-The numbered invariants below turn that reasoning into claims code and tests can enforce.
+Fencing only at the cold store and putting the shard's own writes through the log are refused in
+[chapter 13](13-designs-that-were-rejected.md).
 
 ---
 
 ## The invariants
 
-Eleven invariants, numbered. The numbers are the layer's own: most of them appear in the code and in
-the tests. They follow the order the layer was built in rather than any order of exposition, so do
-not read the list as an argument — read it as an index. The suites in the last column belong to
-[chapter 11](11-verification.md), which owns `waltest` and the guards.
-
-Three of them are claims about things this library does not implement, and they are stated anyway
-because the deployment that supplies those things is the only place they can hold. I4's cold-store
-half and I5 are both obligations on the `cold.Applier` a deployment supplies, and a deployment that
-breaks either loses acknowledged data: nothing here can check them, and the "how it is verified"
-column says so rather than naming a suite that does not judge them. I9 is the same shape one seam
-lower, on the log.
+There are eleven. The numbers are the code's own and follow build order, so read the list as an
+index, not an argument. Three bind what a deployment supplies, and nothing in this tree checks them:
+I4's cold-store half and I5 bind the `cold.Applier` (break either and acknowledged data is lost),
+and I9 binds the `wal.Log` (break it and the log is slow, not wrong). The suites are in [chapter
+11](11-verification.md).
 
 | # | What it claims | Enforced in | How it is verified |
 |---|---|---|---|
-| **I1** | A mutation is one log entry, whole. No path writes parts of a mutation as separate entries. | [`mutation/mutation.go`](../../mutation/mutation.go) — one `oneof`, one payload | `mutation`'s field-set and kind guards; `wrapper/intercept_test.go` asserts the record format has exactly eight shapes |
+| **I1** | A mutation is one log entry, whole: no path writes its parts as separate entries. | [`mutation/mutation.go`](../../mutation/mutation.go) — exactly one request per mutation, one `oneof` in `mutation.proto`, one payload | `mutation`'s field-set and kind guards; `wrapper/intercept_test.go` asserts the record format has exactly eight shapes |
 | **I2** | A mutation is confirmed to its caller ⟺ its seqno ≤ commitSeqno. No ack before durability. | [`wal/wal.go`](../../wal/wal.go) guarantee 3 (cumulative ack); the cycle answers after `Append` returns | the log conformance suite [`wal/waltest`](../../wal/waltest/waltest.go), which every implementation runs |
-| **I3** | Readers see state as of commitSeqno: everything confirmed, nothing unconfirmed. | [`fold/overlay.go`](../../fold/overlay.go) and [`cycle/read.go`](../../cycle/read.go) — reads run on the cycle's own goroutine | `cycle`'s read tests over a window that is deliberately left undrained |
-| **I4** | Fencing is end to end: the log append is protected by the contract's fence semantics, and the cold-store write by the same epoch in the same transaction. | [`wal/wal.go`](../../wal/wal.go) (`Log.Fence`); the cold-store half is the applier's, which is handed the epoch on every `Apply` | `waltest`'s `FenceCutsOffLowerEpochs` (the zombie ex-owner) and `TwoWritersContendForOneShard` cover the log half; the applier's half is a deployment's obligation and nothing here judges it |
-| **I5** | appliedSeqno is persisted atomically with each batch, and a batch it already covers is never applied twice. | the applier's own transaction: `cold.Applier` is handed a batch and `cold.Watermarker` reads back what it committed | `cycle`'s recovery tests, over an applier whose outcome the test chooses; that the real one is atomic is a deployment's obligation |
+| **I3** | Readers see state as of commitSeqno: everything confirmed, nothing unconfirmed. | [`fold/overlay.go`](../../fold/overlay.go) and [`cycle/read.go`](../../cycle/read.go) — reads run on the cycle's own goroutine | `cycle`'s read tests over a window left undrained |
+| **I4** | Fencing is end to end: the log append by the contract's fence, the cold-store write by the same epoch in the same transaction. | [`wal/wal.go`](../../wal/wal.go) (`Log.Fence`); the cold-store half is the applier's, handed the epoch on every `Apply` | `waltest`'s `FenceCutsOffLowerEpochs` (the zombie ex-owner) and `TwoWritersContendForOneShard` cover the log half; the acceptance suite's `TestAShardThatLosesItsEpochMidRun` holds `cold/memcold` to the cold-store half; a deployment's own applier is its obligation |
+| **I5** | appliedSeqno is persisted atomically with each batch, and a batch it already covers is never applied twice. | the applier's own transaction: `cold.Applier` is handed a batch and `cold.Watermarker` reads back what it committed | `cycle`'s recovery tests, over an applier whose outcome the test chooses; the real one's atomicity is a deployment's obligation |
 | **I6** | Log entries are self-contained state deltas, not commands: applying an entry needs nothing but the entry. | [`mutation/encode.go`](../../mutation/encode.go) — the record mirrors the persistence request field for field | the codec's field-set guard: one recorded decision per mirrored field |
 | **I7** | The layer does not model an ack level: it applies the range deletions it was asked for, in the order it was asked. | [`fold/histtasks.go`](../../fold/histtasks.go), handed to the applier inside the drain's `fold.Batch` | `fold`'s task tests and the task-page corpus test; the `wal_dropped_tasks` / `wal_written_tasks` pair |
-| **I8** | Compaction barriers: a snapshot resets what was accumulated for the run, an update merges, a deletion is a tombstone. | [`fold/fold.go`](../../fold/fold.go) and [`fold/merge.go`](../../fold/merge.go) | `fold`'s barrier tests, and the condition corpus that drives a generated stream through the accumulator the way a cycle does |
-| **I9** | An append is one immediate write over adjacent keys of the log's own storage: no indexes, no changefeeds, no reads of other tables. | the `wal.Log` implementation, whichever one a deployment supplies | nothing in this tree: it is a cost claim about storage this library does not own, and a backend that breaks it is slow rather than wrong |
+| **I8** | Compaction barriers: a snapshot resets what was accumulated for the run, an update merges, a deletion is a tombstone. | [`fold/fold.go`](../../fold/fold.go) and [`fold/merge.go`](../../fold/merge.go) | `fold`'s barrier tests, and the condition corpus, which drives a generated stream through the accumulator as a cycle does |
+| **I9** | An append is one immediate write over adjacent keys of the log's own storage: no indexes, no changefeeds, no reads of other tables. | the `wal.Log` implementation a deployment supplies | nothing in this tree: a cost claim about storage this library does not own |
 | **I10** | Exceeding the tail bound is degradation, not loss: what was refused is not in the log, what was acked is. | [`cycle/decide.go`](../../cycle/decide.go) (`writeRefused`) over [`cycle/tailstate`](../../cycle/tailstate/tailstate.go) | `internal/verify/guard`'s three backpressure-boundary tests; `cycle`'s edge tests over both units |
-| **I11** | The epoch is the shard's own counter: one token rather than two mechanisms; it may grow without an ownership change, and the shard's own writes bypass the log. | [`wal/wal.go`](../../wal/wal.go) (`Epoch`), [`wrapper/shard_store.go`](../../wrapper/shard_store.go) | `waltest`'s `EpochGrowsWithoutChangingOwner`; `wrapper`'s `TestTheEpochTravelsWithTheWrite`, which asserts the request's rangeID is the epoch the mutation is written under, and its `ShardStore` tests, which assert the acquire is reported before the rangeID moves |
+| **I11** | The epoch is the shard's own counter: one token rather than two mechanisms; it may grow without an ownership change, and the shard's own writes bypass the log. | [`wal/wal.go`](../../wal/wal.go) (`Epoch`), [`wrapper/shard_store.go`](../../wrapper/shard_store.go) | `waltest`'s `EpochGrowsWithoutChangingOwner`; `wrapper`'s `TestTheEpochTravelsWithTheWrite` (the request's rangeID is the epoch the mutation is written under) and its `ShardStore` tests (the acquire is reported before the rangeID moves) |
+
 
 ### I7, at more length
 
-An **ack level** is what a category's queue derives above the store: a category can have several
-readers, and the meaningful "everything below this is done" is the minimum, over all of them, of each
-reader's lowest not-yet-completed key. It lives *above* the persistence interface and there is
-nothing in that interface to express it — no `ExecutionStore` call carries one, so a component under
-the boundary cannot consult it, recompute it or be told it. What crosses is the consequence:
-`[InclusiveMin, ExclusiveMax)` of one category, which needs no interpretation because it already
-says every row in that range is garbage. So I7 is forced by the interface rather than preferred.
+An *ack level* is what a category's queue derives above the store: the minimum, over its readers,
+of each reader's lowest not-yet-completed key. No `ExecutionStore` call carries one, so a component
+under the persistence interface cannot consult, recompute or be told it. What crosses is the
+consequence, an `[InclusiveMin, ExclusiveMax)` of one category whose every row is garbage, so the
+interface forces I7.
 
-The obvious design for task deletion is to keep an ack level per category and skip anything below
-it. This layer does not: it carries the caller's own `[InclusiveMin, ExclusiveMax)` through the log
-as a mutation like any other, and resolves it the way it resolves every write-then-delete pair.
-
-* a range folding into the window **drops the tasks the window already holds inside it**;
-* the range itself **becomes a statement in the drain that carries it**;
-* a task arriving *after* a range is **kept**, because that is what the sequential path would do.
-
-`fold.TaskRange.Covers` is the store's own DELETE predicate, and it is the single answer to three
-questions at once — what the cold store loses, what the window drops, and what a merged read hides.
-
-Two consequences follow, and both are [chapter
-07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write)'s, which owns I7's read side
-and the two counters used to measure it:
-
-* a task created and completed inside one window is never written to the cold store at all;
-* the drop and the leak are the same number. For every task row the drop declines to write there is
-  exactly one row that would otherwise have been permanent garbage, sitting below a boundary its
-  queue had already completed.
+The layer carries the caller's range through the log as a mutation like any other. A task row the
+range covers is not written; a task the caller wrote after the range is kept. A task created and
+completed inside one window never reaches the cold store. The predicate (`fold.TaskRange.Covers`)
+and the leak it prevents are in [chapter
+07](07-read-path.md#5-invariant-i7--the-tasks-a-drain-does-not-write).
 
 ### I8, at more length
 
-I8's barriers govern the run's **state**, and three rules sit beside them. Each is one a reader would
-otherwise have to infer from a merged request, and the last two fail silently when they are not
-known.
+I8's barriers govern the run's state. Three more rules sit beside them, and the last two fail
+silently when broken.
 
-* **Tasks are exempt from both destructive barriers, not just the tombstone.** A task the layer has
-  already acknowledged must end up either in the cold store or still in the window, so neither
-  barrier may drop one. On the tombstone side, a deleted run's tasks survive as orphaned tasks on
-  the emitted delete. On the snapshot side, a create, conflict-resolve or set resets everything else
-  about the run and leaves its accumulated tasks alone, concatenating them through the barrier:
-  tasks are queue records rather than workflow state, and rewriting a workflow's state wholesale
-  does not cancel work already promised. `fold.mergeTasks` is called from the merge, the
-  snapshot-delta and the snapshot-replacing paths alike, and the last of those saves the prior task
-  map across the replacement.
-* **Upsert and delete of one key are resolved inside the accumulator, per key, before anything is
-  emitted.** The store's transaction does not emit statements in the order they were registered: for
-  each collection it issues every upsert and then every delete. So a window that emitted an
-  unresolved pair for the same key would have them applied in that order whatever the caller meant,
-  and a key re-upserted after being deleted would be written and then deleted again — an
-  acknowledged write gone. `fold.mergeItems` takes the arriving mutation's deletes and then its
-  upserts, so across mutations the later operation wins and the key leaves the other set entirely.
-  This is a constraint on anyone adding a keyed collection to the fold: merging one without the
-  resolution compiles, passes any test that compares merged requests, and shows up as a row that
-  should be there and is not.
-* **Buffered events do not merge**, which is a fourth barrier rule beside I8's three. Each arriving
-  mutation's `NewBufferedEvents` blob is stripped out of the merged request and appended to a
-  per-run list in arrival order, so the merged request's own slot is always nil, and at drain time
-  each accumulated batch becomes a row of its own. The batch carries its run id
-  (`fold.BufferedBatch`) rather than reading it off the request, because a window whose merged state
-  is a snapshot has no mutation left to read it from. `ClearBufferedEvents` is a barrier of its own
-  and a different one from a snapshot: it drops the batches the window accumulated before it *and*
-  marks the merged request so the drain clears the run's pre-window rows in the cold store — two
-  halves, because the window and the store hold different generations of the same rows.
-  Concatenating two batches into one row is the failure this rule exists to prevent, and no
-  comparison of merged requests would see it.
+* Tasks pass through both destructive barriers: an acknowledged task ends up in the cold store or
+  stays in the window. A deleted run's tasks survive as orphaned tasks on the emitted delete. A
+  create, conflict-resolve or set resets everything else about the run but concatenates its
+  accumulated tasks, because rewriting mutable state does not cancel work already promised.
+  `fold.mergeTasks` is called from the merge, snapshot-delta and snapshot-replacing paths alike; the
+  last saves the prior task map across the replacement.
+* Upsert and delete of one key are resolved per key inside the accumulator, before anything is
+  emitted. The store's transaction issues, per collection, every upsert and then every delete,
+  whatever the registration order, so a window that emitted both for one key would lose an
+  acknowledged write. `fold.mergeItems` takes the arriving mutation's deletes and then its upserts,
+  so the later operation wins and the key leaves the other set. A keyed collection added to the fold
+  without this compiles, passes any test that compares merged requests, and shows up as a missing
+  row.
+* Buffered events do not merge. Each arriving mutation's `NewBufferedEvents` blob is stripped from
+  the merged request (whose own slot is always nil) and appended to a per-run list in arrival order;
+  at drain time each batch becomes its own row. The batch carries its run id
+  (`fold.BufferedBatch`), because a window whose merged state is a snapshot has no mutation left to
+  read it from. `ClearBufferedEvents` is a barrier separate from a snapshot: it drops the batches
+  accumulated before it and marks the merged request so the drain also clears the run's older
+  pre-window rows in the cold store. Two batches concatenated into one row, the failure this
+  prevents, is invisible to any comparison of merged requests.
 
 ### I10, at more length
 
-The bound has two units — entries and bytes — and both come off `tailstate.Tail`, not off the
-window. They are not two spellings of one budget: **bytes bound memory**, the resident cost of an
-unapplied tail in the heap of the process that also runs the history service, and **entries bound
-recovery time**, since a successor must decode and fold every inherited entry and that work is per
-entry rather than per byte. Whichever trips first raises the refusal, and the `limit` tag says
-which. Why neither unit works alone, and where the two defaults come from, is [chapter
-14](14-where-the-defaults-came-from.md#why-the-bound-counts-entries-as-well-as-bytes).
+The bound has two units, entries and bytes. Encoded bytes stand in for memory: the resident cost of
+an unapplied tail in the heap of the process that also runs the history service. Entries bound
+recovery time, since a successor decodes and folds every inherited entry. A large payload trips the
+byte counter long before the entry counter; whichever trips first refuses, and the `limit` tag says
+which. The bound reads the tail as it stands, so the tail overshoots it by at most one entry. The
+"not loss" half, a refusal raised before the append, is guarded by `internal/verify/guard`'s
+`TestTheBackpressureRefusalIsDefinitelyNotCommitted`. Why neither unit works alone, and where the
+defaults come from: [chapter
+14](14-where-the-defaults-came-from.md#why-the-bound-counts-entries-as-well-as-bytes). The checks,
+their precedence, the error's cause and scope, and what one `%w` around it would cost: [chapter
+05](05-write-path.md#4-failed-write--backpressure-i10). The keys and defaults: [chapter
+08](08-configuration.md). The operator's response: [chapter
+09](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain).
 
-* **entries** going up means the applier is behind, and that a failover would take longer than it
-  should;
-* **bytes** going up means a workflow near the server's own blob limits: a large payload trips the
-  byte counter long before the entry counter.
-
-Three properties matter more than the numbers:
-
-* the refusal is raised **before** the append — that is the "not loss" half of the claim, and
-  `internal/verify/guard`'s `TestTheBackpressureRefusalIsDefinitelyNotCommitted` is the guard on it;
-* the bound reads the tail **as it stands**, never the tail the incoming mutation would make. So no
-  mutation is ever refused for its own size, and the tail overshoots the bound by at most one entry;
-* a *stalled* applier — one that cannot read whether its last drain committed — is refused as such,
-  ahead of the size check, even when the tail is also full. It is the reason an operator can act on,
-  and unlike a full tail it will not clear by waiting.
-
-The rest of the refusal is elsewhere:
-
-* the exact cause and scope the unwrapped `*serviceerror.ResourceExhausted` carries, and what one
-  `%w` around it would cost — [chapter 05](05-write-path.md#4-failed-write--backpressure-i10);
-* where the numbers live and what they default to — [chapter 08](08-configuration.md);
-* what an operator does about sustained refusals —
-  [chapter 09](09-operations.md#a-a-shard-stopped-accepting-writes--backpressure-or-an-unresolved-drain).
-
-One boundary of the claim, and no setting moves it. The situation the bound is for — the cold store
-refusing writes while the log keeps acking — presumes an asymmetric failure, and a log that lives in
-the same database as the cold store cannot fail asymmetrically from it: one incident is an incident
-of both halves at once. **The bound makes a cold-store degradation's consequences bounded; it does
-not make the two halves independent.** Whether they are independent is a deployment choice rather
-than a property of the layer, and it is the main thing a deployment decides when it picks the log
-and the cold store. Putting the log somewhere the cold store cannot take down is what the contract
-exists to allow.
+One limit no setting removes: the bound covers an asymmetric failure, the cold store refusing writes
+while the log keeps acknowledging. A log in the same database as the cold store fails with it.
+Independence of the two halves is a deployment choice, made when picking the log and the cold
+store, and the contract exists to allow it.
 
 ### The invariants without a number
 
-Not every claim this handbook makes about the layer carries a number, and the absence is deliberate:
-an unnumbered claim is one that has no such name inside the code. It is one of three things:
+Some claims carry no number because the code gives them none. Each is one of three things:
 
-* a property of the system as it stands without this layer —
-  [chapter 12](12-the-write-before-the-layer.md);
-* a property of an instrument that judges the layer rather than of the layer itself, such as the
-  witness's own named claims — [chapter 11](11-verification.md);
+* a property of the system without this layer ([chapter 12](12-the-write-before-the-layer.md));
+* a property of an instrument that judges the layer, such as the witness's named claims
+  ([chapter 11](11-verification.md));
 * a mechanism local to one chapter, stated where it is used.
 
 Do not renumber them into the list, and do not invent I12.
@@ -750,69 +523,45 @@ Do not renumber them into the list, and do not invent I12.
 
 ## One name, one thing
 
-This last section is for whoever adds a name to the tree, not for whoever is reading it. The glossary
-above is the vocabulary of the *design*, and it holds. It never governed the vocabulary of the
-*identifiers*, and that is where words multiplied. Two rules, narrower than "pick distinct names":
-
-* **A name may mean two things in two packages.** `waltz.Config`, `cycle.Config` and the
-  configuration type of whatever store sits underneath are not a defect — the package is the
-  disambiguator, which is what package names are for. Do not rename across this line.
-* **A name may not mean two things a reader meets together** — in one package, in one file, in one
-  function body, or on two types a call site holds at once. That is where the package name stops
-  disambiguating and the reader has to.
-
-Two shapes are worse than a repeated word, and they are the ones to look for.
-
-* **One name, two return types.** `Tail.Stalled` answers with the stall itself, while the same
-  question on `tailstate.Mirror` — the copy of those counters that goroutines other than the loop
-  read — answers with a seqno. So the mirror's method is `StalledAt`: a position says so in its name.
-* **One question, two answers that disagree.** `CurrentView.Held` and `workflowAcc.assertsCurrent`
-  are both "does the window hold this row", and they part company on a *guarded* current row — one
-  the window has only `DeleteCurrentWorkflowExecution` guards over, with no write above them
-  (`fold.CurrentGuarded`) — correctly: one is a read question and the other a partition question.
-  Neither name said which.
-
-A pair like that passes every review, because each half is right.
-
-The words that are already taken:
-
-| word | it is | it is not |
-|---|---|---|
-| **Registry** | `cycle.Manager`, the shards this node holds | `waltz.Registry`, which is task categories |
-| **Held** | a read: the window has something to say about this row | carrying a head assertion, which is `asserts*` |
-| **Policy** | `cycle.Policy`, a source of `Config` read at the decision | `WAL.StaticConfig()`, which is a `Config` value |
-| **Take** | `Window.Take`, which *empties* the window | building a read's view, which is `takeView` |
-| **ranges** | undrained range deletes (`fold.Accumulator.ranges`) | task rows, which are `addedTasks` |
-
-The list is not closed and is not a checklist to run: it is where a name goes when it turns out to
-have been two. There is deliberately no test over any of it — a check on spelling cannot see either
-of the two shapes above, which are the ones that cost something.
+An identifier may mean two things in two packages, but not where a reader meets both: in one
+package, file or function body, or on two types a call site holds at once. The words already taken
+are listed in [`CONTEXT.md`](../../CONTEXT.md)'s "One name, one thing".
 
 ---
 
+## Summary
+
+A write is acknowledged once it is durable in a shard's log, before the cold store holds it. Three
+positions describe that interval: `commitSeqno` (acknowledged), `appliedSeqno`, the watermark
+(contained in a committed drain), and `resolved` between them (settled, applied or not). The tail,
+`(resolved, commitSeqno]`, is acknowledged work whose fate is open; the window is the folded,
+in-memory slice of it the next drain takes.
+
+Mutations land at gap-free seqnos under an epoch that fences any older owner. The accumulator folds
+a window per workflow, answers reads, and hands one batch per drain to the cold store, whose
+transaction moves the watermark. Every assertion is verified before the ack. A new owner replays
+the tail above the watermark, trim deletes the log below it, and backpressure refuses a write before
+its append rather than lose one after it. The eleven invariants make these rules checkable; three
+bind what a deployment supplies. Chapter 03 maps the packages.
+
 ## Where this lives in the code
 
-* [`../../CONTEXT.md`](../../CONTEXT.md) — the glossary this chapter translates, plus the "one name,
-  one thing" section.
-* [`../../wal/wal.go`](../../wal/wal.go) — the five contract guarantees, `Seqno`,
-  `Epoch`, and the four errors a caller is expected to handle.
-* [`../../mutation/mutation.go`](../../mutation/mutation.go) — the record format:
-  the eight request shapes, and what a payload's format and provisional flag mean.
-* [`../../fold/fold.go`](../../fold/fold.go) and
-  [`../../fold/check.go`](../../fold/check.go) — the accumulator, and the condition
-  authority's recorded/discarded partition.
+* [`../../CONTEXT.md`](../../CONTEXT.md) — the glossary, and "one name, one thing".
+* [`../../wal/wal.go`](../../wal/wal.go) — the five contract guarantees, `Seqno`, `Epoch`, and the
+  four errors a caller is expected to handle.
+* [`../../mutation/mutation.go`](../../mutation/mutation.go) — the record format: the eight request
+  shapes, the payload format and the provisional flag.
+* [`../../fold/fold.go`](../../fold/fold.go) and [`../../fold/check.go`](../../fold/check.go) — the
+  accumulator, and the recorded/discarded partition.
 * [`../../fold/overlay.go`](../../fold/overlay.go) and
-  [`../../fold/taskpage.go`](../../fold/taskpage.go) — the overlay's four run shapes, its four
-  current-execution shapes, and the merge-on-read pagination rule.
-* [`../../fold/merge.go`](../../fold/merge.go) — I8's mechanics: the per-key
-  upsert-versus-delete resolution, and the task concatenation that survives every barrier.
-* [`../../fold/histtasks.go`](../../fold/histtasks.go) — I7: ranges, what they drop, and
-  `TaskRange.Covers`.
-* [`../../cycle/tailstate/tailstate.go`](../../cycle/tailstate/tailstate.go) — the
-  tail's arithmetic in one place: commit, applied, resolved, bytes and the stall.
-* [`../../cycle/decide.go`](../../cycle/decide.go) — I10's refusal, its precedence rules
-  and the exact error shape it returns.
-* [`../../cycle/replay.go`](../../cycle/replay.go) — replay: the inherited tail read back
-  above appliedSeqno, folded into a fresh accumulator and drained.
+  [`../../fold/taskpage.go`](../../fold/taskpage.go) — the overlay's run and current-execution
+  shapes, and the merge-on-read pagination rule.
+* [`../../fold/merge.go`](../../fold/merge.go) — I8: per-key upsert-versus-delete resolution and
+  task concatenation.
+* [`../../fold/histtasks.go`](../../fold/histtasks.go) — I7: ranges and `TaskRange.Covers`.
+* [`../../cycle/tailstate/tailstate.go`](../../cycle/tailstate/tailstate.go) — the tail's
+  arithmetic: commit, applied, resolved, bytes and the stall.
+* [`../../cycle/decide.go`](../../cycle/decide.go) — I10's refusal, its precedence and error shape.
+* [`../../cycle/replay.go`](../../cycle/replay.go) — replay of the inherited tail.
 * [`../../apply/failure.go`](../../apply/failure.go) — the five outcome classes, including the
-  unknown one that makes I5's "read the watermark first" rule the only safe recovery.
+  unknown one that makes "read the watermark first" the only safe recovery.

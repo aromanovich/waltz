@@ -2,7 +2,7 @@ package acceptance
 
 // Recovery: one stream driven twice over the same seed, once through a single
 // cycle and once through a chain of them, each abandoned the way a process that
-// dies abandons one — the range id moves, no drain runs, and the window's
+// dies abandons one — the rangeID moves, no drain runs, and the window's
 // mutations are in the log and nowhere else. The two databases must agree, row
 // for row and blob for blob.
 //
@@ -63,7 +63,7 @@ func TestARecoveredShardHoldsWhatAnUninterruptedOneDoes(t *testing.T) {
 		totals := crashed.mgr.Totals()
 		require.Greater(t, totals.Acked, totals.Applied,
 			"crash %d lands on an empty tail, so its successor recovers nothing", crash+1)
-		// A crash, in the two things the layer can see of one: the range id has
+		// A crash, in the two things the layer can see of one: the rangeID has
 		// moved and the window this cycle is holding is never drained.
 		crashed.takeShard(t)
 	}
